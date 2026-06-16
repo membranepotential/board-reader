@@ -1,0 +1,18 @@
+[project]
+name = "board-reader-edge"
+version = "0.1.0"
+description = "board-reader edge node (the Pi): capture, rectify (later), and forward frames"
+requires-python = ">=3.12"
+dependencies = [
+    "board-reader-core",
+    "numpy>=2.0",
+    "opencv-python-headless>=4.10",
+    "websockets>=12",
+]
+
+[project.scripts]
+board-reader-edge = "board_reader_edge.cli:main"
+
+[build-system]
+requires = ["uv_build>=0.11.16,<0.12.0"]
+build-backend = "uv_build"

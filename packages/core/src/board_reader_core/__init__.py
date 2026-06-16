@@ -1,0 +1,31 @@
+"""board-reader-core — the shared contract (DESIGN.md §5, §4.5).
+
+Imported by both the edge and the inference node. Contains no node-specific logic:
+the L3 position protocol, the L1->L2 wire envelope, and sim helpers.
+"""
+
+from board_reader_core.protocol import (
+    CLASSES,
+    EMPTY_PLACEMENT,
+    START_PLACEMENT,
+    ClockState,
+    PositionEvent,
+    dist_from_placement,
+    iso_utc,
+    placement_from_dist,
+)
+from board_reader_core.wire import Frame, decode_jpeg, encode_jpeg
+
+__all__ = [
+    "CLASSES",
+    "START_PLACEMENT",
+    "EMPTY_PLACEMENT",
+    "ClockState",
+    "PositionEvent",
+    "dist_from_placement",
+    "placement_from_dist",
+    "iso_utc",
+    "Frame",
+    "encode_jpeg",
+    "decode_jpeg",
+]

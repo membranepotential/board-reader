@@ -1,0 +1,40 @@
+# Virtual workspace root for the board-reader monorepo.
+# The deployable code lives in packages/*; this root only ties them together,
+# pins the resolver, and holds shared dev tooling. See docs/DESIGN.md.
+
+[tool.uv.workspace]
+members = ["packages/*"]
+
+[tool.uv]
+# Supply-chain hardening: 7-day dependency "seasoning". Only resolve to releases
+# published on or before this date (today minus 7 days), so freshly-published
+# (potentially compromised) versions are never pulled. Bump deliberately.
+exclude-newer = "2026-06-09T00:00:00Z"
+
+[tool.uv.sources]
+board-reader-core = { workspace = true }
+board-reader-edge = { workspace = true }
+board-reader-inference = { workspace = true }
+board-reader-viewer = { workspace = true }
+
+[dependency-groups]
+# Installed into the workspace venv for local dev + the test suite.
+dev = [
+    "board-reader-core",
+    "board-reader-edge",
+    "board-reader-inference",
+    "board-reader-viewer",
+    "pytest>=8",
+    "httpx>=0.27",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests", "packages"]
+filterwarnings = [
+    # Starlette's TestClient warns about httpx vs httpx2; harmless for our suite.
+    "ignore:Using `httpx` with `starlette.testclient`",
+    # uvicorn still drives the legacy websockets API; not our code.
+    "ignore:websockets.legacy is deprecated:DeprecationWarning",
+    "ignore:websockets.server.WebSocketServerProtocol is deprecated:DeprecationWarning",
+    "ignore:remove second argument of ws_handler:DeprecationWarning",
+]

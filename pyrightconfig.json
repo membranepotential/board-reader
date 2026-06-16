@@ -1,0 +1,11 @@
+{
+  "venvPath": ".",
+  "venv": ".venv",
+  "extraPaths": [
+    "packages/core/src",
+    "packages/edge/src",
+    "packages/inference/src",
+    "packages/viewer/src"
+  ],
+  "reportMissingImports": "warning"
+}

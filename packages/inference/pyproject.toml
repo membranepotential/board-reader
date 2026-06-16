@@ -1,0 +1,18 @@
+[project]
+name = "board-reader-inference"
+version = "0.1.0"
+description = "board-reader inference node: stateless per-frame position estimator + WS gateway"
+requires-python = ">=3.12"
+dependencies = [
+    "board-reader-core",
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
+    "numpy>=2.0",
+]
+
+[project.scripts]
+board-reader-inference = "board_reader_inference.cli:main"
+
+[build-system]
+requires = ["uv_build>=0.11.16,<0.12.0"]
+build-backend = "uv_build"

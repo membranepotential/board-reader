@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>board-reader · live positions</title>
+<style>
+  :root { color-scheme: dark; }
+  body { font: 15px/1.4 system-ui, sans-serif; margin: 0; background: #14171c; color: #e6e6e6; }
+  header { padding: 14px 20px; border-bottom: 1px solid #272b33; display: flex; align-items: baseline; gap: 14px; }
+  header h1 { font-size: 17px; margin: 0; font-weight: 600; }
+  #conn { font-size: 13px; padding: 2px 8px; border-radius: 10px; background: #3a2020; color: #ff9a9a; }
+  #conn.up { background: #1f3a24; color: #97e0a6; }
+  main { display: flex; flex-wrap: wrap; gap: 22px; padding: 20px; }
+  .board-card { background: #1b1f26; border: 1px solid #272b33; border-radius: 10px; padding: 14px; }
+  .board-card h2 { font-size: 14px; margin: 0 0 10px; display: flex; justify-content: space-between; gap: 12px; }
+  .status { font-size: 12px; padding: 1px 7px; border-radius: 9px; background: #243; color: #9e9; }
+  .status.recalibrating, .status.needs_setup, .status.stale { background: #432; color: #fc8; }
+  .board { display: grid; grid-template-columns: repeat(8, 40px); grid-template-rows: repeat(8, 40px); }
+  .sq { display: flex; align-items: center; justify-content: center; font-size: 28px; position: relative; }
+  .sq.light { background: #b9c4d0; } .sq.dark { background: #5a7390; }
+  .sq .pc.white { color: #fafafa; text-shadow: 0 0 2px #000; }
+  .sq .pc.black { color: #14171c; }
+  .sq .lc { position: absolute; top: 2px; right: 3px; width: 6px; height: 6px; border-radius: 50%; background: #e25; }
+  .meta { margin-top: 10px; font-size: 12px; color: #9aa3ad; display: grid; gap: 4px; }
+  .bar { height: 6px; border-radius: 3px; background: #2b2f37; overflow: hidden; }
+  .bar > i { display: block; height: 100%; }
+  .bar.conf > i { background: #5ad17a; } .bar.stab > i { background: #6aa8ff; }
+  code { color: #c8cdd4; }
+</style>
+</head>
+<body>
+<header>
+  <h1>board-reader · live positions</h1>
+  <span id="conn">connecting…</span>
+  <span style="font-size:12px;color:#6b7280">source: <code id="wsurl"></code></span>
+</header>
+<main id="boards"></main>
+
+<script>
+const WS_URL = "__BR_INFERENCE_WS__";
+document.getElementById("wsurl").textContent = WS_URL;
+
+const GLYPH = { P:"♙",N:"♘",B:"♗",R:"♖",Q:"♕",K:"♔", p:"♟",n:"♞",b:"♝",r:"♜",q:"♛",k:"♚" };
+const boards = new Map();
+
+function fenToGrid(placement) {
+  return placement.split("/").map(rank => {
+    const cells = [];
+    for (const ch of rank) {
+      if (/\d/.test(ch)) for (let i = 0; i < +ch; i++) cells.push("");
+      else cells.push(ch);
+    }
+    return cells;
+  });
+}
+
+function ensureCard(id) {
+  if (boards.has(id)) return boards.get(id);
+  const card = document.createElement("div");
+  card.className = "board-card";
+  card.innerHTML = `
+    <h2><span>board ${id}</span><span class="status ok">ok</span></h2>
+    <div class="board"></div>
+    <div class="meta">
+      <div>placement: <code class="pl"></code></div>
+      <div>confidence <div class="bar conf"><i></i></div></div>
+      <div>stability <div class="bar stab"><i></i></div></div>
+      <div>seq <code class="seq"></code> · utc <code class="utc"></code> · clock <code class="clk"></code></div>
+    </div>`;
+  document.getElementById("boards").appendChild(card);
+  const boardEl = card.querySelector(".board");
+  const sqs = [];
+  for (let r = 0; r < 8; r++) for (let c = 0; c < 8; c++) {
+    const sq = document.createElement("div");
+    sq.className = "sq " + ((r + c) % 2 === 0 ? "light" : "dark");
+    boardEl.appendChild(sq);
+    sqs.push(sq);
+  }
+  const rec = { card, sqs };
+  boards.set(id, rec);
+  return rec;
+}
+
+function squareConfidence(dist, r, c) {
+  if (!dist || !dist[r] || !dist[r][c]) return 1;
+  return Math.max(...dist[r][c]);
+}
+
+function render(ev) {
+  const { sqs, card } = ensureCard(ev.board_id);
+  const grid = fenToGrid(ev.placement);
+  for (let r = 0; r < 8; r++) for (let c = 0; c < 8; c++) {
+    const sq = sqs[r * 8 + c];
+    const cell = grid[r][c];
+    const lowConf = squareConfidence(ev.square_dist, r, c) < 0.5;
+    sq.innerHTML =
+      (cell ? `<span class="pc ${cell === cell.toUpperCase() ? "white" : "black"}">${GLYPH[cell]}</span>` : "") +
+      (lowConf ? `<span class="lc" title="low confidence"></span>` : "");
+  }
+  const st = card.querySelector(".status");
+  st.textContent = ev.status; st.className = "status " + ev.status;
+  card.querySelector(".pl").textContent = ev.placement;
+  card.querySelector(".conf > i").style.width = Math.round((ev.confidence ?? 0) * 100) + "%";
+  card.querySelector(".stab > i").style.width = Math.round((ev.stability ?? 0) * 100) + "%";
+  card.querySelector(".seq").textContent = ev.seq;
+  card.querySelector(".utc").textContent = ev.utc;
+  card.querySelector(".clk").textContent = (ev.clock && ev.clock.running) || "none";
+}
+
+function connect() {
+  const conn = document.getElementById("conn");
+  const ws = new WebSocket(WS_URL);
+  ws.onopen = () => { conn.textContent = "live"; conn.className = "up"; };
+  ws.onclose = () => { conn.textContent = "disconnected — retrying"; conn.className = ""; setTimeout(connect, 1500); };
+  ws.onerror = () => ws.close();
+  ws.onmessage = (m) => { try { render(JSON.parse(m.data)); } catch (e) { console.error(e); } };
+}
+connect();
+</script>
+</body>
+</html>
