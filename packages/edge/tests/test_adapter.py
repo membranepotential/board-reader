@@ -4,9 +4,12 @@ from __future__ import annotations
 
 import json
 
-from board_reader_core.sim import render_board
+import numpy as np
+
+from board_reader_core.sim import render_board, simulate_angled_view
 from board_reader_core.wire import Frame, decode_jpeg
 from board_reader_edge.adapter import FileEdgeAdapter
+from board_reader_edge.rectify import Rectifier
 from board_reader_edge.source import SyntheticSource
 
 
@@ -39,6 +42,29 @@ def test_envelope_reconstructs_into_a_frame():
 def test_frames_passthrough_for_in_process_wiring():
     frames = list(_adapter(2).frames())
     assert [f.seq for f in frames] == [0, 1]
+
+
+def test_rectifier_rectifies_forwarded_frames_to_canonical_crops():
+    board = render_board(square_px=48)
+    angled, gt = simulate_angled_view(board)
+    src = SyntheticSource([angled, angled], board_id="A1")
+    rect = Rectifier(out_size=board.shape[0], manual_corners=gt)
+    frames = list(FileEdgeAdapter(src, rectifier=rect).frames())
+    assert len(frames) == 2
+    # Forwarded image is the canonical crop (board's size), not the larger angled view.
+    assert frames[0].image.shape == board.shape
+    assert frames[0].image.shape != angled.shape
+
+
+def test_rectifier_suppresses_frames_it_cannot_localise():
+    # A blank frame between two good ones: auto rectifier drops the blank (needs_setup).
+    board = render_board(square_px=48)
+    angled, _ = simulate_angled_view(board)
+    blank = np.zeros_like(angled)
+    src = SyntheticSource([angled, blank, angled], board_id="A1")
+    frames = list(FileEdgeAdapter(src, rectifier=Rectifier(out_size=board.shape[0])).frames())
+    # The blank is suppressed; only the two locatable frames are forwarded.
+    assert len(frames) == 2
 
 
 def test_throttle_sleeps_between_frames_using_injected_clock():

@@ -55,3 +55,88 @@ def render_board(
 def render_frames(placements: list[str], *, square_px: int = 48) -> list[np.ndarray]:
     """Render a sequence of placements into board images."""
     return [render_board(p, square_px=square_px) for p in placements]
+
+
+# --- Perspective simulation (the "angled broadcast view", DESIGN D8) -----------
+#
+# The real edge sees the board at an angle and must rectify it back to a canonical
+# top-down crop (WP-A). To develop and test that offline without a camera, we take a
+# canonical board image and warp it onto a larger canvas as a foreshortened
+# quadrilateral. Corner order is **TL, TR, BR, BL** everywhere — for a canonical
+# board (rank 8 top, file a left) that is a8, h8, h1, a1.
+
+# Corner order shared by the warp helpers and the edge rectifier.
+CORNER_ORDER: tuple[str, ...] = ("a8", "h8", "h1", "a1")
+
+
+def board_corners(size: int) -> np.ndarray:
+    """The 4 corners (TL,TR,BR,BL) of a canonical ``size``x``size`` board image."""
+    s = float(size)
+    return np.array([[0, 0], [s, 0], [s, s], [0, s]], dtype=np.float32)
+
+
+def warp_to_quad(
+    board: np.ndarray,
+    dst_quad: np.ndarray,
+    *,
+    canvas: tuple[int, int] | None = None,
+    background: tuple[int, int, int] = (0, 0, 0),
+) -> np.ndarray:
+    """Warp a canonical square ``board`` onto ``dst_quad`` (TL,TR,BR,BL) of a canvas.
+
+    Returns a BGR image of size ``canvas`` (h, w); defaults to a square canvas just
+    big enough to hold the quad. The area outside the quad is filled with
+    ``background`` (black by default) so the board reads as a clear foreground
+    quadrilateral — exactly what the detector keys on.
+    """
+    h, w = board.shape[:2]
+    if h != w:
+        raise ValueError("board image must be square")
+    src = board_corners(w)
+    dst = np.asarray(dst_quad, dtype=np.float32)
+    if dst.shape != (4, 2):
+        raise ValueError("dst_quad must be 4 (x, y) corners")
+    if canvas is None:
+        side = int(np.ceil(dst.max())) + 1
+        canvas = (side, side)
+    out_h, out_w = canvas
+    matrix = cv2.getPerspectiveTransform(src, dst)
+    return cv2.warpPerspective(
+        board,
+        matrix,
+        (out_w, out_h),
+        borderMode=cv2.BORDER_CONSTANT,
+        borderValue=background,
+    )
+
+
+def simulate_angled_view(
+    board: np.ndarray,
+    *,
+    tilt: float = 0.25,
+    yaw: float = 0.06,
+    margin: float = 0.12,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Render ``board`` as a plausible angled view; return ``(image, dst_quad)``.
+
+    Deterministic (no RNG). ``tilt`` foreshortens the far (top) edge, ``yaw`` skews
+    left/right, and ``margin`` insets the board within the canvas so it sits fully
+    inside the frame. ``dst_quad`` is the ground-truth board outline in image
+    coordinates (TL,TR,BR,BL) — handy for tests that exercise manual corners.
+    """
+    side = board.shape[0]
+    canvas = int(round(side * (1.0 + 2 * margin)))
+    m = side * margin
+    top = side * tilt / 2.0  # how much the far edge shrinks inward on each side
+    sk = side * yaw  # horizontal skew
+    dst = np.array(
+        [
+            [m + top + sk, m],                 # TL (a8, far)
+            [m + side - top + sk, m],          # TR (h8, far)
+            [m + side, m + side],              # BR (h1, near)
+            [m, m + side],                     # BL (a1, near)
+        ],
+        dtype=np.float32,
+    )
+    img = warp_to_quad(board, dst, canvas=(canvas, canvas))
+    return img, dst

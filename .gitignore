@@ -20,5 +20,9 @@ data/
 *.mkv
 *.webm
 
+# Model artifacts (regenerated from official weights via tools/export_dinov2_onnx.py)
+models/
+*.onnx
+
 # OS / editor
 .DS_Store

@@ -28,12 +28,32 @@ from board_reader_inference.estimator import Estimator, StubEstimator
 from board_reader_inference.hub import PositionHub
 
 
+def _default_estimator() -> Estimator:
+    """Pick the estimator from the environment.
+
+    ``BR_CENTROIDS=<path>`` -> the M1 :class:`CentroidEstimator` with calibrated
+    centroids and the lightweight embedder (the DINOv2 embedder swaps in here later).
+    Unset -> the M0 :class:`StubEstimator`. Resolved at import time so the uvicorn
+    string-imported ``app`` honours it without a code change.
+    """
+    path = os.environ.get("BR_CENTROIDS")
+    if not path:
+        return StubEstimator()
+    from board_reader_inference.centroid import CentroidClassifier
+    from board_reader_inference.embed import make_embedder
+    from board_reader_inference.estimator import CentroidEstimator
+
+    classifier = CentroidClassifier.load(path)
+    # Rebuild the same backbone the centroids were calibrated with (dims must match).
+    return CentroidEstimator(make_embedder(classifier.backbone), classifier)
+
+
 def create_app(
     estimator: Estimator | None = None,
     hub: PositionHub | None = None,
 ) -> FastAPI:
     """Build the gateway app. Estimator/hub are injectable for tests."""
-    est: Estimator = estimator if estimator is not None else StubEstimator()
+    est: Estimator = estimator if estimator is not None else _default_estimator()
     hub_: PositionHub = hub if hub is not None else PositionHub()
 
     app = FastAPI(title="board-reader inference node")
