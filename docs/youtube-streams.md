@@ -21,4 +21,22 @@ multi-hour stream) + `ffmpeg -frames:v 1`.
 
 Note: the simple auto board-detector (`find_board_quad`) does **not** localise these
 real cluttered boards — they need the operator corner-tap (`rectify --corners …`).
-Robust real-photo detection (Hough-line clustering, WP-A1) is later work.
+Robust real-photo detection (Hough-line clustering, WP-A1) is later work. Pick corners
+with `tools/corner_picker.html` (load the frame, click the 4 board corners).
+
+### Operator corners used for validation (pixel coords, any order)
+
+| Frame | Corners `x0,y0,...` |
+|---|---|
+| `TDEnuPnvLaA_0442_board.png` | `10,232,351,234,310,112,58,110` |
+| `7u9zRjq3ePw_0003_full.png` | `687,943,1249,934,1171,720,751,727` (mild fish-eye) |
+
+### Real-footage validation findings (2026-06-17)
+
+Rectification works on both streams with operator corners. Recognition (rectify → crop
+→ DINOv2 centroid) **within-frame self-consistency**: video1 start 92% piece-type /
+100% occupancy / 98% colour; video2 start 98% / 100% / 100%. **Cross-frame
+generalisation is poor**: these are very low/side broadcast angles, so tall pieces lean
+nearly horizontal and smear across neighbouring squares, breaking the per-square
+assumption (DESIGN's documented top risk). Next: a labelled eval set (WP-B4), a higher
+camera angle, and/or multi-frame burst voting.
