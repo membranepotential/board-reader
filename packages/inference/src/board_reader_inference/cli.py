@@ -32,30 +32,63 @@ def cmd_serve(args: argparse.Namespace) -> int:
     return 0
 
 
+def _parse_corners(spec: str):
+    import numpy as np
+
+    nums = [float(x) for x in spec.replace(";", ",").split(",") if x.strip()]
+    if len(nums) != 8:
+        raise SystemExit("--corners needs 8 numbers: x0,y0,...,x3,y3 (a8,h8,h1,a1)")
+    return np.array(nums, dtype="float32").reshape(4, 2)
+
+
 def cmd_calibrate(args: argparse.Namespace) -> int:
     import cv2
     import numpy as np
 
     from board_reader_inference.centroid import build_centroids
     from board_reader_inference.embed import make_embedder
-    from board_reader_inference.squares import crop_squares
+    from board_reader_inference.squares import crop_squares, crop_squares_photo
 
-    board = cv2.imread(args.image, cv2.IMREAD_COLOR)
-    if board is None:
-        raise SystemExit(f"could not read rectified board image: {args.image}")
-    crops = crop_squares(board, inset=args.inset, size=args.square_size)
+    if bool(args.image) == bool(args.photo):
+        raise SystemExit("pass exactly one of --image (rectified crop) or --photo")
+    if args.photo and not args.corners:
+        raise SystemExit("--photo needs --corners x0,y0,...,x3,y3 (a8,h8,h1,a1)")
+
+    if args.photo:
+        photo = cv2.imread(args.photo, cv2.IMREAD_COLOR)
+        if photo is None:
+            raise SystemExit(f"could not read photo: {args.photo}")
+        crops = crop_squares_photo(
+            photo,
+            _parse_corners(args.corners),
+            headroom=args.headroom,
+            side_pad=args.side_pad,
+            size=args.square_size or 224,
+        )
+        crop_mode, source = "photo", args.photo
+    else:
+        board = cv2.imread(args.image, cv2.IMREAD_COLOR)
+        if board is None:
+            raise SystemExit(f"could not read rectified board image: {args.image}")
+        crops = crop_squares(board, inset=args.inset, size=args.square_size)
+        crop_mode, source = "rectified", args.image
+
     classifier = build_centroids(
         make_embedder(args.backbone),
         crops,
         args.placement,
         temperature=args.temperature,
         backbone=args.backbone,
+        crop_mode=crop_mode,
+        augment=args.augment,
+        box_headroom=args.headroom,
+        box_side_pad=args.side_pad,
     )
     classifier.save(args.out)
     present = int((~np.isnan(classifier.centroids).any(axis=1)).sum())
     print(
-        f"calibrated {present}/13 class centroids ({args.backbone}) "
-        f"from {args.image} -> {args.out}"
+        f"calibrated {present}/13 class centroids ({args.backbone}, {crop_mode}"
+        f"{', augmented' if args.augment else ''}) from {source} -> {args.out}"
     )
     return 0
 
@@ -75,7 +108,16 @@ def build_parser() -> argparse.ArgumentParser:
     s.set_defaults(func=cmd_serve)
 
     c = sub.add_parser("calibrate", help="build class centroids from a labeled position")
-    c.add_argument("--image", required=True, help="a rectified top-down board crop")
+    c.add_argument("--image", help="a rectified top-down board crop")
+    c.add_argument(
+        "--photo",
+        help="an ORIGINAL photo (full-piece boxes; needs --corners) — preferred "
+        "for real photos: warped squares decapitate pieces",
+    )
+    c.add_argument(
+        "--corners",
+        help="playing-surface corners in --photo pixels: x0,y0,...,x3,y3 (a8,h8,h1,a1)",
+    )
     c.add_argument(
         "--placement", default=START_PLACEMENT, help="the board's true FEN field 1"
     )
@@ -87,6 +129,19 @@ def build_parser() -> argparse.ArgumentParser:
     c.add_argument("--inset", type=float, default=0.1)
     c.add_argument("--square-size", dest="square_size", type=int, default=None)
     c.add_argument("--temperature", type=float, default=0.1)
+    c.add_argument(
+        "--headroom", type=float, default=1.6,
+        help="--photo mode: upward box extension in square-widths (piece height)",
+    )
+    c.add_argument(
+        "--side-pad", dest="side_pad", type=float, default=0.15,
+        help="--photo mode: sideways box padding in square-widths",
+    )
+    c.add_argument(
+        "--augment", action=argparse.BooleanOptionalAction, default=True,
+        help="photometric augmentation (gamma/white-balance variants) of the "
+        "calibration crops; widens lighting robustness",
+    )
     c.set_defaults(func=cmd_calibrate)
     return p
 

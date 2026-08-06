@@ -25,6 +25,10 @@ def _send_frame(ws, seq=0):
     ws.send_bytes(jpeg)
 
 
+def _app_estimator(client: TestClient):
+    return client.app.state.estimator
+
+
 def test_healthz_ok():
     r = _client().get("/healthz")
     assert r.status_code == 200
@@ -60,6 +64,131 @@ def test_end_to_end_ingest_to_viewer_stream():
     assert "square_dist" in event
 
 
+def test_estimate_snapshot_roundtrip():
+    """POST /estimate (rectified crop JPEG body) -> position event, retained in hub."""
+    from board_reader_core.wire import encode_jpeg
+
+    client = _client()
+    r = client.post(
+        "/estimate",
+        content=encode_jpeg(render_board()),
+        headers={"Content-Type": "image/jpeg"},
+    )
+    assert r.status_code == 200
+    event = r.json()
+    assert event["board_id"] == "snapshot"
+    assert event["placement"] == START_PLACEMENT
+    assert "square_dist" in event
+    # The event is retained like any streamed frame's.
+    assert client.get("/boards/snapshot").json()["seq"] == event["seq"]
+
+
+def test_estimate_rejects_garbage_bytes():
+    r = _client().post(
+        "/estimate", content=b"not a jpeg", headers={"Content-Type": "image/jpeg"}
+    )
+    assert r.status_code == 400
+    assert "error" in r.json()
+
+
+def test_estimate_with_corners_falls_back_to_server_side_warp():
+    """A photo + corners against a rectified-mode estimator still estimates.
+
+    The stub has no photo path, so the gateway warps the photo to the canonical
+    crop server-side and runs the normal path.
+    """
+    from board_reader_core.sim import simulate_angled_view
+    from board_reader_core.wire import encode_jpeg
+
+    photo, quad = simulate_angled_view(render_board())
+    corners = ",".join(f"{x:.1f},{y:.1f}" for x, y in quad)
+    r = _client().post(
+        f"/estimate?corners={corners}",
+        content=encode_jpeg(photo),
+        headers={"Content-Type": "image/jpeg"},
+    )
+    assert r.status_code == 200
+    assert r.json()["placement"] == START_PLACEMENT
+
+
+def test_estimate_rejects_malformed_corners():
+    from board_reader_core.wire import encode_jpeg
+
+    r = _client().post(
+        "/estimate?corners=1,2,3",
+        content=encode_jpeg(render_board()),
+        headers={"Content-Type": "image/jpeg"},
+    )
+    assert r.status_code == 400
+
+
+def test_estimate_photo_path_used_for_photo_mode_centroids():
+    """With photo-mode centroids the gateway calls estimate_photo (full-piece boxes)."""
+    from board_reader_core.sim import simulate_angled_view
+    from board_reader_core.wire import encode_jpeg
+    from board_reader_inference.centroid import build_centroids
+    from board_reader_inference.embed import LiteEmbedder
+    from board_reader_inference.estimator import CentroidEstimator
+    from board_reader_inference.squares import crop_squares_photo
+
+    board = render_board(START_PLACEMENT)
+    photo, quad = simulate_angled_view(board)
+    emb = LiteEmbedder()
+    clf = build_centroids(
+        emb,
+        crop_squares_photo(photo, quad, size=64),
+        START_PLACEMENT,
+        crop_mode="photo",
+    )
+    est = CentroidEstimator(emb, clf, square_size=64)
+    calls = []
+    orig = est.estimate_photo
+    est.estimate_photo = lambda frame, corners: calls.append(1) or orig(frame, corners)
+    client = TestClient(create_app(est, PositionHub()))
+    corners = ",".join(f"{x:.1f},{y:.1f}" for x, y in quad)
+    r = client.post(
+        f"/estimate?corners={corners}",
+        content=encode_jpeg(photo),
+        headers={"Content-Type": "image/jpeg"},
+    )
+    assert r.status_code == 200
+    # This asserts the ROUTING (photo-mode centroids -> estimate_photo with the
+    # posted corners); classification quality on real photos is the DINOv2 eval's
+    # job — the Lite embedder cannot read tall perspective boxes.
+    assert calls, "gateway must route photo-mode centroids through estimate_photo"
+    assert r.json()["board_id"] == "snapshot"
+
+
+def test_detect_endpoint_success_and_no_board(monkeypatch):
+    import sys
+    import types
+
+    import numpy as np
+
+    from board_reader_core.wire import encode_jpeg
+
+    quad = np.array([[10, 10], [90, 10], [90, 90], [10, 90]], dtype=np.float32)
+    fake = types.ModuleType("board_reader_core.boarddetect")
+    fake.detect_board_quad = lambda image: quad
+    monkeypatch.setitem(sys.modules, "board_reader_core.boarddetect", fake)
+    client = _client()
+    body = encode_jpeg(render_board())
+    r = client.post("/detect", content=body, headers={"Content-Type": "image/jpeg"})
+    assert r.status_code == 200
+    assert r.json()["corners"] == quad.tolist()
+
+    fake.detect_board_quad = lambda image: None
+    r = client.post("/detect", content=body, headers={"Content-Type": "image/jpeg"})
+    assert r.status_code == 422
+
+
+def test_detect_endpoint_rejects_garbage():
+    r = _client().post(
+        "/detect", content=b"junk", headers={"Content-Type": "image/jpeg"}
+    )
+    assert r.status_code == 400
+
+
 def test_viewer_replays_retained_latest_on_connect():
     client = _client()
     with client.websocket_connect("/ingest") as ingest:
@@ -69,3 +198,810 @@ def test_viewer_replays_retained_latest_on_connect():
     with client.websocket_connect("/viewer") as viewer:
         event = json.loads(viewer.receive_text())
     assert event["seq"] == 9
+
+
+def test_calibrate_hot_swaps_estimator(tmp_path, monkeypatch):
+    """POST /calibrate rebuilds a per-set kNN exemplar bank from one labeled photo
+    and the running estimator immediately uses it (DESIGN §4.6 E1/E2)."""
+    from board_reader_core.wire import encode_jpeg
+    from board_reader_inference.centroid import ExemplarClassifier, build_exemplars
+    from board_reader_inference.embed import LiteEmbedder
+    from board_reader_inference.estimator import CentroidEstimator
+    from board_reader_inference.squares import crop_squares_photo, full_frame_corners
+
+    monkeypatch.chdir(tmp_path)  # exemplars_session.npz lands in a sandbox
+    mid = "r1bqkb1r/pppp1ppp/2n2n2/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R"
+    # Flat renders + full-frame corners: photo boxes with zero headroom are then
+    # exact squares, which the Lite embedder can classify (it cannot read tall
+    # perspective boxes — real-photo quality is the DINOv2 eval's job).
+    photo = render_board(START_PLACEMENT)
+    quad = full_frame_corners(photo)
+    emb = LiteEmbedder()
+    seed = build_exemplars(
+        emb,
+        crop_squares_photo(photo, quad, headroom=0.0, side_pad=0.0, size=64),
+        START_PLACEMENT,
+        box_headroom=0.0,
+        box_side_pad=0.0,
+    )
+    est = CentroidEstimator(emb, seed, square_size=64, headroom=0.0, side_pad=0.0)
+    client = TestClient(create_app(est, PositionHub()))
+
+    cal_photo = render_board(mid)
+    cal_quad = full_frame_corners(cal_photo)
+    cal_corners = ",".join(f"{x:.1f},{y:.1f}" for x, y in cal_quad)
+    r = client.post(
+        f"/calibrate?corners={cal_corners}&placement={mid}",
+        content=encode_jpeg(cal_photo),
+        headers={"Content-Type": "image/jpeg"},
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["backbone"] == "lite"
+    assert 0 < body["classes_calibrated"] <= 13
+    assert (tmp_path / "models/exemplars_session.npz").exists() or body["saved"] is None
+    swapped = _app_estimator(client)
+    assert isinstance(swapped.classifier, ExemplarClassifier)
+    exemplars_after_first = body["exemplars"]
+
+    # The swapped-in estimator classifies the calibration position correctly.
+    r2 = client.post(
+        f"/estimate?corners={cal_corners}",
+        content=encode_jpeg(cal_photo),
+        headers={"Content-Type": "image/jpeg"},
+    )
+    assert r2.status_code == 200
+    assert r2.json()["placement"] == mid
+
+    # A second calibration photo ADDS to the bank rather than replacing it.
+    third = "r1bqk2r/pppp1ppp/2n2n2/2b1p3/2B1P3/5N2/PPPP1PPP/RNBQ1RK1"
+    third_photo = render_board(third)
+    third_quad = full_frame_corners(third_photo)
+    third_corners = ",".join(f"{x:.1f},{y:.1f}" for x, y in third_quad)
+    r3 = client.post(
+        f"/calibrate?corners={third_corners}&placement={third}",
+        content=encode_jpeg(third_photo),
+        headers={"Content-Type": "image/jpeg"},
+    )
+    assert r3.status_code == 200
+    assert r3.json()["exemplars"] > exemplars_after_first
+    # The estimator still works after growing.
+    r4 = client.post(
+        f"/estimate?corners={third_corners}",
+        content=encode_jpeg(third_photo),
+        headers={"Content-Type": "image/jpeg"},
+    )
+    assert r4.status_code == 200
+    assert r4.json()["placement"] == third
+
+
+def _assert_valid_jpeg_b64(b64: str) -> None:
+    import base64
+
+    import cv2
+    import numpy as np
+
+    raw = base64.b64decode(b64)
+    arr = np.frombuffer(raw, dtype=np.uint8)
+    decoded = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+    assert decoded is not None, "debug image did not decode as a valid JPEG"
+
+
+def test_estimate_debug_off_by_default():
+    from board_reader_core.wire import encode_jpeg
+
+    r = _client().post(
+        "/estimate",
+        content=encode_jpeg(render_board()),
+        headers={"Content-Type": "image/jpeg"},
+    )
+    assert r.status_code == 200
+    assert "debug" not in r.json()
+
+
+def test_estimate_debug_on_returns_valid_images_and_does_not_leak_into_snapshot():
+    from board_reader_core.wire import encode_jpeg
+
+    client = _client()
+    r = client.post(
+        "/estimate?debug=1",
+        content=encode_jpeg(render_board()),
+        headers={"Content-Type": "image/jpeg"},
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert set(body["debug"].keys()) == {"boxes", "mosaic"}
+    _assert_valid_jpeg_b64(body["debug"]["boxes"])
+    _assert_valid_jpeg_b64(body["debug"]["mosaic"])
+    # The debug key is HTTP-response-only; the hub's retained event has none.
+    snap = client.get("/boards/snapshot").json()
+    assert "debug" not in snap
+
+
+def test_estimate_debug_on_photo_path():
+    """debug=1 also works on the photo path (ExemplarClassifier + corners)."""
+    from board_reader_core.sim import simulate_angled_view
+    from board_reader_core.wire import encode_jpeg
+    from board_reader_inference.centroid import build_exemplars
+    from board_reader_inference.embed import LiteEmbedder
+    from board_reader_inference.estimator import CentroidEstimator
+    from board_reader_inference.squares import crop_squares_photo
+
+    board = render_board(START_PLACEMENT)
+    photo, quad = simulate_angled_view(board)
+    emb = LiteEmbedder()
+    clf = build_exemplars(
+        emb,
+        crop_squares_photo(photo, quad, size=64),
+        START_PLACEMENT,
+    )
+    est = CentroidEstimator(emb, clf, square_size=64)
+    client = TestClient(create_app(est, PositionHub()))
+    corners = ",".join(f"{x:.1f},{y:.1f}" for x, y in quad)
+    r = client.post(
+        f"/estimate?corners={corners}&debug=true",
+        content=encode_jpeg(photo),
+        headers={"Content-Type": "image/jpeg"},
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert set(body["debug"].keys()) == {"boxes", "mosaic"}
+    _assert_valid_jpeg_b64(body["debug"]["boxes"])
+    _assert_valid_jpeg_b64(body["debug"]["mosaic"])
+
+
+def test_calibrate_rejects_bad_input():
+    from board_reader_core.wire import encode_jpeg
+
+    client = _client()
+    r = client.post(
+        "/calibrate?corners=1,2,3",
+        content=encode_jpeg(render_board()),
+        headers={"Content-Type": "image/jpeg"},
+    )
+    assert r.status_code == 400
+
+
+def test_uploads_saved_when_retention_enabled(tmp_path, monkeypatch):
+    from board_reader_core.wire import encode_jpeg
+
+    monkeypatch.setenv("BR_SAVE_UPLOADS", str(tmp_path))
+    # The /calibrate below persists a session bank relative to cwd — sandbox it,
+    # or the test clobbers the real models/exemplars_session.npz (it did, once).
+    # A lite photo-mode estimator keeps /calibrate off the DINOv2 weights too.
+    monkeypatch.chdir(tmp_path)
+    client = TestClient(create_app(_occupancy_estimator(), PositionHub()))
+    body = encode_jpeg(render_board())
+
+    r = client.post("/estimate", content=body, headers={"Content-Type": "image/jpeg"})
+    assert r.status_code == 200
+    jpgs = sorted(tmp_path.glob("*-estimate.jpg"))
+    metas = sorted(tmp_path.glob("*-estimate.json"))
+    assert len(jpgs) == 1 and len(metas) == 1
+    assert jpgs[0].read_bytes() == body
+    meta = json.loads(metas[0].read_text())
+    assert meta["kind"] == "estimate"
+    # The response's placement is annotated back onto the sidecar, so every
+    # retained shot doubles as (predicted-)labeled eval data.
+    assert meta["placement"] == r.json()["placement"]
+
+    # calibrate keeps corners + placement so the shot is usable as labeled data
+    h, w = render_board().shape[:2]
+    corners = f"0,0,{w},0,{w},{h},0,{h}"
+    client.post(
+        f"/calibrate?corners={corners}",
+        content=body,
+        headers={"Content-Type": "image/jpeg"},
+    )
+    metas = sorted(tmp_path.glob("*-calibrate.json"))
+    assert len(metas) == 1
+    meta = json.loads(metas[0].read_text())
+    assert meta["corners"] == corners and meta["placement"] == START_PLACEMENT
+
+    # undecodable bodies are rejected AND not retained
+    client.post("/estimate", content=b"not a jpeg", headers={"Content-Type": "image/jpeg"})
+    assert len(list(tmp_path.glob("*-estimate.jpg"))) == 1
+
+
+def test_uploads_not_saved_by_default(tmp_path, monkeypatch):
+    from board_reader_core.wire import encode_jpeg
+
+    monkeypatch.delenv("BR_SAVE_UPLOADS", raising=False)
+    monkeypatch.chdir(tmp_path)  # any accidental relative write would land here
+    client = TestClient(create_app(StubEstimator(START_PLACEMENT), PositionHub()))
+    r = client.post(
+        "/estimate", content=encode_jpeg(render_board()),
+        headers={"Content-Type": "image/jpeg"},
+    )
+    assert r.status_code == 200
+    assert list(tmp_path.iterdir()) == []
+
+
+# --- Zero-setup path: occupancy-only + start-position auto-calibration ---------
+
+
+def _occupancy_estimator():
+    """Lite-backbone stand-in for the ChessReD occupancy bank, over flat sim
+    renders (headroom 0 = exact squares, which the Lite embedder can read)."""
+    from board_reader_inference.centroid import build_exemplars
+    from board_reader_inference.embed import LiteEmbedder
+    from board_reader_inference.estimator import CentroidEstimator
+    from board_reader_inference.squares import crop_squares_photo, full_frame_corners
+
+    photo = render_board(START_PLACEMENT)
+    quad = full_frame_corners(photo)
+    emb = LiteEmbedder()
+    clf = build_exemplars(
+        emb,
+        crop_squares_photo(photo, quad, headroom=0.0, side_pad=0.0, size=64),
+        START_PLACEMENT,
+        box_headroom=0.0,
+        box_side_pad=0.0,
+    )
+    return CentroidEstimator(emb, clf, square_size=64, headroom=0.0, side_pad=0.0)
+
+
+def _corners_param(photo):
+    from board_reader_inference.squares import full_frame_corners
+
+    return ",".join(f"{x:.1f},{y:.1f}" for x, y in full_frame_corners(photo))
+
+
+def test_uncalibrated_estimate_is_occupancy_only_and_unpublished(tmp_path, monkeypatch):
+    from board_reader_core.protocol import parse_placement
+    from board_reader_core.wire import encode_jpeg
+
+    monkeypatch.chdir(tmp_path)
+    client = TestClient(
+        create_app(
+            StubEstimator(START_PLACEMENT),
+            PositionHub(),
+            occupancy_estimator=_occupancy_estimator(),
+        )
+    )
+    mid = "r1bqkb1r/pppp1ppp/2n2n2/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R"
+    photo = render_board(mid)
+    r = client.post(
+        f"/estimate?corners={_corners_param(photo)}&board_id=Z1",
+        content=encode_jpeg(photo),
+        headers={"Content-Type": "image/jpeg"},
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["mode"] == "occupancy"
+    assert "placement" not in body
+    assert "hint" in body
+    truth = [
+        cell != "empty" for row in parse_placement(mid) for cell in row
+    ]
+    got = [v for row in body["occupied"] for v in row]
+    assert got == truth
+    # Occupancy-only readouts are HTTP-response-only — never published to the hub.
+    assert client.get("/boards/Z1").status_code == 404
+
+
+def test_uncalibrated_estimate_autocalibrates_on_start_position(tmp_path, monkeypatch):
+    from board_reader_core.wire import encode_jpeg
+    from board_reader_inference.centroid import ExemplarClassifier
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("BR_SESSION_BANK", str(tmp_path / "models/exemplars_session.npz"))
+    client = TestClient(
+        create_app(
+            StubEstimator(START_PLACEMENT),
+            PositionHub(),
+            occupancy_estimator=_occupancy_estimator(),
+        )
+    )
+    start_photo = render_board(START_PLACEMENT)
+    r = client.post(
+        f"/estimate?corners={_corners_param(start_photo)}&board_id=Z1",
+        content=encode_jpeg(start_photo),
+        headers={"Content-Type": "image/jpeg"},
+    )
+    assert r.status_code == 200
+    body = r.json()
+    auto = body["autocalibrated"]
+    assert body["placement"] == START_PLACEMENT
+    assert auto["matches"] == 64 and auto["rotation"] == 0
+    assert auto["exemplars"] == 64 * 4  # photometric variants included
+    assert auto["saved"] and (tmp_path / "models/exemplars_session.npz").exists()
+    # The full event IS published (it's a real position reading).
+    assert client.get("/boards/Z1").json()["placement"] == START_PLACEMENT
+    # The estimator is hot-swapped: a midgame photo now gets full recognition.
+    swapped = _app_estimator(client)
+    assert isinstance(swapped.classifier, ExemplarClassifier)
+    mid = "r1bqkb1r/pppp1ppp/2n2n2/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R"
+    mid_photo = render_board(mid)
+    r2 = client.post(
+        f"/estimate?corners={_corners_param(mid_photo)}",
+        content=encode_jpeg(mid_photo),
+        headers={"Content-Type": "image/jpeg"},
+    )
+    body2 = r2.json()
+    assert "mode" not in body2
+    assert body2["placement"] == mid
+
+
+def test_autocalibration_handles_rotated_corner_labeling(tmp_path, monkeypatch):
+    """90-deg-off corner detection self-corrects: the bank's labels match the crops."""
+    import numpy as np
+
+    from board_reader_core.protocol import parse_placement
+    from board_reader_core.wire import encode_jpeg
+    from board_reader_inference.squares import full_frame_corners
+
+    monkeypatch.chdir(tmp_path)
+    client = TestClient(
+        create_app(
+            StubEstimator(START_PLACEMENT),
+            PositionHub(),
+            occupancy_estimator=_occupancy_estimator(),
+        )
+    )
+    start_photo = render_board(START_PLACEMENT)
+    rolled = np.roll(full_frame_corners(start_photo), 1, axis=0)
+    corners = ",".join(f"{x:.1f},{y:.1f}" for x, y in rolled)
+    r = client.post(
+        f"/estimate?corners={corners}",
+        content=encode_jpeg(start_photo),
+        headers={"Content-Type": "image/jpeg"},
+    )
+    assert r.status_code == 200
+    body = r.json()
+    auto = body["autocalibrated"]
+    assert auto["rotation"] != 0
+    # The reported placement is the start position seen through the rotated
+    # labeling — rotating it back by `rotation` recovers the canonical board.
+    grid = np.array(parse_placement(body["placement"]), dtype="<U5")
+    start = np.array(parse_placement(START_PLACEMENT), dtype="<U5")
+    assert (np.rot90(grid, auto["rotation"]) == start).all()
+
+
+def test_session_bank_restored_on_restart_when_autocalib_enabled(tmp_path, monkeypatch):
+    from board_reader_core.wire import encode_jpeg
+    from board_reader_inference.estimator import CentroidEstimator
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("BR_CENTROIDS", raising=False)
+    monkeypatch.setenv("BR_SESSION_BANK", str(tmp_path / "models/exemplars_session.npz"))
+    occ = _occupancy_estimator()
+    client = TestClient(
+        create_app(StubEstimator(START_PLACEMENT), PositionHub(), occupancy_estimator=occ)
+    )
+    start_photo = render_board(START_PLACEMENT)
+    r = client.post(
+        f"/estimate?corners={_corners_param(start_photo)}",
+        content=encode_jpeg(start_photo),
+        headers={"Content-Type": "image/jpeg"},
+    )
+    assert r.json()["autocalibrated"]["saved"]
+
+    # A fresh app (server restart) with autocalib enabled restores the session
+    # bank as its style estimator — calibration survives restarts.
+    app2 = create_app(hub=PositionHub(), occupancy_estimator=occ)
+    restored = app2.state.estimator
+    assert isinstance(restored, CentroidEstimator)
+    assert restored.embedder is occ.embedder  # shared backbone, one ONNX session
+    # Without autocalib enabled, the default stays the M0 stub (no implicit loads).
+    app3 = create_app(hub=PositionHub())
+    assert isinstance(app3.state.estimator, StubEstimator)
+
+
+def test_low_light_warning_on_dark_photos():
+    import numpy as np
+
+    from board_reader_core.wire import encode_jpeg
+
+    client = _client()
+    dark = (render_board() * 0.15).astype(np.uint8)
+    r = client.post("/estimate", content=encode_jpeg(dark), headers={"Content-Type": "image/jpeg"})
+    assert r.json().get("warnings") == ["low_light"]
+    r = client.post(
+        "/estimate", content=encode_jpeg(render_board()),
+        headers={"Content-Type": "image/jpeg"},
+    )
+    assert "warnings" not in r.json()
+
+
+def test_calibrated_bank_refreshes_on_drifted_start_position(tmp_path, monkeypatch):
+    """Seeing the start position at sub-threshold confidence appends
+    label-confirmed exemplars — the bank tracks lighting drift on its own."""
+    from board_reader_core.wire import encode_jpeg
+    from board_reader_inference import autocalib
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("BR_SESSION_BANK", str(tmp_path / "models/exemplars_session.npz"))
+    est = _occupancy_estimator()  # lite exemplar-bank estimator, 256 exemplars
+    before = est.classifier.exemplars.shape[0]
+    client = TestClient(create_app(est, PositionHub()))
+    photo = render_board(START_PLACEMENT)
+
+    # Confidence gate: with the threshold at 0 every read counts as "confident
+    # enough already" -> no refresh. (The lite stand-in's absolute confidence is
+    # not meaningful, so the gate is exercised via explicit thresholds.)
+    monkeypatch.setattr(autocalib, "APPEND_MAX_CONF", 0.0)
+    r = client.post(
+        f"/estimate?corners={_corners_param(photo)}",
+        content=encode_jpeg(photo),
+        headers={"Content-Type": "image/jpeg"},
+    )
+    assert "bank_refreshed" not in r.json()
+
+    # Simulate drifted lighting by disabling the confidence gate.
+    monkeypatch.setattr(autocalib, "APPEND_MAX_CONF", 2.0)
+    r = client.post(
+        f"/estimate?corners={_corners_param(photo)}",
+        content=encode_jpeg(photo),
+        headers={"Content-Type": "image/jpeg"},
+    )
+    body = r.json()
+    refresh = body["bank_refreshed"]
+    assert refresh["agree"] >= autocalib.APPEND_MIN_AGREE
+    assert refresh["total"] > before
+    assert refresh["saved"] and (tmp_path / "models/exemplars_session.npz").exists()
+    swapped = _app_estimator(client)
+    assert swapped.classifier.exemplars.shape[0] == refresh["total"]
+
+    # The cap stops unbounded growth.
+    monkeypatch.setattr(autocalib, "APPEND_BANK_CAP", refresh["total"])
+    r = client.post(
+        f"/estimate?corners={_corners_param(photo)}",
+        content=encode_jpeg(photo),
+        headers={"Content-Type": "image/jpeg"},
+    )
+    assert "bank_refreshed" not in r.json()
+
+
+def test_no_session_persistence_without_opt_in(tmp_path, monkeypatch):
+    """Structural guard: without BR_SESSION_BANK, calibration flows never write
+    (a cwd-relative default silently clobbered the real bank from test runs)."""
+    from board_reader_core.wire import encode_jpeg
+    from board_reader_inference import autocalib
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("BR_SESSION_BANK", raising=False)
+    monkeypatch.setattr(autocalib, "APPEND_MAX_CONF", 2.0)  # force a refresh attempt
+    client = TestClient(create_app(_occupancy_estimator(), PositionHub()))
+    photo = render_board(START_PLACEMENT)
+    r = client.post(
+        f"/estimate?corners={_corners_param(photo)}",
+        content=encode_jpeg(photo),
+        headers={"Content-Type": "image/jpeg"},
+    )
+    refresh = r.json()["bank_refreshed"]
+    assert refresh["saved"] is None  # refresh happened in-memory only
+    assert list(tmp_path.rglob("*.npz")) == []  # and nothing landed on disk
+
+
+def _cycling_oracle(placement: str):
+    """Logits fn recognizing crops by position in the 64-crop sequence.
+
+    Unlike test_trained's one-shot oracle it cycles, so any number of /estimate
+    calls (and ensemble members re-cropping) keep getting consistent answers.
+    """
+    import numpy as np
+
+    from board_reader_core.protocol import CLASSES, NUM_CLASSES, parse_placement
+
+    labels = [c for row in parse_placement(placement) for c in row]
+    state = {"i": 0}
+
+    def fn(batch: np.ndarray) -> np.ndarray:
+        n = batch.shape[0]
+        out = np.full((n, NUM_CLASSES), -5.0, dtype=np.float32)
+        for j in range(n):
+            out[j, CLASSES.index(labels[(state["i"] + j) % 64])] = 5.0
+        state["i"] = (state["i"] + n) % 64
+        return out
+
+    return fn
+
+
+def _lite_start_estimator(size: int = 64):
+    """A Lite-embedder CentroidEstimator calibrated on the start position, with
+    the flat-render zero-headroom geometry the Lite embedder can actually read."""
+    from board_reader_inference.centroid import build_exemplars
+    from board_reader_inference.embed import LiteEmbedder
+    from board_reader_inference.estimator import CentroidEstimator
+    from board_reader_inference.squares import crop_squares_photo, full_frame_corners
+
+    photo = render_board(START_PLACEMENT)
+    quad = full_frame_corners(photo)
+    emb = LiteEmbedder()
+    bank = build_exemplars(
+        emb,
+        crop_squares_photo(photo, quad, headroom=0.0, side_pad=0.0, size=size),
+        START_PLACEMENT,
+        backbone="lite",
+        box_headroom=0.0,
+        box_side_pad=0.0,
+    )
+    return CentroidEstimator(
+        emb, bank, square_size=size, headroom=0.0, side_pad=0.0
+    )
+
+
+def _corners_query(photo):
+    from board_reader_inference.squares import full_frame_corners
+
+    return ",".join(f"{x:.1f},{y:.1f}" for x, y in full_frame_corners(photo))
+
+
+def test_calibrate_boosts_trained_estimator(tmp_path, monkeypatch):
+    """/calibrate over a zero-shot trained estimator wraps it into an ensemble —
+    calibration boosts, never replaces (DESIGN §4.6)."""
+    from board_reader_core.wire import encode_jpeg
+    from board_reader_inference.estimator import EnsembleEstimator
+    from board_reader_inference.trained import TrainedEstimator
+
+    monkeypatch.chdir(tmp_path)
+    trained = TrainedEstimator(
+        _cycling_oracle(START_PLACEMENT), headroom=0.0, side_pad=0.0, square_size=64
+    )
+    occ = _lite_start_estimator()
+    client = TestClient(create_app(trained, PositionHub(), occupancy_estimator=occ))
+    photo = render_board(START_PLACEMENT)
+    corners = _corners_query(photo)
+    r = client.post(
+        f"/calibrate?corners={corners}",
+        content=encode_jpeg(photo),
+        headers={"Content-Type": "image/jpeg"},
+    )
+    assert r.status_code == 200
+    assert r.json()["backbone"] == "lite"
+    est = _app_estimator(client)
+    assert isinstance(est, EnsembleEstimator)
+    assert est.primary is trained
+    r2 = client.post(
+        f"/estimate?corners={corners}",
+        content=encode_jpeg(photo),
+        headers={"Content-Type": "image/jpeg"},
+    )
+    assert r2.status_code == 200
+    assert r2.json()["placement"] == START_PLACEMENT
+
+
+def test_trained_path_bootstraps_bank_on_start_position(tmp_path, monkeypatch):
+    """A start-position sighting upgrades the bare trained model to the ensemble
+    with zero user action, and persists the bank iff BR_SESSION_BANK opts in."""
+    from board_reader_core.wire import encode_jpeg
+    from board_reader_inference.estimator import EnsembleEstimator
+    from board_reader_inference.trained import TrainedEstimator
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("BR_SESSION_BANK", str(tmp_path / "bank.npz"))
+    trained = TrainedEstimator(
+        _cycling_oracle(START_PLACEMENT), headroom=0.0, side_pad=0.0, square_size=64
+    )
+    occ = _lite_start_estimator()
+    client = TestClient(create_app(trained, PositionHub(), occupancy_estimator=occ))
+    photo = render_board(START_PLACEMENT)
+    corners = _corners_query(photo)
+    r = client.post(
+        f"/estimate?corners={corners}",
+        content=encode_jpeg(photo),
+        headers={"Content-Type": "image/jpeg"},
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["placement"] == START_PLACEMENT
+    assert body["autocalibrated"]["matches"] == 64
+    assert body["autocalibrated"]["rotation"] == 0
+    assert body["autocalibrated"]["saved"] == str(tmp_path / "bank.npz")
+    assert (tmp_path / "bank.npz").exists()
+    assert isinstance(_app_estimator(client), EnsembleEstimator)
+
+    # Second sighting: the booster already exists — no re-bootstrap.
+    r2 = client.post(
+        f"/estimate?corners={corners}",
+        content=encode_jpeg(photo),
+        headers={"Content-Type": "image/jpeg"},
+    )
+    assert "autocalibrated" not in r2.json()
+
+
+def test_estimate_autorotate_corrects_flipped_corners(tmp_path, monkeypatch):
+    """autorotate=1 undoes mislabeled corner orientation via chess plausibility
+    (the 20260718-0002 field failure: a8 tagged on White's home corner)."""
+    import numpy as np
+
+    from board_reader_core.protocol import encode_placement, parse_placement
+    from board_reader_core.wire import encode_jpeg
+    from board_reader_inference.trained import TrainedEstimator
+
+    monkeypatch.chdir(tmp_path)
+    mid = "3r2k1/ppp2pp1/7p/2Q5/5qbP/3B4/PPPRrP2/2K5"
+    flipped = encode_placement(
+        np.rot90(np.array(parse_placement(mid), dtype="<U5"), 2).tolist()
+    )
+    trained = TrainedEstimator(
+        _cycling_oracle(flipped), headroom=0.0, side_pad=0.0, square_size=64
+    )
+    client = TestClient(create_app(trained, PositionHub()))
+    photo = render_board(flipped)
+    corners = _corners_query(photo)
+    r = client.post(
+        f"/estimate?corners={corners}&autorotate=1",
+        content=encode_jpeg(photo),
+        headers={"Content-Type": "image/jpeg"},
+    )
+    body = r.json()
+    assert body["autorotated"] == 180
+    assert body["placement"] == mid
+
+    r2 = client.post(
+        f"/estimate?corners={corners}",
+        content=encode_jpeg(photo),
+        headers={"Content-Type": "image/jpeg"},
+    )
+    body2 = r2.json()
+    assert "autorotated" not in body2
+    assert body2["placement"] == flipped
+
+
+def test_default_estimator_builds_ensemble_from_session_bank(tmp_path, monkeypatch):
+    """BR_MODEL + a persisted session bank -> startup ensemble, not bare model."""
+    import numpy as np
+
+    from board_reader_inference import server as srv
+    from board_reader_inference import trained as trained_mod
+    from board_reader_inference.estimator import EnsembleEstimator
+
+    bank_path = tmp_path / "bank.npz"
+    _lite_start_estimator().classifier.save(bank_path)
+    monkeypatch.setenv("BR_MODEL", "whatever.onnx")
+    monkeypatch.setenv("BR_SESSION_BANK", str(bank_path))
+    monkeypatch.delenv("BR_CENTROIDS", raising=False)
+    monkeypatch.setattr(
+        trained_mod,
+        "_onnx_logits_fn",
+        lambda path: (lambda b: np.zeros((b.shape[0], 13), dtype=np.float32)),
+    )
+    est = srv._default_estimator(None)
+    assert isinstance(est, EnsembleEstimator)
+
+    # Without a persisted bank the model runs bare.
+    monkeypatch.setenv("BR_SESSION_BANK", str(tmp_path / "missing.npz"))
+    from board_reader_inference.trained import TrainedEstimator
+
+    assert isinstance(srv._default_estimator(None), TrainedEstimator)
+
+
+def test_default_estimator_degrades_when_model_unloadable(tmp_path, monkeypatch):
+    """BR_MODEL pointing at nothing (fresh clone without models/) must not kill
+    the server — it degrades to the next tier so `docker compose up` still works."""
+    monkeypatch.setenv("BR_MODEL", str(tmp_path / "nonexistent.onnx"))
+    monkeypatch.delenv("BR_CENTROIDS", raising=False)
+    monkeypatch.delenv("BR_SESSION_BANK", raising=False)
+    from board_reader_inference import server as srv
+    from board_reader_inference.estimator import StubEstimator
+
+    assert isinstance(srv._default_estimator(None), StubEstimator)
+
+
+def test_calibrate_corrects_mislabeled_orientation(tmp_path, monkeypatch):
+    """/calibrate must not trust corner orientation blindly: labels that disagree
+    with the trained model's own reading of the photo by a rotation are rotated
+    into agreement (2026-07-18 field incident: a 180°-off calibrate pushed a
+    color-swapped bank to disk)."""
+    import numpy as np
+
+    from board_reader_core.protocol import encode_placement, parse_placement
+    from board_reader_core.wire import encode_jpeg
+    from board_reader_inference.estimator import EnsembleEstimator
+    from board_reader_inference.trained import TrainedEstimator
+
+    monkeypatch.chdir(tmp_path)
+    trained = TrainedEstimator(
+        _cycling_oracle(START_PLACEMENT), headroom=0.0, side_pad=0.0, square_size=64
+    )
+    occ = _lite_start_estimator()
+    client = TestClient(create_app(trained, PositionHub(), occupancy_estimator=occ))
+    photo = render_board(START_PLACEMENT)
+    corners = _corners_query(photo)
+    flipped = encode_placement(
+        np.rot90(np.array(parse_placement(START_PLACEMENT), dtype="<U5"), 2).tolist()
+    )
+    r = client.post(
+        f"/calibrate?corners={corners}&placement={flipped}",
+        content=encode_jpeg(photo),
+        headers={"Content-Type": "image/jpeg"},
+    )
+    assert r.status_code == 200
+    assert r.json()["label_rotation"] == 2
+    est = _app_estimator(client)
+    assert isinstance(est, EnsembleEstimator)
+    # The bank was calibrated with the CORRECTED labels: reading the same photo
+    # yields the true orientation, not the operator's flipped claim.
+    r2 = client.post(
+        f"/estimate?corners={corners}",
+        content=encode_jpeg(photo),
+        headers={"Content-Type": "image/jpeg"},
+    )
+    assert r2.json()["placement"] == START_PLACEMENT
+
+
+def test_calibrate_keeps_operator_labels_when_agreeing(tmp_path, monkeypatch):
+    """Correctly-oriented calibrates pass through unrotated."""
+    from board_reader_core.wire import encode_jpeg
+    from board_reader_inference.trained import TrainedEstimator
+
+    monkeypatch.chdir(tmp_path)
+    trained = TrainedEstimator(
+        _cycling_oracle(START_PLACEMENT), headroom=0.0, side_pad=0.0, square_size=64
+    )
+    occ = _lite_start_estimator()
+    client = TestClient(create_app(trained, PositionHub(), occupancy_estimator=occ))
+    photo = render_board(START_PLACEMENT)
+    r = client.post(
+        f"/calibrate?corners={_corners_query(photo)}",
+        content=encode_jpeg(photo),
+        headers={"Content-Type": "image/jpeg"},
+    )
+    assert r.status_code == 200
+    assert r.json()["label_rotation"] == 0
+
+
+def test_calibrate_rejects_photo_not_showing_claimed_position(tmp_path, monkeypatch):
+    """A mid-game photo calibrated as 'start' (field incident #4) is refused —
+    no rotation of the claimed labels agrees with the model's reading."""
+    from board_reader_core.wire import encode_jpeg
+    from board_reader_inference.trained import TrainedEstimator
+
+    monkeypatch.chdir(tmp_path)
+    mid = "r2qr2k/ppp2Qpp/8/2b1N3/3npn2/2N5/PPP2PPP/R3R1K1"
+    trained = TrainedEstimator(
+        _cycling_oracle(mid), headroom=0.0, side_pad=0.0, square_size=64
+    )
+    occ = _lite_start_estimator()
+    client = TestClient(create_app(trained, PositionHub(), occupancy_estimator=occ))
+    photo = render_board(mid)
+    r = client.post(
+        f"/calibrate?corners={_corners_query(photo)}",  # default placement=START
+        content=encode_jpeg(photo),
+        headers={"Content-Type": "image/jpeg"},
+    )
+    assert r.status_code == 422
+    assert "does not match" in r.json()["error"]
+    # Nothing was persisted or hot-swapped: the estimator is still the bare model.
+    assert _app_estimator(client) is trained
+
+
+def test_estimate_warns_on_very_low_camera_angle():
+    """A corner quad compressed to <0.62 aspect (camera nearly board-level) gets
+    a very_low_angle warning — recognition measurably collapses there."""
+    import numpy as np
+
+    from board_reader_core.wire import encode_jpeg
+    from board_reader_inference.trained import TrainedEstimator
+
+    photo = render_board(START_PLACEMENT)
+    h, w = photo.shape[:2]
+    est = TrainedEstimator(
+        _cycling_oracle(START_PLACEMENT), headroom=0.0, side_pad=0.0, square_size=64
+    )
+    client = TestClient(create_app(est, PositionHub()))
+    flat = f"0,0,{w},0,{w},{int(h * 0.4)},0,{int(h * 0.4)}"  # aspect 0.4
+    r = client.post(
+        f"/estimate?corners={flat}",
+        content=encode_jpeg(photo),
+        headers={"Content-Type": "image/jpeg"},
+    )
+    assert "very_low_angle" in r.json().get("warnings", [])
+
+    square = f"0,0,{w},0,{w},{h},0,{h}"
+    r2 = client.post(
+        f"/estimate?corners={square}",
+        content=encode_jpeg(photo),
+        headers={"Content-Type": "image/jpeg"},
+    )
+    assert "very_low_angle" not in r2.json().get("warnings", [])
+
+
+def test_booster_weight_by_bank_maturity():
+    """A mature bank earns the heavier blend share; a thin bootstrap doesn't."""
+    from board_reader_inference.server import _booster_weight
+
+    assert _booster_weight(256) == 0.5
+    assert _booster_weight(4096) == 0.3

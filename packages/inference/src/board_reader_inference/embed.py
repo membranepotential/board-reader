@@ -117,6 +117,7 @@ class DinoV2Embedder:
         *,
         image_size: int = 224,
         providers: list[str] | None = None,
+        batch_size: int = 64,
     ) -> None:
         import onnxruntime as ort
 
@@ -127,12 +128,28 @@ class DinoV2Embedder:
                 "tools/export_dinov2_onnx.py (see tools/README.md)"
             )
         self.image_size = image_size
+        if providers is None:
+            # Prefer the GPU when the CUDA EP is usable (~5x on a GTX 1650);
+            # preload_dlls resolves the pip-installed nvidia-*-cu12 libs so no
+            # LD_LIBRARY_PATH setup is needed. Silently fall back to CPU — the
+            # session constructor itself downgrades if CUDA can't initialise.
+            providers = ["CPUExecutionProvider"]
+            if "CUDAExecutionProvider" in ort.get_available_providers():
+                try:
+                    ort.preload_dlls()
+                    providers = ["CUDAExecutionProvider", "CPUExecutionProvider"]
+                except Exception:
+                    pass
         self.session = ort.InferenceSession(
             str(self.model_path),
-            providers=providers or ["CPUExecutionProvider"],
+            providers=providers,
         )
         self._input = self.session.get_inputs()[0].name
         self._dim = int(self.session.get_outputs()[0].shape[-1])
+        # Cap the per-run batch: a 64-crop board fits comfortably, but augmented
+        # multi-photo calibration can hand us hundreds of crops at once, which
+        # OOMs the ONNX arena (especially on small GPUs).
+        self.batch_size = batch_size
 
     @property
     def dim(self) -> int:
@@ -154,7 +171,13 @@ class DinoV2Embedder:
     def embed(self, crops: list[np.ndarray]) -> np.ndarray:
         if not crops:
             return np.zeros((0, self.dim), dtype=np.float32)
-        out = self.session.run(None, {self._input: self._preprocess(crops)})[0]
+        outs = [
+            self.session.run(
+                None, {self._input: self._preprocess(crops[i : i + self.batch_size])}
+            )[0]
+            for i in range(0, len(crops), self.batch_size)
+        ]
+        out = np.vstack(outs)
         return l2_normalize(np.asarray(out, dtype=np.float32), axis=1)
 
 

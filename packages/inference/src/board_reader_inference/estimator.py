@@ -22,9 +22,11 @@ from board_reader_core.protocol import (
 )
 from board_reader_core.wire import Frame
 
-from board_reader_inference.centroid import CentroidClassifier
+import numpy as np
+
+from board_reader_inference.centroid import CentroidClassifier, ExemplarClassifier
 from board_reader_inference.embed import Embedder
-from board_reader_inference.squares import crop_squares
+from board_reader_inference.squares import crop_squares, crop_squares_photo
 
 
 @runtime_checkable
@@ -78,26 +80,54 @@ class CentroidEstimator:
 
     The embedder and classifier are injected so the same estimator runs with the
     lightweight M1 embedder, the DINOv2 backbone, or a fine-tuned head — and with
-    centroids calibrated from any labeled position.
+    centroids (or the validated-stronger kNN exemplar bank) calibrated from any
+    labeled position.
     """
 
     def __init__(
         self,
         embedder: Embedder,
-        classifier: CentroidClassifier,
+        classifier: CentroidClassifier | ExemplarClassifier,
         *,
         inset: float = 0.1,
         square_size: int | None = None,
         orientation: str = "a1_bottom_left",
+        headroom: float = 1.6,
+        side_pad: float = 0.15,
     ) -> None:
         self.embedder = embedder
         self.classifier = classifier
         self.inset = inset
         self.square_size = square_size
         self.orientation = orientation
+        # Photo-path box geometry; must match what calibration used (see
+        # squares.crop_squares_photo).
+        self.headroom = headroom
+        self.side_pad = side_pad
 
     def estimate(self, frame: Frame) -> PositionEvent:
         crops = crop_squares(frame.image, inset=self.inset, size=self.square_size)
+        return self._event_from_crops(frame, crops)
+
+    def estimate_photo(self, frame: Frame, corners: np.ndarray) -> PositionEvent:
+        """Estimate from an ORIGINAL photo + playing-surface corners (a8,h8,h1,a1).
+
+        Uses tall full-piece boxes (:func:`crop_squares_photo`) instead of flat
+        squares of a top-down warp — exact for centroids calibrated with
+        ``crop_mode="photo"``, approximate otherwise (the gateway matches modes).
+        """
+        crops = crop_squares_photo(
+            frame.image,
+            corners,
+            headroom=self.headroom,
+            side_pad=self.side_pad,
+            size=self.square_size or 224,
+        )
+        return self._event_from_crops(frame, crops)
+
+    def _event_from_crops(
+        self, frame: Frame, crops: list[np.ndarray]
+    ) -> PositionEvent:
         embeddings = self.embedder.embed(crops)
         square_dist = self.classifier.classify_board(embeddings)
         return PositionEvent.from_square_dist(
@@ -105,6 +135,72 @@ class CentroidEstimator:
             seq=frame.seq,
             utc=iso_utc(frame.capture_ts),
             square_dist=square_dist,
+            stability=frame.stability,
+            clock=ClockState(frame.clock),
+            status="ok",
+            orientation=self.orientation,
+        )
+
+
+class EnsembleEstimator:
+    """Blend a zero-shot trained classifier with a per-set calibration bank (§4.6).
+
+    Calibration-as-booster: the exemplar bank is near-perfect under conditions it
+    has seen but brittle outside them; the trained model is the reverse. Averaging
+    their square distributions tracks the better member square-by-square (measured
+    2026-07-18 on the 7-board labeled eval: trained 415/448, bank 430/448, 50/50
+    blend 439/448). Both members must expose the photo path (``estimate_photo``).
+    """
+
+    crop_mode = "photo"
+
+    def __init__(
+        self,
+        primary: "Estimator",
+        booster: "Estimator",
+        *,
+        weight: float = 0.5,
+    ) -> None:
+        if not 0.0 < weight < 1.0:
+            raise ValueError("weight must be in (0, 1) — at 0 or 1 use the member directly")
+        self.primary = primary
+        self.booster = booster
+        self.weight = weight
+
+    # The gateway's debug/refresh plumbing reads box geometry off the active
+    # estimator; delegate to the primary (the trained model's geometry).
+    @property
+    def headroom(self) -> float:
+        return self.primary.headroom
+
+    @property
+    def side_pad(self) -> float:
+        return self.primary.side_pad
+
+    @property
+    def square_size(self) -> int | None:
+        return getattr(self.primary, "square_size", None)
+
+    @property
+    def orientation(self) -> str:
+        return self.primary.orientation
+
+    def estimate(self, frame: Frame) -> PositionEvent:
+        from board_reader_inference.squares import full_frame_corners
+
+        return self.estimate_photo(frame, full_frame_corners(frame.image))
+
+    def estimate_photo(self, frame: Frame, corners: np.ndarray) -> PositionEvent:
+        a = self.primary.estimate_photo(frame, corners)
+        b = self.booster.estimate_photo(frame, corners)
+        dist = self.weight * np.asarray(a.square_dist, dtype=np.float32) + (
+            1.0 - self.weight
+        ) * np.asarray(b.square_dist, dtype=np.float32)
+        return PositionEvent.from_square_dist(
+            board_id=frame.board_id,
+            seq=frame.seq,
+            utc=iso_utc(frame.capture_ts),
+            square_dist=dist,
             stability=frame.stability,
             clock=ClockState(frame.clock),
             status="ok",
