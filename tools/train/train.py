@@ -24,6 +24,7 @@ from torch.utils.data import DataLoader, WeightedRandomSampler
 
 import _bootstrap
 from board_reader_core.protocol import CLASSES, NUM_CLASSES
+from board_reader_inference.squares import BboxGeometry, geometry_tag
 
 from augment import eval_transform, train_transform
 from config import Config
@@ -70,11 +71,13 @@ def resolve_styles(cfg: Config) -> list[str]:
 
 
 def geo_cache_root(cfg: Config):
-    """Geometry-keyed cache dir so different headroom/side_pad don't collide/reuse.
-    ``headroom=0.15, side_pad=0.15`` maps to the default root (run (a)'s cache)."""
-    if cfg.headroom == 0.15 and cfg.side_pad == 0.15:
+    """Geometry-keyed cache dir so different geometries don't collide/reuse.
+    The original ``BboxGeometry(0.15, 0.15)`` maps to the default root (run (a)'s
+    cache), which predates the tagging scheme."""
+    geometry = cfg.geometry
+    if geometry == BboxGeometry(headroom=0.15, side_pad=0.15):
         return CACHE_ROOT
-    return CACHE_ROOT / f"hr{cfg.headroom:g}_sp{cfg.side_pad:g}"
+    return CACHE_ROOT / geometry_tag(geometry)
 
 
 def ensure_caches(names: list[str], cfg: Config) -> None:
@@ -84,8 +87,7 @@ def ensure_caches(names: list[str], cfg: Config) -> None:
         style = available[name]
         if name == "chessred" and cfg.max_boards is not None:
             style = chessred_style(max_boards=cfg.max_boards)
-        build_cache(style, out_root=root, size=cfg.size,
-                    headroom=cfg.headroom, side_pad=cfg.side_pad)
+        build_cache(style, out_root=root, size=cfg.size, geometry=cfg.geometry)
 
 
 @torch.no_grad()
@@ -108,7 +110,7 @@ def train(cfg: Config) -> Path:
     cfg.dump(out_dir / "config.yaml")
 
     names = resolve_styles(cfg)
-    print(f"styles: {names} | geometry headroom={cfg.headroom} side_pad={cfg.side_pad}")
+    print(f"styles: {names} | geometry {cfg.geometry}")
     ensure_caches(names, cfg)
     data = load_styles(names, cache_root=geo_cache_root(cfg))
     print(f"loaded {len(data)} crops; classes: {class_counts_str(data.labels)}")

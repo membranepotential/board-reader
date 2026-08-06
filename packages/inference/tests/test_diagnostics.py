@@ -10,7 +10,12 @@ import numpy as np
 from board_reader_core.protocol import GRID, NUM_CLASSES, START_PLACEMENT, dist_from_placement
 from board_reader_core.sim import render_board
 from board_reader_inference.diagnostics import crop_mosaic, draw_boxes, to_b64_jpeg
-from board_reader_inference.squares import crop_squares_photo, full_frame_corners, photo_square_boxes
+from board_reader_inference.squares import (
+    BboxGeometry,
+    crop_squares_photo,
+    full_frame_corners,
+    square_boxes,
+)
 
 
 def _square_dist():
@@ -19,14 +24,14 @@ def _square_dist():
 
 def test_draw_boxes_returns_downscaled_shape():
     board = render_board(square_px=32)  # small enough that no downscale kicks in
-    boxes = photo_square_boxes(full_frame_corners(board), headroom=0.0, side_pad=0.0)
+    boxes = square_boxes(full_frame_corners(board), BboxGeometry(0.0, 0.0), board.shape)
     out = draw_boxes(board, boxes, _square_dist())
     assert out.shape == board.shape
 
 
 def test_draw_boxes_downscales_large_images():
     board = render_board(square_px=200)  # long side > 1200
-    boxes = photo_square_boxes(full_frame_corners(board), headroom=0.0, side_pad=0.0)
+    boxes = square_boxes(full_frame_corners(board), BboxGeometry(0.0, 0.0), board.shape)
     out = draw_boxes(board, boxes, _square_dist())
     assert max(out.shape[:2]) <= 1200
     assert max(out.shape[:2]) < max(board.shape[:2])
@@ -35,7 +40,7 @@ def test_draw_boxes_downscales_large_images():
 def test_crop_mosaic_returns_8_col_grid():
     board = render_board(START_PLACEMENT, square_px=32)
     crops = crop_squares_photo(
-        board, full_frame_corners(board), headroom=0.0, side_pad=0.0, size=64
+        board, full_frame_corners(board), geometry=BboxGeometry(0.0, 0.0), size=64
     )
     mosaic = crop_mosaic(crops, _square_dist())
     assert mosaic.ndim == 3 and mosaic.shape[2] == 3

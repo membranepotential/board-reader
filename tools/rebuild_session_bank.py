@@ -29,7 +29,7 @@ from board_reader_core.protocol import CLASSES, encode_placement, parse_placemen
 from board_reader_core.wire import Frame
 from board_reader_inference.centroid import build_exemplars, load_classifier
 from board_reader_inference.embed import make_embedder
-from board_reader_inference.squares import crop_squares_photo
+from board_reader_inference.squares import BboxGeometry, crop_squares_photo
 from board_reader_inference.trained import TrainedEstimator
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -87,8 +87,9 @@ def main() -> None:
         crops = crop_squares_photo(
             img,
             corners,
-            headroom=classifier.box_headroom,
-            side_pad=classifier.box_side_pad,
+            geometry=BboxGeometry(
+                headroom=classifier.box_headroom, side_pad=classifier.box_side_pad
+            ),
             size=224,
         )
         new = build_exemplars(

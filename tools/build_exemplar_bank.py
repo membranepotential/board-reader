@@ -18,7 +18,7 @@ import numpy as np
 from board_reader_core.protocol import CLASSES, parse_placement
 from board_reader_inference.centroid import photometric_variants
 from board_reader_inference.embed import DinoV2Embedder, l2_normalize
-from board_reader_inference.squares import crop_squares_photo
+from board_reader_inference.squares import BboxGeometry, crop_squares_photo
 
 ROOT = Path(__file__).resolve().parent.parent
 HEADROOM, SIDE_PAD, TEMPERATURE = 0.15, 0.15, 0.1
@@ -35,7 +35,7 @@ def main() -> None:
         if img is None:
             raise FileNotFoundError(entry["source"])
         corners = np.array(entry["corners_a8_h8_h1_a1"], dtype=np.float32)
-        sq = crop_squares_photo(img, corners, headroom=HEADROOM, side_pad=SIDE_PAD)
+        sq = crop_squares_photo(img, corners, geometry=BboxGeometry(HEADROOM, SIDE_PAD))
         lab = [c for row in parse_placement(entry["placement"]) for c in row]
         for crop, l in zip(sq, lab):
             variants = photometric_variants(crop)

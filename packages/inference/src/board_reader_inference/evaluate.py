@@ -19,8 +19,14 @@ estimator is therefore scored on recognition given a labeled board, with
 orientation held fixed; ``--autorotate`` folds the orientation guess back in for
 an end-to-end figure.
 
+``--prior`` adds a second, opt-in score: the same distributions run through the
+hard-constraint decoder (:mod:`.prior`). It is reported *beside* the estimator's own
+numbers, with squares fixed and squares broken kept apart, because a repair that
+trades one right square for one wrong one is not an improvement.
+
     uv run board-reader-inference eval
     BR_MODEL=models/run_e/model.onnx uv run board-reader-inference eval data/uploads
+    ... eval --prior data/uploads       # does the hard-constraint decode help?
 """
 
 from __future__ import annotations
@@ -28,6 +34,7 @@ from __future__ import annotations
 import json
 from collections import Counter
 from dataclasses import dataclass, field
+from enum import StrEnum
 from pathlib import Path
 
 import numpy as np
@@ -36,6 +43,7 @@ from board_reader_core.protocol import CLASSES, GRID, NUM_CLASSES, parse_placeme
 from board_reader_core.wire import Frame
 
 from board_reader_inference.labels import LabeledBoard
+from board_reader_inference.prior import PriorDecode, decode
 
 #: Reliability-diagram resolution. Ten bins over [0, 1] is the conventional
 #: choice and keeps each row readable at the ~640-square scale we evaluate at.
@@ -111,6 +119,89 @@ class BoardResult:
         }
 
 
+class FlipVerdict(StrEnum):
+    """What a decoder flip did to a square, judged against the truth label."""
+
+    FIXED = "fixed"  # was wrong, now right
+    BROKEN = "broken"  # was right, now wrong
+    NEUTRAL = "neutral"  # wrong before and after — a different wrong answer
+
+
+@dataclass(frozen=True)
+class SquareChange:
+    """One square the decoder relabelled, with the truth beside it."""
+
+    square: str
+    truth: str
+    before: str
+    after: str
+
+    @property
+    def verdict(self) -> FlipVerdict:
+        if self.after == self.truth:
+            return FlipVerdict.FIXED
+        if self.before == self.truth:
+            return FlipVerdict.BROKEN
+        return FlipVerdict.NEUTRAL
+
+    def __str__(self) -> str:
+        return f"{self.square} {self.before}->{self.after} (truth {self.truth})"
+
+    def to_dict(self) -> dict:
+        return {
+            "square": self.square,
+            "truth": self.truth,
+            "before": self.before,
+            "after": self.after,
+            "verdict": self.verdict.value,
+        }
+
+
+@dataclass(frozen=True)
+class PriorBoardResult:
+    """One board scored twice: as the estimator read it, and as the decoder repaired it.
+
+    ``fixed`` and ``broken`` are kept apart on purpose. A decoder that fixes three
+    squares and breaks two is not "+1"; it is a coin flip with extra steps, and the
+    net number would hide that.
+    """
+
+    board_id: str
+    decode: PriorDecode
+    changes: tuple[SquareChange, ...]
+    correct_before: int
+    correct_after: int
+
+    @property
+    def fixed(self) -> tuple[SquareChange, ...]:
+        return tuple(c for c in self.changes if c.verdict is FlipVerdict.FIXED)
+
+    @property
+    def broken(self) -> tuple[SquareChange, ...]:
+        return tuple(c for c in self.changes if c.verdict is FlipVerdict.BROKEN)
+
+    @property
+    def perfect_before(self) -> bool:
+        return self.correct_before == GRID * GRID
+
+    @property
+    def perfect_after(self) -> bool:
+        return self.correct_after == GRID * GRID
+
+    def to_dict(self) -> dict:
+        return {
+            "board_id": self.board_id,
+            "placement": self.decode.placement,
+            "flips": [f.to_dict() for f in self.decode.flips],
+            "residual": self.decode.residual.to_dict(),
+            "changes": [c.to_dict() for c in self.changes],
+            "correct_before": self.correct_before,
+            "correct_after": self.correct_after,
+            "fixed": len(self.fixed),
+            "broken": len(self.broken),
+        }
+
+
 @dataclass(frozen=True)
 class Bin:
     lo: float
@@ -125,6 +216,145 @@ class Bin:
         return self.mean_confidence - self.accuracy
 
 
+@dataclass(frozen=True)
+class TemperatureReport:
+    """What temperature scaling buys, measured leave-one-board-out.
+
+    Every field is computed by scaling each board with a ``T`` fitted on the
+    *other* boards, so none of it is self-graded. ``answers_changed`` exists to
+    be asserted at zero: scaling is a monotone per-square transform, so if it
+    ever moves an argmax something is wrong with the implementation, not with
+    the calibration.
+    """
+
+    temperatures: list[float]  # per fold, one per board
+    ece_before: float
+    ece_after: float
+    bins_after: list[Bin]
+    conf_perfect_before: float | None
+    conf_imperfect_before: float | None
+    conf_perfect_after: float | None
+    conf_imperfect_after: float | None
+    answers_changed: int
+    #: Probability that a randomly chosen perfect board outranks a randomly
+    #: chosen imperfect one by board confidence (0.5 = no signal). This, not the
+    #: raw gap, is what a downstream consumer thresholding on confidence
+    #: actually depends on — scaling compresses the gap by construction, so the
+    #: gap alone would make a harmless change look like a loss.
+    auc_before: float | None
+    auc_after: float | None
+
+    @property
+    def temperature(self) -> float:
+        """The representative ``T`` (median across folds)."""
+        return float(np.median(self.temperatures)) if self.temperatures else 1.0
+
+    @property
+    def separation_before(self) -> float | None:
+        if self.conf_perfect_before is None or self.conf_imperfect_before is None:
+            return None
+        return self.conf_perfect_before - self.conf_imperfect_before
+
+    @property
+    def separation_after(self) -> float | None:
+        if self.conf_perfect_after is None or self.conf_imperfect_after is None:
+            return None
+        return self.conf_perfect_after - self.conf_imperfect_after
+
+    def to_dict(self) -> dict:
+        return {
+            "temperature_median": round(self.temperature, 4),
+            "temperatures": [round(t, 4) for t in self.temperatures],
+            "ece_before": round(self.ece_before, 4),
+            "ece_after": round(self.ece_after, 4),
+            "answers_changed": self.answers_changed,
+            "board_ranking_auc": {
+                "before": _round_opt(self.auc_before),
+                "after": _round_opt(self.auc_after),
+            },
+            "board_confidence": {
+                "perfect_before": _round_opt(self.conf_perfect_before),
+                "imperfect_before": _round_opt(self.conf_imperfect_before),
+                "perfect_after": _round_opt(self.conf_perfect_after),
+                "imperfect_after": _round_opt(self.conf_imperfect_after),
+            },
+        }
+
+
+def _round_opt(x: float | None) -> float | None:
+    return None if x is None else round(x, 4)
+
+
+def _mean_or_none(values: list[float]) -> float | None:
+    return float(np.mean(values)) if values else None
+
+
+def _ranking_auc(positive: list[float], negative: list[float]) -> float | None:
+    """P(a random positive scores above a random negative), ties counted as half.
+
+    Plain Mann-Whitney U over the two small samples — with tens of boards this is
+    exact and needs no approximation.
+    """
+    if not positive or not negative:
+        return None
+    wins = sum(
+        1.0 if p > n else 0.5 if p == n else 0.0 for p in positive for n in negative
+    )
+    return wins / (len(positive) * len(negative))
+
+
+def score_temperature(
+    results: list["BoardResult"],
+    dists: list[np.ndarray],
+    truth_indices: list[np.ndarray],
+) -> TemperatureReport:
+    """Leave-one-board-out temperature scaling, scored against the same labels."""
+    from board_reader_inference.calibration import leave_one_out_scaled
+
+    scaled, temps = leave_one_out_scaled(dists, truth_indices)
+    conf_after = [float(d.max(axis=-1).mean()) for d in scaled]
+    changed = sum(
+        int((np.asarray(a).argmax(axis=-1) != np.asarray(b).argmax(axis=-1)).sum())
+        for a, b in zip(dists, scaled)
+    )
+    bins_after, ece_after = reliability(
+        np.concatenate([d.max(axis=-1).ravel() for d in scaled]) if scaled else np.empty(0),
+        np.concatenate(
+            [(d.argmax(axis=-1) == t).ravel() for d, t in zip(scaled, truth_indices)]
+        )
+        if scaled
+        else np.empty(0, dtype=bool),
+    )
+    _, ece_before = reliability(
+        np.concatenate([np.asarray(d).max(axis=-1).ravel() for d in dists]) if dists else np.empty(0),
+        np.concatenate(
+            [(np.asarray(d).argmax(axis=-1) == t).ravel() for d, t in zip(dists, truth_indices)]
+        )
+        if dists
+        else np.empty(0, dtype=bool),
+    )
+    perfect = [i for i, r in enumerate(results) if r.perfect]
+    imperfect = [i for i, r in enumerate(results) if not r.perfect]
+    return TemperatureReport(
+        temperatures=temps,
+        ece_before=ece_before,
+        ece_after=ece_after,
+        bins_after=bins_after,
+        conf_perfect_before=_mean_or_none([results[i].confidence for i in perfect]),
+        conf_imperfect_before=_mean_or_none([results[i].confidence for i in imperfect]),
+        conf_perfect_after=_mean_or_none([conf_after[i] for i in perfect]),
+        conf_imperfect_after=_mean_or_none([conf_after[i] for i in imperfect]),
+        answers_changed=changed,
+        auc_before=_ranking_auc(
+            [results[i].confidence for i in perfect],
+            [results[i].confidence for i in imperfect],
+        ),
+        auc_after=_ranking_auc(
+            [conf_after[i] for i in perfect], [conf_after[i] for i in imperfect]
+        ),
+    )
+
+
 @dataclass
 class Report:
     boards: list[BoardResult]
@@ -132,10 +362,35 @@ class Report:
     bins: list[Bin] = field(default_factory=list)
     ece: float = 0.0
     warnings: list[str] = field(default_factory=list)
+    #: Populated only with ``--prior``: the same boards re-scored after the
+    #: hard-constraint decoder. Empty means the decoder was not run at all, which
+    #: is not the same as it having found nothing to do.
+    prior: list[PriorBoardResult] = field(default_factory=list)
+    #: Populated with ``--temperature``: what temperature scaling does to the
+    #: CONFIDENCES (it cannot move a single answer — see :mod:`.calibration`).
+    #: Every number here is leave-one-board-out, so no board is graded by a
+    #: temperature its own labels helped fit.
+    temperature: TemperatureReport | None = None
 
     @property
     def perfect_boards(self) -> int:
         return sum(b.perfect for b in self.boards)
+
+    @property
+    def prior_perfect_boards(self) -> int:
+        return sum(p.perfect_after for p in self.prior)
+
+    @property
+    def prior_correct(self) -> int:
+        return sum(p.correct_after for p in self.prior)
+
+    @property
+    def prior_fixed(self) -> int:
+        return sum(len(p.fixed) for p in self.prior)
+
+    @property
+    def prior_broken(self) -> int:
+        return sum(len(p.broken) for p in self.prior)
 
     @property
     def squares(self) -> int:
@@ -156,6 +411,16 @@ class Report:
             "ece": round(self.ece, 4),
             "errors_by_kind": dict(self.errors_by_kind()),
             "confusions": dict(self.confusions()),
+            "prior": {
+                "perfect_boards": self.prior_perfect_boards,
+                "correct_squares": self.prior_correct,
+                "fixed": self.prior_fixed,
+                "broken": self.prior_broken,
+                "per_board": [p.to_dict() for p in self.prior],
+            }
+            if self.prior
+            else None,
+            "temperature": self.temperature.to_dict() if self.temperature else None,
             "reliability": [
                 {
                     "lo": b.lo,
@@ -174,6 +439,92 @@ class Report:
 
     def confusions(self) -> Counter:
         return Counter(f"{e.truth}->{e.predicted}" for b in self.boards for e in b.errors)
+
+    def _render_temperature(self) -> list[str]:
+        """The temperature block: what honest confidences would look like.
+
+        Reported leave-one-board-out, and always next to ``answers changed``, so
+        the reader can see the claim being made is about confidence only.
+        """
+        t = self.temperature
+        if t is None:
+            return []
+        lines = ["", f"temperature scaling (leave-one-board-out, T={t.temperature:.3f})"]
+        spread = (min(t.temperatures), max(t.temperatures)) if t.temperatures else (1.0, 1.0)
+        lines.append(f"  T across folds: {spread[0]:.3f}-{spread[1]:.3f}")
+        lines.append(f"  ECE {t.ece_before:.3f} -> {t.ece_after:.3f}")
+        if t.separation_before is not None and t.separation_after is not None:
+            lines.append(
+                f"  board confidence perfect-imperfect gap: "
+                f"{t.separation_before:+.3f} -> {t.separation_after:+.3f}"
+                f"  (perfect {t.conf_perfect_after:.3f} · "
+                f"imperfect {t.conf_imperfect_after:.3f})"
+            )
+        if t.auc_before is not None and t.auc_after is not None:
+            lines.append(
+                f"  board ranking AUC: {t.auc_before:.3f} -> {t.auc_after:.3f}"
+                "   (0.5 = confidence carries no board-level signal)"
+            )
+        # Must be zero: scaling is monotone per square. A nonzero here is a bug.
+        lines.append(f"  answers changed: {t.answers_changed}")
+        for b in t.bins_after:
+            lines.append(
+                f"  {b.lo:.1f}-{b.hi:.1f}{b.count:>7}"
+                f"{b.mean_confidence:>10.3f}{b.accuracy:>9.3f}{b.gap:>+7.3f}"
+            )
+        return lines
+
+    def _render_prior(self) -> list[str]:
+        """The prior block: both scores side by side, then every flip.
+
+        Fixed and broken are printed apart, and each flip is printed with its truth
+        label, because the only way to trust this decoder is to read its edits.
+        """
+        if not self.prior:
+            return []
+        n = len(self.boards)
+        touched = [p for p in self.prior if p.decode.flips]
+        residual = [p for p in self.prior if not p.decode.residual.satisfied]
+        lines = [
+            "",
+            "hard-constraint prior (decoded from square_dist; the wire is unchanged)",
+            "  frame unknown here, so the back-rank pawn constraint sits out — counts only",
+        ]
+        lines.append(
+            f"  PERFECT BOARDS   {self.perfect_boards}/{n} -> "
+            f"{self.prior_perfect_boards}/{n}"
+        )
+        lines.append(
+            f"  per-square       {self.correct}/{self.squares} -> "
+            f"{self.prior_correct}/{self.squares}"
+            f"   (fixed {self.prior_fixed} · broken {self.prior_broken})"
+        )
+        lines.append(
+            f"  boards touched   {len(touched)}/{n}"
+            + (f" · residual violation on {len(residual)}" if residual else "")
+        )
+        if not touched:
+            lines.append("  no board violated a hard constraint — nothing to decode")
+            return lines
+        fired = Counter(f.constraint.value for p in touched for f in p.decode.flips)
+        lines.append(
+            "  constraints fired  "
+            + " · ".join(f"{k} {v}" for k, v in fired.most_common())
+        )
+        lines.append("  flips")
+        for p in touched:
+            by_square = {c.square: c for c in p.changes}
+            for flip in p.decode.flips:
+                change = by_square.get(flip.square)
+                verdict = change.verdict.value if change else "reverted"
+                truth = change.truth if change else "?"
+                lines.append(
+                    f"    {p.board_id:<32}{str(flip):<16}cost {flip.cost:5.2f}"
+                    f"  {flip.constraint.value:<17}truth {truth:<6}{verdict.upper()}"
+                )
+            if not p.decode.residual.satisfied:
+                lines.append(f"    {p.board_id:<32}residual: {p.decode.residual}")
+        return lines
 
     def render(self) -> str:
         if not self.boards:
@@ -195,6 +546,8 @@ class Report:
             f"per-square       {self.correct}/{self.squares}"
             f"   {100.0 * self.correct / self.squares:5.1f}%"
         )
+
+        lines += self._render_prior()
 
         kinds = self.errors_by_kind()
         if kinds:
@@ -226,6 +579,7 @@ class Report:
                 if vals
             ]
             lines.append("  board confidence: " + " · ".join(parts))
+            lines.extend(self._render_temperature())
 
         lines.append("")
         lines.append("per board")
@@ -335,6 +689,48 @@ def score_board(board: LabeledBoard, dist: np.ndarray) -> BoardResult:
     )
 
 
+def score_prior(board: LabeledBoard, dist: np.ndarray) -> PriorBoardResult:
+    """Decode one distribution under the hard constraints and score the result.
+
+    ``dist`` is only read — the decoder returns a placement beside the event, it
+    never rewrites the distribution the estimator produced (DESIGN D1).
+
+    Truth here lives in the frame the photo's *corners* define, which is not a
+    chess frame — 16 of 21 confirmed boards were shot a quarter- or half-turn off —
+    and nothing in the eval *establishes* the true one. Resolving it with
+    :func:`.autocalib.resolve_rotation` would be circular, since that function
+    picks the rotation minimising back-rank pawns, so the frame is reported as
+    unknown and :attr:`Constraint.BACK_RANK_PAWNS` sits out. What is measured here
+    is therefore the three rotation-invariant count constraints.
+    """
+    result = decode(dist, quarter_turns=None)
+    truth = parse_placement(board.placement)
+    before = [[CLASSES[int(i)] for i in row] for row in dist.argmax(axis=-1)]
+    after = parse_placement(result.placement)
+    changes = tuple(
+        SquareChange(
+            square=_square_name(r, c),
+            truth=truth[r][c],
+            before=before[r][c],
+            after=after[r][c],
+        )
+        for r in range(GRID)
+        for c in range(GRID)
+        if before[r][c] != after[r][c]
+    )
+    return PriorBoardResult(
+        board_id=board.board_id,
+        decode=result,
+        changes=changes,
+        correct_before=sum(
+            before[r][c] == truth[r][c] for r in range(GRID) for c in range(GRID)
+        ),
+        correct_after=sum(
+            after[r][c] == truth[r][c] for r in range(GRID) for c in range(GRID)
+        ),
+    )
+
+
 def reliability(
     confidences: np.ndarray, hits: np.ndarray, bins: int = CONF_BINS
 ) -> tuple[list[Bin], float]:
@@ -366,20 +762,41 @@ def reliability(
 
 
 def evaluate(
-    estimator: object, boards: list[LabeledBoard], *, autorotate: bool = False
+    estimator: object,
+    boards: list[LabeledBoard],
+    *,
+    autorotate: bool = False,
+    prior: bool = True,
+    temperature: bool = False,
 ) -> Report:
-    """Read every labeled board and assemble the report."""
+    """Read every labeled board and assemble the report.
+
+    ``prior`` scores the hard-constraint decode of each distribution
+    (:mod:`.prior`) alongside the estimator's own numbers. It defaults to **on**
+    because the decoder now serves (``/estimate`` returns its repair), and this
+    harness's whole contract is to score what actually serves — an off-by-default
+    flag would quietly stop measuring the product. It still changes nothing about
+    the primary numbers: both scores are reported side by side, never folded
+    together. Pass ``prior=False`` (``--no-prior``) to isolate the raw estimator.
+    """
     results: list[BoardResult] = []
+    prior_results: list[PriorBoardResult] = []
     confidences: list[np.ndarray] = []
     hits: list[np.ndarray] = []
+    dists: list[np.ndarray] = []
+    truth_indices: list[np.ndarray] = []
     for board in boards:
         dist = read_board(estimator, board, autorotate=autorotate)
         result = score_board(board, dist)
         results.append(result)
+        if prior:
+            prior_results.append(score_prior(board, dist))
         truth = parse_placement(board.placement)
         truth_idx = np.array(
             [[CLASSES.index(truth[r][c]) for c in range(GRID)] for r in range(GRID)]
         )
+        dists.append(dist)
+        truth_indices.append(truth_idx)
         confidences.append(dist.max(axis=-1).ravel())
         hits.append((dist.argmax(axis=-1) == truth_idx).ravel())
     bins, ece = reliability(
@@ -398,6 +815,10 @@ def evaluate(
         bins=bins,
         ece=ece,
         warnings=warnings,
+        prior=prior_results,
+        temperature=(
+            score_temperature(results, dists, truth_indices) if temperature else None
+        ),
     )
 
 
@@ -412,6 +833,8 @@ def run(
     *,
     estimator: object | None = None,
     autorotate: bool = False,
+    prior: bool = True,
+    temperature: bool = False,
     json_out: str | None = None,
 ) -> Report:
     """Load labels, build the deployed estimator if none was injected, report."""
@@ -423,7 +846,9 @@ def run(
         from board_reader_inference.server import _default_estimator
 
         estimator = _default_estimator()
-    report = evaluate(estimator, boards, autorotate=autorotate)
+    report = evaluate(
+        estimator, boards, autorotate=autorotate, prior=prior, temperature=temperature
+    )
     if json_out:
         Path(json_out).write_text(json.dumps(report.to_dict(), indent=2))
     return report

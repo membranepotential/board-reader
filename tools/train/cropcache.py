@@ -36,7 +36,13 @@ if os.environ.get("BR_CV_THREADS"):
 
 import _bootstrap  # noqa: F401
 from board_reader_core.protocol import CLASS_INDEX, CLASSES, GRID, parse_placement
-from board_reader_inference.squares import crop_squares_photo
+from board_reader_inference.squares import (
+    BboxGeometry,
+    CropGeometry,
+    PoseGeometry,
+    crop_squares_photo,
+    geometry_from_dict,
+)
 
 from styles import BOARD, Style, discover_styles
 
@@ -45,6 +51,7 @@ CACHE_ROOT = _bootstrap.ROOT / "data" / "external" / "_cropcache"
 # Deployed photo-crop geometry (must match the gateway + build_exemplar_bank*).
 HEADROOM = 0.15
 SIDE_PAD = 0.15
+DEFAULT_CACHE_GEOMETRY: CropGeometry = BboxGeometry(HEADROOM, SIDE_PAD)
 SIZE = 224
 JPEG_QUALITY = 95
 DEFAULT_SHARD = 4096  # crops per shard (~64 boards)
@@ -63,6 +70,15 @@ class CacheMeta:
     group_names: list[str]
     class_counts: dict[str, int]
     n_samples: int = 0  # source style sample count at build time (staleness check)
+    # Full geometry record. `headroom`/`side_pad` above stay for the caches built
+    # before pose geometry existed; for those this is None and they are the truth.
+    crop_geometry: dict | None = None
+
+    @property
+    def geometry(self) -> CropGeometry:
+        if self.crop_geometry is not None:
+            return geometry_from_dict(self.crop_geometry)
+        return BboxGeometry(headroom=self.headroom, side_pad=self.side_pad)
 
     def to_dict(self) -> dict:
         return self.__dict__
@@ -87,12 +103,12 @@ def _pad_resize(img: np.ndarray, size: int) -> np.ndarray:
     return cv2.resize(img, (size, size), interpolation=cv2.INTER_AREA)
 
 
-def _board_crops(sample, size: int, headroom: float, side_pad: float):
+def _board_crops(sample, size: int, geometry: CropGeometry):
     """(crop, label_idx) pairs for one board-mode sample."""
     img = cv2.imread(str(sample.image_path))
     if img is None:
         return None
-    crops = crop_squares_photo(img, sample.corners, headroom=headroom, side_pad=side_pad, size=size)
+    crops = crop_squares_photo(img, sample.corners, geometry=geometry, size=size)
     return list(zip(crops, _flatten_labels(sample.placement)))
 
 
@@ -147,8 +163,7 @@ def build_cache(
     *,
     out_root: Path = CACHE_ROOT,
     size: int = SIZE,
-    headroom: float = HEADROOM,
-    side_pad: float = SIDE_PAD,
+    geometry: CropGeometry = DEFAULT_CACHE_GEOMETRY,
     shard_size: int = DEFAULT_SHARD,
     force: bool = False,
 ) -> CacheMeta:
@@ -180,7 +195,7 @@ def build_cache(
     unit = "boards" if style.mode == BOARD else "crops"
     for n, s in enumerate(samples, 1):
         pairs = (
-            _board_crops(s, size, headroom, side_pad)
+            _board_crops(s, size, geometry)
             if style.mode == BOARD
             else _crop_sample(s, size)
         )
@@ -206,12 +221,13 @@ def build_cache(
         n_boards=n_boards,
         n_crops=sum(class_counts.values()),
         size=size,
-        headroom=headroom,
-        side_pad=side_pad,
+        headroom=getattr(geometry, "headroom", 0.0),
+        side_pad=getattr(geometry, "side_pad", 0.0),
         shards=writer.shards,
         group_names=ordered_groups,
         class_counts={c: class_counts.get(c, 0) for c in CLASSES},
         n_samples=len(samples),
+        crop_geometry=geometry.to_dict(),
     )
     with open(meta_path, "w") as f:
         json.dump(meta.to_dict(), f, indent=2)
@@ -239,12 +255,23 @@ def main() -> None:
     ap.add_argument("styles", nargs="*", help="style names (default: all discovered)")
     ap.add_argument("--max-boards", type=int, default=None, help="cap boards (chessred only)")
     ap.add_argument("--shard-size", type=int, default=DEFAULT_SHARD)
-    ap.add_argument("--headroom", type=float, default=HEADROOM, help="crop geometry")
-    ap.add_argument("--side-pad", type=float, default=SIDE_PAD, help="crop geometry")
+    ap.add_argument("--headroom", type=float, default=HEADROOM, help="bbox geometry")
+    ap.add_argument("--side-pad", type=float, default=SIDE_PAD, help="bbox geometry")
+    ap.add_argument(
+        "--pose", nargs=2, type=float, metavar=("PIECE_HEIGHT", "PIECE_RADIUS"),
+        default=None,
+        help="pose geometry instead of bbox: piece prism size in board units "
+             "(e.g. --pose 1.9 0.5). Overrides --headroom/--side-pad.",
+    )
     ap.add_argument("--out-root", type=Path, default=CACHE_ROOT, help="cache root (geometry-keyed)")
     ap.add_argument("--force", action="store_true")
     args = ap.parse_args()
 
+    geometry: CropGeometry = (
+        PoseGeometry(piece_height=args.pose[0], piece_radius=args.pose[1])
+        if args.pose
+        else BboxGeometry(headroom=args.headroom, side_pad=args.side_pad)
+    )
     available = discover_styles()
     names = args.styles or list(available)
     for name in names:
@@ -256,9 +283,9 @@ def main() -> None:
             from styles import chessred_style
 
             style = chessred_style(max_boards=args.max_boards)
-        print(f"caching {name} ({len(style)} boards) hr={args.headroom} sp={args.side_pad} -> {args.out_root}")
+        print(f"caching {name} ({len(style)} boards) {geometry} -> {args.out_root}")
         meta = build_cache(style, out_root=args.out_root, shard_size=args.shard_size,
-                           headroom=args.headroom, side_pad=args.side_pad, force=args.force)
+                           geometry=geometry, force=args.force)
         nz = {c: n for c, n in meta.class_counts.items() if n}
         print(f"  -> {meta.n_crops} crops in {len(meta.shards)} shards; classes: {nz}")
 

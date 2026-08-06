@@ -9,6 +9,7 @@ from starlette.testclient import TestClient
 
 from board_reader_core.protocol import START_PLACEMENT
 from board_reader_core.sim import render_board
+from board_reader_inference.squares import BboxGeometry
 from board_reader_core.wire import Frame
 from board_reader_inference.estimator import StubEstimator
 from board_reader_inference.hub import PositionHub
@@ -130,7 +131,7 @@ def test_estimate_photo_path_used_for_photo_mode_centroids():
     from board_reader_inference.centroid import build_centroids
     from board_reader_inference.embed import LiteEmbedder
     from board_reader_inference.estimator import CentroidEstimator
-    from board_reader_inference.squares import crop_squares_photo
+    from board_reader_inference.squares import BboxGeometry, crop_squares_photo
 
     board = render_board(START_PLACEMENT)
     photo, quad = simulate_angled_view(board)
@@ -220,12 +221,12 @@ def test_calibrate_hot_swaps_estimator(tmp_path, monkeypatch):
     emb = LiteEmbedder()
     seed = build_exemplars(
         emb,
-        crop_squares_photo(photo, quad, headroom=0.0, side_pad=0.0, size=64),
+        crop_squares_photo(photo, quad, geometry=BboxGeometry(0.0, 0.0), size=64),
         START_PLACEMENT,
         box_headroom=0.0,
         box_side_pad=0.0,
     )
-    est = CentroidEstimator(emb, seed, square_size=64, headroom=0.0, side_pad=0.0)
+    est = CentroidEstimator(emb, seed, square_size=64, geometry=BboxGeometry(0.0, 0.0))
     client = TestClient(create_app(est, PositionHub()))
 
     cal_photo = render_board(mid)
@@ -434,12 +435,12 @@ def _occupancy_estimator():
     emb = LiteEmbedder()
     clf = build_exemplars(
         emb,
-        crop_squares_photo(photo, quad, headroom=0.0, side_pad=0.0, size=64),
+        crop_squares_photo(photo, quad, geometry=BboxGeometry(0.0, 0.0), size=64),
         START_PLACEMENT,
         box_headroom=0.0,
         box_side_pad=0.0,
     )
-    return CentroidEstimator(emb, clf, square_size=64, headroom=0.0, side_pad=0.0)
+    return CentroidEstimator(emb, clf, square_size=64, geometry=BboxGeometry(0.0, 0.0))
 
 
 def _corners_param(photo):
@@ -712,14 +713,14 @@ def _lite_start_estimator(size: int = 64):
     emb = LiteEmbedder()
     bank = build_exemplars(
         emb,
-        crop_squares_photo(photo, quad, headroom=0.0, side_pad=0.0, size=size),
+        crop_squares_photo(photo, quad, geometry=BboxGeometry(0.0, 0.0), size=size),
         START_PLACEMENT,
         backbone="lite",
         box_headroom=0.0,
         box_side_pad=0.0,
     )
     return CentroidEstimator(
-        emb, bank, square_size=size, headroom=0.0, side_pad=0.0
+        emb, bank, square_size=size, geometry=BboxGeometry(0.0, 0.0)
     )
 
 
@@ -738,7 +739,7 @@ def test_calibrate_boosts_trained_estimator(tmp_path, monkeypatch):
 
     monkeypatch.chdir(tmp_path)
     trained = TrainedEstimator(
-        _cycling_oracle(START_PLACEMENT), headroom=0.0, side_pad=0.0, square_size=64
+        _cycling_oracle(START_PLACEMENT), geometry=BboxGeometry(0.0, 0.0), square_size=64
     )
     occ = _lite_start_estimator()
     client = TestClient(create_app(trained, PositionHub(), occupancy_estimator=occ))
@@ -773,7 +774,7 @@ def test_trained_path_bootstraps_bank_on_start_position(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("BR_SESSION_BANK", str(tmp_path / "bank.npz"))
     trained = TrainedEstimator(
-        _cycling_oracle(START_PLACEMENT), headroom=0.0, side_pad=0.0, square_size=64
+        _cycling_oracle(START_PLACEMENT), geometry=BboxGeometry(0.0, 0.0), square_size=64
     )
     occ = _lite_start_estimator()
     client = TestClient(create_app(trained, PositionHub(), occupancy_estimator=occ))
@@ -817,7 +818,7 @@ def test_estimate_autorotate_corrects_flipped_corners(tmp_path, monkeypatch):
         np.rot90(np.array(parse_placement(mid), dtype="<U5"), 2).tolist()
     )
     trained = TrainedEstimator(
-        _cycling_oracle(flipped), headroom=0.0, side_pad=0.0, square_size=64
+        _cycling_oracle(flipped), geometry=BboxGeometry(0.0, 0.0), square_size=64
     )
     client = TestClient(create_app(trained, PositionHub()))
     photo = render_board(flipped)
@@ -861,7 +862,7 @@ def test_estimate_debug_boxes_match_the_rotated_frame_when_autorotate_fires(
     from board_reader_core.protocol import encode_placement, parse_placement
     from board_reader_core.wire import encode_jpeg
     from board_reader_inference import diagnostics
-    from board_reader_inference.squares import full_frame_corners, photo_square_boxes
+    from board_reader_inference.squares import full_frame_corners, square_boxes
     from board_reader_inference.trained import TrainedEstimator
 
     monkeypatch.chdir(tmp_path)
@@ -873,7 +874,7 @@ def test_estimate_debug_boxes_match_the_rotated_frame_when_autorotate_fires(
         np.rot90(np.array(parse_placement(mid), dtype="<U5"), rendered_turns).tolist()
     )
     trained = TrainedEstimator(
-        _cycling_oracle(flipped), headroom=0.3, side_pad=0.1, square_size=64
+        _cycling_oracle(flipped), geometry=BboxGeometry(0.3, 0.1), square_size=64
     )
     client = TestClient(create_app(trained, PositionHub()))
     photo = render_board(flipped)
@@ -908,7 +909,7 @@ def test_estimate_debug_boxes_match_the_rotated_frame_when_autorotate_fires(
     # (see test_squares.py for why that alternative is wrong once headroom or
     # side_pad is nonzero: it rotates their fixed image direction too).
     k = body["autorotated"] // 90
-    original = photo_square_boxes(quad, headroom=0.3, side_pad=0.1)
+    original = square_boxes(quad, BboxGeometry(0.3, 0.1), photo.shape)
     expected = np.rot90(original.reshape(8, 8, 4, 2), k, axes=(0, 1)).reshape(-1, 4, 2)
     assert np.allclose(seen["boxes"], expected)
 
@@ -967,7 +968,7 @@ def test_calibrate_corrects_mislabeled_orientation(tmp_path, monkeypatch):
 
     monkeypatch.chdir(tmp_path)
     trained = TrainedEstimator(
-        _cycling_oracle(START_PLACEMENT), headroom=0.0, side_pad=0.0, square_size=64
+        _cycling_oracle(START_PLACEMENT), geometry=BboxGeometry(0.0, 0.0), square_size=64
     )
     occ = _lite_start_estimator()
     client = TestClient(create_app(trained, PositionHub(), occupancy_estimator=occ))
@@ -1002,7 +1003,7 @@ def test_calibrate_keeps_operator_labels_when_agreeing(tmp_path, monkeypatch):
 
     monkeypatch.chdir(tmp_path)
     trained = TrainedEstimator(
-        _cycling_oracle(START_PLACEMENT), headroom=0.0, side_pad=0.0, square_size=64
+        _cycling_oracle(START_PLACEMENT), geometry=BboxGeometry(0.0, 0.0), square_size=64
     )
     occ = _lite_start_estimator()
     client = TestClient(create_app(trained, PositionHub(), occupancy_estimator=occ))
@@ -1025,7 +1026,7 @@ def test_calibrate_rejects_photo_not_showing_claimed_position(tmp_path, monkeypa
     monkeypatch.chdir(tmp_path)
     mid = "r2qr2k/ppp2Qpp/8/2b1N3/3npn2/2N5/PPP2PPP/R3R1K1"
     trained = TrainedEstimator(
-        _cycling_oracle(mid), headroom=0.0, side_pad=0.0, square_size=64
+        _cycling_oracle(mid), geometry=BboxGeometry(0.0, 0.0), square_size=64
     )
     occ = _lite_start_estimator()
     client = TestClient(create_app(trained, PositionHub(), occupancy_estimator=occ))
@@ -1052,7 +1053,7 @@ def test_estimate_warns_on_very_low_camera_angle():
     photo = render_board(START_PLACEMENT)
     h, w = photo.shape[:2]
     est = TrainedEstimator(
-        _cycling_oracle(START_PLACEMENT), headroom=0.0, side_pad=0.0, square_size=64
+        _cycling_oracle(START_PLACEMENT), geometry=BboxGeometry(0.0, 0.0), square_size=64
     )
     client = TestClient(create_app(est, PositionHub()))
     flat = f"0,0,{w},0,{w},{int(h * 0.4)},0,{int(h * 0.4)}"  # aspect 0.4

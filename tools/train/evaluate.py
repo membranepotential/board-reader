@@ -25,7 +25,12 @@ import torch
 
 import _bootstrap
 from board_reader_core.protocol import CLASS_INDEX, START_PLACEMENT, parse_placement
-from board_reader_inference.squares import crop_squares_photo
+from board_reader_inference.squares import (
+    BboxGeometry,
+    CropGeometry,
+    crop_squares_photo,
+    geometry_from_dict,
+)
 
 from augment import IMAGENET_MEAN, IMAGENET_STD, eval_transform, to_rgb_tensor
 from config import Config
@@ -34,6 +39,7 @@ from models import build_model
 
 ROOT = _bootstrap.ROOT
 HEADROOM, SIDE_PAD, SIZE = 0.15, 0.15, 224
+DEFAULT_EVAL_GEOMETRY: CropGeometry = BboxGeometry(HEADROOM, SIDE_PAD)
 
 
 @dataclass
@@ -68,6 +74,30 @@ def load_user_photos(gt_path: Path = ROOT / "data/eval/ground_truth.json") -> li
         corners = np.asarray(rec["corners_a8_h8_h1_a1"], dtype=np.float32).reshape(4, 2)
         boards.append(EvalBoard(name, src, corners, _labels_from_placement(rec["placement"])))
     return boards
+
+
+def load_style(name: str) -> list[EvalBoard]:
+    """A registered style's boards as an eval set (the unseen-style validation).
+
+    ``chesscog_transfer`` is the one that matters: 20 real photos of a physical
+    set that appears in no training run, so it is the honest real-photo
+    generalisation number. Keep it out of ``styles``, score it after every run.
+    """
+    from styles import discover_styles
+
+    style = discover_styles().get(name)
+    if style is None:
+        print(f"  WARN style {name!r} not found")
+        return []
+    return [
+        EvalBoard(
+            f"{name}/{s.image_path.stem}",
+            s.image_path,
+            s.corners,
+            _labels_from_placement(s.placement),
+        )
+        for s in style.samples()
+    ]
 
 
 def load_uploads_calibrate(uploads: Path = ROOT / "data/uploads") -> list[EvalBoard]:
@@ -139,7 +169,7 @@ def _make_predictor(args, *, grayscale: bool):
 
 
 def eval_boards(
-    boards: list[EvalBoard], predictor, *, headroom: float, side_pad: float, per_board: bool = False
+    boards: list[EvalBoard], predictor, *, geometry: CropGeometry, per_board: bool = False
 ) -> tuple[SquareStats, int]:
     stats = SquareStats()
     perfect = 0
@@ -148,7 +178,7 @@ def eval_boards(
         if img is None:
             print(f"  WARN unreadable {b.image_path}")
             continue
-        crops = crop_squares_photo(img, b.corners, headroom=headroom, side_pad=side_pad, size=SIZE)
+        crops = crop_squares_photo(img, b.corners, geometry=geometry, size=SIZE)
         pred = predictor.predict(crops)
         stats.update(b.labels, pred)
         n_correct = int((pred == b.labels).sum())
@@ -163,23 +193,44 @@ def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--ckpt", type=Path, help="torch checkpoint (best.pt)")
     ap.add_argument("--onnx", type=Path, help="exported ONNX model (evaluate through onnxruntime)")
-    ap.add_argument("--headroom", type=float, default=0.15, help="crop geometry (must match training)")
-    ap.add_argument("--side-pad", type=float, default=0.15, help="crop geometry (must match training)")
+    ap.add_argument("--headroom", type=float, default=None, help="override bbox crop geometry")
+    ap.add_argument("--side-pad", type=float, default=None, help="override bbox crop geometry")
+    ap.add_argument(
+        "--style", action="append", default=["chesscog_transfer"],
+        help="also score this registered style as an unseen-style set "
+             "(default: chesscog_transfer; repeatable)",
+    )
     ap.add_argument("--no-grayscale", action="store_true", help="skip the shape-bias diagnostic")
     args = ap.parse_args()
     if not args.ckpt and not args.onnx:
         ap.error("give --ckpt or --onnx")
 
-    # A torch checkpoint carries its own training geometry (authoritative). The ONNX
-    # doesn't, so the caller must pass --headroom/--side-pad matching the run.
-    headroom, side_pad = args.headroom, args.side_pad
+    # Geometry travels with the model, never with the caller: a torch checkpoint
+    # carries its training Config, an ONNX its `.meta.json` sidecar. Guessing it
+    # from flags is how a tall-crop model got served on short crops once.
+    geometry = DEFAULT_EVAL_GEOMETRY
     if args.ckpt:
         import torch
         c = torch.load(args.ckpt, map_location="cpu", weights_only=False).get("config", {})
-        headroom, side_pad = c.get("headroom", headroom), c.get("side_pad", side_pad)
-    print(f"eval geometry: headroom={headroom} side_pad={side_pad}")
+        geometry = (Config(**c) if isinstance(c, dict) else Config()).geometry
+    elif args.onnx:
+        sidecar = Path(str(args.onnx) + ".meta.json")
+        if sidecar.exists():
+            meta = json.loads(sidecar.read_text())
+            geometry = geometry_from_dict(meta.get("crop_geometry", meta))
+        else:
+            print(f"  WARN no sidecar at {sidecar}; assuming {geometry}")
+    if args.headroom is not None or args.side_pad is not None:
+        base = geometry if isinstance(geometry, BboxGeometry) else DEFAULT_EVAL_GEOMETRY
+        geometry = BboxGeometry(
+            headroom=args.headroom if args.headroom is not None else base.headroom,
+            side_pad=args.side_pad if args.side_pad is not None else base.side_pad,
+        )
+    print(f"eval geometry: {geometry}")
 
     sets = {"user_photos": load_user_photos(), "uploads_calibrate": load_uploads_calibrate()}
+    for style_name in dict.fromkeys(args.style):
+        sets[style_name] = load_style(style_name)
 
     def run(grayscale: bool) -> SquareStats:
         predictor = _make_predictor(args, grayscale=grayscale)
@@ -191,7 +242,7 @@ def main() -> None:
             if not boards:
                 print(f"{name}: (no boards)")
                 continue
-            stats, perfect = eval_boards(boards, predictor, headroom=headroom, side_pad=side_pad,
+            stats, perfect = eval_boards(boards, predictor, geometry=geometry,
                                          per_board=not grayscale)
             for f in overall.__dataclass_fields__:
                 setattr(overall, f, getattr(overall, f) + getattr(stats, f))

@@ -33,10 +33,11 @@ from board_reader_core.wire import Frame, decode_jpeg
 from board_reader_inference.estimator import Estimator, StubEstimator
 from board_reader_inference.hub import PositionHub
 from board_reader_inference.squares import (
+    BboxGeometry,
     crop_squares_photo,
     full_frame_corners,
-    photo_square_boxes,
     rectify_photo,
+    square_boxes,
 )
 
 
@@ -118,6 +119,28 @@ def _quad_aspect(quad: np.ndarray) -> float:
     return float(min(h / w, w / h))
 
 
+def _prior_decode(event):
+    """Hard-constraint repair of one read (:mod:`.prior`), for serving beside it.
+
+    ``square_dist`` and ``event.placement`` are left exactly as the estimator
+    produced them — the §5 invariant is that ``placement`` is the argmax of
+    ``square_dist``, and the hub publishes the raw event. The repair rides along
+    in the HTTP response as ``result["prior"]``, so applying it stays the
+    consumer's choice and a downstream legality smoother cannot double-count it
+    (DESIGN D1).
+
+    **``quarter_turns`` is deliberately not passed.** The only orientation this
+    path has is ``autocalib.resolve_rotation``'s guess, which picks the frame that
+    *minimises* pawns on ranks 1/8 — the very quantity ``BACK_RANK_PAWNS``
+    measures. Feeding it that guess is circular and was measured destroying a
+    correct, confident pawn; see :mod:`.prior`'s module docstring for the full
+    account. Do not "fix" this by wiring the guess in: that is the bug.
+    """
+    from board_reader_inference.prior import decode
+
+    return decode(np.asarray(event.square_dist))
+
+
 def _estimator_from_bank(path: str, *, share_from: "Estimator | None" = None):
     """Build a :class:`CentroidEstimator` from a saved calibration file.
 
@@ -137,8 +160,9 @@ def _estimator_from_bank(path: str, *, share_from: "Estimator | None" = None):
     return CentroidEstimator(
         embedder if embedder is not None else make_embedder(classifier.backbone),
         classifier,
-        headroom=classifier.box_headroom,
-        side_pad=classifier.box_side_pad,
+        geometry=BboxGeometry(
+            headroom=classifier.box_headroom, side_pad=classifier.box_side_pad
+        ),
     )
 
 
@@ -334,7 +358,7 @@ def create_app(
             return None
         return path
 
-    def _debug_payload(image, corners, square_dist, *, headroom, side_pad, size, rotate_k=0):
+    def _debug_payload(image, corners, square_dist, *, geometry, size, rotate_k=0):
         """The opt-in ``?debug=1`` visualisation pair, from whatever a branch saw.
 
         ``rotate_k`` is the same ``np.rot90`` turn count ``autorotate`` applied to
@@ -359,10 +383,8 @@ def create_app(
             to_b64_jpeg,
         )
 
-        boxes = photo_square_boxes(corners, headroom=headroom, side_pad=side_pad)
-        crops = crop_squares_photo(
-            image, corners, headroom=headroom, side_pad=side_pad, size=size
-        )
+        boxes = square_boxes(corners, geometry, image.shape)
+        crops = crop_squares_photo(image, corners, geometry=geometry, size=size)
         if rotate_k:
             boxes = np.rot90(
                 boxes.reshape(GRID, GRID, 4, 2), rotate_k, axes=(0, 1)
@@ -409,8 +431,7 @@ def create_app(
         crops = crop_squares_photo(
             frame.image,
             corners,
-            headroom=cent.headroom,
-            side_pad=cent.side_pad,
+            geometry=cent.geometry,
             size=cent.square_size or 224,
         )
         new = build_exemplars(
@@ -426,8 +447,7 @@ def create_app(
         refreshed = CentroidEstimator(
             cent.embedder,
             classifier,
-            headroom=cent.headroom,
-            side_pad=cent.side_pad,
+            geometry=cent.geometry,
             square_size=cent.square_size,
             orientation=cent.orientation,
         )
@@ -486,8 +506,9 @@ def create_app(
         crops = crop_squares_photo(
             frame.image,
             corners,
-            headroom=base.headroom,
-            side_pad=base.side_pad,
+            # The bank is bbox-only; a pose-geometry model reports the deployed
+            # bank default here rather than inventing scalars (see TrainedEstimator).
+            geometry=BboxGeometry(headroom=base.headroom, side_pad=base.side_pad),
             size=base.square_size or 224,
         )
         classifier = build_exemplars(
@@ -500,7 +521,9 @@ def create_app(
             box_side_pad=base.side_pad,
         )
         bank_est = CentroidEstimator(
-            embedder, classifier, headroom=base.headroom, side_pad=base.side_pad
+            embedder,
+            classifier,
+            geometry=BboxGeometry(headroom=base.headroom, side_pad=base.side_pad),
         )
         est = EnsembleEstimator(
             base, bank_est, weight=_booster_weight(classifier.exemplars.shape[0])
@@ -540,8 +563,7 @@ def create_app(
         crops = crop_squares_photo(
             frame.image,
             corners,
-            headroom=occ_est.headroom,
-            side_pad=occ_est.side_pad,
+            geometry=occ_est.geometry,
             size=size,
         )
         dist = occ_est.classifier.classify_board(occ_est.embedder.embed(crops))
@@ -561,7 +583,7 @@ def create_app(
             if debug_on:
                 result["debug"] = _debug_payload(
                     frame.image, corners, dist,
-                    headroom=occ_est.headroom, side_pad=occ_est.side_pad, size=size,
+                    geometry=occ_est.geometry, size=size,
                 )
             return JSONResponse(result)
 
@@ -577,14 +599,23 @@ def create_app(
         est = CentroidEstimator(
             occ_est.embedder,
             classifier,
-            headroom=occ_est.headroom,
-            side_pad=occ_est.side_pad,
+            geometry=occ_est.geometry,
         )
         app.state.estimator = est
         saved = _save_session(classifier)
         event = est.estimate_photo(frame, corners)
         await hub_.publish(event)
         result = event.to_dict()
+        # This branch answers with real piece types, so it gets the same repair as
+        # the calibrated path. (The occupancy-only branch above does not: with no
+        # piece identity and no colour there is nothing the constraints can read.)
+        # ``match.rotation`` *would* be an established frame here — it comes from
+        # the start-position occupancy pattern, not from the circular pawn
+        # heuristic — but a start position has no pawn on rank 1/8 by
+        # construction, so the one frame-dependent constraint could never fire.
+        # Passing it would add an untestable convention for zero gain.
+        repair = _prior_decode(event)
+        result["prior"] = repair.to_dict()
         result["autocalibrated"] = {
             "matches": match.matches,
             "rotation": match.rotation,
@@ -593,7 +624,11 @@ def create_app(
         }
         # This branch answers with a real position too, so it is labelable like any
         # other read (see /labels).
-        _annotate_upload(sidecar, placement=event.placement)
+        _annotate_upload(
+            sidecar,
+            placement=event.placement,
+            prior_flips=[f.square for f in repair.flips],
+        )
         if sidecar is not None:
             result["upload"] = sidecar.stem
         if warns:
@@ -601,7 +636,7 @@ def create_app(
         if debug_on:
             result["debug"] = _debug_payload(
                 frame.image, corners, event.square_dist,
-                headroom=occ_est.headroom, side_pad=occ_est.side_pad, size=size,
+                geometry=occ_est.geometry, size=size,
             )
         return JSONResponse(result)
 
@@ -649,7 +684,7 @@ def create_app(
         # estimate itself actually took (kept in lockstep with that branch so the
         # visualisation always matches what recognition saw).
         debug_image, debug_corners = image, full_frame_corners(image)
-        debug_headroom, debug_side_pad = 0.0, 0.0
+        debug_geometry = BboxGeometry(headroom=0.0, side_pad=0.0)
 
         if quad is not None and photo_fn is None:
             # Rectified-mode estimator handed an original photo: warp server-side
@@ -670,7 +705,7 @@ def create_app(
             # is a rectified crop — treat the whole frame as the board (approximate
             # but keeps the old rectified-crop contract working).
             debug_corners = quad if quad is not None else full_frame_corners(image)
-            debug_headroom, debug_side_pad = est.headroom, est.side_pad
+            debug_geometry = est.geometry
             event = photo_fn(frame, debug_corners)
             autocal = _maybe_bootstrap_bank(frame, debug_corners, event)
             if autocal is not None:
@@ -702,13 +737,20 @@ def create_app(
                 rotated_deg = k * 90
         await hub_.publish(event)
         result = event.to_dict()
+        repair = _prior_decode(event)
+        result["prior"] = repair.to_dict()
         if autocal:
             result["autocalibrated"] = autocal
         if refresh:
             result["bank_refreshed"] = refresh
         if rotated_deg:
             result["autorotated"] = rotated_deg
-        _annotate_upload(sidecar, placement=event.placement, autorotated=rotated_deg)
+        _annotate_upload(
+            sidecar,
+            placement=event.placement,
+            autorotated=rotated_deg,
+            prior_flips=[f.square for f in repair.flips],
+        )
         if sidecar is not None:
             # Names the retained photo so the client can confirm this read's
             # position as ground truth (POST /labels/{upload}). Absent when
@@ -724,7 +766,7 @@ def create_app(
             size = est.square_size or 224 if photo_fn is not None else 224
             result["debug"] = _debug_payload(
                 debug_image, debug_corners, event.square_dist,
-                headroom=debug_headroom, side_pad=debug_side_pad, size=size,
+                geometry=debug_geometry, size=size,
                 rotate_k=(rotated_deg or 0) // 90,
             )
         return JSONResponse(result)
@@ -844,7 +886,7 @@ def create_app(
             headroom, side_pad = 0.3, 0.15
         try:
             crops = crop_squares_photo(
-                image, quad, headroom=headroom, side_pad=side_pad
+                image, quad, geometry=BboxGeometry(headroom=headroom, side_pad=side_pad)
             )
             new = build_exemplars(
                 embedder,
@@ -865,7 +907,9 @@ def create_app(
         else:
             classifier = new
         bank_est = CentroidEstimator(
-            embedder, classifier, headroom=headroom, side_pad=side_pad
+            embedder,
+            classifier,
+            geometry=BboxGeometry(headroom=headroom, side_pad=side_pad),
         )
         # Calibration BOOSTS a zero-shot trained model rather than replacing it
         # (the blend beats either member alone — see EnsembleEstimator).
@@ -958,6 +1002,10 @@ def create_app(
                 predicted=meta.get("placement"),
                 corrections=corrections,
                 autorotated=int(meta.get("autorotated") or 0),
+                # What the decoder repaired in the read the operator just
+                # confirmed — so a later eval can tell truth that came from the
+                # board apart from truth that came from the decoder.
+                prior_flips=[str(s) for s in (meta.get("prior_flips") or [])],
             )
         except OSError as e:
             return JSONResponse({"error": f"could not write label: {e}"}, status_code=500)

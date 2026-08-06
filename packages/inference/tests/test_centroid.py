@@ -21,7 +21,7 @@ from board_reader_inference.centroid import (
     load_classifier,
 )
 from board_reader_inference.embed import LiteEmbedder
-from board_reader_inference.squares import crop_squares, crop_squares_photo, full_frame_corners
+from board_reader_inference.squares import BboxGeometry, crop_squares, crop_squares_photo, full_frame_corners
 
 EMBEDDER = LiteEmbedder()
 
@@ -120,7 +120,7 @@ def _photo_bank(placement: str, **kw) -> ExemplarClassifier:
     """Build a bank from flat (zero-headroom) photo boxes so LiteEmbedder can read it."""
     photo = render_board(placement, square_px=48)
     crops = crop_squares_photo(
-        photo, full_frame_corners(photo), headroom=0.0, side_pad=0.0, size=64
+        photo, full_frame_corners(photo), geometry=BboxGeometry(0.0, 0.0), size=64
     )
     return build_exemplars(EMBEDDER, crops, placement, **kw)
 
@@ -128,7 +128,7 @@ def _photo_bank(placement: str, **kw) -> ExemplarClassifier:
 def _photo_crops(placement: str) -> list[np.ndarray]:
     photo = render_board(placement, square_px=48)
     return crop_squares_photo(
-        photo, full_frame_corners(photo), headroom=0.0, side_pad=0.0, size=64
+        photo, full_frame_corners(photo), geometry=BboxGeometry(0.0, 0.0), size=64
     )
 
 

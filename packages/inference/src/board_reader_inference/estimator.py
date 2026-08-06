@@ -26,7 +26,13 @@ import numpy as np
 
 from board_reader_inference.centroid import CentroidClassifier, ExemplarClassifier
 from board_reader_inference.embed import Embedder
-from board_reader_inference.squares import crop_squares, crop_squares_photo
+from board_reader_inference.squares import (
+    DEFAULT_GEOMETRY,
+    BboxGeometry,
+    CropGeometry,
+    crop_squares,
+    crop_squares_photo,
+)
 
 
 @runtime_checkable
@@ -92,8 +98,7 @@ class CentroidEstimator:
         inset: float = 0.1,
         square_size: int | None = None,
         orientation: str = "a1_bottom_left",
-        headroom: float = 1.6,
-        side_pad: float = 0.15,
+        geometry: BboxGeometry = DEFAULT_GEOMETRY,
     ) -> None:
         self.embedder = embedder
         self.classifier = classifier
@@ -101,9 +106,18 @@ class CentroidEstimator:
         self.square_size = square_size
         self.orientation = orientation
         # Photo-path box geometry; must match what calibration used (see
-        # squares.crop_squares_photo).
-        self.headroom = headroom
-        self.side_pad = side_pad
+        # squares.crop_squares_photo). The exemplar bank is defined in terms of
+        # image-axis boxes, so this path is bbox geometry by construction — the
+        # type says so, and a pose-geometry bank would need a different bank.
+        self.geometry: BboxGeometry = geometry
+
+    @property
+    def headroom(self) -> float:
+        return self.geometry.headroom
+
+    @property
+    def side_pad(self) -> float:
+        return self.geometry.side_pad
 
     def estimate(self, frame: Frame) -> PositionEvent:
         crops = crop_squares(frame.image, inset=self.inset, size=self.square_size)
@@ -119,8 +133,7 @@ class CentroidEstimator:
         crops = crop_squares_photo(
             frame.image,
             corners,
-            headroom=self.headroom,
-            side_pad=self.side_pad,
+            geometry=self.geometry,
             size=self.square_size or 224,
         )
         return self._event_from_crops(frame, crops)
@@ -168,7 +181,12 @@ class EnsembleEstimator:
         self.weight = weight
 
     # The gateway's debug/refresh plumbing reads box geometry off the active
-    # estimator; delegate to the primary (the trained model's geometry).
+    # estimator; delegate to the primary (the trained model's geometry). Members
+    # crop independently, so a pose-geometry primary and a bbox booster coexist.
+    @property
+    def geometry(self) -> CropGeometry:
+        return self.primary.geometry
+
     @property
     def headroom(self) -> float:
         return self.primary.headroom

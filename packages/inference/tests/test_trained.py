@@ -11,7 +11,12 @@ from board_reader_core.sim import render_board
 from board_reader_core.wire import Frame
 
 from board_reader_inference.trained import TrainedEstimator, preprocess
-from board_reader_inference.squares import full_frame_corners
+from board_reader_inference.squares import (
+    DEFAULT_GEOMETRY,
+    BboxGeometry,
+    PoseGeometry,
+    full_frame_corners,
+)
 
 
 def _oracle_logits_for(placement: str):
@@ -124,13 +129,43 @@ def test_geometry_loaded_from_model_sidecar(tmp_path, monkeypatch):
         trained_mod, "_onnx_logits_fn", lambda p: (lambda b: None)
     )
     est = TrainedEstimator(model)
-    assert est.headroom == 1.6 and est.side_pad == 0.25 and est.square_size == 224
-    # Explicit kwargs override the sidecar; no sidecar -> historical defaults.
-    assert TrainedEstimator(model, headroom=0.0).headroom == 0.0
+    assert est.geometry == BboxGeometry(1.6, 0.25) and est.square_size == 224
+    # An explicit geometry overrides the sidecar; no sidecar -> historical default.
+    override = BboxGeometry(0.0, 0.0)
+    assert TrainedEstimator(model, geometry=override).geometry == override
     bare = tmp_path / "bare.onnx"
     bare.write_bytes(b"stub")
-    est2 = TrainedEstimator(bare)
-    assert est2.headroom == 0.15 and est2.side_pad == 0.15
+    assert TrainedEstimator(bare).geometry == BboxGeometry(0.15, 0.15)
+
+
+def test_pose_geometry_round_trips_through_the_sidecar(tmp_path, monkeypatch):
+    """A pose-geometry model must serve pose-geometry crops: the sidecar is the
+    only thing carrying that from training to the server."""
+    import json
+
+    from board_reader_inference import trained as trained_mod
+
+    model = tmp_path / "pose.onnx"
+    model.write_bytes(b"stub")
+    (tmp_path / "pose.onnx.meta.json").write_text(
+        json.dumps(
+            {
+                "crop_geometry": {
+                    "kind": "pose",
+                    "piece_height": 1.9,
+                    "piece_radius": 0.5,
+                    "focal_ratio": 1.0,
+                },
+                "square_size": 224,
+            }
+        )
+    )
+    monkeypatch.setattr(trained_mod, "_onnx_logits_fn", lambda p: (lambda b: None))
+    est = TrainedEstimator(model)
+    assert est.geometry == PoseGeometry(1.9, 0.5, 1.0)
+    # Pose geometry has no box-padding scalars; the bbox-only exemplar bank that
+    # may sit beside this model gets the deployed default, not an invented number.
+    assert (est.headroom, est.side_pad) == (DEFAULT_GEOMETRY.headroom, DEFAULT_GEOMETRY.side_pad)
 
 
 def test_missing_sidecar_warns_loudly(tmp_path, monkeypatch, capsys):
@@ -146,8 +181,8 @@ def test_missing_sidecar_warns_loudly(tmp_path, monkeypatch, capsys):
     err = capsys.readouterr().err
     assert "no crop-geometry sidecar" in err and "decapitated" in err
 
-    # An explicit headroom is a deliberate choice, not an accident — no noise.
-    TrainedEstimator(bare, headroom=1.6)
+    # An explicit geometry is a deliberate choice, not an accident — no noise.
+    TrainedEstimator(bare, geometry=BboxGeometry(1.6, 0.15))
     assert capsys.readouterr().err == ""
 
     # A model that ships its geometry is the normal case — also no noise.

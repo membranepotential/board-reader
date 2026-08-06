@@ -4,6 +4,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import sys
+import types
+
 import numpy as np
 import pytest
 
@@ -81,3 +84,42 @@ def test_dinov2_embedder_emits_384d_normalised_embeddings():
 @requires_dinov2
 def test_make_embedder_dinov2():
     assert isinstance(make_embedder("dinov2"), DinoV2Embedder)
+
+
+def test_embedder_resolves_a_symbolic_output_width_by_probing(monkeypatch, tmp_path):
+    """An ONNX whose output width is a symbolic name, not an int, must still load.
+
+    torch's legacy exporter names a reduce output's width symbolically
+    (``'ReduceMeanembedding_dim_1'``); reading it as an int raised ValueError and
+    made the central-column DINOv2 export unloadable despite being correct.
+    """
+    from board_reader_inference import embed as embed_mod
+
+    class _FakeOutput:
+        shape = ["batch", "ReduceMeanembedding_dim_1"]
+
+    class _FakeInput:
+        name = "pixel_values"
+
+    class _FakeSession:
+        def __init__(self, *a, **kw):
+            pass
+
+        def get_inputs(self):
+            return [_FakeInput()]
+
+        def get_outputs(self):
+            return [_FakeOutput()]
+
+        def run(self, _names, feed):
+            n = feed["pixel_values"].shape[0]
+            return [np.ones((n, 384), dtype=np.float32)]
+
+    model = tmp_path / "sym.onnx"
+    model.write_bytes(b"stub")
+    fake_ort = types.SimpleNamespace(InferenceSession=_FakeSession)
+    monkeypatch.setitem(sys.modules, "onnxruntime", fake_ort)
+
+    emb = embed_mod.DinoV2Embedder(model, providers=["CPUExecutionProvider"])
+    assert emb.dim == 384
+    assert emb.embed([np.zeros((8, 8, 3), dtype=np.uint8)] * 3).shape == (3, 384)

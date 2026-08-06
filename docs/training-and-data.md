@@ -59,11 +59,25 @@ Board corners are always `a8, h8, h1, a1` — the playing surface, in that order
 | **Final test** | Felix's own photos (`data/eval/`) + dim-light calibrate uploads | **report only, never tune** |
 | **Auxiliary** | Zenodo piece crops — top-down framing, not the deployed oblique geometry | crop-level signal only |
 
-> [!failure] `chesscog_transfer` is a broken validation set
-> Frozen-DINOv2 self-kNN *within* it scores 0.597 accuracy / 0.747 occupancy, where clean
-> crops give ~95%+ occupancy — its crops and labels are geometrically broken. It made a good
-> run look like a 0.50 failure while the model was actually reading real photos at 0.88.
-> Repair its corners before using it as a holdout again.
+> [!success] `chesscog_transfer` — repaired 2026-08-07, usable again
+> It was retired as "geometrically broken" (self-kNN 0.597, and it made a good run look like
+> a 0.50 failure while the model was reading real photos at 0.88). The diagnosis was wrong in
+> an instructive way: **the crops and corners were never broken.** All 22 warps grid-align.
+> What was broken was the *label orientation* — `build_transfer_labels.py` decided which side
+> was White **by eye**, and got it wrong on 14 of 22 boards, rotating every label 180°. Two
+> more boards (`test/22,24`) were silent corner-detection failures — quads of the table, not
+> the board.
+>
+> `repair_orientation.py` now resolves orientation photometrically (checkerboard parity for
+> the 90° ambiguity, light-vs-dark piece wood for the 180° one) and drops the non-boards.
+> Result: **20 real photos of an unseen physical set**, with `run_e` — which never trained on
+> it — scoring **0.819** where it scored 0.500 before. That is the honest real-photo
+> generalisation baseline any new run has to beat.
+>
+> Two durable lessons. *A per-image ambiguity resolved by eye needs an exhaustive check, not
+> a 4-board spot check* — the original validation sampled four boards and missed three broken
+> ones. And *"the data is broken" is a hypothesis, not a diagnosis*: the 0.597 was real, but
+> it pointed at the wrong layer, and the set sat unused for weeks as a result.
 
 ## Run history
 
@@ -77,6 +91,13 @@ All under `scratch/runs/` (git-ignored; reproducible from `tools/train/configs/`
 | `d16` | headroom sweep, `hr=1.6` | **won** — holdout 0.665 → 0.835; deployed 2026-07-18 → 2026-08-06 |
 | `d18` | headroom sweep, `hr=1.8 / sp=0.25` | ties the holdout, loses on real photos (409 vs 430) |
 | `run_e` | wave-2: 11 styles incl. wooden-Staunton dim renders | **won** — holdout 0.835 → 0.898; **currently deployed** |
+
+> [!note] The crop-geometry sweep was **scalar only**
+> `d16`/`d18` swept `headroom`/`side_pad` — two numbers. Every variant, including the deployed
+> `hr1.6/sp0.15`, is still an axis-aligned bounding box extended along **fixed image axes** by a
+> multiple of the square's projected width. No camera-pose-aware / 3D box geometry has ever been
+> built or measured (verified 2026-08-07 across code, docs, learnings and full git history). See
+> STATUS *Next 6* for the untried bounding-cylinder idea and what it would cost.
 
 ### How `run_e` was decided (2026-08-06)
 

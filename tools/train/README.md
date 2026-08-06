@@ -89,9 +89,11 @@ canonical `square_dist`.
 ## Evaluation tiers (keep them separate)
 
 1. **Train** — `chessred` + ChessRender360 + synthetic styles (board geometry).
-2. **Validation (unseen style, tune against it)** — `chesscog_transfer` (22 real
-   photos of a set in no training set). Use `configs/val_chesscog.yaml` or
-   `--holdout chesscog_transfer`. This is the number to tune on.
+2. **Validation (unseen style, tune against it)** — `chesscog_transfer` (**20**
+   real photos of a set in no training set; label orientation repaired 2026-08-07
+   — see its README). Never put it in `styles`; score it after every run.
+   `run_e` baseline: **0.819** per-square. Held-out synthetic
+   `chessr_vlab_wooden` stays the `--holdout` for comparability with `d16`/`run_e`.
 3. **Final test (report only, never tune)** — Felix's photos (`data/eval`) + the
    dim-light `data/uploads` calibrate shots, via `evaluate.py`.
 4. **Auxiliary** — `zenodo_chesspieces` (4 crop-only sets, top-down; geometry ≠

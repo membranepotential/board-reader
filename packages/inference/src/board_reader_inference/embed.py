@@ -138,11 +138,26 @@ class DinoV2Embedder:
             providers=providers,
         )
         self._input = self.session.get_inputs()[0].name
-        self._dim = int(self.session.get_outputs()[0].shape[-1])
+        self._dim = self._resolve_dim()
         # Cap the per-run batch: a 64-crop board fits comfortably, but augmented
         # multi-photo calibration can hand us hundreds of crops at once, which
         # OOMs the ONNX arena (especially on small GPUs).
         self.batch_size = batch_size
+
+    def _resolve_dim(self) -> int:
+        """Embedding width, from the graph if it is concrete, else by probing.
+
+        An ONNX export can leave the output width as a *symbolic* name rather
+        than an integer (torch's legacy exporter does this for a reduce output,
+        e.g. ``'ReduceMeanembedding_dim_1'``). Reading it blindly raised
+        ``ValueError`` and made a perfectly good model unloadable, so fall back
+        to running one zero crop and measuring the answer.
+        """
+        declared = self.session.get_outputs()[0].shape[-1]
+        if isinstance(declared, int):
+            return declared
+        probe = np.zeros((1, 3, self.image_size, self.image_size), dtype=np.float32)
+        return int(self.session.run(None, {self._input: probe})[0].shape[-1])
 
     @property
     def dim(self) -> int:

@@ -48,7 +48,11 @@ def cmd_calibrate(args: argparse.Namespace) -> int:
 
     from board_reader_inference.centroid import build_centroids
     from board_reader_inference.embed import make_embedder
-    from board_reader_inference.squares import crop_squares, crop_squares_photo
+    from board_reader_inference.squares import (
+        BboxGeometry,
+        crop_squares,
+        crop_squares_photo,
+    )
 
     if bool(args.image) == bool(args.photo):
         raise SystemExit("pass exactly one of --image (rectified crop) or --photo")
@@ -62,8 +66,7 @@ def cmd_calibrate(args: argparse.Namespace) -> int:
         crops = crop_squares_photo(
             photo,
             _parse_corners(args.corners),
-            headroom=args.headroom,
-            side_pad=args.side_pad,
+            geometry=BboxGeometry(headroom=args.headroom, side_pad=args.side_pad),
             size=args.square_size or 224,
         )
         crop_mode, source = "photo", args.photo
@@ -101,6 +104,8 @@ def cmd_eval(args: argparse.Namespace) -> int:
         report = run(
             args.paths or None,
             autorotate=args.autorotate,
+            prior=not args.no_prior,
+            temperature=args.temperature,
             json_out=args.json,
         )
     except ValueError as e:
@@ -182,6 +187,21 @@ def build_parser() -> argparse.ArgumentParser:
         help="also let the estimator pick the board's orientation, as the "
         "snapshot page does with auto-detected corners; off by default so the "
         "score isolates recognition from orientation",
+    )
+    e.add_argument(
+        "--no-prior",
+        action="store_true",
+        help="isolate the raw estimator by skipping the hard-constraint decode "
+        "(<=1 king per colour, no pawn on rank 1/8, <=16 pieces, promotion "
+        "budget). The decode is ON by default because it is what /estimate now "
+        "serves, and this harness scores what serves",
+    )
+    e.add_argument(
+        "--temperature",
+        action="store_true",
+        help="also fit and report temperature scaling of the confidences "
+        "(leave-one-board-out, so no board is graded by its own labels). It "
+        "cannot change a single answer — only how honest the numbers are.",
     )
     e.add_argument("--json", help="also write the full report as JSON here")
     e.set_defaults(func=cmd_eval)

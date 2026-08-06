@@ -30,7 +30,15 @@ from board_reader_core.protocol import (
 from board_reader_core.wire import Frame
 
 from board_reader_inference.onnxrt import cuda_providers
-from board_reader_inference.squares import crop_squares_photo, full_frame_corners
+from board_reader_inference.squares import (
+    DEFAULT_GEOMETRY,
+    LEGACY_GEOMETRY,
+    BboxGeometry,
+    CropGeometry,
+    crop_squares_photo,
+    full_frame_corners,
+    geometry_from_dict,
+)
 
 # ImageNet normalization, RGB order — the torchvision transform the model
 # trained with.
@@ -40,10 +48,6 @@ _STD = np.array([0.229, 0.224, 0.225], dtype=np.float32)
 # Logits -> distribution temperature 1.0 (plain softmax): the network's own
 # confidences are what the event's square_dist should carry.
 LogitsFn = Callable[[np.ndarray], np.ndarray]
-
-# The crop geometry of the pre-sidecar models (v1). Only ever a fallback.
-_LEGACY_HEADROOM = 0.15
-_LEGACY_SIDE_PAD = 0.15
 
 
 def preprocess(crops: list[np.ndarray]) -> np.ndarray:
@@ -89,32 +93,31 @@ class TrainedEstimator:
         self,
         model: str | Path | LogitsFn,
         *,
-        headroom: float | None = None,
-        side_pad: float | None = None,
+        geometry: CropGeometry | None = None,
         square_size: int | None = None,
         orientation: str = "a1_bottom_left",
         batch_size: int = 64,
     ) -> None:
         # Crop geometry SHIPS WITH the model: a `<model>.meta.json` sidecar
-        # written at export time carries the headroom/side_pad/size the network
+        # written at export time carries the geometry and size the network
         # trained on (train/serve must crop identically — a geometry mismatch
         # silently decapitates crops and reads as "the model got worse").
-        # Explicit kwargs override; without a sidecar the historical 0.15
-        # defaults apply (the v1 model's geometry).
+        # An explicit `geometry=` overrides; without a sidecar the historical
+        # v1 geometry applies.
         meta: dict = {}
         if not callable(model):
             meta_path = Path(f"{model}.meta.json")
             if meta_path.exists():
                 meta = json.loads(meta_path.read_text())
-            elif headroom is None:
+            elif geometry is None:
                 # Never fall back silently: this exact mismatch (a tall-crop
                 # model served on v1's short geometry) shipped once and read as
                 # "the model got worse" — kings clipped into bishops.
                 print(
                     f"WARNING: no crop-geometry sidecar at {meta_path}; falling back to "
-                    f"headroom={_LEGACY_HEADROOM} (the superseded v1 geometry). A model "
-                    "trained on tall crops will have its pieces decapitated. Export the "
-                    "sidecar or pass headroom= explicitly.",
+                    f"{LEGACY_GEOMETRY} (the superseded v1 geometry). A model trained on "
+                    "tall crops will have its pieces decapitated. Export the sidecar or "
+                    "pass geometry= explicitly.",
                     file=sys.stderr,
                 )
         self.logits_fn: LogitsFn = (
@@ -124,17 +127,32 @@ class TrainedEstimator:
         # that produced it, and "which model was that?" has already been the
         # wrong answer once (the v1/d16 mix-up). None when driven by a callable.
         self.model_path: str | None = None if callable(model) else str(model)
-        self.headroom = (
-            headroom if headroom is not None else float(meta.get("headroom", _LEGACY_HEADROOM))
-        )
-        self.side_pad = (
-            side_pad if side_pad is not None else float(meta.get("side_pad", _LEGACY_SIDE_PAD))
-        )
+        if geometry is not None:
+            self.geometry: CropGeometry = geometry
+        elif "crop_geometry" in meta:
+            self.geometry = geometry_from_dict(meta["crop_geometry"])
+        elif "headroom" in meta:  # pre-ADT sidecars carried bare scalars
+            self.geometry = geometry_from_dict(meta)
+        else:
+            self.geometry = LEGACY_GEOMETRY
         self.square_size = (
             square_size if square_size is not None else int(meta.get("square_size", 224))
         )
         self.orientation = orientation
         self.batch_size = batch_size
+
+    # Box padding as scalars, for the callers that build a (bbox-only) exemplar
+    # bank alongside this model. Pose geometry has no such scalars, so they
+    # report the deployed bank default rather than inventing a number.
+    @property
+    def headroom(self) -> float:
+        geo = self.geometry if isinstance(self.geometry, BboxGeometry) else DEFAULT_GEOMETRY
+        return geo.headroom
+
+    @property
+    def side_pad(self) -> float:
+        geo = self.geometry if isinstance(self.geometry, BboxGeometry) else DEFAULT_GEOMETRY
+        return geo.side_pad
 
     def _dist(self, crops: list[np.ndarray]) -> np.ndarray:
         outs = []
@@ -153,8 +171,7 @@ class TrainedEstimator:
         crops = crop_squares_photo(
             frame.image,
             corners,
-            headroom=self.headroom,
-            side_pad=self.side_pad,
+            geometry=self.geometry,
             size=self.square_size,
         )
         return PositionEvent.from_square_dist(

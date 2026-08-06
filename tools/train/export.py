@@ -51,11 +51,16 @@ def export(ckpt_path: Path, out_path: Path, *, opset: int = 17) -> None:
     )
     print(f"exported -> {out_path}")
     # Geometry sidecar the deployed TrainedEstimator reads (<model>.onnx.meta.json).
+    # This IS the train/serve contract: whatever cut the training crops must cut
+    # the inference crops, and the only thing carrying that across is this file.
     import json
-    cfg = torch.load(ckpt_path, map_location="cpu", weights_only=False).get("config", {})
+    raw = torch.load(ckpt_path, map_location="cpu", weights_only=False).get("config", {})
+    cfg = Config(**raw) if isinstance(raw, dict) else Config()
     meta = {
-        "headroom": float(cfg.get("headroom", 0.15)),
-        "side_pad": float(cfg.get("side_pad", 0.15)),
+        "crop_geometry": cfg.geometry.to_dict(),
+        # Kept so a sidecar stays readable by pre-ADT code paths; bbox-only.
+        "headroom": float(getattr(cfg.geometry, "headroom", 0.0)),
+        "side_pad": float(getattr(cfg.geometry, "side_pad", 0.0)),
         "square_size": SIZE,
     }
     meta_path = Path(str(out_path) + ".meta.json")

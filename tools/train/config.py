@@ -8,6 +8,11 @@ from pathlib import Path
 import yaml
 
 import _bootstrap
+from board_reader_inference.squares import (
+    BboxGeometry,
+    CropGeometry,
+    geometry_from_dict,
+)
 
 ROOT = _bootstrap.ROOT
 
@@ -21,11 +26,23 @@ class Config:
     val_frac: float = 0.25  # group-split fraction when holdout is None
     require_mode: str | None = None  # "board" | "crop": filter discovered styles by geometry
 
-    # crop geometry (crop_squares_photo). headroom is x square-width, extended UPWARD
-    # in image space; 0.15 (kNN-era default) decapitates tall pieces at steep angles.
-    # The cache is keyed by geometry so different values don't collide.
+    # crop geometry (crop_squares_photo). Two ways to say it, and the cache is
+    # keyed by whichever applies so variants never collide:
+    #
+    #   headroom / side_pad          bbox geometry, x square-width. headroom
+    #                                extends UPWARD in image space; 0.15 (the
+    #                                kNN-era default) decapitates tall pieces at
+    #                                steep angles, 1.6 is the deployed value.
+    #   crop_geometry: {kind: ...}   the full CropGeometry record — the only way
+    #                                to ask for pose geometry, e.g.
+    #                                {kind: pose, piece_height: 1.9,
+    #                                 piece_radius: 0.5}. Wins when present.
+    #
+    # Both exist because every run before 2026-08-07 recorded the scalars, and
+    # their checkpoints must keep loading.
     headroom: float = 0.15
     side_pad: float = 0.15
+    crop_geometry: dict | None = None
 
     # model
     model: str = "resnet18"  # resnet18 | resnet50 | dinov2
@@ -56,6 +73,13 @@ class Config:
     size: int = 224
     steps_per_epoch: int | None = None  # cap for smoke runs
     out_dir: str = "scratch/runs/run"
+
+    @property
+    def geometry(self) -> CropGeometry:
+        """The crop geometry this run trains (and therefore must serve) with."""
+        if self.crop_geometry is not None:
+            return geometry_from_dict(self.crop_geometry)
+        return BboxGeometry(headroom=self.headroom, side_pad=self.side_pad)
 
     @classmethod
     def load(cls, path: str | Path) -> "Config":

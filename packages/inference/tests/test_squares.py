@@ -3,15 +3,24 @@
 from __future__ import annotations
 
 import numpy as np
+import pytest
 
 from board_reader_core.protocol import GRID, START_PLACEMENT
 from board_reader_core.sim import render_board, simulate_angled_view
 from board_reader_inference.squares import (
+    BboxGeometry,
+    PoseGeometry,
+    _board_to_image,
+    _focal_from_homography,
+    board_pose,
     crop_squares,
     crop_squares_photo,
     full_frame_corners,
+    geometry_from_dict,
+    geometry_tag,
     photo_square_boxes,
     rectify_photo,
+    square_boxes,
 )
 
 
@@ -144,3 +153,160 @@ def test_crop_squares_photo_behavior_unchanged():
     crops = crop_squares_photo(photo, quad, size=224)
     assert len(crops) == 64
     assert all(c.shape == (224, 224, 3) for c in crops)
+
+
+# --------------------------------------------------------------------------- #
+# Pose geometry (PoseGeometry): boxes from the recovered camera pose
+# --------------------------------------------------------------------------- #
+
+
+def test_pose_boxes_agree_with_the_homography_on_the_board_plane():
+    """The ``Z = 0`` face of each prism must be the square's own base quad.
+
+    ``r1``, ``r2`` and ``t`` come straight from the homography precisely so that
+    nothing about the existing, well-tested plane geometry changes — only the
+    height is new. If this drifts, the pose path has stopped agreeing with the
+    board it is standing on.
+    """
+    board = render_board(square_px=32)
+    photo, quad = simulate_angled_view(board)
+    flat = square_boxes(quad, BboxGeometry(0.0, 0.0), photo.shape)
+    geometry = PoseGeometry(piece_height=1.9, piece_radius=0.5)
+    K, r1, r2, r3t = board_pose(quad, photo.shape, geometry)
+    r3, t = r3t[0], r3t[1]
+
+    for r in range(GRID):
+        for c in range(GRID):
+            base = np.array(
+                [[c, r, 0.0], [c + 1, r, 0.0], [c + 1, r + 1, 0.0], [c, r + 1, 0.0]]
+            )
+            cam = base @ np.stack([r1, r2, r3]) + t
+            img = (K @ cam.T).T
+            uv = img[:, :2] / img[:, 2:3]
+            # `flat` is the bbox of that quad; compare bboxes, not vertex order.
+            got = np.array(
+                [uv[:, 0].min(), uv[:, 1].min(), uv[:, 0].max(), uv[:, 1].max()]
+            )
+            want_quad = flat[r * GRID + c]
+            want = np.array(
+                [
+                    want_quad[:, 0].min(),
+                    want_quad[:, 1].min(),
+                    want_quad[:, 0].max(),
+                    want_quad[:, 1].max(),
+                ]
+            )
+            assert np.allclose(got, want, atol=0.5), f"square r{r}c{c}: {got} != {want}"
+
+
+def test_pose_box_height_tracks_piece_height_not_foreshortened_square_width():
+    """The whole point: on an angled view, a real piece's projected height varies
+    far less across the board than a square's projected width does.
+
+    ``BboxGeometry`` ties box height to that width, so its near-rank boxes are
+    much taller than its far-rank ones even though the pieces are identical —
+    the documented steep-angle decapitation. ``PoseGeometry`` carries the height
+    through the camera pose instead, so the spread collapses.
+    """
+    board = render_board(square_px=32)
+    photo, quad = simulate_angled_view(board)
+
+    def rank_heights(boxes):
+        h = (boxes[:, 2, 1] - boxes[:, 0, 1]).reshape(GRID, GRID)
+        return h.mean(axis=1)
+
+    bbox_h = rank_heights(square_boxes(quad, BboxGeometry(1.6, 0.15), photo.shape))
+    pose_h = rank_heights(
+        square_boxes(quad, PoseGeometry(piece_height=1.9, piece_radius=0.5), photo.shape)
+    )
+    bbox_spread = float(bbox_h.max() / bbox_h.min())
+    pose_spread = float(pose_h.max() / pose_h.min())
+    assert pose_spread < bbox_spread, (
+        f"pose spread {pose_spread:.2f} should be tighter than bbox {bbox_spread:.2f}"
+    )
+    # Near-rank boxes are still taller than far-rank ones (they are closer), just
+    # by perspective alone rather than by foreshortening.
+    assert 1.0 < pose_spread < 1.5
+
+
+def test_pose_boxes_from_shifted_corners_match_rot90():
+    """Pose boxes re-derived from a rotated corner labelling equal the rotated
+    boxes — the property ``BboxGeometry`` provably lacks (see the divergence
+    test above).
+
+    The reason is physical: a bbox is extended along fixed *image* axes, so
+    relabelling a8 silently rotates that extension. A prism stands along the
+    *board normal*, which no relabelling can move. Worth pinning down: it means
+    the autorotate debug path is exact under pose geometry rather than merely
+    close.
+    """
+    board = render_board(square_px=32)
+    photo, quad = simulate_angled_view(board)
+    geometry = PoseGeometry(piece_height=1.9, piece_radius=0.5)
+    grid = square_boxes(quad, geometry, photo.shape).reshape(GRID, GRID, 4, 2)
+    for k in (1, 2, 3):
+        shifted = quad[[(i + k) % 4 for i in range(4)]]
+        recomputed = square_boxes(shifted, geometry, photo.shape)
+        rotated = np.rot90(grid, k, axes=(0, 1)).reshape(-1, 4, 2)
+        assert np.allclose(recomputed, rotated, atol=0.5), f"k={k}"
+
+
+def test_focal_is_recovered_from_a_synthetic_projection():
+    """``_focal_from_homography`` must recover the focal length that generated a
+    view, since every pose box's height scales with it."""
+    f_true = 900.0
+    w_img, h_img = 1200, 900
+    cx, cy = w_img / 2, h_img / 2
+    K = np.array([[f_true, 0, cx], [0, f_true, cy], [0, 0, 1.0]])
+    # A board tilted 55 degrees away from the camera and pushed back.
+    a = np.deg2rad(55.0)
+    R = np.array(
+        [[1, 0, 0], [0, np.cos(a), -np.sin(a)], [0, np.sin(a), np.cos(a)]]
+    )
+    t = np.array([-4.0, -2.0, 14.0])
+    H = K @ np.stack([R[:, 0], R[:, 1], t], axis=1)
+    got = _focal_from_homography(H, cx, cy)
+    assert got is not None
+    assert abs(got - f_true) / f_true < 0.01, f"recovered {got}, want {f_true}"
+
+
+def test_focal_falls_back_when_the_view_is_top_down():
+    """A fronto-parallel board carries no information about focal length, so the
+    solver must say so rather than return a fabricated number."""
+    board = render_board(square_px=32)
+    corners = full_frame_corners(board)
+    H = _board_to_image(corners).astype(np.float64)
+    assert _focal_from_homography(H, board.shape[1] / 2, board.shape[0] / 2) is None
+    # ...and the caller still produces usable boxes via PoseGeometry.focal_ratio.
+    boxes = square_boxes(corners, PoseGeometry(1.9, 0.5), board.shape)
+    assert boxes.shape == (64, 4, 2) and np.isfinite(boxes).all()
+
+
+def test_pose_geometry_needs_an_image_shape():
+    board = render_board(square_px=32)
+    with pytest.raises(ValueError, match="image_shape"):
+        square_boxes(full_frame_corners(board), PoseGeometry(1.9, 0.5), None)
+
+
+@pytest.mark.parametrize(
+    "geometry",
+    [BboxGeometry(1.6, 0.15), BboxGeometry(0.0, 0.0), PoseGeometry(1.9, 0.5, 1.0)],
+)
+def test_geometry_round_trips_through_its_dict_form(geometry):
+    """The sidecar and the crop cache both persist geometry as a dict; a lossy
+    round-trip here is a silent train/serve mismatch there."""
+    assert geometry_from_dict(geometry.to_dict()) == geometry
+    assert geometry_tag(geometry)
+
+
+def test_legacy_sidecar_without_a_kind_is_bbox():
+    """Sidecars written before pose geometry existed carry bare scalars."""
+    assert geometry_from_dict({"headroom": 1.6, "side_pad": 0.25}) == BboxGeometry(1.6, 0.25)
+
+
+def test_geometry_rejects_impossible_values():
+    for bad in (lambda: BboxGeometry(-1.0, 0.15), lambda: BboxGeometry(1.6, -0.1),
+                lambda: PoseGeometry(0.0, 0.5), lambda: PoseGeometry(1.9, -0.5),
+                lambda: PoseGeometry(1.9, 0.5, 0.0)):
+        with pytest.raises(ValueError):
+            bad()

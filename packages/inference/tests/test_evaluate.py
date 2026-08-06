@@ -13,6 +13,7 @@ import json
 import numpy as np
 import pytest
 
+from board_reader_inference.squares import BboxGeometry
 from board_reader_core.protocol import (
     CLASS_INDEX,
     GRID,
@@ -250,6 +251,121 @@ def test_report_separates_confidence_of_right_and_wrong_boards():
     assert "perfect" in rendered and "imperfect" in rendered
 
 
+# ---- the opt-in hard-constraint prior ----------------------------------------
+
+
+def _dist_with_runner_up(
+    placement: str, square: str, top: tuple[str, float], second: tuple[str, float]
+) -> np.ndarray:
+    """Plant a square whose argmax is ``top`` and whose second choice is ``second``.
+
+    The decoder relabels to the *cheapest alternative*, so a synthetic board with a
+    flat tail would always decode to ``empty``. Giving the runner-up real mass is
+    what makes these tests exercise the decision the real distribution makes.
+    """
+    dist = dist_from_placement(placement, confidence=0.95).copy()
+    c, r = "abcdefgh".index(square[0]), GRID - int(square[1])
+    rest = (1.0 - top[1] - second[1]) / (NUM_CLASSES - 2)
+    dist[r, c] = rest
+    dist[r, c, CLASS_INDEX[top[0]]] = top[1]
+    dist[r, c, CLASS_INDEX[second[0]]] = second[1]
+    return dist
+
+
+def test_the_prior_is_on_by_default_because_it_is_what_serves():
+    """The harness scores what /estimate serves, and the decode now serves."""
+    dists = {"two_kings": _dist_with(MIDGAME, {"e8": ("K", 0.6)})}
+    report = evaluate(FakeEstimator(dists), [_board("two_kings")])
+    assert report.prior != []
+    assert "hard-constraint prior" in report.render()
+
+
+def test_the_prior_can_be_isolated_away():
+    """``--no-prior`` still gives the raw estimator on its own."""
+    dists = {"two_kings": _dist_with(MIDGAME, {"e8": ("K", 0.6)})}
+    report = evaluate(FakeEstimator(dists), [_board("two_kings")], prior=False)
+    assert report.prior == []
+    assert "hard-constraint prior" not in report.render()
+
+
+def test_the_prior_fixes_a_two_king_board_and_says_which_square():
+    """e8 truly holds a black king; the estimator calls it white at a thin margin."""
+    dist = _dist_with_runner_up(MIDGAME, "e8", ("K", 0.50), ("k", 0.45))
+    report = evaluate(FakeEstimator({"b": dist}), [_board("b")], prior=True)
+
+    assert report.perfect_boards == 0 and report.correct == 63
+    (p,) = report.prior
+    assert p.decode.placement == MIDGAME and p.perfect_after
+    assert [str(f) for f in p.decode.flips] == ["e8 K->k"]
+    assert [str(c) for c in p.fixed] == ["e8 K->k (truth k)"]
+    assert p.broken == ()
+    assert report.prior_fixed == 1 and report.prior_broken == 0
+    assert report.prior_perfect_boards == 1 and report.prior_correct == 64
+
+
+def test_the_prior_can_break_a_square_it_was_right_about():
+    """The failure mode that must stay visible: a hallucinated second king that is
+    *more* confident than the real one drags the real one out instead."""
+    dist = _dist_with(MIDGAME, {"e8": ("k", 0.40), "a5": ("k", 0.90)})
+    report = evaluate(FakeEstimator({"b": dist}), [_board("b")], prior=True)
+
+    (p,) = report.prior
+    assert [f.square for f in p.decode.flips] == ["e8"]
+    assert [c.square for c in p.broken] == ["e8"]
+    assert p.fixed == ()
+    assert report.prior_broken == 1 and report.prior_correct == report.correct - 1
+
+
+def test_a_board_with_nothing_to_repair_is_reported_as_untouched():
+    report = evaluate(
+        FakeEstimator({"b": dist_from_placement(MIDGAME)}), [_board("b")], prior=True
+    )
+    (p,) = report.prior
+    assert p.decode.flips == () and p.changes == ()
+    assert p.correct_before == p.correct_after == 64
+    rendered = report.render()
+    assert "boards touched   0/1" in rendered
+    assert "nothing to decode" in rendered
+
+
+def test_the_prior_block_prints_both_scores_and_every_flip():
+    dist = _dist_with_runner_up(MIDGAME, "e8", ("K", 0.50), ("k", 0.45))
+    report = evaluate(FakeEstimator({"b": dist}), [_board("b")], prior=True)
+    rendered = report.render()
+    assert "hard-constraint prior" in rendered
+    assert "PERFECT BOARDS   0/1 -> 1/1" in rendered
+    assert "per-square       63/64 -> 64/64   (fixed 1 · broken 0)" in rendered
+    assert "e8 K->k" in rendered and "kings" in rendered and "FIXED" in rendered
+    # The headline block above it is untouched by the prior.
+    assert "PERFECT BOARDS   0/1" in rendered
+
+
+def test_the_prior_survives_json_round_tripping():
+    dist = _dist_with_runner_up(MIDGAME, "e8", ("K", 0.50), ("k", 0.45))
+    report = evaluate(FakeEstimator({"b": dist}), [_board("b")], prior=True)
+    out = json.loads(json.dumps(report.to_dict()))
+    assert out["prior"]["fixed"] == 1 and out["prior"]["broken"] == 0
+    assert out["prior"]["per_board"][0]["flips"][0]["square"] == "e8"
+    assert out["prior"]["per_board"][0]["changes"][0]["verdict"] == "fixed"
+    assert out["correct_squares"] == 63  # the primary number never moves
+
+
+def test_the_eval_cli_defaults_the_prior_on():
+    from board_reader_inference.cli import build_parser
+
+    assert build_parser().parse_args(["eval"]).no_prior is False
+    assert build_parser().parse_args(["eval", "--no-prior", "data/uploads"]).no_prior is True
+
+
+def test_the_prior_never_rewrites_what_the_estimator_serves():
+    """DESIGN D1: the decode is a value beside the read, not a correction to it."""
+    dist = _dist_with_runner_up(MIDGAME, "e8", ("K", 0.50), ("k", 0.45))
+    before = dist.copy()
+    report = evaluate(FakeEstimator({"b": dist}), [_board("b")], prior=True)
+    assert np.array_equal(dist, before)
+    assert report.boards[0].predicted != report.prior[0].decode.placement
+
+
 # ---- provenance and the contamination warning --------------------------------
 
 
@@ -260,7 +376,7 @@ def test_describe_estimator_names_the_model_and_the_bank():
     def logits(batch):
         return np.zeros((batch.shape[0], NUM_CLASSES), dtype=np.float32)
 
-    trained = TrainedEstimator(logits, headroom=1.6, side_pad=0.15)
+    trained = TrainedEstimator(logits, geometry=BboxGeometry(1.6, 0.15))
     trained.model_path = "models/d16/model.onnx"
     ensemble = EnsembleEstimator(trained, FakeEstimator({}), weight=0.3)
     described = describe_estimator(ensemble)
@@ -331,3 +447,27 @@ def test_run_undoes_autorotation_so_truth_survives_the_orientation_guess(tmp_pat
 def test_run_on_a_directory_with_nothing_labeled_is_not_an_error(tmp_path):
     report = run([str(tmp_path)], estimator=FakeEstimator({}))
     assert report.boards == []
+
+
+def test_ranking_auc_is_the_signal_the_confidence_gap_hides():
+    """Temperature scaling compresses the perfect/imperfect confidence gap by
+    construction, so the gap alone would report a harmless change as a loss. AUC
+    is the rank-based number that actually decides whether a consumer can
+    threshold on confidence."""
+    from board_reader_inference.evaluate import _ranking_auc
+
+    assert _ranking_auc([0.9, 0.8], [0.2, 0.1]) == 1.0
+    assert _ranking_auc([0.2, 0.1], [0.9, 0.8]) == 0.0
+    assert _ranking_auc([0.5], [0.5]) == 0.5  # ties are half a win
+    # A monotone squeeze toward 1.0 keeps the ordering, so AUC is unmoved even
+    # though the means have nearly converged.
+    assert _ranking_auc([0.99, 0.98], [0.97, 0.96]) == 1.0
+    assert _ranking_auc([], [0.5]) is None
+    assert _ranking_auc([0.5], []) is None
+
+
+def test_temperature_report_is_absent_unless_asked_for():
+    """It costs a leave-one-out fit per board; the default eval must not pay it."""
+    from board_reader_inference.evaluate import Report
+
+    assert Report(boards=[], estimator="x").temperature is None

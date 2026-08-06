@@ -36,7 +36,7 @@ import numpy as np
 from board_reader_core.protocol import CLASS_INDEX, CLASSES, GRID
 from board_reader_inference.centroid import photometric_variants
 from board_reader_inference.embed import DinoV2Embedder, l2_normalize
-from board_reader_inference.squares import crop_squares_photo
+from board_reader_inference.squares import BboxGeometry, crop_squares_photo
 
 ROOT = Path(__file__).resolve().parent.parent
 CHESSRED = ROOT / "data/external/chessred"
@@ -137,7 +137,9 @@ def build_bank(
     labels: list[str] = []
     for n, iid in enumerate(board_ids, 1):
         img = ds.image(iid)
-        sq = crop_squares_photo(img, ds.corner_quad(iid), headroom=HEADROOM, side_pad=SIDE_PAD)
+        sq = crop_squares_photo(
+            img, ds.corner_quad(iid), geometry=BboxGeometry(HEADROOM, SIDE_PAD)
+        )
         for crop, lab in zip(sq, ds.labels(iid)):
             variants = photometric_variants(crop) if augment else [crop]
             crops.extend(variants)
