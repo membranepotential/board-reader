@@ -48,6 +48,10 @@
            font: inherit; font-size: 15px; font-weight: 600; min-height: 48px;
            touch-action: manipulation; cursor: pointer; }
   button.secondary { background: #333842; }
+  /* A secondary button that is really a toggle (the hover magnifier) carries its state
+     in aria-pressed, and the styling reads straight off it — no parallel class to keep
+     in sync with the attribute screen readers are told about. */
+  button.secondary[aria-pressed="true"] { background: var(--accent); color: #fff; }
   button:disabled { opacity: .4; cursor: default; }
   /* Small, unobtrusive text-button — deliberately NOT the >=48px treatment, since
      these are occasional side actions, not steps in the main flow. */
@@ -145,10 +149,13 @@
      portrait photo overflow the square frame — which is exactly how it got clipped. */
   .corner-stage { position: relative; line-height: 0; touch-action: pan-y; }
   .corner-stage canvas { border: 0; border-radius: 0; display: block; max-width: none; }
-  .corner-handle { position: absolute; width: 44px; height: 44px; margin: -22px 0 0 -22px;
-                   border-radius: 50%; background: rgba(255,207,51,.9); border: 3px solid var(--accent);
+  /* 34px: still a comfortable thumb target, but small enough that four of them on a
+     phone-sized photo no longer hide the board edges they are meant to be aligned with.
+     Precision comes from the loupe (which now draws the handles too), not from bulk. */
+  .corner-handle { position: absolute; width: 34px; height: 34px; margin: -17px 0 0 -17px;
+                   border-radius: 50%; background: rgba(255,207,51,.9); border: 2px solid var(--accent);
                    display: flex; align-items: center; justify-content: center;
-                   font-weight: 800; font-size: 13px; color: #14171c;
+                   font-weight: 800; font-size: 12px; color: #14171c;
                    touch-action: none; -webkit-user-select: none; user-select: none;
                    -webkit-touch-callout: none; box-shadow: 0 2px 10px rgba(0,0,0,.5); }
   .corner-handle:active { background: #ffcf33; }
@@ -280,11 +287,15 @@
   .chip-sq { font-family: ui-monospace, monospace; font-size: 12px; background: var(--panel-2);
              border: 1px solid var(--line); border-radius: 6px; padding: 4px 8px; color: var(--fg);
              min-height: 32px; touch-action: manipulation; cursor: pointer; }
-  /* ---- recent positions: every read this session, restorable ------------------ */
+  /* ---- recent positions: this session's reads merged with the node's retained photos --- */
   .hist { border-top: 1px solid var(--line); padding-top: 10px; margin-top: 18px; }
   .hist-head { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; }
   .hist-head h3 { font-size: 14px; }
   .hist-head .spacer { flex: 1; }
+  .hist-note { font-size: 11.5px; color: var(--dim); margin: 0 0 8px; }
+  /* Where a row comes from is a permanent property of the row, so it is spelled out on
+     every one of them rather than implied by ordering. */
+  .hist-tag { color: var(--dim); }
   .hist-list { display: flex; flex-direction: column; gap: 4px; max-height: 320px; overflow-y: auto; }
   .hist-row { display: flex; align-items: center; gap: 10px; width: 100%; text-align: left;
               background: none; border: 0; border-left: 2px solid transparent;
@@ -345,6 +356,9 @@
         <button id="rotate" style="display:none" class="secondary">Rotate labels</button>
         <button id="undo" class="secondary">Undo</button>
         <button id="reset" class="secondary">Reset corners</button>
+        <!-- Hover magnifier: mouse-only, off by default. aria-pressed carries the state
+             (and drives the styling); the drag-time loupe is independent of it. -->
+        <button id="magnifier" class="secondary" type="button" aria-pressed="false">Magnifier</button>
       </div>
     </div>
 
@@ -358,6 +372,17 @@
       </div>
       <p class="hint" id="boardHint">Click a square to inspect it; click it again to toggle
         through its most likely readings.</p>
+      <!-- Saving the labelling is a first-class action on the position, so it lives with
+           the position — not buried in a collapsed stage body, and never silently absent:
+           when the node retains no photos the button stays put and explains itself. -->
+      <div class="row" id="labelRow" style="display:none">
+        <button id="confirmPosition" type="button">Save labelling</button>
+      </div>
+      <div class="note" id="labelHint" style="display:none">
+        Fix any wrong squares first, then save — the board as shown is kept as the
+        true position for this photo. Labellings are only ever used to <em>score</em> the
+        reader, never to train or calibrate it.
+      </div>
     </div>
 
     <!-- Piece switcher: sits beside the board when there is room, otherwise a sheet. -->
@@ -435,6 +460,9 @@
               Geometry cannot know which physical corner is a8, so the labels start as a guess
               and the server auto-rotates the reading by chess plausibility — until you touch a
               handle, at which point your labelling wins and auto-rotation is switched off.
+              When the server does rotate, this page adopts that rotation into its own corner
+              labels, so the handles, the table below and the rectified preview keep describing
+              the same board as the position on the right.
               The photo above carries the quad; drag a handle there to correct it.</p>
             <table class="kv" id="cornerTable"></table>
           </div>
@@ -518,7 +546,9 @@
             <p class="note">Which corner is a8 is not knowable from geometry. With untouched
               auto-detected corners the read is posted with <code>autorotate=1</code> and the server
               picks the rotation whose reading is most plausible; once you edit a corner or rotate
-              the labels, that is authoritative and no rotation is applied.</p>
+              the labels, that is authoritative and no rotation is applied. A rotation the server
+              applies is adopted here as well — the corner labels shift by the same amount, so
+              the whole page ends up describing one single orientation.</p>
             <table class="kv" id="orientTable"></table>
             <div class="row">
               <button id="rotate2" class="secondary" style="display:none">Rotate labels and re-read</button>
@@ -540,12 +570,6 @@
               <button id="copyFen" class="text-btn" type="button">Copy FEN</button>
               <button id="copyJson" class="text-btn" type="button">Copy raw event</button>
               <button id="resetCorrections" class="text-btn" type="button" style="display:none">Reset corrections</button>
-              <button id="confirmPosition" class="text-btn" type="button" style="display:none">Confirm as ground truth</button>
-            </div>
-            <div class="note" id="labelHint" style="display:none">
-              Fix any wrong squares below, then confirm — the board as shown is kept as the
-              true position for this photo. Labels are only ever used to <em>score</em> the
-              reader, never to train or calibrate it.
             </div>
             <div class="stm" id="stmRow">
               to move:
@@ -567,15 +591,18 @@
 
   </div>
 
-  <!-- Every read this session, newest first. Selecting one restores the whole pipeline
-       view — photo, corners, geometry, crops, distributions — so two reads can be
-       compared without re-shooting either. -->
+  <!-- Every read this session merged with every photo the inference node still retains,
+       newest first. Selecting a session read restores the whole pipeline view — photo,
+       corners, geometry, crops, distributions — so two reads can be compared without
+       re-shooting either. Selecting a node-held photo loads it and reads it again for
+       real, so the stages always describe the photo actually on screen. -->
   <section class="hist">
     <div class="hist-head">
       <h3>Recent positions</h3>
       <span class="spacer"></span>
-      <button id="histClear" class="text-btn" type="button" style="display:none">Clear</button>
+      <button id="histClear" class="text-btn" type="button" style="display:none">Clear this session</button>
     </div>
+    <p class="hist-note" id="histNote"></p>
     <div class="hist-list" id="histList"></div>
   </section>
 
@@ -633,6 +660,7 @@ const readBtn = $("read");
 const calibBtn = $("calib");
 const errEl = $("err");
 const inspectorEl = $("inspector");
+const magnifierBtn = $("magnifier");
 
 // ---- pipeline stage state ----------------------------------------------------
 // Every stage always exists and always carries a state + a headline; the body holds
@@ -675,6 +703,11 @@ let dragIdx = null;    // corner being dragged, or null
 // moment the user places, drags, or relabels a corner, their orientation is
 // authoritative and auto-rotation is off.
 let cornersEdited = false;
+// Quarter-turns this page has ADOPTED from a server auto-rotation (see absorbAutorotation).
+// Purely explanatory — the rotation itself already lives in `rot` — but without it the
+// corner table cannot tell "the labels are still an unverified guess" apart from "the
+// server rotated them by 90 degrees and we took its word for it".
+let autoRotApplied = 0;
 let detectFailed = false;
 let lastMode = "position";  // "position" | "occupancy" — which /estimate shape rendered last
 let lastEvent = null;       // the raw /estimate JSON of the current result
@@ -702,6 +735,12 @@ function canvasJpeg(c, quality) {
   return new Promise((res) => c.toBlob(res, "image/jpeg", quality));
 }
 function fmt(n, d = 2) { return Number(n).toFixed(d); }
+// Anything the inference node hands us (upload ids, stored placements) goes through here
+// before it reaches an innerHTML — the node is trusted, its stored strings are not.
+function esc(s) {
+  return String(s ?? "").replace(/[&<>"']/g,
+    (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[ch]));
+}
 
 // ---- 1. capture --------------------------------------------------------------
 // The capture stage's own evidence is kept as data (not just DOM) so restoring a
@@ -750,6 +789,7 @@ fileEl.onchange = (e) => {
     const k = drawSourceFrom(im);
     URL.revokeObjectURL(im.src);
     pts = []; rot = 0; dragIdx = null; detectFailed = false; cornersEdited = false;
+    autoRotApplied = 0;
     lastMode = "position";  // a fresh photo has no bearing on a previous occupancy-only read
     lastEvent = null;
     activeReadId = null; renderHistory();   // nothing in the log describes this photo yet
@@ -819,6 +859,7 @@ async function autoDetect() {
     // Geometric TL,TR,BR,BL from the server; initial guess: a8=TL, h8=TR, h1=BR, a1=BL.
     pts = d.corners.map((p) => [Math.round(p[0]), Math.round(p[1])]);
     rot = 0;
+    autoRotApplied = 0;
     cornersEdited = false;  // orientation is a guess — let the server auto-rotate
     setDetectStep("ok", `auto-detected in ${detectMs.toFixed(0)} ms · labels unconfirmed`);
     draw();
@@ -827,7 +868,7 @@ async function autoDetect() {
   } catch (e) {
     detectFailed = true;
     detectMs = performance.now() - t0;
-    pts = []; rot = 0;
+    pts = []; rot = 0; autoRotApplied = 0;
     setDetectStep("fail", `no board found (${String(e.message || e)}) — set the four corners by hand`);
     setRunState("needs corners");
     openStep("detect", true);  // fallback path: surface manual corner-tapping immediately
@@ -871,9 +912,15 @@ function renderCornerTable() {
     ["source", detectFailed ? "hand-placed" : (cornersEdited ? "auto-detected, edited" : "auto-detected"),
       cornersEdited || detectFailed ? "v-warn" : "v-ok"],
     ["detect latency", detectMs === null ? "—" : `${detectMs.toFixed(0)} ms`],
-    ["label rotation", `${rot * 90}deg applied on this page`],
+    ["label rotation", `${rot * 90}deg` +
+      (autoRotApplied ? ` (${autoRotApplied * 90}deg of it adopted from the server)` : " set on this page")],
     ...CORNER_ORDER.map((lbl, i) => [lbl, `${oc[i][0]}, ${oc[i][1]}`]),
-    ["server auto-rotate", cornersEdited ? "off (your labelling wins)" : "on (labels are a guess)"],
+    ["server auto-rotate", cornersEdited
+      ? "off (your labelling wins)"
+      : (autoRotApplied
+          ? `on — the server rotated the labels by ${autoRotApplied * 90} degrees and this page adopted it`
+          : "on — the labels are an unverified guess the server may still rotate"),
+      cornersEdited || autoRotApplied ? "v-ok" : "v-warn"],
   ]);
 }
 
@@ -957,8 +1004,10 @@ view.addEventListener("pointerdown", (ev) => {
 view.addEventListener("contextmenu", (ev) => ev.preventDefault());
 document.addEventListener("dragstart", (ev) => ev.preventDefault());
 
+const LOUPE_Z = 4;   // magnification of the loupe, in source pixels per loupe pixel
+
 function showLoupe(ev, p) {
-  const Z = 4, s = loupe.width / Z;
+  const Z = LOUPE_Z, s = loupe.width / Z;
   const W = 140, H = 140, GAP = 24;
   loupe.style.display = "block";
   // Prefer floating above the finger; flip below and clamp to the viewport so it never
@@ -972,19 +1021,81 @@ function showLoupe(ev, p) {
   lctx.imageSmoothingEnabled = false;
   lctx.clearRect(0, 0, loupe.width, loupe.height);
   lctx.drawImage(src, p[0] - s / 2, p[1] - s / 2, s, s, 0, 0, loupe.width, loupe.height);
-  lctx.strokeStyle = "#2a6ef0"; lctx.beginPath();
+  lctx.strokeStyle = "#2a6ef0"; lctx.lineWidth = 1; lctx.beginPath();
   lctx.moveTo(70, 0); lctx.lineTo(70, 140); lctx.moveTo(0, 70); lctx.lineTo(140, 70); lctx.stroke();
+  drawLoupeCorners(p, Z);
 }
+
+// The quad and its corner markers, redrawn INSIDE the loupe. The handles themselves are
+// DOM elements sitting above the canvas, so a magnified copy of the canvas alone shows
+// none of them — and lining a corner up means seeing the handle and the board edge in the
+// same view. Markers are drawn as translucent rings with the label set outside them, so
+// the pixels being aimed at stay visible underneath.
+function drawLoupeCorners(p, Z) {
+  if (!pts.length) return;
+  const cx = loupe.width / 2, cy = loupe.height / 2;
+  const at = (q) => [(q[0] - p[0]) * Z + cx, (q[1] - p[1]) * Z + cy];
+  if (pts.length >= 2) {
+    lctx.strokeStyle = "#2a6ef0"; lctx.lineWidth = 2;
+    lctx.beginPath();
+    pts.forEach((q, i) => { const [x, y] = at(q); lctx[i ? "lineTo" : "moveTo"](x, y); });
+    if (pts.length === 4) lctx.closePath();
+    lctx.stroke();
+  }
+  const R = 9;
+  lctx.font = "700 11px system-ui, sans-serif";
+  lctx.textAlign = "center"; lctx.textBaseline = "bottom";
+  pts.forEach((q, i) => {
+    const [x, y] = at(q);
+    lctx.beginPath(); lctx.arc(x, y, R, 0, Math.PI * 2);
+    lctx.fillStyle = "rgba(255,207,51,.28)"; lctx.fill();
+    lctx.lineWidth = 2; lctx.strokeStyle = "#ffcf33"; lctx.stroke();
+    lctx.lineWidth = 3; lctx.strokeStyle = "rgba(0,0,0,.8)";
+    lctx.strokeText(labelOf(i), x, y - R - 2);   // dark outline: legible over any photo
+    lctx.fillStyle = "#ffcf33";
+    lctx.fillText(labelOf(i), x, y - R - 2);
+  });
+}
+
+// ---- hover magnifier (opt-in, mouse only) -----------------------------------
+// A pointer hovering the photo magnifies whatever is under it. Deliberately off by
+// default — a loupe that follows every mouse move is a distraction while reading the
+// stages — and deliberately mouse-only: touch has no hover, and the scroll invariants
+// above (canvas unconditionally pan-y, no preventDefault/setPointerCapture on it) must
+// hold for a thumb no matter what this toggle says. The listeners below observe only.
+let magnifierOn = false;
+
+magnifierBtn.onclick = () => {
+  magnifierOn = !magnifierOn;
+  magnifierBtn.setAttribute("aria-pressed", magnifierOn ? "true" : "false");
+  magnifierBtn.textContent = magnifierOn ? "Magnifier on" : "Magnifier";
+  if (!magnifierOn && dragIdx === null) loupe.style.display = "none";
+};
+
+// Bound to the stage, not the canvas, so hovering a handle keeps the loupe alive (the
+// handles are opaque DOM elements covering the canvas underneath them).
+cornerStage.addEventListener("pointermove", (ev) => {
+  // dragIdx !== null: a drag already owns the loupe and aims it at the corner itself,
+  // which is more useful than the raw cursor position — do not fight it.
+  if (!magnifierOn || ev.pointerType !== "mouse" || dragIdx !== null || !src.width) return;
+  showLoupe(ev, canvasPos(ev));
+});
+cornerStage.addEventListener("pointerleave", () => {
+  if (dragIdx === null) loupe.style.display = "none";
+});
 
 $("undo").onclick = () => { pts.pop(); draw(); maybeRectify(); };
 $("reset").onclick = () => {
-  pts = []; rot = 0; detectFailed = false; draw(); maybeRectify();
+  pts = []; rot = 0; autoRotApplied = 0; detectFailed = false; draw(); maybeRectify();
 };
 // Rotating labels changes which physical corner is a8 — any per-square corrections made
 // against the OLD mapping no longer refer to the right squares, so they're cleared here
 // rather than silently misapplied to a re-read under the new orientation.
 function rotateLabels() {
-  rot = (rot + 1) % 4; cornersEdited = true; resetCorrections(); draw(); maybeRectify();
+  // A hand rotation makes the labelling the operator's own: whatever the server once
+  // contributed to `rot` is no longer the explanation for where a8 sits.
+  rot = (rot + 1) % 4; cornersEdited = true; autoRotApplied = 0;
+  resetCorrections(); draw(); maybeRectify();
 }
 rotateBtn.onclick = rotateLabels;
 rotateBtn2.onclick = () => { rotateLabels(); runRead(); };
@@ -1097,6 +1208,7 @@ async function runRead() {
     estimateMs = performance.now() - t0;
     render(await r.json());
     setRunState("done");
+    refreshUploads();   // this read may have added a photo to the node's retained set
   } catch (e) {
     errEl.textContent = String(e) + "\nIs the inference node reachable at " + INFERENCE_HTTP + " ?";
     ["sample", "classify", "orient", "output"].forEach((s) => setStep(s, "fail", "read failed"));
@@ -1291,18 +1403,37 @@ function renderCorrectionsList() {
 // one exactly right" is the observation the perfect-board rate is made of.
 let lastUpload = null;   // ev.upload — names the retained photo this read came from
 let savedLabel = null;   // the placement last confirmed for lastUpload, or null
+// The markup owns the explanatory copy; it is stashed here because the no-retention
+// state replaces it and has to be able to put it back.
+const LABEL_HINT_HTML = $("labelHint").innerHTML;
+const NO_RETENTION_HINT =
+  "This inference node is not retaining photos, so a labelling would have no image to " +
+  "belong to and no eval could ever replay it. Restart the node with BR_SAVE_UPLOADS set " +
+  "to keep labellings.";
 
 function updateConfirmButton() {
   const btn = $("confirmPosition");
-  // No retained photo (the server runs without BR_SAVE_UPLOADS) means a label would
-  // have no image to belong to and no eval could ever replay it — don't offer it.
-  const offer = Boolean(lastUpload) && lastMode === "position";
-  btn.style.display = offer ? "inline-block" : "none";
-  $("labelHint").style.display = offer ? "block" : "none";
-  if (!offer) return;
+  const row = $("labelRow"), hint = $("labelHint");
+  // Shown whenever a position is on screen. Occupancy carries no placement, so there is
+  // nothing a human could state about it.
+  const shown = lastMode === "position" && Boolean(lastPlacement);
+  row.style.display = shown ? "flex" : "none";
+  hint.style.display = shown ? "block" : "none";
+  if (!shown) return;
+  if (!lastUpload) {
+    // No retained photo (the server runs without BR_SAVE_UPLOADS). Disabled and explained,
+    // never hidden: an absent button is what made this read as a missing feature.
+    btn.disabled = true;
+    btn.textContent = "Save labelling";
+    hint.textContent = NO_RETENTION_HINT;
+    return;
+  }
+  hint.innerHTML = LABEL_HINT_HTML;
   const saved = savedLabel !== null && savedLabel === lastPlacement;
-  btn.textContent = saved ? "Ground truth saved" : "Confirm as ground truth";
   btn.disabled = saved;
+  // Once something has been saved for this photo, a changed board is an UPDATE — the
+  // label is the position as shown, so editing a square invalidates what was saved.
+  btn.textContent = saved ? "Labelling saved" : (savedLabel === null ? "Save labelling" : "Update labelling");
 }
 
 $("confirmPosition").onclick = async () => {
@@ -1325,8 +1456,9 @@ $("confirmPosition").onclick = async () => {
     await r.json();
     savedLabel = lastPlacement;
     showBanner("info", corrections.size
-      ? `Saved as ground truth with ${corrections.size} correction(s) — this board can now score the reader.`
-      : "Saved as ground truth — the model read this board exactly right.");
+      ? `Labelling saved with ${corrections.size} correction(s) — this board can now score the reader.`
+      : "Labelling saved — the model read this board exactly right.");
+    refreshUploads();   // the node now reports this photo as labelled
   } catch (e) {
     errEl.textContent = String(e) + "\nIs the inference node reachable at " + INFERENCE_HTTP + " ?";
     btn.disabled = false;
@@ -1558,6 +1690,7 @@ function render(ev, restored = null) {
   if (ev.mode === "occupancy") { renderOccupancy(ev, restored); return; }
 
   lastMode = "position";
+  absorbAutorotation(ev, restored);
   basePlacement = ev.placement;
   baseSquareDist = ev.square_dist ?? null;
   // Which retained photo this reading belongs to, so its position can be confirmed
@@ -1593,10 +1726,41 @@ function render(ev, restored = null) {
   if (ev.autocalibrated) {
     showBanner("info", `Auto-calibrated from the starting position (${ev.autocalibrated.matches}/64 squares)`);
   } else if (ev.autorotated) {
-    showBanner("info", `Orientation auto-corrected (rotated ${ev.autorotated} degrees) — use "rotate labels" if this looks wrong`);
+    showBanner("info", `Orientation auto-corrected: the server rotated the reading by ` +
+      `${ev.autorotated} degrees and the corner labels moved with it — use "rotate labels" ` +
+      `if this still looks wrong`);
   } else hideBanner();
   updateRotateVisibility();
   if (restored) markRestored(restored); else pushRead(ev);
+}
+
+// A read posted with &autorotate=1 can come back rotated: the server reports its
+// square_dist/placement as rot90(corner-frame grid, k) and tells us k via ev.autorotated
+// (in degrees). Left alone, the page would then hold TWO orientations at once — the board
+// showing the rotated position while the corner handles, the corner table, the rectified
+// preview and the per-square crop all still describe the pre-rotation frame. That is
+// exactly the reported symptom: "the position is correct, but the corners are not aligned
+// and the crop view shows the wrong square."
+//
+// So absorb k into the page's own labelling instead. Reindexing the 8x8 lattice by
+// rot90(., k) is exactly a +k cyclic shift of the ordered corners — oc'[i] = oc[(i+k)%4] —
+// and since orderedCorners()[i] = pts[(i - rot + 4) % 4], that is rot -= k. (Derived and
+// verified numerically against the server's own photo_square_boxes.)
+//
+// cornersEdited stays FALSE on purpose: the corners are still auto-detected, nobody has
+// asserted an orientation by hand, so later reads keep asking for auto-rotation.
+function absorbAutorotation(ev, restored) {
+  // Only ever on a fresh read. A restored history entry stored the rot it was rendered
+  // with, which already includes this — absorbing again would rotate it a second time.
+  if (restored !== null || !ev.autorotated) return;
+  const k = (((ev.autorotated / 90) % 4) + 4) % 4;
+  if (!k) return;
+  rot = (rot - k + 4) % 4;
+  autoRotApplied = k;
+  // Re-render everything that is derived from the corners so it describes the new frame.
+  // No re-read: the event in hand is already expressed in it.
+  draw();
+  maybeRectify();
 }
 
 // Occupancy-only: the server has no piece-type calibration for this set yet, so there is
@@ -1786,13 +1950,20 @@ function updateOrientStep(ev) {
   const rotated = ev.autorotated ?? 0;
   setStep("orient", rotated ? "warn" : "ok",
     auto
-      ? (rotated ? `server rotated the reading by ${rotated} degrees` : "auto-rotation on, no rotation needed")
+      ? (rotated
+          ? `server rotated the reading by ${rotated} degrees and this page adopted it — ` +
+            `corner labels, crops and board now share one orientation`
+          : "auto-rotation on, no rotation needed")
       : "your corner labelling used as-is (auto-rotation off)");
   kv("orientTable", [
     ["corner labels", cornersEdited ? "set by you" : "auto-detected guess"],
     ["autorotate requested", auto ? "yes (&autorotate=1)" : "no"],
     ["rotation applied", `${rotated} degrees`, rotated ? "v-warn" : "v-ok"],
-    ["page label rotation", `${rot * 90} degrees`],
+    ["adopted by this page", rotated
+      ? `yes — the corner labels were shifted by ${rotated} degrees, so a8 on the photo is a8 on the board`
+      : "nothing to adopt", rotated ? "v-ok" : ""],
+    ["page label rotation", `${rot * 90} degrees in total` +
+      (autoRotApplied ? ` (${autoRotApplied * 90} of them adopted from the server)` : "")],
     ["reported orientation", ev.orientation ?? "—"],
   ]);
 }
@@ -1820,10 +1991,12 @@ function pushRead(ev) {
     warnings: ev.warnings ?? [],
     autocalibrated: !!ev.autocalibrated,
     autorotated: ev.autorotated ?? 0,
+    upload: ev.upload ?? null,   // matches this read to the node's own retained photo
     event: ev,
     corrections: [],
     // the pipeline context this read ran in
     photo: srcPhoto, pts: pts.map((p) => p.slice()), rot, cornersEdited, detectFailed,
+    autoRot: autoRotApplied,
     meanLuma: srcMeanLuma, bytes: srcBytes, detectMs, estimateMs,
     cap: capState, detect: detectState,
   });
@@ -1834,39 +2007,227 @@ function pushRead(ev) {
 
 function markRestored(entry) { activeReadId = entry.id; renderHistory(); }
 
+// ---- the inference node's own retained photos --------------------------------
+// The session list only ever knew about reads made in THIS tab, which made every earlier
+// photo the node is still holding invisible. GET /uploads is the node's own record of
+// them; it is merged into the same list, newest first, and a node that predates the
+// endpoint (or is unreachable) simply leaves the session list standing.
+//
+//   GET /uploads?limit=100 -> { retention, uploads: [{ id, ts, kind, corners, placement,
+//                               autorotated, labeled, label_placement, label_corrections }] }
+//   GET /uploads/{id}/photo[?max=N] -> image/jpeg
+const UPLOADS_LIMIT = 100;
+let serverUploads = [];      // newest first, as the node returned them
+let retention = null;        // true | false | null = the node never told us
+
+function uploadPhotoUrl(id, max) {
+  return INFERENCE_HTTP + "/uploads/" + encodeURIComponent(id) + "/photo" +
+    (max ? "?max=" + max : "");
+}
+
+// Liberal on the wire: an ISO string, epoch seconds or epoch milliseconds all parse.
+// A row whose timestamp we cannot read still belongs in the list — it just sorts last.
+function parseTs(ts) {
+  if (typeof ts === "number") return new Date(ts > 1e12 ? ts : ts * 1000);
+  const d = new Date(ts ?? "");
+  return isNaN(d.getTime()) ? null : d;
+}
+
+async function refreshUploads() {
+  try {
+    const r = await fetch(INFERENCE_HTTP + "/uploads?limit=" + UPLOADS_LIMIT);
+    if (!r.ok) throw new Error("uploads " + r.status);
+    const d = await r.json();
+    serverUploads = Array.isArray(d.uploads) ? d.uploads : [];
+    retention = d.retention !== false;
+  } catch {
+    // Degrade to the session list — never break the page over a missing endpoint.
+    serverUploads = [];
+    retention = null;
+  }
+  renderHistory();
+}
+
+function historyNote() {
+  if (retention === false) {
+    return "Photo retention is off on the inference node — only this session's reads are listed.";
+  }
+  if (retention === null) {
+    return "The inference node did not answer /uploads — only this session's reads are listed.";
+  }
+  return "This session's reads plus every photo the inference node still holds. " +
+    "Clear removes only this session's entries; the node's own are listed again on the next refresh.";
+}
+
+// One merged, newest-first list. A photo that this session read is shown as the session
+// entry — it owns the full event, its corrections and its debug images, so it restores
+// instead of re-reading; the node's record of it only contributes the labelled flag.
+function historyRows() {
+  const rows = reads.map((e) => ({
+    kind: "session", key: "s" + e.id, at: e.at, entry: e,
+    upload: e.upload ? serverUploads.find((u) => u.id === e.upload) : undefined,
+  }));
+  const owned = new Set(reads.map((e) => e.upload).filter(Boolean));
+  for (const u of serverUploads) {
+    if (owned.has(u.id)) continue;
+    rows.push({ kind: "node", key: "u" + u.id, at: parseTs(u.ts), upload: u });
+  }
+  rows.sort((a, b) => (b.at ? b.at.getTime() : 0) - (a.at ? a.at.getTime() : 0));
+  return rows;
+}
+
 function renderHistory() {
   const el = $("histList");
   $("histClear").style.display = reads.length ? "inline-block" : "none";
-  if (!reads.length) {
-    el.innerHTML = '<div class="hist-empty">no reads yet — every position read this session lands here</div>';
+  $("histNote").textContent = historyNote();
+  const rows = historyRows();
+  if (!rows.length) {
+    el.innerHTML = '<div class="hist-empty">no reads yet — every position read this session, ' +
+      'and every photo the inference node retains, lands here</div>';
     return;
   }
   el.innerHTML = "";
-  for (const e of reads) {
-    const row = document.createElement("button");
-    row.type = "button";
-    row.className = "hist-row" + (e.id === activeReadId ? " active" : "");
-    row.title = "Restore this read — photo, corners, crops and distributions";
-    const flags = [];
-    if (e.corrections.length) flags.push(`${e.corrections.length} corrected`);
-    if (e.autocalibrated) flags.push("auto-calibrated");
-    if (e.autorotated) flags.push(`rotated ${e.autorotated}deg`);
-    e.warnings.forEach((w) => flags.push(w));
-    const headline = e.mode === "occupancy"
-      ? `occupancy only — ${e.occupied}/64 occupied`
-      : e.placement;
-    row.innerHTML =
-      `<img src="${e.photo}" alt="" />` +
-      `<span class="hist-body">` +
-      `<span class="hist-fen">${headline}</span>` +
-      `<span class="hist-meta">${e.at.toLocaleTimeString()}` +
-      (e.confidence !== null ? ` · conf ${fmt(e.confidence, 3)}` : "") +
-      (e.estimateMs ? ` · ${e.estimateMs.toFixed(0)} ms` : "") +
-      (flags.length ? ` · <span class="flag">${flags.join(", ")}</span>` : "") +
-      `</span></span>`;
-    row.onclick = () => restoreRead(e.id);
-    el.appendChild(row);
+  for (const row of rows) {
+    el.appendChild(row.kind === "session" ? sessionRow(row) : nodeRow(row.upload));
   }
+}
+
+function sessionRow({ entry: e, upload }) {
+  const row = document.createElement("button");
+  row.type = "button";
+  row.className = "hist-row" + (e.id === activeReadId ? " active" : "");
+  row.title = "Restore this read — photo, corners, crops and distributions";
+  const flags = [];
+  if (e.corrections.length) flags.push(`${e.corrections.length} corrected`);
+  if (e.autocalibrated) flags.push("auto-calibrated");
+  if (e.autorotated) flags.push(`rotated ${e.autorotated}deg`);
+  if (upload?.labeled) flags.push("labelled");
+  e.warnings.forEach((w) => flags.push(w));
+  const headline = e.mode === "occupancy"
+    ? `occupancy only — ${e.occupied}/64 occupied`
+    : e.placement;
+  row.innerHTML =
+    `<img src="${e.photo}" alt="" />` +
+    `<span class="hist-body">` +
+    `<span class="hist-fen">${esc(headline)}</span>` +
+    `<span class="hist-meta">${e.at.toLocaleTimeString()}` +
+    (e.confidence !== null ? ` · conf ${fmt(e.confidence, 3)}` : "") +
+    (e.estimateMs ? ` · ${e.estimateMs.toFixed(0)} ms` : "") +
+    ` · <span class="hist-tag">this session</span>` +
+    (flags.length ? ` · <span class="flag">${esc(flags.join(", "))}</span>` : "") +
+    `</span></span>`;
+  row.onclick = () => restoreRead(e.id);
+  return row;
+}
+
+// A photo the node holds but this session never read: there is no event, no distribution
+// and no debug image to restore, so the row carries only what the node recorded and
+// clicking it loads the photo and reads it for real.
+function nodeRow(u) {
+  const row = document.createElement("button");
+  row.type = "button";
+  row.className = "hist-row";
+  row.title = "Load this photo from the inference node and read it again";
+  const flags = [];
+  if (u.labeled) flags.push("labelled");
+  if (u.autorotated) flags.push(`rotated ${u.autorotated}deg`);
+  if (u.kind && u.kind !== "estimate") flags.push(String(u.kind));
+  const at = parseTs(u.ts);
+  row.innerHTML =
+    `<img loading="lazy" src="${esc(uploadPhotoUrl(u.id, 160))}" alt="" />` +
+    `<span class="hist-body">` +
+    `<span class="hist-fen">${esc(u.placement || "no placement recorded")}</span>` +
+    `<span class="hist-meta">${at ? esc(at.toLocaleString()) : esc(String(u.ts ?? "—"))}` +
+    ` · <span class="hist-tag">on the inference node</span>` +
+    (flags.length ? ` · <span class="flag">${esc(flags.join(", "))}</span>` : "") +
+    `</span></span>`;
+  row.onclick = () => loadUpload(u);
+  return row;
+}
+
+// Load a node-held photo and put the pipeline back on it honestly: stages 1-3 rebuilt
+// from THIS image and the corners the node recorded for it, then a real read — which
+// lands in the session list like any other. Nothing is faked from the node's summary.
+async function loadUpload(u) {
+  errEl.textContent = "";
+  setRunState("loading photo");
+  $("busy").style.display = "inline";
+  let objUrl = null;
+  try {
+    // Fetched as a blob rather than assigned straight to img.src: a cross-origin image
+    // would taint the source canvas, and this page reads it back (getImageData for the
+    // luma check, toDataURL for the history thumbnail). A blob: URL is same-origin.
+    const r = await fetch(uploadPhotoUrl(u.id));
+    if (!r.ok) throw new Error("photo " + r.status);
+    objUrl = URL.createObjectURL(await r.blob());
+    const im = await new Promise((res, rej) => {
+      const i = new Image();
+      i.onload = () => res(i);
+      i.onerror = () => rej(new Error("the retained photo could not be decoded"));
+      i.src = objUrl;
+    });
+    const k = drawSourceFrom(im);
+    // The node stores the corners as posted, in the photo's own pixels; k rescales them
+    // if this photo is larger than MAX_SRC and we just downscaled it.
+    const restoredPts = parseCorners(u.corners, k);
+    pts = restoredPts ?? [];
+    rot = 0; autoRotApplied = 0; dragIdx = null;
+    cornersEdited = false;      // the node's corners are not a human assertion of a8
+    detectFailed = false;
+    lastMode = "position";
+    lastEvent = null;
+    activeReadId = null;
+    detectMs = estimateMs = null;
+    closeInspector();
+    $("result").style.display = "none";
+    captureLabelText.textContent = "New photo";
+    captureLabelEl.classList.add("compact");
+    srcMeanLuma = meanLuma();
+    srcBytes = (await canvasJpeg(src, 0.9)).size;
+    srcPhoto = src.toDataURL("image/jpeg", 0.75);
+
+    resetSteps("capture");
+    const at = parseTs(u.ts);
+    capState = {
+      summary: `${src.width}x${src.height} px · ${(srcBytes / 1024).toFixed(0)} kB · mean luma ${fmt(srcMeanLuma, 1)}`,
+      rows: [
+        ["source file", `retained upload ${esc(u.id)} on the inference node`],
+        ["retained at", at ? at.toLocaleString() : String(u.ts ?? "—")],
+        ["original size", `${im.naturalWidth}x${im.naturalHeight} px`],
+        ["posted size", `${src.width}x${src.height} px (scale ${fmt(k, 3)})`],
+        ["posted JPEG", `${(srcBytes / 1024).toFixed(0)} kB at q0.90`],
+        ["mean luma", `${fmt(srcMeanLuma, 1)} / 255 (server warns below ${LOW_LIGHT_MEAN})`,
+          srcMeanLuma < LOW_LIGHT_MEAN ? "v-warn" : "v-ok"],
+      ],
+    };
+    applyCapState();
+    renderHistory();
+    if (restoredPts) {
+      setDetectStep("ok", "corners restored from the inference node's record for this photo");
+      draw();
+      maybeRectify();
+      await runRead();
+    } else {
+      // No usable corners on record — detecting them again is the honest fallback, and
+      // autoDetect() runs the read itself on success.
+      draw();
+      await autoDetect();
+    }
+  } catch (e) {
+    errEl.textContent = String(e) +
+      "\nIs the inference node reachable at " + INFERENCE_HTTP + " ?";
+    setRunState("failed");
+  } finally {
+    if (objUrl) URL.revokeObjectURL(objUrl);
+    $("busy").style.display = "none";
+  }
+}
+
+// "x,y,x,y,x,y,x,y" in a8,h8,h1,a1 order — the same string this page posts as ?corners=.
+function parseCorners(s, k = 1) {
+  const n = String(s ?? "").split(",").map(Number);
+  if (n.length !== 8 || n.some((v) => !isFinite(v))) return null;
+  return [0, 1, 2, 3].map((i) => [Math.round(n[i * 2] * k), Math.round(n[i * 2 + 1] * k)]);
 }
 
 // Put the entire page back into the state that read produced. Stage 1-3 come from the
@@ -1880,6 +2241,7 @@ function restoreRead(id) {
     drawSourceFrom(im);
     pts = e.pts.map((p) => p.slice());
     rot = e.rot; cornersEdited = e.cornersEdited; detectFailed = e.detectFailed;
+    autoRotApplied = e.autoRot;   // e.rot already includes it — never absorb it twice
     srcMeanLuma = e.meanLuma; srcBytes = e.bytes; srcPhoto = e.photo;
     detectMs = e.detectMs; estimateMs = e.estimateMs;
     capState = e.cap; detectState = e.detect;
@@ -1894,6 +2256,8 @@ function restoreRead(id) {
   im.src = e.photo;
 }
 
+// Clears THIS SESSION's entries only — the node-held ones are not ours to drop, and they
+// reappear on the next refresh. The button says so, and so does the note above the list.
 $("histClear").onclick = () => {
   reads.length = 0; activeReadId = null; renderHistory();
 };
@@ -1984,7 +2348,9 @@ window.addEventListener("resize", () => {
 });
 syncBarHeight();
 renderCorrectionsList();
+updateConfirmButton();
 renderHistory();
+refreshUploads();   // the node's retained photos are listed before the first read
 </script>
 </body>
 </html>

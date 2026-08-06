@@ -14,6 +14,10 @@ confidences**. No moves, no legality, no PGN — those are the downstream applic
   Landed: ground-truth capture + the eval harness (below). Next: act on what it measured.
 - **snapshot.html rewrite** (yours, uncommitted) — the page is now a stage-by-stage pipeline
   inspector; `test_viewer.py` was updated to match. Not committed yet.
+- **Snapshot orientation + labelling UX** (uncommitted, 2026-08-06) — auto-rotation now
+  reaches the whole page, not just the board; hover magnifier; server-backed Recent list.
+  Detail in Done. Next: commit, then act on item 1 below (collect clean labels) — the
+  save-labelling button and the all-photos list exist to make that session practical.
 
 ## Done
 
@@ -44,6 +48,22 @@ confidences**. No moves, no legality, no PGN — those are the downstream applic
   reload; **Confirm as ground truth** now POSTs them to `/labels/{upload}`, stored beside the
   retained photo in the corner frame (autorotation undone, so truth never inherits a model
   guess). Labels are scoring data only — nothing feeds them back into the bank.
+- **Auto-rotation reaches the whole page (2026-08-06).** A read posted with `autorotate=1`
+  came back rotated, but only the board knew: the corner handles, corner table, rectified
+  preview and the inspector's crop thumbnail all still described the pre-rotation frame.
+  Two halves, both fixed: the page now absorbs the server's `k` into its own label rotation
+  (`rot -= k`, fresh reads only), and `/estimate`'s `?debug=1` boxes/mosaic are permuted by
+  the same `np.rot90` as `square_dist` — sampled from the original corners, since `headroom`
+  and `side_pad` extend along fixed *image* axes and re-deriving from shifted corners would
+  sample the wrong pixels. Verified live on a real 90°-rotated board: handles land right,
+  d8's crop shows the black queen the board shows, and the saved label still stores truth in
+  the posted-corner frame.
+- **Snapshot labelling UX (2026-08-06).** "Save labelling" is a real button under the board
+  (disabled *with a reason* when the node retains no photos, instead of vanishing); Recent
+  positions lists every photo the node still holds via new `GET /uploads` +
+  `GET /uploads/{id}/photo`, not just this tab's reads — clicking one loads it and reads it
+  for real. Opt-in hover magnifier that draws the corner handles inside the loupe, and
+  handles shrunk 44→34px so they stop hiding the edges they align to.
 - **Eval harness.** `uv run board-reader-inference eval` scores the estimator
   `_default_estimator()` builds — i.e. what actually serves — and leads with **perfect-board
   rate**. Reports error kinds, confusions, a reliability diagram, and warns when a bank is

@@ -138,10 +138,13 @@ def test_snapshot_page_is_mobile_first():
 
 
 def test_snapshot_page_corner_handles_are_finger_sized():
-    """Corner drag handles are real ≥44px DOM elements, not precision-tap canvas pixels."""
+    """Corner drag handles are real, thumb-sized DOM elements, not precision-tap canvas
+    pixels. 34px (down from 44) so four of them stop hiding the very board edges they are
+    meant to be aligned with — precision comes from the loupe, which draws them too."""
     html = TestClient(create_app()).get("/snapshot").text
     assert ".corner-handle" in html
-    assert "width: 44px; height: 44px" in html
+    assert "width: 34px; height: 34px" in html
+    assert "margin: -17px 0 0 -17px" in html          # still centred on their own point
     assert "pointerdown" in html and "pointermove" in html and "pointerup" in html
 
 
@@ -427,14 +430,21 @@ def test_snapshot_page_can_confirm_a_position_as_ground_truth():
     assert "placement: lastPlacement, corrections: corrections.size" in html
 
 
-def test_snapshot_page_only_offers_labelling_when_a_photo_was_retained():
-    """Without BR_SAVE_UPLOADS the response carries no upload id, so a label would
-    have no image to belong to and could never be replayed by an eval."""
+def test_snapshot_page_explains_rather_than_hides_labelling_without_retention():
+    """Without BR_SAVE_UPLOADS the response carries no upload id, so a label would have
+    no image to belong to. The button stays put and says so — silently vanishing is what
+    made operators believe the page had no save-labelling button at all."""
     html = TestClient(create_app()).get("/snapshot").text
     assert "lastUpload = ev.upload ?? null" in html
-    offer = html.split("function updateConfirmButton() {")[1].split("\n}")[0]
-    assert 'lastMode === "position"' in offer
-    assert 'btn.style.display = offer ? "inline-block" : "none"' in offer
+    offer = html.split("function updateConfirmButton() {")[1].split("\n}\n")[0]
+    assert 'lastMode === "position"' in offer      # occupancy has no placement to state
+    assert "if (!lastUpload) {" in offer
+    assert "btn.disabled = true;" in offer
+    assert "hint.textContent = NO_RETENTION_HINT;" in offer
+    assert "BR_SAVE_UPLOADS" in html
+    # ...and it is never hidden for lack of an upload id: the only thing that hides it is
+    # having no position on screen at all.
+    assert 'btn.style.display' not in offer
 
 
 def test_snapshot_page_invalidates_a_saved_label_when_a_square_changes():
@@ -443,3 +453,135 @@ def test_snapshot_page_invalidates_a_saved_label_when_a_square_changes():
     html = TestClient(create_app()).get("/snapshot").text
     assert "updateConfirmButton();   // editing a square invalidates any label already saved" in html
     assert "savedLabel !== null && savedLabel === lastPlacement" in html
+    # Save -> saved (disabled) -> actionable again once the shown placement changes.
+    assert '"Labelling saved" : (savedLabel === null ? "Save labelling" : "Update labelling")' in html
+
+
+def test_snapshot_page_promotes_the_save_labelling_button_to_the_board_column():
+    """Saving the labelling is a first-class action on the position, so it lives with the
+    position — a real primary button under the board, not a text-button buried in the
+    collapsed stage-7 body where it read as missing."""
+    html = TestClient(create_app()).get("/snapshot").text
+    body = html.split("<main>")[1].split("</main>")[0]
+    board_col = body.split('class="board-col"')[1].split("</div>\n\n")[0]
+    assert 'id="confirmPosition"' in board_col
+    assert 'id="labelHint"' in board_col
+    assert 'id="labelRow"' in board_col
+    # Promoted out of stage 7 entirely, and no longer a small text-button.
+    stage7 = body.split('id="step-output"')[1]
+    assert "confirmPosition" not in stage7 and "labelHint" not in stage7
+    assert '<button id="confirmPosition" type="button">' in html  # no class="text-btn"
+
+
+def test_snapshot_page_absorbs_the_servers_autorotation_into_its_own_labels():
+    """A read posted with &autorotate=1 comes back rotated by k quarter-turns. The page
+    must adopt that k into its own corner labelling, or the board shows the rotated
+    position while the handles, the corner table, the rectified preview and the per-square
+    crop all still describe the pre-rotation frame.
+
+    orderedCorners()[i] = pts[(i - rot + 4) % 4], and reindexing the lattice by
+    rot90(., k) is a +k cyclic shift of the ordered corners — so rot -= k.
+    """
+    html = TestClient(create_app()).get("/snapshot").text
+    assert "function absorbAutorotation" in html
+    fn = html.split("function absorbAutorotation(ev, restored) {")[1].split("\n}\n")[0]
+    assert "rot = (rot - k + 4) % 4;" in fn
+    # Never on the restore path: a stored entry's rot already includes the absorption.
+    assert "if (restored !== null || !ev.autorotated) return;" in fn
+    assert "autoRotApplied = e.autoRot;" in html
+    # Re-render what depends on the corners, but never re-read: the event in hand is
+    # already expressed in the new frame.
+    assert "draw();" in fn and "maybeRectify();" in fn
+    assert "runRead" not in fn
+    # Absorbed BEFORE the orientation stage reports and BEFORE the history entry is made.
+    render_fn = html.split("function render(ev, restored = null) {")[1].split("\n}\n")[0]
+    assert render_fn.index("absorbAutorotation(ev, restored)") < render_fn.index("updateOrientStep(ev)")
+    assert render_fn.index("absorbAutorotation(ev, restored)") < render_fn.index("pushRead(ev)")
+    # The corners stay auto-detected, so later reads still ask for auto-rotation.
+    assert "cornersEdited = true" not in fn
+    # And the page says plainly what happened, in both places that used to mislead.
+    assert "and this page adopted it" in html
+    assert "adopted by this page" in html
+
+
+def test_snapshot_page_has_an_optional_hover_magnifier_that_shows_the_handles():
+    """Hovering the photo can magnify it, off by default. Mouse only — touch has no hover
+    and the scroll invariants must survive — and the loupe draws the corner quad and its
+    labelled handles, which are DOM elements and therefore invisible in a magnified copy
+    of the canvas alone."""
+    html = TestClient(create_app()).get("/snapshot").text
+    assert 'id="magnifier"' in html
+    assert 'aria-pressed="false"' in html                    # off by default
+    assert 'button.secondary[aria-pressed="true"]' in html    # state drives the styling
+    assert "let magnifierOn = false;" in html
+    # Mouse-only hover, and never while a drag already owns the loupe.
+    hover = html.split('cornerStage.addEventListener("pointermove"')[1].split("});")[0]
+    assert 'ev.pointerType !== "mouse"' in hover
+    assert "dragIdx !== null" in hover
+    assert "preventDefault" not in hover and "setPointerCapture" not in hover
+    assert 'cornerStage.addEventListener("pointerleave"' in html
+    # The handles are drawn INTO the loupe, in loupe coordinates.
+    assert "function drawLoupeCorners" in html
+    assert "drawLoupeCorners(p, Z);" in html
+    assert "const at = (q) => [(q[0] - p[0]) * Z + cx, (q[1] - p[1]) * Z + cy];" in html
+    assert "lctx.fillText(labelOf(i)" in html
+
+
+def test_snapshot_page_lists_every_retained_image_not_just_this_session():
+    """Recent positions merges this session's reads with every photo the inference node
+    still holds, newest first — a photo read here restores in full, a node-only photo is
+    loaded and read again for real."""
+    html = TestClient(create_app()).get("/snapshot").text
+    assert '"/uploads?limit=" + UPLOADS_LIMIT' in html
+    assert "function refreshUploads" in html
+    assert "function historyRows" in html
+    assert "function nodeRow" in html and "function sessionRow" in html
+    assert 'kind: "node"' in html and 'kind: "session"' in html
+    # A read this session owns its full event, so it restores rather than re-reads; it is
+    # matched to the node's record by upload id and never listed twice.
+    assert "const owned = new Set(reads.map((e) => e.upload).filter(Boolean));" in html
+    assert "if (owned.has(u.id)) continue;" in html
+    assert "row.onclick = () => restoreRead(e.id);" in html
+    assert "row.onclick = () => loadUpload(u);" in html
+    # Thumbnails come from the node, lazily and long-side capped.
+    assert '"/uploads/" + encodeURIComponent(id) + "/photo"' in html
+    assert 'uploadPhotoUrl(u.id, 160)' in html and 'loading="lazy"' in html
+    # Refreshed on load, after every completed read, and after every saved labelling.
+    assert html.count("refreshUploads();") >= 3
+
+
+def test_snapshot_page_loading_a_retained_photo_is_an_honest_read():
+    """Clicking a node-held photo rebuilds stages 1-3 from THAT image and the corners the
+    node recorded for it, then runs a real read — no faking a result from the summary."""
+    html = TestClient(create_app()).get("/snapshot").text
+    fn = html.split("async function loadUpload(u) {")[1].split("\n}\n")[0]
+    assert "drawSourceFrom(im)" in fn
+    assert "parseCorners(u.corners, k)" in fn
+    assert "rot = 0; autoRotApplied = 0; dragIdx = null;" in fn
+    assert "cornersEdited = false;" in fn
+    assert "await runRead();" in fn
+    assert "resetSteps(\"capture\")" in fn and "applyCapState();" in fn
+    # No usable corners on record: detect them again rather than invent them.
+    assert "await autoDetect();" in fn
+    # The photo is fetched as a blob: a cross-origin <img> would taint the source canvas,
+    # which this page reads back (getImageData for luma, toDataURL for the thumbnail).
+    assert "URL.createObjectURL(await r.blob())" in fn
+    assert "function parseCorners" in html
+    assert "n.length !== 8" in html                        # a8,h8,h1,a1 as 8 numbers
+
+
+def test_snapshot_page_degrades_gracefully_without_the_uploads_endpoint():
+    """A node that predates /uploads, or has retention off, must cost the page nothing:
+    the session list stands and the reason is stated."""
+    html = TestClient(create_app()).get("/snapshot").text
+    fn = html.split("async function refreshUploads() {")[1].split("\n}\n")[0]
+    assert "} catch {" in fn                                # a failed fetch is not fatal
+    assert "serverUploads = [];" in fn
+    assert "retention = null;" in fn
+    assert "renderHistory();" in fn
+    note = html.split("function historyNote() {")[1].split("\n}\n")[0]
+    assert "Photo retention is off on the inference node" in note
+    assert "only this session's reads are listed" in note
+    # Clearing drops only this session's entries, and the copy says so.
+    assert ">Clear this session<" in html
+    assert "Clear removes only this session's entries" in html
