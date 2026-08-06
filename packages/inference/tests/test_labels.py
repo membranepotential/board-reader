@@ -16,6 +16,7 @@ from board_reader_inference.labels import (
     UPLOAD_ID,
     load_labels,
     rotate_placement,
+    rotate_square,
     save_label,
 )
 
@@ -205,3 +206,68 @@ def test_upload_id_accepts_real_stems(candidate):
 def test_upload_id_rejects_anything_that_is_not_a_stem(candidate):
     """An upload id is a request parameter — it must never reach a path join loose."""
     assert not UPLOAD_ID.match(candidate)
+
+
+MIDGAME = "r1bqk2r/pppp1ppp/2n2n2/2b1p3/2B1P3/5N2/PPPP1PPP/RNBQ1RK1"
+
+
+@pytest.mark.parametrize("k", [0, 1, 2, 3, -1, -2])
+@pytest.mark.parametrize("square", ["a1", "h8", "e4", "a8", "h1", "d2"])
+def test_rotate_square_tracks_rotate_placement_exactly(square, k):
+    """The two must agree or a recorded square points at the wrong piece.
+
+    The piece standing on ``square`` before the turn is the piece standing on
+    ``rotate_square(square, k)`` after it — that is the whole contract, and it is
+    what lets a label carry the decoder's repaired squares into the corner frame.
+    """
+    def piece_at(placement, sq):
+        grid = parse_placement(placement)
+        return grid[8 - int(sq[1])]["abcdefgh".index(sq[0])]
+
+    assert piece_at(MIDGAME, square) == piece_at(
+        rotate_placement(MIDGAME, k), rotate_square(square, k)
+    )
+
+
+def test_rotate_square_rejects_a_non_square():
+    with pytest.raises(ValueError):
+        rotate_square("j9", 1)
+
+
+def test_label_records_the_decoder_repairs_in_the_corner_frame(tmp_path):
+    """A repaired square is stored un-rotated, like the placement it belongs to.
+
+    Without this the eval cannot tell truth that came from the board apart from
+    truth the operator accepted from the decoder.
+    """
+    save_label(
+        tmp_path,
+        "20260806-210118-0000-estimate",
+        placement=START_PLACEMENT,
+        corners="0,0,8,0,8,8,0,8",
+        predicted=START_PLACEMENT,
+        corrections=0,
+        autorotated=90,
+        prior_flips=["e8", "a1"],
+    )
+    meta = json.loads(
+        (tmp_path / f"20260806-210118-0000-estimate{LABEL_SUFFIX}").read_text()
+    )
+    assert meta["prior_flips"] == [rotate_square("e8", -1), rotate_square("a1", -1)]
+
+
+def test_label_without_repairs_records_an_empty_list_not_a_missing_key(tmp_path):
+    """Absent would mean "unknown"; empty means "the decoder ran and changed nothing"."""
+    save_label(
+        tmp_path,
+        "20260806-210118-0000-estimate",
+        placement=START_PLACEMENT,
+        corners="0,0,8,0,8,8,0,8",
+        predicted=START_PLACEMENT,
+        corrections=0,
+        autorotated=0,
+    )
+    meta = json.loads(
+        (tmp_path / f"20260806-210118-0000-estimate{LABEL_SUFFIX}").read_text()
+    )
+    assert meta["prior_flips"] == []

@@ -557,10 +557,29 @@
         </details>
       </section>
 
-      <section class="step" id="step-output" data-state="idle">
+      <section class="step" id="step-repair" data-state="idle">
         <details>
           <summary>
             <span class="s-caret">&#9656;</span><span class="s-idx">7</span>
+            <span class="s-name">Impossible-board repair</span><span class="s-chip">idle</span>
+            <span class="s-sum">waiting for a read</span>
+          </summary>
+          <div class="s-body">
+            <p class="note">Some reads describe a board that cannot exist — two white kings, a
+              pawn on the back rank, more pieces than a side can own. The server decodes the
+              nearest possible board out of the same per-square distribution and returns it
+              alongside the raw read; the distribution itself is never rewritten. Every square it
+              relabelled is listed here, cheapest first, so the repair is auditable rather than
+              silent. The board below shows the repaired position.</p>
+            <table class="kv" id="repairTable"></table>
+          </div>
+        </details>
+      </section>
+
+      <section class="step" id="step-output" data-state="idle">
+        <details>
+          <summary>
+            <span class="s-caret">&#9656;</span><span class="s-idx">8</span>
             <span class="s-name">Position output</span><span class="s-chip">idle</span>
             <span class="s-sum">waiting for a read</span>
           </summary>
@@ -667,7 +686,7 @@ const magnifierBtn = $("magnifier");
 // the evidence and stays collapsed until asked for. No stage is ever gated behind an
 // opt-in toggle — diagnostics are the point of this page.
 const CHIP = { idle: "idle", run: "running", ok: "ok", warn: "check", fail: "failed" };
-const STEPS = ["capture", "detect", "rectify", "sample", "classify", "orient", "output"];
+const STEPS = ["capture", "detect", "rectify", "sample", "classify", "orient", "repair", "output"];
 
 function setStep(id, state, summary) {
   const el = $("step-" + id);
@@ -1319,7 +1338,8 @@ function confidenceAt(r, c) {
   return d ? Math.max(...d) : 1;
 }
 // What's actually shown at (r,c) right now: the correction if one exists, else the
-// server's own argmax (read straight off basePlacement, so it never drifts from `render`).
+// board the server served — the repaired one when it sent a repair, otherwise its own
+// argmax (read straight off basePlacement, so it never drifts from `render`).
 function currentClassAt(r, c) {
   const corrected = corrections.get(squareKey(r, c));
   if (corrected !== undefined) return corrected;
@@ -1691,7 +1711,13 @@ function render(ev, restored = null) {
 
   lastMode = "position";
   absorbAutorotation(ev, restored);
-  basePlacement = ev.placement;
+  // The repaired board is the answer when the server sent one: `ev.placement` is
+  // the raw argmax (and stays that way in the event JSON), while `ev.prior` carries
+  // the nearest board that is actually possible. Corrections still layer on top of
+  // this baseline without mutating it, so "reset corrections" restores exactly what
+  // the server served — which is now the repaired read.
+  updateRepairStep(ev);
+  basePlacement = ev.prior?.placement ?? ev.placement;
   baseSquareDist = ev.square_dist ?? null;
   // Which retained photo this reading belongs to, so its position can be confirmed
   // as ground truth. Restoring a history entry carries its own upload id along, so
@@ -1816,6 +1842,9 @@ function renderOccupancy(ev, restored = null) {
   $("estimatorNotes").innerHTML = "";
   setStep("orient", "idle", "not resolvable without a placement");
   kv("orientTable", [["orientation", "unknown — occupancy carries no colour cue"]]);
+  // Nothing for the repair to read: the constraints are all about piece identity
+  // and colour, and an occupancy-only read has neither.
+  setStep("repair", "idle", "not applicable — occupancy only, no piece types to constrain");
   setStep("output", "warn", "no placement in occupancy mode");
   $("pl").textContent = "";
   $("corrList").innerHTML = "";
@@ -1942,6 +1971,35 @@ function renderEstimatorNotes(ev) {
   }
   el.innerHTML = bits.join("") ||
     '<div class="note">no estimator-state changes on this read</div>';
+}
+
+// ---- stage 7: impossible-board repair ----------------------------------------
+// The server hands back `prior` on every real read: the nearest board satisfying
+// the constraints no chess position can break, decoded from the same distribution.
+// An empty `flips` list means the read was already possible — that is the good
+// case and is reported as such, not hidden.
+function updateRepairStep(ev) {
+  const prior = ev.prior ?? null;
+  if (!prior) {
+    setStep("repair", "idle", "no repair reported by the server");
+    kv("repairTable", [["served", "this build of the server does not decode a repair"]]);
+    return;
+  }
+  const flips = prior.flips ?? [];
+  const residual = Object.keys(prior.residual ?? {}).length;
+  setStep("repair", flips.length ? "warn" : "ok",
+    flips.length
+      ? `${flips.length} square(s) relabelled to reach a possible board` +
+        (residual ? " — some impossibility remains" : "")
+      : "the read was already a possible board — nothing changed");
+  const rows = flips.map((f, i) => [
+    `${i + 1}. ${esc(f.square)}`,
+    `${esc(f.from)} &rarr; ${esc(f.to)} · ${esc(f.constraint)} · cost ${esc(f.cost)}`,
+  ]);
+  if (residual) {
+    rows.push(["unresolved", esc(Object.entries(prior.residual).map(([k, v]) => `${k} ${v}`).join(" · "))]);
+  }
+  kv("repairTable", rows.length ? rows : [["flips", "none — no constraint was violated"]]);
 }
 
 // ---- stage 6: orientation ----------------------------------------------------

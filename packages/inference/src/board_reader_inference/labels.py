@@ -65,6 +65,25 @@ def rotate_placement(placement: str, k: int) -> str:
     return encode_placement(np.rot90(grid, k).tolist())
 
 
+def rotate_square(square: str, k: int) -> str:
+    """Rotate one algebraic square by ``k`` quarter-turns, matching :func:`rotate_placement`.
+
+    Derived from ``np.rot90`` on an index grid rather than from arithmetic, so the
+    two can never drift apart: the piece on ``square`` in ``placement`` is always
+    the piece on ``rotate_square(square, k)`` in ``rotate_placement(placement, k)``
+    (locked by a test). Used to carry square references — like the hard-constraint
+    decoder's repaired squares — from the frame the operator *saw* into the corner
+    frame a label is stored in.
+    """
+    file_, rank = square[0], square[1:]
+    if file_ not in "abcdefgh" or rank not in [str(n) for n in range(1, 9)]:
+        raise ValueError(f"not an algebraic square: {square!r}")
+    r, c = 8 - int(rank), "abcdefgh".index(file_)
+    moved = np.rot90(np.arange(64).reshape(8, 8), k)
+    rows, cols = np.where(moved == r * 8 + c)
+    return f"{'abcdefgh'[int(cols[0])]}{8 - int(rows[0])}"
+
+
 def parse_corners(spec: str) -> np.ndarray:
     """``x0,y0,...,x3,y3`` -> a 4x2 float32 quad (a8, h8, h1, a1).
 
@@ -101,6 +120,7 @@ def save_label(
     predicted: str | None,
     corrections: int,
     autorotated: int,
+    prior_flips: list[str] | None = None,
 ) -> Path:
     """Write ``<upload_id>.label.json``; returns the path.
 
@@ -108,10 +128,20 @@ def save_label(
     ``autorotated`` quarter-turns; those are undone here so what lands on disk is
     in the corner frame. Re-labelling the same upload overwrites — the last
     confirmation is the truth.
+
+    ``prior_flips`` are the squares the hard-constraint decoder repaired in this
+    read (:mod:`.prior`), in the frame the operator saw, un-rotated to the corner
+    frame like everything else here. They are recorded for one reason: since the
+    decoder's repair is what gets *displayed*, an operator confirming with no
+    corrections can hand back truth that came from the decoder rather than from
+    the board. That is the same bias the bank incidents taught us to distrust, so
+    a later eval must be able to find these labels — it cannot if we do not
+    write them down. Nothing reads them back into the bank; see the module note.
     """
     k = (autorotated // 90) % 4
     truth = rotate_placement(placement, -k) if k else placement
     parse_placement(truth)  # reject a malformed label before it reaches disk
+    flips = [rotate_square(s, -k) if k else s for s in (prior_flips or [])]
     path = directory / f"{upload_id}{LABEL_SUFFIX}"
     path.write_text(
         json.dumps(
@@ -125,6 +155,7 @@ def save_label(
                 "predicted": predicted,
                 "corrections": corrections,
                 "autorotated": autorotated,
+                "prior_flips": flips,
             }
         )
     )

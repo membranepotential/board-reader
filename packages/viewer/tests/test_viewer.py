@@ -65,7 +65,7 @@ def test_snapshot_page_renders_the_pipeline_as_ordered_stages():
     in the order it runs, each stage carrying a state and a headline."""
     html = TestClient(create_app()).get("/snapshot").text
     stages = [
-        "capture", "detect", "rectify", "sample", "classify", "orient", "output",
+        "capture", "detect", "rectify", "sample", "classify", "orient", "repair", "output",
     ]
     positions = []
     for stage in stages:
@@ -73,7 +73,10 @@ def test_snapshot_page_renders_the_pipeline_as_ordered_stages():
         assert marker in html, stage
         positions.append(html.index(marker))
     assert positions == sorted(positions)  # laid out in pipeline order
-    assert 'const STEPS = ["capture", "detect", "rectify", "sample", "classify", "orient", "output"];' in html
+    assert (
+        'const STEPS = ["capture", "detect", "rectify", "sample", "classify", '
+        '"orient", "repair", "output"];'
+    ) in html
     assert "function setStep" in html                       # state + headline per stage
     chip = html.split("const CHIP = {")[1].split("}")[0]
     for state in ("idle", "run", "ok", "warn", "fail"):
@@ -86,7 +89,7 @@ def test_snapshot_page_details_are_always_present_but_collapsed():
     html = TestClient(create_app()).get("/snapshot").text
     body = html.split("<main>")[1].split("</main>")[0]
     assert "<details open" not in body and "<details  open" not in body
-    assert body.count("<details>") == 7                      # one per stage
+    assert body.count("<details>") == 8                      # one per stage
     # The old opt-in diagnostics checkbox is gone; debug images are always requested.
     assert "diagToggle" not in html
     assert '"/estimate?corners=" + qs + "&debug=1"' in html

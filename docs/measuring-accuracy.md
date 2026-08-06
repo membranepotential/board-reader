@@ -105,12 +105,21 @@ the photo's **corners** define rather than to any model output.
 ### Confirmed labels (`*.label.json`)
 
 The snapshot page's correction panel is the only place a human ever states what a
-board really holds. **Confirm as ground truth** in stage 7 writes that statement
+board really holds. **Confirm as ground truth** in stage 8 writes that statement
 next to the retained photo. Confirming a flawless read counts just as much as
 fixing four squares — the perfect-board rate is made of both.
 
 If the read was `autorotated`, the turn is undone before storing, so truth never
 inherits the model's orientation guess and survives a model that guesses differently.
+
+> [!warning] A confirmed label can now inherit the *decoder's* answer
+> Since the repaired board is what the page displays, confirming a read with no
+> corrections can hand back truth that came from the hard-constraint decoder rather
+> than from the board. The label therefore records `prior_flips` — the squares the
+> decoder relabelled, un-rotated into the corner frame like the placement itself —
+> so an eval can find these boards later. It does not make the label wrong; it makes
+> the risk **detectable**, which is the difference between this and the bank
+> incidents. When labelling, read the repaired squares off the board deliberately.
 
 > [!danger] Labels never feed the bank
 > Nothing reads a label back into calibration or training. That is the whole point:
@@ -178,6 +187,7 @@ bank was not built from.
 uv run board-reader-inference eval                    # data/eval + data/uploads
 BR_MODEL=models/run_e/model.onnx uv run board-reader-inference eval
 uv run board-reader-inference eval --json report.json --autorotate
+uv run board-reader-inference eval --no-prior           # the raw estimator alone
 ```
 
 The harness builds its estimator from the environment through the same
@@ -185,6 +195,14 @@ The harness builds its estimator from the environment through the same
 ensemble, blend weight and all — and prints that configuration above every report.
 `--autorotate` folds the orientation guess back in; without it the score isolates
 recognition from orientation.
+
+The **hard-constraint decode is on by default**, for the same "measure what serves"
+reason: `/estimate` now returns a repaired board beside every read, so a harness
+that skipped the repair would stop scoring the product. It is reported as a second
+block rather than folded into the headline — the estimator's own numbers stay
+first, and the decode's **fixed** and **broken** squares are printed apart, because
+a repair that trades a right square for a wrong one is not an improvement. Pass
+`--no-prior` to isolate the raw estimator.
 
 Contrast with `tools/train/evaluate.py`, which scores the trained model alone inside
 the training venv and never sees the ensemble. That one answers "did the training
