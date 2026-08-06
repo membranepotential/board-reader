@@ -120,6 +120,10 @@ class TrainedEstimator:
         self.logits_fn: LogitsFn = (
             model if callable(model) else _onnx_logits_fn(model)
         )
+        # Provenance: an accuracy number is only meaningful next to the weights
+        # that produced it, and "which model was that?" has already been the
+        # wrong answer once (the v1/d16 mix-up). None when driven by a callable.
+        self.model_path: str | None = None if callable(model) else str(model)
         self.headroom = (
             headroom if headroom is not None else float(meta.get("headroom", _LEGACY_HEADROOM))
         )

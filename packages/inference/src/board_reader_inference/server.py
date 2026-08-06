@@ -472,7 +472,11 @@ def create_app(
         }
 
     async def _uncalibrated_estimate(
-        frame: Frame, corners: np.ndarray, debug_on: bool, warns: list[str]
+        frame: Frame,
+        corners: np.ndarray,
+        debug_on: bool,
+        warns: list[str],
+        sidecar: Path | None = None,
     ):
         """Zero-setup path: occupancy-only readout + start-position auto-calibration.
 
@@ -545,6 +549,11 @@ def create_app(
             "exemplars": int(classifier.exemplars.shape[0]),
             "saved": saved,
         }
+        # This branch answers with a real position too, so it is labelable like any
+        # other read (see /labels).
+        _annotate_upload(sidecar, placement=event.placement)
+        if sidecar is not None:
+            result["upload"] = sidecar.stem
         if warns:
             result["warnings"] = warns
         if debug_on:
@@ -591,7 +600,7 @@ def create_app(
                 image=image,
             )
             corners_q = quad if quad is not None else full_frame_corners(image)
-            return await _uncalibrated_estimate(frame, corners_q, debug_on, warns)
+            return await _uncalibrated_estimate(frame, corners_q, debug_on, warns, sidecar)
 
         # What the debug boxes/mosaic should be drawn from — defaults to "whole
         # posted image is the board", overridden below by whichever branch the
@@ -658,6 +667,11 @@ def create_app(
         if rotated_deg:
             result["autorotated"] = rotated_deg
         _annotate_upload(sidecar, placement=event.placement, autorotated=rotated_deg)
+        if sidecar is not None:
+            # Names the retained photo so the client can confirm this read's
+            # position as ground truth (POST /labels/{upload}). Absent when
+            # retention is off — then there is no photo to attach a label to.
+            result["upload"] = sidecar.stem
         if warns:
             result["warnings"] = warns
         if debug_on:
@@ -829,6 +843,85 @@ def create_app(
                 "saved": path,
                 "exemplars": int(classifier.exemplars.shape[0]),
                 "label_rotation": label_rotation,
+            }
+        )
+
+    @app.post("/labels/{upload_id}")
+    async def label(upload_id: str, request: Request) -> JSONResponse:
+        """Record the operator's confirmed position for a retained photo.
+
+        The snapshot page's correction panel already has a human fixing wrong
+        squares; this is where that answer is kept instead of being discarded on
+        reload. Body: ``{"placement": <FEN field 1>, "corrections": <int>}`` —
+        the position **as displayed**, whose ``autorotate`` turn is undone by
+        :func:`labels.save_label` so the stored truth is in the frame the photo's
+        corners define and never depends on a model output.
+
+        Labels are **eval data only**: nothing reads them back into the
+        calibration bank. Fitting on them would recreate exactly the
+        contamination they exist to measure (see :mod:`.labels`).
+        """
+        from board_reader_core.protocol import parse_placement
+
+        from board_reader_inference.labels import UPLOAD_ID, save_label
+
+        if not save_dir:
+            return JSONResponse(
+                {
+                    "error": (
+                        "photo retention is off (BR_SAVE_UPLOADS unset), so there is "
+                        "no photo to label — a label without its photo is not eval data"
+                    )
+                },
+                status_code=422,
+            )
+        if not UPLOAD_ID.match(upload_id):
+            return JSONResponse({"error": "not an upload id"}, status_code=400)
+        sidecar = Path(save_dir) / f"{upload_id}.json"
+        if not sidecar.exists():
+            return JSONResponse({"error": "no such upload"}, status_code=404)
+        try:
+            payload = json.loads(await request.body())
+            placement = str(payload["placement"])
+            parse_placement(placement)
+            corrections = int(payload.get("corrections", 0))
+        except (ValueError, KeyError, TypeError) as e:
+            return JSONResponse({"error": f"bad label: {e}"}, status_code=400)
+        try:
+            meta = json.loads(sidecar.read_text())
+        except (OSError, ValueError):
+            meta = {}
+        if not meta.get("corners"):
+            # A placement only means something in a stated frame. Without the
+            # corners the photo cannot be re-cropped, so an eval could never
+            # replay this board — refuse rather than write a label nothing loads.
+            return JSONResponse(
+                {
+                    "error": (
+                        "this read was made without corners, so its position has no "
+                        "frame to be true in and no eval could replay it — read the "
+                        "photo again with the board corners set"
+                    )
+                },
+                status_code=422,
+            )
+        try:
+            path = save_label(
+                Path(save_dir),
+                upload_id,
+                placement=placement,
+                corners=meta.get("corners"),
+                predicted=meta.get("placement"),
+                corrections=corrections,
+                autorotated=int(meta.get("autorotated") or 0),
+            )
+        except OSError as e:
+            return JSONResponse({"error": f"could not write label: {e}"}, status_code=500)
+        return JSONResponse(
+            {
+                "saved": str(path),
+                "placement": json.loads(path.read_text())["placement"],
+                "corrections": corrections,
             }
         )
 

@@ -3,6 +3,7 @@
     board-reader-inference serve --host 0.0.0.0 --port 8000
     board-reader-inference serve --centroids centroids.npz      # use the M1 estimator
     board-reader-inference calibrate --image rect.png --placement <FEN1> -o centroids.npz
+    board-reader-inference eval                                  # score the deployed stack
 
 Imports only :mod:`board_reader_core` and this package; it never imports the edge.
 Calibration takes an **already-rectified** board crop (run ``board-reader-edge
@@ -93,8 +94,29 @@ def cmd_calibrate(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_eval(args: argparse.Namespace) -> int:
+    from board_reader_inference.evaluate import run
+
+    try:
+        report = run(
+            args.paths or None,
+            autorotate=args.autorotate,
+            json_out=args.json,
+        )
+    except ValueError as e:
+        # Misconfiguration (no photo-capable estimator, unreadable photo) — say so
+        # in one line rather than a traceback; the message names the fix.
+        print(f"cannot evaluate: {e}", file=sys.stderr)
+        return 2
+    print(report.render())
+    # 1 when there was nothing to score: an empty eval is not a passing eval.
+    return 0 if report.boards else 1
+
+
 def build_parser() -> argparse.ArgumentParser:
     from board_reader_core.protocol import START_PLACEMENT
+
+    from board_reader_inference.evaluate import DEFAULT_PATHS
 
     p = argparse.ArgumentParser(prog="board-reader-inference", description=__doc__)
     sub = p.add_subparsers(dest="command", required=True)
@@ -143,6 +165,26 @@ def build_parser() -> argparse.ArgumentParser:
         "calibration crops; widens lighting robustness",
     )
     c.set_defaults(func=cmd_calibrate)
+
+    e = sub.add_parser(
+        "eval",
+        help="score the deployed estimator on labeled boards (perfect-board rate)",
+    )
+    e.add_argument(
+        "paths",
+        nargs="*",
+        help="files/dirs holding labels (*.label.json, ground_truth.json); "
+        f"default: {' '.join(DEFAULT_PATHS)}",
+    )
+    e.add_argument(
+        "--autorotate",
+        action="store_true",
+        help="also let the estimator pick the board's orientation, as the "
+        "snapshot page does with auto-detected corners; off by default so the "
+        "score isolates recognition from orientation",
+    )
+    e.add_argument("--json", help="also write the full report as JSON here")
+    e.set_defaults(func=cmd_eval)
     return p
 
 
