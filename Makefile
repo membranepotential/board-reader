@@ -8,8 +8,16 @@
 # BR_SESSION_BANK does it ensemble with the exemplar bank (638/640). The bank is
 # part of the product, so it belongs here rather than in a shell snippet you have
 # to remember.
+#
+# Teardown kills the two children by PID, never `kill 0`: the process group
+# includes this shell, so a group kill re-enters its own TERM trap, which kills
+# the group again — bash recurses until it overflows its stack and segfaults.
+# The trap disarms itself first for the same reason.
 
 .PHONY: dev stop
+
+# `wait -n` below is a bashism, and the teardown relies on bash trap semantics.
+SHELL := /bin/bash
 
 # Primary LAN address, so /snapshot works from a phone. Falls back to localhost.
 HOST := $(shell ip route get 1.1.1.1 2>/dev/null | grep -oP 'src \K[\d.]+' || echo 127.0.0.1)
@@ -24,15 +32,24 @@ dev:
 	@echo "  snapshot   http://$(HOST):8080/snapshot"
 	@echo "  live       http://$(HOST):8080"
 	@echo "  inference  http://$(HOST):8000"
-	@trap 'kill 0' EXIT INT TERM; \
-	BR_MODEL=$(BR_MODEL) \
+	@BR_MODEL=$(BR_MODEL) \
 	BR_SESSION_BANK=$(BR_SESSION_BANK) \
 	BR_SAVE_UPLOADS=$(BR_SAVE_UPLOADS) \
 	  uv run board-reader-inference serve --host 0.0.0.0 --port 8000 & \
+	inference=$$!; \
 	BR_INFERENCE_HTTP=http://$(HOST):8000 \
 	BR_INFERENCE_WS=ws://$(HOST):8000/viewer \
 	  uv run board-reader-viewer --host 0.0.0.0 --port 8080 & \
-	wait
+	viewer=$$!; \
+	trap 'kill $$inference $$viewer 2>/dev/null; \
+	      wait $$inference $$viewer 2>/dev/null' EXIT; \
+	trap 'trap - EXIT INT TERM; \
+	      kill $$inference $$viewer 2>/dev/null; \
+	      wait $$inference $$viewer 2>/dev/null; \
+	      exit 0' INT TERM; \
+	wait -n; status=$$?; \
+	echo "!! a server exited on its own (status $$status) — stopping the other"; \
+	exit $$status
 
 # The bracket keeps the pattern from matching this recipe's own command line.
 stop:
