@@ -166,10 +166,11 @@ aspects:
 
   evaldata:
     description: >-
-      External state — the labeled evaluation set. Every accuracy figure quoted
-      anywhere in the repo is relative to this; when it grows, the figures are
-      no longer comparable to the ones on record.
-    probe: "python -c \"import json,pathlib; p=pathlib.Path('data/eval/ground_truth.json'); print(len(json.loads(p.read_text())) if p.exists() else 'absent')\""
+      External state — the labeled evaluation set: the curated ground_truth.json
+      plus every board an operator confirmed through the snapshot page. Every
+      accuracy figure quoted anywhere in the repo is relative to this; when it
+      grows, the figures are no longer comparable to the ones on record.
+    probe: "python -c \"import json,pathlib; p=pathlib.Path('data/eval/ground_truth.json'); c=len(list(pathlib.Path('data/uploads').glob('*.label.json'))) if pathlib.Path('data/uploads').is_dir() else 0; print((len(json.loads(p.read_text())) if p.exists() else 0), 'curated,', c, 'confirmed')\""
     affects:
       - aspect: docs
         role: >-
@@ -199,7 +200,7 @@ aspects:
       The Obsidian docs vault — architecture, recognition pipeline, calibration,
       operating envelope, runbook, training/data, glossary. Explains how the
       system currently behaves (DESIGN owns why it was decided that way).
-    files: ["docs/index.md", "docs/architecture.md", "docs/recognition-pipeline.md", "docs/calibration-and-the-bank.md", "docs/operating-envelope.md", "docs/runbook.md", "docs/training-and-data.md", "docs/glossary.md"]
+    files: ["docs/index.md", "docs/architecture.md", "docs/recognition-pipeline.md", "docs/calibration-and-the-bank.md", "docs/measuring-accuracy.md", "docs/operating-envelope.md", "docs/runbook.md", "docs/training-and-data.md", "docs/glossary.md"]
     affects:
       - aspect: status
         role: >-

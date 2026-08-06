@@ -34,7 +34,7 @@ uv run board-reader-edge feed --video clip.mp4 --throttle   # or a real clip
 **The phone flow** — serve on the LAN and open `/snapshot` on the phone:
 
 ```bash
-BR_MODEL=models/d16/model.onnx \
+BR_MODEL=models/run_e/model.onnx \
 BR_SESSION_BANK=models/exemplars_session.npz \
 BR_SAVE_UPLOADS=data/uploads \
 uv run board-reader-inference serve --host 0.0.0.0

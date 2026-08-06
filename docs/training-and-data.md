@@ -74,23 +74,39 @@ All under `scratch/runs/` (git-ignored; reproducible from `tools/train/configs/`
 | `smoke` | 10-minute sanity | — |
 | `val_chesscog` | run (a): the multi-style bet, 5 styles | **won** — 0.925 on user photos, deployed as `v1` |
 | `loso_resnet_sin` | candidate (b): Stylized-ImageNet init | lost (0.665 holdout) — consistent with the frozen SIN negative |
-| `d16` | headroom sweep, `hr=1.6` | **won** — holdout 0.665 → 0.835; **currently deployed** |
+| `d16` | headroom sweep, `hr=1.6` | **won** — holdout 0.665 → 0.835; deployed 2026-07-18 → 2026-08-06 |
 | `d18` | headroom sweep, `hr=1.8 / sp=0.25` | ties the holdout, loses on real photos (409 vs 430) |
-| `run_e` | wave-2: 11 styles incl. wooden-Staunton dim renders | **finished, never deployed** — see below |
+| `run_e` | wave-2: 11 styles incl. wooden-Staunton dim renders | **won** — holdout 0.835 → 0.898; **currently deployed** |
 
-### The open `run_e` question
+### How `run_e` was decided (2026-08-06)
 
-`run_e` completed 2026-07-19 and was never evaluated as an ensemble. Alone, against the
-deployed `d16` on the boards both were scored on:
+`run_e` finished 2026-07-19 and sat undeployed for two weeks because it had only ever been
+scored *alone*, by `tools/train/evaluate.py`, while both models serve **as an ensemble** with
+the kNN bank. Settling it meant scoring the stack that actually serves, on both slices:
 
-| Eval slice | `d16` | `run_e` |
+| Configuration | 12 dim calibrate (768 sq) | `data/eval` (640 sq) |
 |---|---|---|
-| 12 dim calibrate boards (768 squares) | 600 | **653** (+53) |
-| 10 bright user boards (640 squares) | **605** | 599 (−6) |
+| `d16` alone | 600 | **605** · 2/10 perfect |
+| `run_e` alone | **653** (+53) | 599 · 0/10 perfect |
+| `d16` + base bank (unseen by the dim boards) | 591 | — |
+| `run_e` + base bank | **630** (+39) | — |
+| `d16` ⊕ session bank *(what was deployed)* | — | 633 · 7/10 perfect |
+| `run_e` ⊕ session bank | — | **638 · 9/10 perfect** |
 
-A clear win exactly in the regime wave-2 targeted, and a small regression outside it — but
-both models are deployed *as ensembles* with the bank, and that comparison has not been run.
-Do that before deciding. Tracked in [[STATUS#Next]].
+The model-alone regression on bright boards is real, but it does not survive the ensemble:
+`run_e` ⊕ bank wins `data/eval` outright, including **62/64 vs 59/64 on `up_20260718_0001`** —
+the one board no bank has ever seen, and therefore the only honest generalisation signal in
+the set. Combined with +53 / +39 squares on the dim boards the wave-2 renders targeted, that
+decided it.
+
+> [!note] Two caveats on the numbers above
+> The 12 calibrate boards are all *start positions*, so perfect-board rate is meaningless
+> there (a constant start-position predictor scores 12/12) — per-square is the metric. And
+> the session bank contains 9 of the 10 `data/eval` boards, so that column's absolute values
+> are an upper bound for both models; only the comparison and the `_0001` row are honest.
+>
+> The daylight base bank *lowers* both models on the dim slice (600→591, 653→630). That is
+> [[calibration-and-the-bank|the known lighting failure]] reproducing, not a `run_e` effect.
 
 ## Synthetic data
 

@@ -22,6 +22,7 @@ reconstruction and PGN belong to whatever consumes the stream.
 | [[architecture]] | What the pieces are, what may import what, how a frame travels |
 | [[recognition-pipeline]] | How a photo becomes an 8×8 distribution |
 | [[calibration-and-the-bank]] | How it adapts to *your* chess set, and how that goes wrong |
+| [[measuring-accuracy]] | What "it works" means, where truth comes from, why the old number flattered |
 | [[operating-envelope]] | Where it works, where it fails, and the measured thresholds |
 | [[runbook]] | How to run it, what to check after a restart, how to recover |
 | [[training-and-data]] | The offline harness, the data tiers, the licensing ledger |

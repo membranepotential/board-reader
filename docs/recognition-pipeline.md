@@ -85,9 +85,14 @@ model is the reverse. On the labeled eval:
 
 | Configuration | Score |
 |---|---|
-| previous model alone (`v1`, short crops) | 579 / 640 |
-| deployed model alone (`d16`, tall crops) | 605 / 640 |
-| trained ⊕ bank, maturity-weighted **(deployed)** | **633 / 640** |
+| `v1` alone (short crops) | 579 / 640 |
+| `d16` alone (tall crops) | 605 / 640 |
+| deployed model alone (`run_e`, 11 styles) | 599 / 640 |
+| trained ⊕ bank, maturity-weighted **(deployed)** | **638 / 640** |
+
+Model-alone rank on this bright set is not the deployment order: `run_e` was chosen on the
+dim boards (653 vs 600 / 768 squares) and on the ensemble, which is what serves. See
+[[training-and-data#How run_e was decided 2026-08-06]].
 
 The blend weight follows bank maturity: **≥1024 exemplars → 30/70 trained/bank**, otherwise
 50/50. A mature bank has earned the extra trust; a one-photo bootstrap has not. (At a flat

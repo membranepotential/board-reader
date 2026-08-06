@@ -119,8 +119,20 @@ Each fix is now a guardrail in the code.
 Recovery from any of these is `tools/rebuild_session_bank.py` — see
 [[runbook#Recovering a poisoned bank]].
 
+## The fifth way it went wrong: it ate the eval set
+
+Not a corruption — a measurement failure. `tools/build_exemplar_bank.py` builds the
+bank's base *from `data/eval/ground_truth.json`*, so the bank has seen nine of the ten
+boards it is scored on. It returns 64/64 on exactly those nine and **43/64** on the one
+it never saw, and that inflated an ensemble headline for months.
+
+The bank being near-perfect on conditions it has seen is the feature, not the bug — it
+is why the ensemble works at all. The bug is scoring it there. See
+[[measuring-accuracy#Contamination]].
+
 ## Related
 
+- [[measuring-accuracy]] — why a bank-backed number is an upper bound, and what to do instead
 - [[recognition-pipeline]] — the bank is one member of the deployed ensemble
 - [[runbook]] — env vars, verification, recovery
 - [[operating-envelope]] — the conditions under which a calibrate is worth doing at all

@@ -182,17 +182,52 @@ uv run board-reader-viewer --host 0.0.0.0 --port 8080
 # 3. On the phone (same Wi-Fi), open  http://<this-machine's-LAN-IP>:8080/snapshot
 ```
 
-Flow on the phone: take/pick a photo → the page **auto-detects the board** and
-places four labeled corner handles → check that **a8** sits on the board's a8
-corner (tap **↻ rotate labels** if not — geometry can't know the orientation),
-drag any handle to fine-tune → check the rectified preview → *Read position* →
-the estimated board renders with low-confidence squares outlined red, plus
-**Open in Lichess analysis / editor** links (side-to-move toggle on the page).
-If auto-detection fails, the page falls back to tapping the four corners
-yourself in the prompted order **a8, h8, h1, a1** (press-drag-release; a loupe
-magnifies under your finger). *Read position* sends the **photo + corners** —
-the server crops each square with headroom from the original view, so pieces
-are seen whole rather than smeared by the top-down warp.
+Flow: take/pick a photo → the page **auto-detects the board**, places four
+labeled corner handles and reads the position, with no further taps. The photo
+stays on screen next to the board it produced, at the same size; check that
+**a8** sits on the board's a8 corner (**Rotate labels** if not — geometry can't
+know the orientation), drag any handle to fine-tune. The estimated board renders
+with low-confidence squares outlined red, plus **Open in Lichess analysis /
+editor** links (side-to-move toggle on the page). If auto-detection fails, stage
+2 says so and the page falls back to tapping the four corners yourself in the
+prompted order **a8, h8, h1, a1** (press-drag-release; a loupe magnifies under
+your finger), then *Read position*. Reads send the **photo + corners** — the
+server crops each square with headroom from the original view, so pieces are
+seen whole rather than smeared by the top-down warp.
+
+**The page is the diagnostic surface for the reader** (viewer aspect). Under the
+photo and the board, the seven stages of the read are listed in the order they
+run — *capture · board detection · rectify & geometry · square sampling ·
+classification · orientation · position output*. Each row always shows its state
+and headline numbers; expanding it shows the full evidence, and nothing is
+behind an opt-in toggle (`?debug=1` is always requested):
+
+1. **Capture** — posted size, JPEG size, mean luma against the server's
+   `LOW_LIGHT_MEAN` (55).
+2. **Board detection** — auto vs hand-placed, `/detect` latency, the four corner
+   coordinates, whether server auto-rotation is still in play.
+3. **Rectify & geometry** — the rectified preview plus projected aspect against
+   `LOW_ANGLE_HW` (0.62), edge lengths, square pitch.
+4. **Square sampling** — the sampling boxes drawn on the photo and the 64
+   model-input crops as the classifier received them.
+5. **Classification** — mean/weakest per-square confidence, an 8×8 confidence
+   map (click a cell to inspect that square), the least-confident squares, and
+   any `autocalibrated` / `bank_refreshed` / `warnings` the server volunteered.
+6. **Orientation** — whether `autorotate=1` was sent and what rotation came back.
+7. **Position output** — the FEN, side-to-move, Lichess links, the corrections
+   made by hand, a material census (two kings, ≤8 pawns), and the raw event JSON.
+
+**Correcting a square:** click it once to inspect — the switcher beside the
+board shows the crop the model saw, what it read, the full 13-class
+distribution, and a White/Black grid to assign from. Click the same square again
+to toggle through its top-3 readings (the fast fix). On a desktop the arrow keys
+move the selection and FEN letters assign (`K` white king, `k` black king, `.`
+empty, `esc` closes). Inspecting never changes a square; only assigning does.
+
+**Recent positions** at the bottom logs every read of the session. Selecting one
+restores the whole pipeline view — that photo, its corners, its crops, its
+distributions and its own corrections — so two reads can be compared without
+re-shooting either. It lives in memory only and is gone on reload.
 
 Notes:
 - The page auto-targets inference on the same host it was loaded from, so no
@@ -262,12 +297,12 @@ The production configuration serves the multi-style trained classifier with the
 per-set bank as an ensemble booster (DESIGN §4.6):
 
 ```bash
-BR_MODEL=models/d16/model.onnx BR_SAVE_UPLOADS=data/uploads \
+BR_MODEL=models/run_e/model.onnx BR_SAVE_UPLOADS=data/uploads \
 BR_SESSION_BANK=models/exemplars_session.npz \
   uv run board-reader-inference serve --host 0.0.0.0 --port 8000
 ```
 
-`models/d16/model.onnx` is the deployed model — the same path
+`models/run_e/model.onnx` is the deployed model — the same path
 [compose.yaml](../compose.yaml) and [runbook.md](runbook.md) use; take it from
 there rather than from memory. The superseded
 `models/piece_classifier_multistyle_v1.onnx` is still on disk and still loads,
@@ -311,6 +346,47 @@ Manual test, on the phone (`/snapshot` as in Option F):
    claimed position (e.g. a mid-game board with the default start placement) —
    the server answers 422 with the reason (fewer than 60% of claimed piece
    squares agree with its own reading) and the bank is untouched.
+
+### Option I — Confirm ground truth, then score the reader
+
+The two halves of measuring whether the snapshot app actually works: collect
+labels through normal use, then run the deployed stack against them.
+
+**Collecting a label** (needs `BR_SAVE_UPLOADS` — Option H's serve line has it):
+
+1. Photograph a position and read it as usual.
+2. In **7. Position output**, fix any wrong squares (tap a square, pick the
+   right piece), then press **Confirm as ground truth**. The button also appears
+   when nothing is wrong — confirming a flawless read is exactly as much a label
+   as fixing four squares, and the perfect-board rate is made of both.
+3. A `data/uploads/<stem>.label.json` appears next to the photo, holding the
+   position, the corners, and what the server predicted at the time. Editing a
+   square after saving re-arms the button — a label describes one exact position.
+4. The label is stored in the frame the **corners** define: if the read was
+   `autorotated`, the turn is undone first, so a later model whose orientation
+   guess differs is still scored against the same truth.
+
+> Labels are scoring data only. Nothing feeds them back into the calibration
+> bank — that is the contamination they exist to measure.
+
+**Scoring:**
+
+```bash
+uv run board-reader-inference eval                    # data/eval + data/uploads
+BR_MODEL=models/run_e/model.onnx uv run board-reader-inference eval   # one member
+uv run board-reader-inference eval --json report.json --autorotate
+```
+
+The harness builds the estimator from the environment exactly as `serve` does,
+prints that configuration above the report, and leads with **perfect boards**,
+not per-square accuracy — 94.5% per square is ~3.5 wrong squares on a board, and
+a position with 3 wrong squares is not a position. It then breaks errors into
+hallucination / missed / colour / type, and prints a reliability diagram: the
+gap between claimed confidence and observed accuracy is what says whether a 0.97
+means anything.
+
+If a calibration bank is active the report warns that boards the bank was built
+from are not held out. Take a number carrying that warning as an upper bound.
 
 ---
 
