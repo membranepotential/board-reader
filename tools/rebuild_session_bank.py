@@ -35,7 +35,10 @@ from board_reader_inference.trained import TrainedEstimator
 ROOT = Path(__file__).resolve().parent.parent
 BASE = ROOT / "models/exemplars_dinov2.npz"
 OUT = ROOT / "models/exemplars_session.npz"
-MODEL = ROOT / "models/piece_classifier_multistyle_v1.onnx"
+# The deployed model (compose.yaml/BR_MODEL). Must match what serves, or the
+# rebuilt bank's exemplars are verified against different crop geometry than the
+# one that will read them.
+MODEL = ROOT / "models/d16/model.onnx"
 UPLOADS = ROOT / "data/uploads"
 
 

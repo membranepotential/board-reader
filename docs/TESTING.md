@@ -262,10 +262,19 @@ The production configuration serves the multi-style trained classifier with the
 per-set bank as an ensemble booster (DESIGN §4.6):
 
 ```bash
-BR_MODEL=models/piece_classifier_multistyle_v1.onnx BR_SAVE_UPLOADS=data/uploads \
+BR_MODEL=models/d16/model.onnx BR_SAVE_UPLOADS=data/uploads \
 BR_SESSION_BANK=models/exemplars_session.npz \
   uv run board-reader-inference serve --host 0.0.0.0 --port 8000
 ```
+
+`models/d16/model.onnx` is the deployed model — the same path
+[compose.yaml](../compose.yaml) and [runbook.md](runbook.md) use; take it from
+there rather than from memory. The superseded
+`models/piece_classifier_multistyle_v1.onnx` is still on disk and still loads,
+but it has no `.onnx.meta.json` sidecar, so serving it silently applies v1's
+short-crop geometry to whatever weights you point at — the decapitation
+signature (kings on the back rank read as bishops). The server now warns on
+stderr when a sidecar is missing; do not ignore that line.
 
 Manual test, on the phone (`/snapshot` as in Option F):
 

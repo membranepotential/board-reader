@@ -15,6 +15,7 @@ batched NCHW float32.
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 from typing import Callable
 
@@ -39,6 +40,10 @@ _STD = np.array([0.229, 0.224, 0.225], dtype=np.float32)
 # Logits -> distribution temperature 1.0 (plain softmax): the network's own
 # confidences are what the event's square_dist should carry.
 LogitsFn = Callable[[np.ndarray], np.ndarray]
+
+# The crop geometry of the pre-sidecar models (v1). Only ever a fallback.
+_LEGACY_HEADROOM = 0.15
+_LEGACY_SIDE_PAD = 0.15
 
 
 def preprocess(crops: list[np.ndarray]) -> np.ndarray:
@@ -101,11 +106,26 @@ class TrainedEstimator:
             meta_path = Path(f"{model}.meta.json")
             if meta_path.exists():
                 meta = json.loads(meta_path.read_text())
+            elif headroom is None:
+                # Never fall back silently: this exact mismatch (a tall-crop
+                # model served on v1's short geometry) shipped once and read as
+                # "the model got worse" — kings clipped into bishops.
+                print(
+                    f"WARNING: no crop-geometry sidecar at {meta_path}; falling back to "
+                    f"headroom={_LEGACY_HEADROOM} (the superseded v1 geometry). A model "
+                    "trained on tall crops will have its pieces decapitated. Export the "
+                    "sidecar or pass headroom= explicitly.",
+                    file=sys.stderr,
+                )
         self.logits_fn: LogitsFn = (
             model if callable(model) else _onnx_logits_fn(model)
         )
-        self.headroom = headroom if headroom is not None else float(meta.get("headroom", 0.15))
-        self.side_pad = side_pad if side_pad is not None else float(meta.get("side_pad", 0.15))
+        self.headroom = (
+            headroom if headroom is not None else float(meta.get("headroom", _LEGACY_HEADROOM))
+        )
+        self.side_pad = (
+            side_pad if side_pad is not None else float(meta.get("side_pad", _LEGACY_SIDE_PAD))
+        )
         self.square_size = (
             square_size if square_size is not None else int(meta.get("square_size", 224))
         )

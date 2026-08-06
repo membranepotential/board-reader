@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 import numpy as np
 
 from board_reader_core.protocol import CLASSES, NUM_CLASSES, START_PLACEMENT, parse_placement
@@ -129,3 +131,28 @@ def test_geometry_loaded_from_model_sidecar(tmp_path, monkeypatch):
     bare.write_bytes(b"stub")
     est2 = TrainedEstimator(bare)
     assert est2.headroom == 0.15 and est2.side_pad == 0.15
+
+
+def test_missing_sidecar_warns_loudly(tmp_path, monkeypatch, capsys):
+    """The silent v1-geometry fallback shipped a decapitating server once; a
+    sidecar-less model must say so on stderr."""
+    from board_reader_inference import trained as trained_mod
+
+    monkeypatch.setattr(trained_mod, "_onnx_logits_fn", lambda p: (lambda b: None))
+
+    bare = tmp_path / "bare.onnx"
+    bare.write_bytes(b"stub")
+    TrainedEstimator(bare)
+    err = capsys.readouterr().err
+    assert "no crop-geometry sidecar" in err and "decapitated" in err
+
+    # An explicit headroom is a deliberate choice, not an accident — no noise.
+    TrainedEstimator(bare, headroom=1.6)
+    assert capsys.readouterr().err == ""
+
+    # A model that ships its geometry is the normal case — also no noise.
+    ok = tmp_path / "ok.onnx"
+    ok.write_bytes(b"stub")
+    (tmp_path / "ok.onnx.meta.json").write_text(json.dumps({"headroom": 1.6}))
+    TrainedEstimator(ok)
+    assert capsys.readouterr().err == ""
