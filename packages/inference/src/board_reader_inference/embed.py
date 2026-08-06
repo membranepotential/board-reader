@@ -20,6 +20,8 @@ from typing import Protocol, runtime_checkable
 import cv2
 import numpy as np
 
+from board_reader_inference.onnxrt import cuda_providers
+
 
 @runtime_checkable
 class Embedder(Protocol):
@@ -129,17 +131,8 @@ class DinoV2Embedder:
             )
         self.image_size = image_size
         if providers is None:
-            # Prefer the GPU when the CUDA EP is usable (~5x on a GTX 1650);
-            # preload_dlls resolves the pip-installed nvidia-*-cu12 libs so no
-            # LD_LIBRARY_PATH setup is needed. Silently fall back to CPU — the
-            # session constructor itself downgrades if CUDA can't initialise.
-            providers = ["CPUExecutionProvider"]
-            if "CUDAExecutionProvider" in ort.get_available_providers():
-                try:
-                    ort.preload_dlls()
-                    providers = ["CUDAExecutionProvider", "CPUExecutionProvider"]
-                except Exception:
-                    pass
+            # Prefer the GPU when the CUDA EP is usable (~5x on a GTX 1650).
+            providers = cuda_providers()
         self.session = ort.InferenceSession(
             str(self.model_path),
             providers=providers,

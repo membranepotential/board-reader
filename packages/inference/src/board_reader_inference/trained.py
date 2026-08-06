@@ -28,6 +28,7 @@ from board_reader_core.protocol import (
 )
 from board_reader_core.wire import Frame
 
+from board_reader_inference.onnxrt import cuda_providers
 from board_reader_inference.squares import crop_squares_photo, full_frame_corners
 
 # ImageNet normalization, RGB order — the torchvision transform the model
@@ -58,7 +59,7 @@ def _onnx_logits_fn(model_path: str | Path) -> LogitsFn:
 
     sess = ort.InferenceSession(
         str(model_path),
-        providers=["CUDAExecutionProvider", "CPUExecutionProvider"],
+        providers=cuda_providers(),
     )
     name = sess.get_inputs()[0].name
 
