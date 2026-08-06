@@ -27,7 +27,8 @@ Nothing in flight. The 2026-07-17/18 recognition campaign landed and is committe
   an unseen set at 92.5% per-square with no calibration. Full write-up:
   [docs/reports/2026-07-18-zero-shot-campaign.md](docs/reports/2026-07-18-zero-shot-campaign.md).
 - **Calibration as a booster.** kNN exemplar bank ⊕ trained model, blended by bank maturity:
-  **633/640** on the labeled eval vs 605 (trained alone) / 579 (previous model).
+  633/640 on the labeled eval vs 605 (trained alone) / 579 (previous model). **That 633 is
+  not a generalization number** — see Open questions.
 - **Guardrails from four bank-corruption incidents.** Opt-in persistence, orientation probe
   on `/calibrate`, piece-square agreement gate (422), `very_low_angle` / `low_light` warnings.
 
@@ -47,6 +48,19 @@ Nothing in flight. The 2026-07-17/18 recognition campaign landed and is committe
 
 ## Open questions
 
+- **The headline accuracy is measured on contaminated data (found 2026-08-06).** The
+  session bank's base is `models/exemplars_dinov2.npz`, which `tools/build_exemplar_bank.py`
+  builds *from `data/eval/ground_truth.json`* — the eval set. So the bank has seen 9 of the
+  10 eval boards, and scores 64/64 on exactly those 9; on `up_20260718_0001`, the one board
+  it never saw, it scores **43/64**. The honest generalization figure is the trained model
+  alone: 605/640 per-square but only **2/10 perfect boards**. Whole-board correctness, not
+  per-square, is the number that matters for reading a game, and it has never been the
+  number we report. Needs: an eval set disjoint from the bank, and perfect-board rate as the
+  headline metric.
+- **Confidence is not calibrated.** A novel board (`20260806-...-0002`) read with two white
+  kings and no black king at **confidence 0.97**. DESIGN §9 lists confidence calibration as
+  a top risk because the whole downstream-smoothing plan leans on confidences being
+  meaningful; it is still unmeasured. Reliability diagrams, not accuracy.
 - Is `run_e`'s bright-board regression real or eval noise? 10 boards is thin.
 - Does `stability` earn its keep (DESIGN D3)? Undecided until M2 produces a stream to judge.
 - Licensing: the deployed model is trained on ChessReD (CC BY-NC-SA) + murky-license
