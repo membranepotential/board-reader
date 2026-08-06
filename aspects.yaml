@@ -149,7 +149,7 @@ aspects:
       External state — the model and calibration artifacts actually on disk.
       Git-ignored (non-redistributable training-data licenses), so the repo can
       only describe them, never contain them.
-    probe: "ls -1 models models/d16 2>/dev/null"
+    probe: "ls -1 models models/run_e 2>/dev/null"
     affects:
       - aspect: docs
         role: >-

@@ -38,7 +38,7 @@ OUT = ROOT / "models/exemplars_session.npz"
 # The deployed model (compose.yaml/BR_MODEL). Must match what serves, or the
 # rebuilt bank's exemplars are verified against different crop geometry than the
 # one that will read them.
-MODEL = ROOT / "models/d16/model.onnx"
+MODEL = ROOT / "models/run_e/model.onnx"
 UPLOADS = ROOT / "data/uploads"
 
 

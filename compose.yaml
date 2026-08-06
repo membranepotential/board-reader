@@ -20,7 +20,7 @@ services:
       # The trained zero-shot classifier (DESIGN §4.6). models/ is git-ignored
       # (non-redistributable training data licenses); when absent the server
       # degrades gracefully to the stub, so a fresh clone still composes up.
-      BR_MODEL: /models/d16/model.onnx
+      BR_MODEL: /models/run_e/model.onnx
     volumes:
       - ./models:/models:ro
     ports:
