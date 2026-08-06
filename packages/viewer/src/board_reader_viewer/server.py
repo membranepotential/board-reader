@@ -17,13 +17,16 @@ from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.responses import HTMLResponse
+from fastapi.staticfiles import StaticFiles
 
 _STATIC = Path(__file__).resolve().parent / "static"
 _DEFAULT_WS = "ws://localhost:8000/viewer"
+_DEFAULT_HTTP = "http://localhost:8000"
 
 
 def create_app() -> FastAPI:
     app = FastAPI(title="board-reader viewer")
+    app.mount("/static", StaticFiles(directory=_STATIC), name="static")
 
     @app.get("/healthz")
     async def healthz() -> dict:
@@ -35,6 +38,14 @@ def create_app() -> FastAPI:
         ws_url = os.environ.get("BR_INFERENCE_WS", _DEFAULT_WS)
         # Inject the inference WS URL the browser should connect to.
         html = html.replace("__BR_INFERENCE_WS__", ws_url)
+        return HTMLResponse(html)
+
+    @app.get("/snapshot", response_class=HTMLResponse)
+    async def snapshot() -> HTMLResponse:
+        """Phone snapshot page: photo -> corner-tap -> rectify -> POST /estimate."""
+        html = (_STATIC / "snapshot.html").read_text(encoding="utf-8")
+        http_url = os.environ.get("BR_INFERENCE_HTTP", _DEFAULT_HTTP)
+        html = html.replace("__BR_INFERENCE_HTTP__", http_url)
         return HTMLResponse(html)
 
     return app

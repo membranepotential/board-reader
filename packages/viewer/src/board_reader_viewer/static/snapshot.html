@@ -1,0 +1,1015 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>board-reader · snapshot</title>
+<link rel="stylesheet" href="/static/vendor/chessground.base.css" />
+<link rel="stylesheet" href="/static/vendor/chessground.brown.css" />
+<link rel="stylesheet" href="/static/vendor/chessground.cburnett.css" />
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  html, body { -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
+  body { font: 16px/1.45 system-ui, sans-serif; margin: 0; background: #14171c; color: #e6e6e6;
+         -webkit-tap-highlight-color: transparent; }
+  header { padding: 10px 16px; border-bottom: 1px solid #272b33; }
+  header h1 { font-size: 16px; margin: 0; font-weight: 600; }
+  main { padding: 14px 16px; padding-bottom: 120px; max-width: 480px; margin: 0 auto; }
+  .step { margin-bottom: 16px; }
+  .hint { color: #9aa3ad; font-size: 14px; margin: 6px 0; }
+  .hint b { color: #ffcf33; }
+  .hint-inline { font-weight: 400; color: #9aa3ad; font-size: 13px; }
+
+  /* Buttons: ≥48px tall everywhere, generous tap targets throughout. */
+  button { background: #2a6ef0; color: #fff; border: 0; border-radius: 10px; padding: 12px 18px;
+           font: inherit; font-size: 16px; font-weight: 600; min-height: 48px;
+           touch-action: manipulation; }
+  button.secondary { background: #333842; }
+  button:disabled { opacity: .4; }
+
+  /* Big primary capture control: a <label> styled as a button wrapping a visually-hidden
+     <input type=file>, so the native file/camera chooser still fires but we control the look. */
+  .visually-hidden { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+                     overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; border: 0; }
+  .capture-btn { display: flex; align-items: center; justify-content: center; gap: 10px;
+                 background: #2a6ef0; color: #fff; font-weight: 700; font-size: 18px;
+                 min-height: 64px; border-radius: 14px; cursor: pointer;
+                 touch-action: manipulation; -webkit-tap-highlight-color: transparent; }
+  .capture-btn .icon { font-size: 22px; }
+  /* Shrinks once a photo is in hand — the big CTA has done its job; results take over focus. */
+  .capture-btn.compact { min-height: 44px; font-size: 14px; border-radius: 10px; }
+  .capture-btn.compact .icon { font-size: 16px; }
+
+  input[type=file] { max-width: 100%; }
+  /* Canvases are non-interactive by default (pan-y = page scroll works normally over them);
+     only the drag handles themselves (below) ever set touch-action: none. */
+  canvas { max-width: 100%; touch-action: pan-y; border: 1px solid #272b33; border-radius: 6px; }
+  #loupe { position: fixed; width: 140px; height: 140px; border: 2px solid #2a6ef0; z-index: 40;
+           border-radius: 10px; pointer-events: none; display: none; background: #000;
+           box-shadow: 0 4px 20px rgba(0,0,0,.6); }
+  #result { display: none; }
+
+  /* The photo + its corner handles. The stage/canvas are ALWAYS touch-action: pan-y —
+     unconditionally, with no state-dependent exception — so a thumb landing anywhere on
+     the photo that isn't a handle scrolls the page like anything else. Only .corner-handle
+     is ever touch-action: none; JS never calls preventDefault/setPointerCapture on the
+     canvas itself either (see the pointerdown handler below) — every drag, including
+     placing a brand-new corner, is captured by a handle element, never the canvas. */
+  .corner-stage { position: relative; line-height: 0; touch-action: pan-y; }
+  .corner-handle { position: absolute; width: 44px; height: 44px; margin: -22px 0 0 -22px;
+                   border-radius: 50%; background: rgba(255,207,51,.9); border: 3px solid #2a6ef0;
+                   display: flex; align-items: center; justify-content: center;
+                   font-weight: 800; font-size: 13px; color: #14171c;
+                   touch-action: none; -webkit-user-select: none; user-select: none;
+                   -webkit-touch-callout: none; box-shadow: 0 2px 10px rgba(0,0,0,.5); }
+  .corner-handle:active { background: #ffcf33; }
+
+  /* Corner adjustment is the fallback path, tucked into a native <details> — collapsed by
+     default whenever auto-detect succeeds, forced open only when it fails. */
+  #cornersDetails summary { cursor: pointer; padding: 12px 0; font-size: 15px; font-weight: 600;
+                             color: #c8cdd4; touch-action: manipulation; }
+
+  /* chessground needs an explicit box; a square wrapper sized by max-width + aspect-ratio,
+     with cg-wrap filling it at 100%. viewOnly means no piece dragging, so touch may
+     pan — a thumb landing on the (full-width) result board must still scroll the page. */
+  .board-wrap { width: 100%; max-width: 420px; aspect-ratio: 1; touch-action: manipulation;
+                -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
+  .cg-wrap { width: 100%; height: 100%; }
+  .lowconf-legend { display: inline-flex; align-items: center; gap: 5px; }
+  .lowconf-legend .dot { width: 10px; height: 10px; border-radius: 50%; background: #e25555;
+                         display: inline-block; }
+
+  /* Auto-calibration success banner: non-blocking, near the board, auto-dismissed by JS. */
+  .autocal-banner { display: none; background: #1f3a24; color: #97e0a6; font-size: 13px;
+                     font-weight: 600; padding: 9px 12px; border-radius: 8px; margin-bottom: 10px; }
+  /* Occupancy-only mode: no placement was recognized, so the hint (which tells the user
+     how to unlock full recognition) has to be the prominent thing on screen. */
+  .occupancy-hint { display: none; background: #2a2410; color: #ffcf33; font-size: 14px;
+                     font-weight: 600; border: 1px solid #4a3f10; border-radius: 8px;
+                     padding: 10px 12px; margin-bottom: 10px; }
+  /* Same amber family as the occupancy hint, deliberately smaller/quieter — it's a
+     secondary heads-up ("reads may be degraded"), not the main thing on screen. */
+  .low-light-hint { display: none; background: #2a2410; color: #ffcf33; font-size: 12px;
+                     font-weight: 500; border: 1px solid #4a3f10; border-radius: 6px;
+                     padding: 6px 10px; margin-bottom: 10px; }
+  /* Small, unobtrusive text-button — deliberately NOT the ≥48px primary-button treatment,
+     since it's an occasional undo action, not a step in the main flow. */
+  .text-btn { background: none; border: 0; color: #6aa8ff; font: inherit; font-size: 13px;
+              font-weight: 600; min-height: auto; padding: 6px 0; text-decoration: underline;
+              touch-action: manipulation; }
+  .meta { font-size: 14px; color: #9aa3ad; margin: 10px 0; word-break: break-all; }
+  .meta code { color: #c8cdd4; }
+  #pl { -webkit-user-select: text; user-select: text; }
+  .links a { display: inline-flex; align-items: center; min-height: 48px; background: #1f3a24;
+             color: #97e0a6; text-decoration: none; padding: 10px 16px; border-radius: 10px;
+             margin: 6px 8px 0 0; font-weight: 600; touch-action: manipulation; }
+  .links a.secondary { background: #333842; color: #c8cdd4; }
+  .stm { margin: 12px 0; }
+  .stm label { margin-right: 18px; padding: 6px 0; display: inline-block; touch-action: manipulation; }
+  #err { color: #ff9a9a; font-size: 14px; white-space: pre-wrap; margin-top: 10px; }
+  .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin: 8px 0; }
+
+  /* Diagnostics: secondary and collapsed — a plain checkbox toggle, de-emphasized. */
+  .diag-toggle { display: flex; align-items: center; gap: 8px; margin: 14px 0 0; font-size: 13px;
+                 color: #7d8590; touch-action: manipulation; padding: 8px 0; }
+  .diag-toggle input { width: 20px; height: 20px; }
+  #diag { display: none; margin-top: 12px; border-top: 1px solid #272b33; padding-top: 12px; }
+  #diag figure { margin: 0 0 16px; }
+  #diag img { max-width: 100%; border-radius: 6px; border: 1px solid #272b33; display: block; }
+  #diag figcaption { font-size: 12px; color: #9aa3ad; margin-top: 6px; }
+
+  /* Fixed bottom stack: the correction panel (when open) sits directly ABOVE the sticky
+     action bar, never overlapping the board, which lives inline in the scrollable content
+     above both. A flex column lets the panel's height vary without any JS measuring. */
+  #bottomStack { position: fixed; left: 0; right: 0; bottom: 0; z-index: 30;
+                 display: flex; flex-direction: column; }
+
+  /* Sticky bottom action bar: the "Read" step of the fallback flow always lives here,
+     reachable without scrolling, safe-area aware for notched phones. */
+  #actionBar { display: flex; align-items: center; gap: 10px;
+               padding: 10px 16px calc(10px + env(safe-area-inset-bottom));
+               background: #1b1f26; border-top: 1px solid #272b33;
+               box-shadow: 0 -6px 20px rgba(0,0,0,.4); }
+  #actionBar[hidden] { display: none; }
+  #actionBar button { flex: 1 1 auto; }
+  #actionBar #calib { flex: 0 0 auto; font-size: 13px; padding: 10px 14px; }
+  #actionBar #busy { font-size: 13px; color: #9aa3ad; white-space: nowrap; }
+
+  /* Tap-to-correct panel: a mobile-first bottom sheet, plain taps only (no touch-action
+     tricks needed — nothing here is a drag/gesture surface, so page scroll is never at
+     risk). Internally scrollable so a small phone never loses access to lower cells. */
+  .correction-panel { background: #1b1f26; border-top: 1px solid #272b33;
+                       padding: 10px 12px; max-height: 42vh; overflow-y: auto;
+                       -webkit-overflow-scrolling: touch; box-shadow: 0 -6px 20px rgba(0,0,0,.4); }
+  .correction-panel[hidden] { display: none; }
+  .cp-header { display: flex; justify-content: space-between; align-items: baseline;
+               gap: 8px; font-size: 13px; color: #9aa3ad; margin-bottom: 8px; }
+  .cp-header b { color: #ffcf33; font-size: 15px; }
+  .cp-header .text-btn { padding: 2px 0; }
+  /* The privileged state — empty↔piece is the most common correction — gets its own
+     full-width row above the 12-piece grid, not just another cell in it. */
+  .cp-empty-row { display: flex; align-items: center; gap: 10px; width: 100%;
+                  background: #232833; border: 2px solid transparent; border-radius: 10px;
+                  padding: 8px 12px; margin-bottom: 10px; min-height: 44px;
+                  color: #e6e6e6; font-weight: 600; font: inherit; font-size: 14px;
+                  touch-action: manipulation; }
+  .cp-empty-row.selected { border-color: #6aa8ff; background: #232f42; }
+  .cp-empty-row .cp-bar-track { flex: 1; }
+  /* 2 rows x 6 columns: White on top, Black below, same piece type in the same column —
+     the board's own color symmetry, so a miscolored read is a vertical glance, not a hunt. */
+  .cp-grid { display: grid; grid-template-columns: repeat(6, 1fr); gap: 6px; }
+  .cp-cell { display: flex; flex-direction: column; align-items: center; gap: 3px;
+             padding: 4px 2px 6px; border-radius: 8px; border: 2px solid transparent;
+             background: #232833; touch-action: manipulation; }
+  .cp-cell.selected { border-color: #6aa8ff; background: #232f42; }
+  .cp-cell.faint { opacity: .45; }
+  .cp-cell piece { display: block; position: static; width: 32px; height: 32px; }
+  .cp-bar-track { width: 100%; height: 5px; border-radius: 3px; background: #333842; overflow: hidden; }
+  .cp-bar-track > i { display: block; height: 100%; background: #6aa8ff; }
+  .cp-pct { font-size: 10px; color: #9aa3ad; }
+  .cp-argmax-dot { width: 5px; height: 5px; border-radius: 50%; background: #ffcf33; }
+</style>
+</head>
+<body>
+<header><h1>board-reader · snapshot → position → Lichess</h1></header>
+<main>
+  <div class="step" id="captureStep">
+    <label class="capture-btn" id="captureLabel" for="file">
+      <span class="icon">&#128247;</span><span id="captureLabelText">Take / choose photo</span>
+    </label>
+    <!-- Deliberately NO capture attribute on this input: with it, iOS Safari skips the
+         chooser and forces the camera, making the photo library unreachable. Bare, both
+         iOS and Android present the native sheet offering camera AND camera roll. -->
+    <input type="file" id="file" accept="image/*" class="visually-hidden" />
+    <div class="hint">Point at the board (angled is fine) — the position reads automatically.</div>
+  </div>
+
+  <div class="step" id="pickStep" style="display:none">
+    <details id="cornersDetails">
+      <summary>Adjust corners <span class="hint-inline">(fallback — only needed if the read looks wrong)</span></summary>
+      <div class="hint" id="cornerHint"></div>
+      <div class="corner-stage" id="cornerStage">
+        <canvas id="view"></canvas>
+      </div>
+      <div class="row">
+        <button id="rotate" style="display:none">&#8635; rotate labels</button>
+        <button id="undo" class="secondary">Undo</button>
+        <button id="reset" class="secondary">Reset corners</button>
+      </div>
+      <div class="hint" id="warpStep" style="display:none">
+        Rectified preview — a8 must be top-left:
+        <canvas id="warped" width="512" height="512"></canvas>
+      </div>
+    </details>
+  </div>
+
+  <div class="step" id="result">
+    <div id="autocalBanner" class="autocal-banner"></div>
+    <div id="occupancyHint" class="occupancy-hint"></div>
+    <div id="lowLightWarning" class="low-light-hint"></div>
+    <div class="board-wrap" id="board"></div>
+    <div class="meta" id="metaRow">
+      placement <code id="pl"></code><br/>
+      confidence <code id="conf"></code> ·
+      <span class="lowconf-legend"><span class="dot"></span> low-confidence squares</span><br/>
+      <span class="hint-inline">Tap a square to correct it.</span>
+      <button id="resetCorrections" class="text-btn" style="display:none">↺ Reset corrections</button>
+    </div>
+    <div class="stm" id="stmRow">
+      to move:
+      <label><input type="radio" name="stm" value="w" checked /> White</label>
+      <label><input type="radio" name="stm" value="b" /> Black</label>
+    </div>
+    <div class="links" id="linksRow">
+      <a id="lnAnalysis" target="_blank" rel="noopener">Open in Lichess analysis</a>
+      <a id="lnEditor" class="secondary" target="_blank" rel="noopener">Lichess editor</a>
+    </div>
+    <label class="diag-toggle">
+      <input type="checkbox" id="diagToggle" /> Show diagnostics
+    </label>
+    <div id="diag">
+      <figure>
+        <img id="diagBoxes" alt="sampling boxes on your photo" />
+        <figcaption>sampling boxes on your photo, colored by confidence</figcaption>
+      </figure>
+      <figure>
+        <img id="diagMosaic" alt="model input mosaic" />
+        <figcaption>what the model saw per square</figcaption>
+      </figure>
+    </div>
+  </div>
+
+  <div id="err"></div>
+</main>
+<canvas id="loupe" width="140" height="140"></canvas>
+
+<div id="bottomStack">
+  <div id="correctionPanel" class="correction-panel" hidden>
+    <div class="cp-header">
+      <span>Correcting <b id="cpSquare"></b></span>
+      <span id="cpCurrent"></span>
+      <button id="cpClose" class="text-btn" type="button">✕ Close</button>
+    </div>
+    <div class="cp-empty-row" id="cpEmptyRow">
+      <span>Empty</span>
+      <span class="cp-bar-track"><i id="cpEmptyBar"></i></span>
+      <span class="cp-pct" id="cpEmptyPct"></span>
+    </div>
+    <div class="cp-grid cg-wrap" id="cpGrid"></div>
+  </div>
+  <div id="actionBar" hidden>
+    <button id="read">Read position</button>
+    <button id="calib" class="secondary">Calibrate (start)</button>
+    <span id="busy" style="display:none">estimating…</span>
+  </div>
+</div>
+
+<script type="module">
+"use strict";
+import { Chessground } from "/static/vendor/chessground.min.js";
+
+// Injected by the viewer server; if it points at localhost but the page is opened
+// from another device (the phone), assume inference lives on the same host as the
+// viewer and rewrite — zero-config LAN use.
+const RAW_HTTP = "__BR_INFERENCE_HTTP__";
+const INFERENCE_HTTP = (() => {
+  try {
+    const u = new URL(RAW_HTTP);
+    if ((u.hostname === "localhost" || u.hostname === "127.0.0.1") &&
+        location.hostname && location.hostname !== "localhost") {
+      u.hostname = location.hostname;
+    }
+    return u.origin;
+  } catch { return RAW_HTTP; }
+})();
+
+const CORNER_ORDER = ["a8", "h8", "h1", "a1"];  // = TL,TR,BR,BL of the canonical crop
+const MAX_SRC = 1600;   // downscale huge phone photos before detecting/warping/uploading
+const OUT = 512;
+// board_reader_core.protocol.CLASSES — canonical square_dist class order (verified in source).
+const CLASSES = ["empty", "P", "N", "B", "R", "Q", "K", "p", "n", "b", "r", "q", "k"];
+
+const fileEl = document.getElementById("file");
+const captureLabelEl = document.getElementById("captureLabel");
+const captureLabelText = document.getElementById("captureLabelText");
+const actionBar = document.getElementById("actionBar");
+const cornersDetails = document.getElementById("cornersDetails");
+const cornerStage = document.getElementById("cornerStage");
+const view = document.getElementById("view"), vctx = view.getContext("2d");
+const warped = document.getElementById("warped"), wctx = warped.getContext("2d");
+const loupe = document.getElementById("loupe"), lctx = loupe.getContext("2d");
+const cornerHint = document.getElementById("cornerHint");
+const rotateBtn = document.getElementById("rotate");
+const readBtn = document.getElementById("read");
+const calibBtn = document.getElementById("calib");
+const errEl = document.getElementById("err");
+const panelEl = document.getElementById("correctionPanel");
+
+// Offscreen source canvas (capped size); all corner coords live in ITS pixel space.
+// This same canvas (as JPEG) is what /detect and /estimate receive, so detector
+// output and the corners query param share one coordinate system.
+const src = document.createElement("canvas");
+const sctx = src.getContext("2d");
+
+let pts = [];          // up to 4 corners, storage order = tap/detect order
+let rot = 0;           // label rotation: label(pts[i]) = CORNER_ORDER[(i+rot)%4]
+let dragIdx = null;    // corner being dragged, or null
+// Auto-detected corners carry NO orientation (geometry can't know which corner is
+// a8), so reads then ask the server to auto-rotate by chess plausibility. The
+// moment the user places, drags, or relabels a corner, their orientation is
+// authoritative and auto-rotation is off.
+let cornersEdited = false;
+let detectFailed = false;
+let lastMode = "position";  // "position" | "occupancy" — which /estimate shape rendered last
+
+// Rotating labels only makes sense when the last read could actually validate them (a
+// placement gives you a color/orientation cue to check against); an occupancy-only read
+// has no such signal, so the button is pointless until a real placement comes back.
+function updateRotateVisibility() {
+  rotateBtn.style.display = (pts.length === 4 && lastMode !== "occupancy") ? "inline-block" : "none";
+}
+
+function labelOf(i) { return CORNER_ORDER[(i + rot) % 4]; }
+// Corners in canonical a8,h8,h1,a1 order regardless of storage order/rotation.
+function orderedCorners() {
+  return CORNER_ORDER.map((_, k) => pts[(k - rot + 4) % 4]);
+}
+function canvasJpeg(c, quality) {
+  return new Promise((res) => c.toBlob(res, "image/jpeg", quality));
+}
+
+fileEl.onchange = (e) => {
+  const f = e.target.files[0]; if (!f) return;
+  errEl.textContent = "";
+  const im = new Image();
+  im.onload = () => {
+    const k = Math.min(1, MAX_SRC / Math.max(im.naturalWidth, im.naturalHeight));
+    src.width = Math.round(im.naturalWidth * k);
+    src.height = Math.round(im.naturalHeight * k);
+    sctx.drawImage(im, 0, 0, src.width, src.height);
+    URL.revokeObjectURL(im.src);
+    pts = []; rot = 0; dragIdx = null; detectFailed = false; cornersEdited = false;
+    lastMode = "position";  // a fresh photo has no bearing on a previous occupancy-only read
+    panelSquare = null; panelEl.hidden = true;  // a new photo invalidates any open correction panel
+    view.width = src.width; view.height = src.height;
+    document.getElementById("pickStep").style.display = "block";
+    document.getElementById("warpStep").style.display = "none";
+    document.getElementById("result").style.display = "none";
+    cornersDetails.open = false;   // collapsed until/unless auto-detect fails
+    captureLabelText.textContent = "New photo";
+    captureLabelEl.classList.add("compact");
+    actionBar.hidden = false;
+    draw();
+    autoDetect();
+  };
+  im.src = URL.createObjectURL(f);
+};
+
+// ---- automatic board detection + automatic read: photo -> position, zero taps ----
+async function autoDetect() {
+  cornerHint.innerHTML = "Detecting board…";
+  try {
+    const blob = await canvasJpeg(src, 0.9);
+    const r = await fetch(INFERENCE_HTTP + "/detect", {
+      method: "POST", body: blob, headers: { "Content-Type": "image/jpeg" },
+    });
+    if (!r.ok) throw new Error("detect " + r.status);
+    const d = await r.json();
+    if (!d.corners || d.corners.length !== 4) throw new Error("no corners");
+    // Geometric TL,TR,BR,BL from the server; initial guess: a8=TL, h8=TR, h1=BR, a1=BL.
+    pts = d.corners.map((p) => [Math.round(p[0]), Math.round(p[1])]);
+    rot = 0;
+    cornersEdited = false;  // orientation is a guess — let the server auto-rotate
+    draw();
+    maybeRectify();
+    await runRead();  // corners look good — go straight to a result, no tap needed
+  } catch {
+    detectFailed = true;
+    pts = []; rot = 0;
+    cornersDetails.open = true;  // fallback path: surface manual corner-tapping immediately
+    draw();
+  }
+}
+
+function draw() {
+  vctx.drawImage(src, 0, 0);
+  vctx.strokeStyle = "#2a6ef0"; vctx.lineWidth = 3;
+  if (pts.length >= 2) {
+    vctx.beginPath();
+    pts.forEach((p, i) => vctx[i ? "lineTo" : "moveTo"](p[0], p[1]));
+    if (pts.length === 4) vctx.closePath();
+    vctx.stroke();
+  }
+  if (pts.length < 4) {
+    cornerHint.innerHTML =
+      (detectFailed ? "Auto-detect didn't find the board — tap the corners yourself. " : "") +
+      `Tap the <b>${CORNER_ORDER[(pts.length + rot) % 4]}</b> corner of the playing surface ` +
+      `(${pts.length}/4). A handle appears there — drag it to fine-tune.`;
+  } else {
+    cornerHint.innerHTML =
+      "Check the labels: <b>a8</b> must sit on the board's a8 corner — " +
+      "<b>&#8635; rotate labels</b> if not. Drag any handle to fine-tune.";
+  }
+  updateRotateVisibility();
+  document.getElementById("undo").disabled =
+    document.getElementById("reset").disabled = pts.length === 0;
+  readBtn.disabled = calibBtn.disabled = pts.length !== 4;
+  renderHandles();
+}
+
+// ---- corner handles: real DOM elements laid over the canvas, not drawn pixels --------
+// Each handle owns its own touch-action: none and its own pointer capture, so a drag only
+// ever gets stolen from the page scroll when it starts ON a handle (see CSS above).
+function renderHandles() {
+  const rect = view.getBoundingClientRect();
+  const scale = rect.width ? rect.width / view.width : 1;   // canvas px -> CSS px
+  let handles = Array.from(cornerStage.querySelectorAll(".corner-handle"));
+  while (handles.length > pts.length) { handles.pop().remove(); }
+  while (handles.length < pts.length) {
+    const el = document.createElement("div");
+    el.className = "corner-handle";
+    attachHandleEvents(el, handles.length);
+    cornerStage.appendChild(el);
+    handles.push(el);
+  }
+  handles.forEach((el, i) => {
+    el.textContent = labelOf(i);
+    el.style.left = (pts[i][0] * scale) + "px";
+    el.style.top = (pts[i][1] * scale) + "px";
+  });
+}
+
+function attachHandleEvents(el, idx) {
+  el.addEventListener("pointerdown", (ev) => {
+    ev.preventDefault();
+    ev.stopPropagation();
+    dragIdx = idx;
+    el.setPointerCapture(ev.pointerId);
+    showLoupe(ev, pts[idx]);
+  });
+  el.addEventListener("pointermove", (ev) => {
+    if (dragIdx !== idx) return;
+    ev.preventDefault();
+    pts[idx] = canvasPos(ev).map(Math.round);
+    cornersEdited = true;
+    showLoupe(ev, pts[idx]);
+    draw();
+  });
+  el.addEventListener("pointerup", (ev) => {
+    if (dragIdx !== idx) return;
+    dragIdx = null;
+    loupe.style.display = "none";
+    draw();
+    maybeRectify();
+  });
+  el.addEventListener("pointercancel", () => {
+    if (dragIdx !== idx) return;
+    dragIdx = null;
+    loupe.style.display = "none";
+  });
+}
+
+function maybeRectify() {
+  if (pts.length === 4) rectifyAndShow();
+  else document.getElementById("warpStep").style.display = "none";
+}
+
+function canvasPos(ev) {
+  const r = view.getBoundingClientRect();
+  return [ (ev.clientX - r.left) * (view.width / r.width),
+           (ev.clientY - r.top) * (view.height / r.height) ];
+}
+
+// ---- corner interaction: the canvas itself only ever ADDS a new corner ------
+// The canvas never captures a pointer, never calls preventDefault, and stays
+// touch-action: pan-y unconditionally — it never competes with page scroll, full stop.
+// Placing a new corner (0-3 pts, guided tap-by-tap) is a single, uncontinued tap: it drops
+// the point at the tap location and immediately grows that corner's .corner-handle there
+// (via renderHandles). Fine-tuning it is a deliberately SEPARATE, subsequent gesture on
+// that handle (attachHandleEvents), never a continuation of this same touch — touch-action
+// is decided once, at touchstart, by whatever element was actually hit; reassigning pointer
+// capture afterwards to a different element does not retroactively change that decision, so
+// a tap-then-drag-without-lifting on the canvas could still get stolen as a page scroll.
+// Splitting "place" from "adjust" into two gestures avoids relying on that at all.
+view.addEventListener("pointerdown", (ev) => {
+  if (pts.length >= 4) return;
+  pts.push(canvasPos(ev).map(Math.round));
+  cornersEdited = true;  // hand-placed corners: the user's labeling is authoritative
+  draw();
+  maybeRectify();
+});
+// iOS Safari: no long-press callout / selection / drag ghosts on the canvas.
+view.addEventListener("contextmenu", (ev) => ev.preventDefault());
+document.addEventListener("dragstart", (ev) => ev.preventDefault());
+
+function showLoupe(ev, p) {
+  const Z = 4, s = loupe.width / Z;
+  const W = 140, H = 140, GAP = 24;
+  loupe.style.display = "block";
+  // Prefer floating above the finger; flip below and clamp to the viewport so it never
+  // drifts off-screen when a corner sits near the top or an edge of a small phone screen.
+  let left = ev.clientX - W / 2;
+  let top = ev.clientY - H - GAP;
+  if (top < 4) top = Math.min(window.innerHeight - H - 4, ev.clientY + GAP);
+  left = Math.max(4, Math.min(window.innerWidth - W - 4, left));
+  loupe.style.left = left + "px";
+  loupe.style.top = top + "px";
+  lctx.imageSmoothingEnabled = false;
+  lctx.clearRect(0, 0, loupe.width, loupe.height);
+  lctx.drawImage(src, p[0] - s / 2, p[1] - s / 2, s, s, 0, 0, loupe.width, loupe.height);
+  lctx.strokeStyle = "#2a6ef0"; lctx.beginPath();
+  lctx.moveTo(70, 0); lctx.lineTo(70, 140); lctx.moveTo(0, 70); lctx.lineTo(140, 70); lctx.stroke();
+}
+
+document.getElementById("undo").onclick = () => { pts.pop(); draw(); maybeRectify(); };
+document.getElementById("reset").onclick = () => {
+  pts = []; rot = 0; detectFailed = false; draw(); maybeRectify();
+};
+// Rotating labels changes which physical corner is a8 — any per-square corrections made
+// against the OLD mapping no longer refer to the right squares, so they're cleared here
+// rather than silently misapplied to a re-read under the new orientation.
+rotateBtn.onclick = () => { rot = (rot + 1) % 4; cornersEdited = true; resetCorrections(); draw(); maybeRectify(); };
+
+// ---- homography: dst (OUT x OUT corners) -> src (labeled corners) ----------
+// Solve the standard 8-unknown DLT system with Gaussian elimination, no libs.
+function homography(dstPts, srcPts) {
+  const A = [], b = [];
+  for (let i = 0; i < 4; i++) {
+    const [x, y] = dstPts[i], [u, v] = srcPts[i];
+    A.push([x, y, 1, 0, 0, 0, -x * u, -y * u]); b.push(u);
+    A.push([0, 0, 0, x, y, 1, -x * v, -y * v]); b.push(v);
+  }
+  for (let c = 0; c < 8; c++) {                    // partial-pivot elimination
+    let piv = c;
+    for (let r = c + 1; r < 8; r++) if (Math.abs(A[r][c]) > Math.abs(A[piv][c])) piv = r;
+    [A[c], A[piv]] = [A[piv], A[c]]; [b[c], b[piv]] = [b[piv], b[c]];
+    for (let r = 0; r < 8; r++) {
+      if (r === c || A[r][c] === 0) continue;
+      const k = A[r][c] / A[c][c];
+      for (let j = c; j < 8; j++) A[r][j] -= k * A[c][j];
+      b[r] -= k * b[c];
+    }
+  }
+  const h = b.map((v, i) => v / A[i][i]);
+  return [...h, 1];                                 // h33 = 1
+}
+
+// Client-side rectified preview only — the server re-derives its own geometry
+// from the corners and reads whole pieces off the original photo.
+function rectifyAndShow() {
+  const H = homography(
+    [[0, 0], [OUT, 0], [OUT, OUT], [0, OUT]],       // a8,h8,h1,a1 in the output
+    orderedCorners()
+  );
+  const sd = sctx.getImageData(0, 0, src.width, src.height);
+  const out = wctx.createImageData(OUT, OUT);
+  for (let y = 0; y < OUT; y++) {
+    for (let x = 0; x < OUT; x++) {
+      const w = H[6] * x + H[7] * y + H[8];
+      const u = Math.round((H[0] * x + H[1] * y + H[2]) / w);
+      const v = Math.round((H[3] * x + H[4] * y + H[5]) / w);
+      const di = (y * OUT + x) * 4;
+      if (u >= 0 && v >= 0 && u < src.width && v < src.height) {
+        const si = (v * src.width + u) * 4;
+        out.data[di] = sd.data[si]; out.data[di + 1] = sd.data[si + 1];
+        out.data[di + 2] = sd.data[si + 2]; out.data[di + 3] = 255;
+      } else { out.data[di + 3] = 255; }
+    }
+  }
+  wctx.putImageData(out, 0, 0);
+  document.getElementById("warpStep").style.display = "block";
+}
+
+// ---- estimate + render ------------------------------------------------------
+// Shared by the automatic zero-tap flow (called right after a successful auto-detect)
+// and the manual fallback (the sticky "Read position" button).
+async function runRead() {
+  if (pts.length !== 4) return;
+  document.getElementById("busy").style.display = "inline";
+  errEl.textContent = "";
+  try {
+    // POST the photo itself + the labeled corners; the server crops each square
+    // with headroom from the original view, so pieces are seen whole.
+    const qs = orderedCorners().map((p) => p.map(Math.round).join(",")).join(",");
+    const debugFlag = document.getElementById("diagToggle").checked ? "&debug=1" : "";
+    const rotFlag = cornersEdited ? "" : "&autorotate=1";
+    const blob = await canvasJpeg(src, 0.9);
+    const r = await fetch(INFERENCE_HTTP + "/estimate?corners=" + qs + debugFlag + rotFlag, {
+      method: "POST", body: blob, headers: { "Content-Type": "image/jpeg" },
+    });
+    if (!r.ok) throw new Error("estimate failed: " + r.status + " " + await r.text());
+    render(await r.json());
+  } catch (e) {
+    errEl.textContent = String(e) + "\nIs the inference node reachable at " + INFERENCE_HTTP + " ?";
+  } finally {
+    document.getElementById("busy").style.display = "none";
+  }
+}
+readBtn.onclick = runRead;
+
+// ---- one-tap per-set calibration --------------------------------------------
+// Photograph the STARTING position in your current lighting, set corners as
+// usual, then tap this: the server rebuilds its per-set centroids from that one
+// photo (the start position contains all 13 classes). Reads after this are tuned
+// to this set + lighting — recalibrate whenever the light changes noticeably.
+// Secondary/opt-in: normal use no longer needs calibration.
+calibBtn.onclick = async () => {
+  if (pts.length !== 4) return;
+  if (!confirm("Calibrate from this photo?\n\nThe board must show the STARTING position, " +
+               "with the a8/h8/h1/a1 labels on the matching corners.")) return;
+  document.getElementById("busy").style.display = "inline";
+  errEl.textContent = "";
+  try {
+    const qs = orderedCorners().map((p) => p.map(Math.round).join(",")).join(",");
+    const blob = await canvasJpeg(src, 0.9);
+    const r = await fetch(INFERENCE_HTTP + "/calibrate?corners=" + qs, {
+      method: "POST", body: blob, headers: { "Content-Type": "image/jpeg" },
+    });
+    if (!r.ok) {
+      // The server refuses calibrations that would poison the bank (photo not
+      // showing the claimed position); surface its reason verbatim, cleanly.
+      let reason = "calibrate failed: " + r.status;
+      try { reason = (await r.json()).error ?? reason; } catch {}
+      errEl.textContent = "🚫 " + reason;
+      return;
+    }
+    const d = await r.json();
+    errEl.textContent = "";
+    const rotNote = d.label_rotation
+      ? ` (corner labels were auto-corrected by ${d.label_rotation * 90}°)` : "";
+    cornerHint.innerHTML = `✅ Calibrated <b>${d.classes_calibrated}/13</b> piece classes ` +
+      `from this photo${rotNote} — now photograph your game position and Read as usual.`;
+  } catch (e) {
+    errEl.textContent = String(e) + "\nIs the inference node reachable at " + INFERENCE_HTTP + " ?";
+  } finally {
+    document.getElementById("busy").style.display = "none";
+  }
+};
+
+function fenToGrid(placement) {
+  return placement.split("/").map((rank) => {
+    const cells = [];
+    for (const ch of rank) {
+      if (/\d/.test(ch)) for (let i = 0; i < +ch; i++) cells.push("");
+      else cells.push(ch);
+    }
+    return cells;
+  });
+}
+
+// Inverse of fenToGrid: an 8x8 grid of piece letters ("" = empty) -> a FEN placement string.
+function gridToFen(grid) {
+  return grid.map((rank) => {
+    let out = "", empty = 0;
+    for (const cell of rank) {
+      if (!cell) { empty++; continue; }
+      if (empty) { out += empty; empty = 0; }
+      out += cell;
+    }
+    if (empty) out += empty;
+    return out;
+  }).join("/");
+}
+
+// FEN row 0 = rank 8, col 0 = file a — chessground keys are e.g. "e4".
+function squareKey(r, c) { return "abcdefgh"[c] + (8 - r); }
+
+let lastPlacement = null;
+let cgBoard = null;  // lazily created: chessground needs the wrapper to have real size,
+                     // which only happens once #result is shown (display:none => 0×0).
+let autocalTimer = null;
+
+// ---- tap-to-correct squares --------------------------------------------------
+// basePlacement/baseSquareDist are the server's own read for the CURRENT result — the
+// uncorrected baseline. `corrections` layers user taps on top without ever mutating them,
+// so "reset corrections" can always restore exactly what the server said.
+let basePlacement = null;    // ev.placement from the last real (non-occupancy) read
+let baseSquareDist = null;   // ev.square_dist from the last real read — needed for distribution lookups
+let corrections = new Map(); // squareKey -> corrected class ("empty"|"P"|...|"k"); absent = original
+let panelSquare = null;      // { r, c } of the square the correction panel is open for, or null
+
+function classIndex(cls) { return CLASSES.indexOf(cls); }
+
+// That square's 3 most likely classes, most likely first — [className, probability][].
+function top3Classes(r, c) {
+  return baseSquareDist[r][c]
+    .map((p, i) => [CLASSES[i], p])
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 3);
+}
+
+// What's actually shown at (r,c) right now: the correction if one exists, else the
+// server's own argmax (read straight off basePlacement, so it never drifts from `render`).
+function currentClassAt(r, c) {
+  const corrected = corrections.get(squareKey(r, c));
+  if (corrected !== undefined) return corrected;
+  return fenToGrid(basePlacement)[r][c] || "empty";
+}
+
+// The panel's active square gets its own autoShape on top of red/blue, so it's obvious
+// which square the open panel refers to (paints last -> on top of a blue "corrected" ring).
+function panelHighlightShape() {
+  // Felix's spec: "a distinct autoShape (e.g. green)" — green, distinct from red
+  // (low-confidence) and blue (already corrected).
+  return panelSquare ? [{ orig: squareKey(panelSquare.r, panelSquare.c), brush: "green" }] : [];
+}
+
+// The single source of truth for "what's actually shown": basePlacement with `corrections`
+// layered on top. Recomputes the live FEN, the board (piece squares + red/blue/green
+// autoShapes), the placement text, and both Lichess links — called after every tap and
+// every reset. Does NOT touch the panel's own contents — callers that changed the
+// correction/selection also call renderPanel() when the panel is open.
+function applyCorrections() {
+  const grid = fenToGrid(basePlacement);
+  const shapes = [];
+  for (let r = 0; r < 8; r++) for (let c = 0; c < 8; c++) {
+    const sq = squareKey(r, c);
+    const corrected = corrections.get(sq);
+    if (corrected !== undefined) {
+      grid[r][c] = corrected === "empty" ? "" : corrected;
+      shapes.push({ orig: sq, brush: "blue" });
+      continue;
+    }
+    const conf = baseSquareDist?.[r]?.[c] ? Math.max(...baseSquareDist[r][c]) : 1;
+    if (conf < 0.5) shapes.push({ orig: sq, brush: "red" });
+  }
+  shapes.push(...panelHighlightShape());
+  lastPlacement = gridToFen(grid);
+  cgBoard.set({ fen: lastPlacement, drawable: { enabled: true, visible: true, autoShapes: shapes } });
+  document.getElementById("pl").textContent = lastPlacement;
+  updateLinks();
+  document.getElementById("resetCorrections").style.display = corrections.size ? "inline-block" : "none";
+}
+
+// ---- correction panel: full distribution + direct selection ------------------
+// Row 1 = White, row 2 = Black, same piece type in the same column — the board's own
+// visual symmetry, so a miscolored read is a one-glance vertical scan, not a hunt.
+const PANEL_TYPES = ["K", "Q", "R", "B", "N", "P"];
+const ROLE_NAMES = { K: "king", Q: "queen", R: "rook", B: "bishop", N: "knight", P: "pawn" };
+
+function renderPanel() {
+  if (!panelSquare) return;
+  const { r, c } = panelSquare;
+  const dist = baseSquareDist[r][c];
+  const argmaxIdx = dist.indexOf(Math.max(...dist));
+  const curCls = currentClassAt(r, c);
+  const curIdx = classIndex(curCls);
+
+  document.getElementById("cpSquare").textContent = squareKey(r, c);
+  document.getElementById("cpCurrent").textContent =
+    `${curCls} · ${Math.round(dist[curIdx] * 100)}%`;
+
+  const emptyPct = Math.round(dist[0] * 100);
+  document.getElementById("cpEmptyRow").classList.toggle("selected", curIdx === 0);
+  document.getElementById("cpEmptyBar").style.width = emptyPct + "%";
+  document.getElementById("cpEmptyPct").textContent = emptyPct + "%";
+
+  const grid = document.getElementById("cpGrid");
+  grid.innerHTML = "";
+  ["white", "black"].forEach((color) => {
+    PANEL_TYPES.forEach((type) => {
+      const cls = color === "white" ? type : type.toLowerCase();
+      const idx = classIndex(cls);
+      const pct = dist[idx] * 100;
+      const cell = document.createElement("div");
+      cell.className = "cp-cell" + (pct < 1 ? " faint" : "") + (idx === curIdx ? " selected" : "");
+      cell.innerHTML =
+        `<piece class="${color} ${ROLE_NAMES[type]}"></piece>` +
+        `<div class="cp-bar-track"><i style="width:${Math.min(100, pct).toFixed(0)}%"></i></div>` +
+        `<div class="cp-pct">${pct < 1 ? "<1%" : Math.round(pct) + "%"}</div>` +
+        (idx === argmaxIdx ? '<div class="cp-argmax-dot" title="model’s original guess"></div>' : "");
+      cell.onclick = () => selectPanelClass(idx);
+      grid.appendChild(cell);
+    });
+  });
+}
+
+// Tap a panel cell -> set that state directly. Selecting the model's own top guess is
+// "no correction" (matches the fast-cycle path's semantics), same as any other class.
+function selectPanelClass(idx) {
+  if (!panelSquare) return;
+  const { r, c } = panelSquare;
+  const sq = squareKey(r, c);
+  const dist = baseSquareDist[r][c];
+  const argmaxIdx = dist.indexOf(Math.max(...dist));
+  if (idx === argmaxIdx) corrections.delete(sq); else corrections.set(sq, CLASSES[idx]);
+  applyCorrections();
+  renderPanel();  // stays open, refreshed — optimizes for fixing several squares in a row
+}
+
+function openPanelFor(r, c) {
+  panelSquare = { r, c };
+  panelEl.hidden = false;
+  renderPanel();
+}
+
+function closePanel() {
+  if (!panelSquare) return;
+  panelSquare = null;
+  panelEl.hidden = true;
+  if (baseSquareDist) applyCorrections();  // drops the green highlight shape
+}
+document.getElementById("cpClose").onclick = closePanel;
+document.getElementById("cpEmptyRow").onclick = () => selectPanelClass(0);
+
+// Tapping a square (a) advances it to its next-most-probable state — the fast path,
+// preserved — cycling argmax -> 2nd -> 3rd -> back to argmax, and (b) opens/updates the
+// full-distribution panel for that square, per Felix's spec. A correction made via the
+// panel (selectPanelClass, possibly outside the top-3) is a valid "current" state to
+// cycle from too — if it isn't one of the top-3, the next tap resets to argmax.
+function cycleSquareCorrection(r, c) {
+  const sq = squareKey(r, c);
+  const top3 = top3Classes(r, c).map(([cls]) => cls);
+  const curIdx3 = top3.indexOf(corrections.get(sq) ?? top3[0]);
+  const nextCls = top3[(curIdx3 + 1) % 3];
+  if (nextCls === top3[0]) corrections.delete(sq); else corrections.set(sq, nextCls);
+  openPanelFor(r, c);   // sets panelSquare before applyCorrections, so its highlight is right
+  applyCorrections();
+}
+
+function resetCorrections() {
+  corrections.clear();
+  panelSquare = null;
+  panelEl.hidden = true;
+  if (baseSquareDist) applyCorrections();
+}
+document.getElementById("resetCorrections").onclick = resetCorrections;
+
+// Tap = tap, not touch-capture: a plain click listener never touches touch-action or
+// preventDefault, so a swipe that starts on the board still scrolls the page like anywhere
+// else — only an actual (non-dragged) tap fires a click at all. viewOnly stays true;
+// chessground's own move/drag interaction is never enabled.
+document.getElementById("board").addEventListener("click", (ev) => {
+  if (!baseSquareDist || lastMode !== "position") return;  // nothing to correct yet/occupancy mode
+  const rect = ev.currentTarget.getBoundingClientRect();
+  const x = ev.clientX - rect.left, y = ev.clientY - rect.top;
+  if (x < 0 || y < 0 || x >= rect.width || y >= rect.height) return;
+  const c = Math.min(7, Math.max(0, Math.floor((x / rect.width) * 8)));
+  const r = Math.min(7, Math.max(0, Math.floor((y / rect.height) * 8)));
+  cycleSquareCorrection(r, c);
+});
+
+// Tapping anywhere outside the board and the panel itself closes the panel — a plain
+// click listener, same as everything else here, so it never touches scroll behavior.
+document.addEventListener("click", (ev) => {
+  if (!panelSquare) return;
+  // Use the event's dispatch-time composedPath(), NOT a live panelEl.contains(ev.target):
+  // selecting a grid cell rebuilds #cpGrid's innerHTML inside that cell's own click handler,
+  // so by the time this bubbles up ev.target is a detached node and .contains() returns
+  // false — which would wrongly close the panel on every direct pick. composedPath() is
+  // captured when the event is dispatched, so it still contains the panel/board.
+  const path = ev.composedPath();
+  if (path.includes(panelEl) || path.includes(document.getElementById("board"))) return;
+  closePanel();
+});
+
+function updateLowLightWarning(ev) {
+  const el = document.getElementById("lowLightWarning");
+  const msgs = [];
+  if (ev.warnings?.includes("low_light")) {
+    msgs.push("⚠️ Photo is very dark — reads degrade; add light if you can.");
+  }
+  if (ev.warnings?.includes("very_low_angle")) {
+    msgs.push("📐 Camera is almost level with the board — pieces hide each other and reads collapse. Hold the phone higher, looking down at the board.");
+  }
+  if (msgs.length) {
+    el.textContent = msgs.join(" ");
+    el.style.display = "block";
+  } else {
+    el.style.display = "none";
+  }
+}
+
+// /estimate answers with one of three shapes (DESIGN §4.6 / TESTING Option G):
+//   1. a normal position event (placement + confidence) — the common case.
+//   2. the same event PLUS a top-level "autocalibrated" block — the server just
+//      self-calibrated piece types from a starting-position photo.
+//   3. occupancy-only ({mode:"occupancy", occupied, hint}) — uncalibrated for this
+//      piece set: no placement exists yet, just which squares are occupied.
+function render(ev) {
+  if (ev.mode === "occupancy") { renderOccupancy(ev); return; }
+
+  lastMode = "position";
+  basePlacement = ev.placement;
+  baseSquareDist = ev.square_dist ?? null;
+  corrections.clear();  // a new read is a fresh baseline; last read's corrections don't carry over
+  panelSquare = null; panelEl.hidden = true;  // a new read invalidates any open correction panel
+  // NB: never "show" via style.display = "" — that reverts to the stylesheet's
+  // display:none and the section stays invisible. Must precede board creation/sizing.
+  document.getElementById("result").style.display = "block";
+  document.getElementById("occupancyHint").style.display = "none";
+  document.getElementById("metaRow").style.display = "";
+  document.getElementById("stmRow").style.display = "";
+  document.getElementById("linksRow").style.display = "";
+
+  const config = {
+    orientation: "white",
+    coordinates: true,
+    viewOnly: true,
+    drawable: { enabled: true, visible: true },
+  };
+  if (!cgBoard) cgBoard = Chessground(document.getElementById("board"), config);
+  else cgBoard.set(config);
+  applyCorrections();  // sets fen/autoShapes/#pl/links/reset-button from the fresh baseline
+
+  document.getElementById("conf").textContent = (ev.confidence ?? 0).toFixed(3);
+  updateDiagnostics(ev);
+  updateLowLightWarning(ev);
+  if (ev.autocalibrated) showAutocalBanner(ev.autocalibrated);
+  else if (ev.autorotated) showBanner(`↻ Orientation auto-corrected (rotated ${ev.autorotated}°) — use "rotate labels" if this looks wrong`);
+  else hideAutocalBanner();
+  updateRotateVisibility();
+  document.getElementById("result").scrollIntoView({ behavior: "smooth" });
+}
+
+// Occupancy-only: the server has no piece-type calibration for this set yet, so there is
+// no placement to show — just which squares have *something* on them, plus the hint that
+// tells the user how to unlock full recognition (photograph the starting position once).
+function renderOccupancy(ev) {
+  lastMode = "occupancy";
+  lastPlacement = null;
+  basePlacement = null;
+  baseSquareDist = null;  // no per-square distribution in this mode — nothing to correct
+  corrections.clear();
+  panelSquare = null; panelEl.hidden = true;
+  document.getElementById("resetCorrections").style.display = "none";
+  document.getElementById("result").style.display = "block";
+  hideAutocalBanner();
+
+  const hintEl = document.getElementById("occupancyHint");
+  hintEl.textContent = "🔍 " + (ev.hint || "Uncalibrated for this piece set — showing occupancy only.");
+  hintEl.style.display = "block";
+  // No placement exists in this mode, so nothing that depends on one is meaningful.
+  document.getElementById("metaRow").style.display = "none";
+  document.getElementById("stmRow").style.display = "none";
+  document.getElementById("linksRow").style.display = "none";
+
+  const shapes = [];
+  for (let r = 0; r < 8; r++) for (let c = 0; c < 8; c++) {
+    if (ev.occupied?.[r]?.[c]) shapes.push({ orig: squareKey(r, c), brush: "blue" });
+  }
+  const config = {
+    fen: "8/8/8/8/8/8/8/8",
+    orientation: "white",
+    coordinates: true,
+    viewOnly: true,
+    drawable: { enabled: true, visible: true, autoShapes: shapes },
+  };
+  if (!cgBoard) cgBoard = Chessground(document.getElementById("board"), config);
+  else cgBoard.set(config);
+
+  updateDiagnostics(ev);
+  updateLowLightWarning(ev);
+  updateRotateVisibility();
+  document.getElementById("result").scrollIntoView({ behavior: "smooth" });
+}
+
+function showAutocalBanner(autocal) {
+  showBanner(`✓ Auto-calibrated from the starting position (${autocal.matches}/64 squares)`);
+}
+function showBanner(text) {
+  const el = document.getElementById("autocalBanner");
+  el.textContent = text;
+  el.style.display = "block";
+  clearTimeout(autocalTimer);
+  autocalTimer = setTimeout(() => { el.style.display = "none"; }, 6000);  // non-blocking, self-dismisses
+}
+function hideAutocalBanner() {
+  clearTimeout(autocalTimer);
+  document.getElementById("autocalBanner").style.display = "none";
+}
+
+// Debug images are opt-in (diagToggle) and only present when the inference
+// server was asked for them; absent debug -> keep the section hidden.
+function updateDiagnostics(ev) {
+  const diag = document.getElementById("diag");
+  if (ev.debug?.boxes && ev.debug?.mosaic) {
+    document.getElementById("diagBoxes").src = "data:image/jpeg;base64," + ev.debug.boxes;
+    document.getElementById("diagMosaic").src = "data:image/jpeg;base64," + ev.debug.mosaic;
+    diag.style.display = "block";
+  } else {
+    diag.style.display = "none";
+  }
+}
+
+// Castling rights are a downstream convenience, derived here in the consumer:
+// grant a right only if that king and rook still stand on their start squares.
+function castling(grid) {
+  let s = "";
+  if (grid[7][4] === "K") { if (grid[7][7] === "R") s += "K"; if (grid[7][0] === "R") s += "Q"; }
+  if (grid[0][4] === "k") { if (grid[0][7] === "r") s += "k"; if (grid[0][0] === "r") s += "q"; }
+  return s || "-";
+}
+
+function updateLinks() {
+  if (!lastPlacement) return;
+  const stm = document.querySelector("input[name=stm]:checked").value;
+  const fen = `${lastPlacement}_${stm}_${castling(fenToGrid(lastPlacement))}_-_0_1`;
+  document.getElementById("lnAnalysis").href = `https://lichess.org/analysis/standard/${fen}`;
+  document.getElementById("lnEditor").href = `https://lichess.org/editor/${fen}`;
+}
+document.querySelectorAll("input[name=stm]").forEach((el) => (el.onchange = updateLinks));
+</script>
+</body>
+</html>
