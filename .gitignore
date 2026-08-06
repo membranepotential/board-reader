@@ -24,5 +24,12 @@ data/
 models/
 *.onnx
 
+# Training/experiment scratch (run dirs, checkpoints, logs — reproducible from
+# tools/train/configs/*.yaml; see docs/reports/ for the results that matter)
+scratch/
+
+# Browser-automation captures (playwright-mcp session snapshots)
+.playwright-mcp/
+
 # OS / editor
 .DS_Store

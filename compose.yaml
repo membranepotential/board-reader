@@ -17,6 +17,12 @@ services:
     command: ["board-reader-inference", "serve", "--host", "0.0.0.0", "--port", "8000"]
     environment:
       BR_ALLOW_ORIGINS: "*"
+      # The trained zero-shot classifier (DESIGN §4.6). models/ is git-ignored
+      # (non-redistributable training data licenses); when absent the server
+      # degrades gracefully to the stub, so a fresh clone still composes up.
+      BR_MODEL: /models/d16/model.onnx
+    volumes:
+      - ./models:/models:ro
     ports:
       - "8000:8000"
     healthcheck:
@@ -57,6 +63,7 @@ services:
     environment:
       # The browser (on the host) reaches inference via its published port.
       BR_INFERENCE_WS: "ws://localhost:8000/viewer"
+      BR_INFERENCE_HTTP: "http://localhost:8000"
     ports:
       - "8080:8080"
     depends_on:

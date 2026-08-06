@@ -426,6 +426,20 @@ A clean gap is recoverable; a confident lie corrupts the consumer's state.
   of the rectified crop + JSON header: `board_id`, `capture_ts`, `seq`,
   `stability`, optional `burst_id`) and `control` (`hello`/register, `set_corners`,
   `calibrate`, `clock_config`). Server replies with acks/config.
+- **Snapshot ingress (HTTP, convenience).** `POST /estimate` accepts a single
+  frame and returns the position event synchronously (also published to the hub):
+  either an already-rectified crop (JPEG body), or — preferred for real photos —
+  the **original photo plus the four surface corners** (`?corners=`), from which
+  the estimator crops **perspective-aware full-piece boxes** (see §4.6). Used by
+  the phone **snapshot page** (a WP-H3-style consumer served by the viewer;
+  Lichess analysis/editor links are assembled client-side from the placement).
+  `POST /detect` proposes the surface corners automatically (geometry only —
+  orientation stays an operator decision, per decision #15).
+- **Detection code placement.** Board detection conceptually runs on the edge
+  (D4); the algorithm lives in `board_reader_core.boarddetect` so the browser-edge
+  snapshot path (which cannot run OpenCV cheaply) can delegate it to the
+  inference node's `/detect`, while the real Pi edge imports the same module
+  locally. Core still imports neither node.
 - **Per-board inbox queue** — bounded; frames latest-wins at rest, burst-grouped
   during motion; control messages prioritized. The backpressure valve.
 - **Pre-filter** — cheap server-side hygiene only (dedup, sharpness floor, reject
@@ -449,10 +463,15 @@ Note there is **no move-resolver / game-state module** — by design.
   ecosystem. DINOv3 has stronger frozen *dense* features (Gram-anchoring) and is a
   candidate if per-square accuracy proves backbone-limited, so the embedding
   backbone stays behind an interface — but it is **not** the default. (See risks.)
-- A **classifier head we train once, offline**, on public datasets (ChessReD real
-  photos + synthetic like ChessRender360 / Chesscog) maps embeddings → 13 classes
-  {empty + {P,N,B,R,Q,K}×{white,black}}. This ships in the box and works on an
-  unseen set/position immediately (accepting the synthetic→real accuracy ceiling).
+- ~~A **classifier head we train once, offline**, on public datasets maps
+  embeddings → 13 classes and works on an unseen set immediately.~~ **Measured
+  false (2026-07-18):** piece *type* does not transfer across physical piece
+  styles on frozen DINOv2 features. A ChessReD-built exemplar bank scores
+  255/320 zero-shot on our labeled photos and a ChessReD-trained linear probe
+  ties it at 254/320 (vs 294/320 same-style calibrated; the probe reaches 90.7%
+  *within* ChessReD, so the gap is the features, not the classifier). Mixing
+  styles into one bank actively hurts (272 vs 291 user-only). What *does*
+  transfer is **occupancy** (empty vs occupied): 94–96% zero-shot, style-robust.
 
 **Optional calibration (position-agnostic):**
 - The operator supplies **any known position** (start position, or a typed-in
@@ -461,6 +480,76 @@ Note there is **no move-resolver / game-state module** — by design.
   nearest-centroid classifier. This is the Chesscog "few-shot from a couple of
   photos → 99.8% per-square" trick, generalized to any labeled position so we are
   **not tied to the start position**.
+- **kNN exemplar bank, validated stronger.** The few-shot classifier is now a kNN
+  exemplar bank rather than a per-class mean: every calibration embedding is kept
+  as its own exemplar and a query is scored by its **nearest exemplar per class**,
+  with **per-board transductive centering** (bank and query batch each re-centered
+  on their own mean before the cosine step) absorbing per-photo lighting/backbone
+  shift. Leave-one-photo-out validation on labeled real photos: 294/320 vs 261/320
+  for centroids, and empty→piece hallucinations cut 28→6. Centroid files remain
+  fully loadable (the classifier is picked by file kind); calibrating from a new
+  photo now *adds* its exemplars to the running bank instead of replacing it.
+
+**Zero-setup via start-position auto-calibration (2026-07-18).** Given the
+occupancy/type split above, "works out of the box" is engineered rather than
+trained: the gateway can hold a style-agnostic **occupancy bank** (built from
+ChessReD, `BR_OCCUPANCY_BANK`). While no piece-type calibration is active,
+`/estimate` answers with occupancy only (HTTP-response-only, never published to
+the hub — the hub carries real position events exclusively). The occupancy
+pattern of the chess **starting position** is unmistakable, so the moment a
+photo matches it (≥60/64 squares, any of the 4 rotations — this also
+self-corrects rotated corner detection; White's side resolved by piece
+brightness), the server silently calibrates piece types *from that photo* via
+the exemplar-bank machinery, using only squares whose occupancy agrees with the
+pattern (so a photo taken a move or two in never contributes wrong labels).
+The session bank persists/restores only when ``BR_SESSION_BANK=<path>`` opts in
+(unset → calibration is in-memory only and nothing is ever written; a
+cwd-relative default let ordinary test runs clobber the real bank). The *calibrated* path self-refreshes
+too: a start-position sighting read at sub-threshold confidence (lighting
+drift) appends label-confirmed exemplars from that photo (only squares whose
+prediction matches the rotated start placement, ≥55/64 required, bank capped) —
+so photographing the board before each game keeps adapting the bank to new
+lighting with zero interaction. Validated motivation: dim-room accuracy went
+~50%→98.8% purely from same-conditions appends. UX: photograph the board before the
+game starts once per new set — no buttons, no labeling. Note: ChessReD is
+**CC BY-NC-SA 4.0** (non-commercial); the occupancy bank derived from it must
+not be redistributed with the repo.
+
+**Multi-style trained classifier + calibration-as-booster (2026-07-18 PM).**
+The campaign's answer to the zero-shot gap is a **multi-style supervised crop
+classifier** (ResNet18, 5 piece styles, shape-bias augmentation) served via
+``BR_MODEL`` (`TrainedEstimator`): 92.5%/320 zero-shot on the held-out user set
+vs 91.9% calibrated kNN. Field testing the same day sharpened three decisions:
+
+- **Crop headroom is load-bearing.** The pipeline had drifted to
+  ``headroom=0.15`` (near-base-only crops) against this document's ~1.6
+  intent. At steep camera elevations (~25–45°) that *decapitates* tall pieces —
+  the classifier sees only lower bodies, so q→b, K→Q, R→P, B→P confusions
+  dominate and cut-off heads hallucinate pawns one square up (measured 57/64,
+  every major piece wrong, on a steep dim shot). Training and serving must use
+  tall crops (~1.6–1.8 square-widths, image-up); the geometry ships with the
+  model, and retraining with tall crops is the standing fix for the steep-angle
+  regime.
+- **Calibration boosts, never replaces.** The exemplar bank is near-perfect
+  under conditions it has seen (64/64 on all bank-adjacent eval boards) but
+  brittle outside them (46/64 on the steep dim shot); the trained model is the
+  reverse. ``EnsembleEstimator`` averages the two square distributions 50/50
+  and tracks the better member square-by-square: 439/448 total vs 415 (trained)
+  and 430 (bank). ``/calibrate``, start-position auto-calibration, and the
+  self-refresh path all wrap the trained model rather than displacing it, and
+  ``BR_MODEL`` + a persisted ``BR_SESSION_BANK`` restore the ensemble at boot.
+  The trained path also **bootstraps** its own booster: its first start-position
+  sighting builds the bank from that photo (labeled by its own 13-class reading,
+  agreement-masked) with zero user action.
+- **Orientation is resolved by chess plausibility, not by the board.** Corner
+  geometry cannot say which corner is a8 (decision #15), and auto-detected
+  corners are arbitrarily oriented. With ``autorotate=1`` (sent by the snapshot
+  UI whenever the user hasn't hand-placed/relabeled corners) the gateway picks
+  the grid rotation with (1) fewest pawns on ranks 1/8, tie-broken by (2)
+  White's men nearer rank 1. Square-color parity and printed border coordinates
+  are deliberately **not** used: players set boards up ignoring printed
+  coordinates, and non-FIDE-printed boards exist (both observed in the field on
+  2026-07-18).
 
 **Ranked alternatives:**
 1. **DINOv2 embeddings + head/centroid** — chosen. ⭐
@@ -479,6 +568,15 @@ calibration, burst voting, and per-square confidences, and we rely on the
 application layer to apply temporal/legality smoothing across the stream. This is
 an intentional division of labor, and the per-square confidences are precisely
 what make the downstream smoothing tractable.
+
+**Square cropping (WP-B1) has two modes.** From a rectified top-down crop
+(streaming path), squares are equal tiles — cheap, but tall pieces are smeared
+by the warp and truncated by the tile, which caps recognition quality. For
+single-photo estimation (snapshot path) the estimator instead crops
+**perspective-aware full-piece boxes from the original photo**: each square's
+projected base quad extended upward by ~1.6 square-widths, so the backbone sees
+whole pieces (the Chesscog-style trick). Calibration must use the same crop
+mode as inference; the centroid file records it.
 
 **Multiple frames:**
 - **Settled burst → classification.** Confidence-weighted per-square vote over the

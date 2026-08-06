@@ -163,6 +163,146 @@ recognition is reading the pixels. Change `--placement` and the viewer follows.
 > The centroids file records its backbone, so `serve --centroids c.npz` auto-selects the
 > matching embedder.
 
+### Option F — Phone snapshot → Lichess
+
+Photograph a real board with your phone, get the position + a Lichess link. The
+snapshot page is an application-layer consumer (DESIGN WP-H3): the CV side still
+only produces placement + confidences; side-to-move, castling guess, and the
+Lichess URL are assembled in the page.
+
+```bash
+# 1. Serve inference with real recognition (a DINOv2 calibration file for your set —
+#    centroids or the kNN exemplar bank the CLI/session calibration now builds):
+uv run board-reader-inference serve --host 0.0.0.0 --port 8000 \
+  --centroids models/centroids_dinov2.npz
+
+# 2. Serve the viewer on the LAN:
+uv run board-reader-viewer --host 0.0.0.0 --port 8080
+
+# 3. On the phone (same Wi-Fi), open  http://<this-machine's-LAN-IP>:8080/snapshot
+```
+
+Flow on the phone: take/pick a photo → the page **auto-detects the board** and
+places four labeled corner handles → check that **a8** sits on the board's a8
+corner (tap **↻ rotate labels** if not — geometry can't know the orientation),
+drag any handle to fine-tune → check the rectified preview → *Read position* →
+the estimated board renders with low-confidence squares outlined red, plus
+**Open in Lichess analysis / editor** links (side-to-move toggle on the page).
+If auto-detection fails, the page falls back to tapping the four corners
+yourself in the prompted order **a8, h8, h1, a1** (press-drag-release; a loupe
+magnifies under your finger). *Read position* sends the **photo + corners** —
+the server crops each square with headroom from the original view, so pieces
+are seen whole rather than smeared by the top-down warp.
+
+Notes:
+- The page auto-targets inference on the same host it was loaded from, so no
+  extra config is needed on the LAN. Override with the `BR_INFERENCE_HTTP` env
+  var on the viewer if inference runs elsewhere.
+- `POST /estimate` on the inference node accepts a **rectified** top-down crop
+  (JPEG body) and returns the position event JSON — handy for scripting:
+  `curl -s --data-binary @crop.jpg -H 'Content-Type: image/jpeg' localhost:8000/estimate`
+- Without `--centroids` you get the M0 stub (fixed start position) — fine for
+  testing the plumbing, useless for real photos.
+- The page's **Calibrate (start position)** button hits `POST /calibrate`, which
+  now builds a kNN exemplar bank in the photo's own lighting (the
+  leave-one-photo-out-validated replacement for centroid averaging, DESIGN
+  §4.6) and hot-swaps it in. Calibrating again — same set, different lighting,
+  or a later position — **adds** that photo's exemplars to the running bank
+  rather than throwing the old ones away, so repeated calibration only helps.
+- Set `BR_SAVE_UPLOADS=data/uploads` on `serve` to keep every posted photo (+
+  its corners/placement metadata) — real-world shots become labeled eval data.
+
+### Option G — Zero-setup: occupancy + start-position auto-calibration
+
+No calibration file for the set at hand? Serve with an **occupancy bank**
+instead (built from ChessReD by `tools/build_exemplar_bank_chessred.py`;
+CC BY-NC-SA — local use only, never committed):
+
+```bash
+BR_OCCUPANCY_BANK=models/exemplars_chessred.npz BR_SAVE_UPLOADS=data/uploads \
+BR_SESSION_BANK=models/exemplars_session.npz \
+  uv run board-reader-inference serve --host 0.0.0.0 --port 8000
+```
+
+`BR_SESSION_BANK` opts into persisting/restoring calibration across restarts;
+without it every calibration lives in memory only (nothing is ever written —
+deliberate, so tests and ad-hoc runs can never clobber a real bank).
+
+Manual test, on the phone (`/snapshot` as in Option F):
+
+1. Photograph any **mid-game** position of a set the server has never seen →
+   the response is occupancy-only (which squares are occupied, no piece types)
+   plus the hint to show the starting position. Nothing is published to the hub.
+2. Photograph the **starting position** → the server detects its occupancy
+   pattern (any rotation; White's side by piece brightness), silently
+   calibrates piece types from that very photo, and answers with a full
+   position event (response carries an `autocalibrated` block). Verify the
+   rendered board is the start position.
+3. Photograph the mid-game position again → full recognition, no calibration
+   button ever pressed.
+4. Restart the server with the same env → recognition still works: the session
+   bank (`models/exemplars_session.npz`) is restored on startup whenever
+   auto-calibration is enabled. (Delete/move that file to rehearse the
+   cold-start flow again.)
+
+To also demo the true cold start, temporarily move `models/exemplars_session.npz`
+away before step 1.
+
+Two further behaviors to verify on any `/estimate`:
+- **Low-light warning**: a very dark photo (mean brightness < 55/255) makes the
+  response carry `"warnings": ["low_light"]` and the page show a dimness hint.
+- **Calibrated self-refresh**: photographing the *starting position* in lighting
+  the bank doesn't cover yet (read confidence below 0.8) makes the response
+  carry `"bank_refreshed": {...}` — the bank grew from that photo; subsequent
+  reads in that lighting improve. Mid-game photos never trigger it.
+
+### Option H — Trained zero-shot model + calibration booster (the default serve)
+
+The production configuration serves the multi-style trained classifier with the
+per-set bank as an ensemble booster (DESIGN §4.6):
+
+```bash
+BR_MODEL=models/piece_classifier_multistyle_v1.onnx BR_SAVE_UPLOADS=data/uploads \
+BR_SESSION_BANK=models/exemplars_session.npz \
+  uv run board-reader-inference serve --host 0.0.0.0 --port 8000
+```
+
+Manual test, on the phone (`/snapshot` as in Option F):
+
+1. With `models/exemplars_session.npz` moved away, photograph a **mid-game**
+   position → a full position event from the trained model alone (zero-shot; no
+   occupancy-only mode, no calibration needed).
+2. Photograph the **starting position** → the response carries an
+   `autocalibrated` block: the trained path bootstrapped its own booster bank
+   from that photo. Subsequent reads answer through the 50/50 ensemble (better
+   in bank-covered conditions, never worse elsewhere). With `BR_SESSION_BANK`
+   set, the bank persists and the ensemble is restored on restart.
+3. Tapping **Calibrate** at any point *adds* to the booster bank — it never
+   replaces the trained model. Calibrate labels are orientation-guarded: if the
+   corner labeling disagrees with the trained model's own reading of the photo
+   by a rotation, the labels are rotated into agreement (response carries
+   `"label_rotation"`), so a calibrate over auto-detected (arbitrarily
+   oriented) corners can never poison the bank with color-swapped exemplars.
+   If a bank is suspected poisoned anyway:
+   `CUDA_VISIBLE_DEVICES= uv run python tools/rebuild_session_bank.py` rebuilds
+   it from all retained calibrate uploads with the same verification.
+4. **Orientation auto-correction**: photograph the board with the camera on
+   Black's side and accept the auto-detected corners (don't touch the handles) —
+   the read comes back with White at the bottom anyway and the response carries
+   `"autorotated": 180` (the UI shows a banner). Hand-placing or relabeling
+   corners disables this — the operator's orientation is authoritative.
+5. **Sidecar labeling** (`BR_SAVE_UPLOADS`): each retained `*-estimate.json`
+   now records the predicted `placement` (and `autorotated` when applied), so
+   every field shot is ready-made eval data.
+6. **Flat-angle warning**: photograph the board with the phone nearly at board
+   level (projected quad aspect < 0.62) — the response carries
+   `"warnings": ["very_low_angle"]` and the page tells you to raise the phone.
+   Recognition is not trustworthy at such angles (yet).
+7. **Calibrate rejection**: tap Calibrate on a photo that does NOT show the
+   claimed position (e.g. a mid-game board with the default start placement) —
+   the server answers 422 with the reason (fewer than 60% of claimed piece
+   squares agree with its own reading) and the bank is untouched.
+
 ---
 
 ## Quick health checks
