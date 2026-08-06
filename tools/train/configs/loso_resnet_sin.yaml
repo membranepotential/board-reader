@@ -1,0 +1,28 @@
+# Experiment (b): ResNet-50 initialised from Stylized-ImageNet weights
+# (rgeirhos/texture-vs-shape) — starts already shape-biased, then fine-tuned across
+# our styles. Same protocol as val_chesscog. The sin_weights path is in the SCRATCH
+# area (not the project models/ dir, which is for deployed artifacts).
+styles: ["all"]
+require_mode: board
+holdout: chessr_vlab_wooden   # clean synthetic holdout (chesscog_transfer data is broken)
+
+model: resnet50
+init: sin
+# Absolute path into the session scratchpad; update the session id if you re-run
+# in a fresh session (or re-copy from ~/.cache/torch/hub/checkpoints/).
+sin_weights: "/tmp/claude-1000/-home-felix-Documents-chess-board-reader/7ac02737-862b-4a57-83fb-5ccdf74b0c31/scratchpad/weights/resnet50_train_45_epochs_combined_IN_SF-2a0d100e.pth.tar"
+shape_bias: true
+
+epochs: 16
+patience: 5
+batch_size: 16           # fp32 on 4GB card w/ lc0 holding 1GB -> bs16 fits
+lr: 0.0003
+weight_decay: 0.05
+steps_per_epoch: 250     # fast per-epoch val cadence (like run a)
+warmup_frac: 0.05
+
+device: auto
+amp: false               # fp32: fastest AND correct on this Turing card (fp16 NaNs, bf16 emulated/slow)
+num_workers: 8
+seed: 0
+out_dir: "scratch/runs/loso_resnet_sin"

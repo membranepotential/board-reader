@@ -1,0 +1,27 @@
+# Run (e) — convergence: winning geometry hr1.6/sp0.15 + wave-2 styles.
+# styles passed explicitly on the CLI (5 originals + 6 w2; chesscog_transfer excluded
+# as broken). holdout chessr_vlab_wooden kept for comparability with d16/d18.
+styles: ["all"]
+require_mode: board
+holdout: chessr_vlab_wooden
+
+model: resnet18
+init: imagenet
+shape_bias: true
+
+headroom: 1.6
+side_pad: 0.15
+
+epochs: 20
+patience: 5
+batch_size: 48
+lr: 0.0005
+weight_decay: 0.05
+steps_per_epoch: 300
+warmup_frac: 0.05
+
+device: auto
+amp: false
+num_workers: 8
+seed: 0
+out_dir: "scratch/runs/run_e"

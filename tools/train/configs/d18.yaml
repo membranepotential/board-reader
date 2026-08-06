@@ -1,0 +1,26 @@
+# Headroom sweep d18: headroom=1.8, side_pad=0.25 (more head + side margin than d16).
+# Otherwise run (a)'s recipe.
+styles: ["all"]
+require_mode: board
+holdout: chessr_vlab_wooden
+
+model: resnet18
+init: imagenet
+shape_bias: true
+
+headroom: 1.8
+side_pad: 0.25
+
+epochs: 18
+patience: 5
+batch_size: 48
+lr: 0.0005
+weight_decay: 0.05
+steps_per_epoch: 250
+warmup_frac: 0.05
+
+device: auto
+amp: false
+num_workers: 8
+seed: 0
+out_dir: "scratch/runs/d18"

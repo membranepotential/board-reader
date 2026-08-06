@@ -1,0 +1,21 @@
+# 10-minute end-to-end sanity fit (ChessReD only, CPU-friendly).
+# Proves the loop: cache -> train (loss falls) -> val metrics -> checkpoint.
+styles: ["chessred"]
+holdout: null            # single style -> leave-groups-out (holds out whole games)
+max_boards: 96           # cap ChessReD for a fast cache
+val_frac: 0.25
+
+model: resnet18
+pretrained: true
+
+epochs: 2
+batch_size: 32
+lr: 0.0005
+weight_decay: 0.05
+steps_per_epoch: 40      # cap: ~40 balanced batches/epoch
+
+device: auto
+amp: true
+num_workers: 4
+seed: 0
+out_dir: "scratch/runs/smoke"

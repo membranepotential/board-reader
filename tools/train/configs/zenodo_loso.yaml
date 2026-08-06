@@ -1,0 +1,22 @@
+# Auxiliary experiment: leave-style-out across the 4 real zenodo_chesspieces sets.
+# CROP-level (top-down tight crops), so geometry does NOT match the deployed oblique
+# tall boxes — treat results as a cross-style *feature* signal, not a deployment
+# number. Held out of the board-geometry LOSO (require_mode keeps them separate).
+styles: ["all"]
+require_mode: crop       # the zenodo styles only
+holdout: zenodo_chesspieces_valid-1   # rotate over the 4 sets
+
+model: resnet18
+init: imagenet
+shape_bias: true
+
+epochs: 20
+batch_size: 96
+lr: 0.0005
+weight_decay: 0.05
+
+device: auto
+amp: true
+num_workers: 4
+seed: 0
+out_dir: "scratch/runs/zenodo_loso"
