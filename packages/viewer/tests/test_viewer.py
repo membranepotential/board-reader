@@ -51,13 +51,73 @@ def test_snapshot_page_has_v2_flow():
 
 
 def test_snapshot_page_required_element_ids_present():
-    """IDs the JS (and this test suite) rely on — a mobile rework must not rename them."""
+    """IDs the JS (and this test suite) rely on — a rework must not rename them."""
     html = TestClient(create_app()).get("/snapshot").text
     for element_id in (
         "rotate", "undo", "reset", "read", "calib", "file",
-        "diagToggle", "result", "cornerHint", "diag",
+        "result", "cornerHint", "board", "inspector", "histList",
     ):
         assert f'id="{element_id}"' in html, element_id
+
+
+def test_snapshot_page_renders_the_pipeline_as_ordered_stages():
+    """The page is a diagnostic surface: the reading algorithm is shown stage by stage,
+    in the order it runs, each stage carrying a state and a headline."""
+    html = TestClient(create_app()).get("/snapshot").text
+    stages = [
+        "capture", "detect", "rectify", "sample", "classify", "orient", "output",
+    ]
+    positions = []
+    for stage in stages:
+        marker = f'id="step-{stage}"'
+        assert marker in html, stage
+        positions.append(html.index(marker))
+    assert positions == sorted(positions)  # laid out in pipeline order
+    assert 'const STEPS = ["capture", "detect", "rectify", "sample", "classify", "orient", "output"];' in html
+    assert "function setStep" in html                       # state + headline per stage
+    chip = html.split("const CHIP = {")[1].split("}")[0]
+    for state in ("idle", "run", "ok", "warn", "fail"):
+        assert f"{state}:" in chip, state
+
+
+def test_snapshot_page_details_are_always_present_but_collapsed():
+    """Full detail for every stage always exists — no opt-in checkbox — and every stage
+    body starts collapsed (a <details> with no `open` attribute in the markup)."""
+    html = TestClient(create_app()).get("/snapshot").text
+    body = html.split("<main>")[1].split("</main>")[0]
+    assert "<details open" not in body and "<details  open" not in body
+    assert body.count("<details>") == 7                      # one per stage
+    # The old opt-in diagnostics checkbox is gone; debug images are always requested.
+    assert "diagToggle" not in html
+    assert '"/estimate?corners=" + qs + "&debug=1"' in html
+
+
+def test_snapshot_page_has_no_emoji():
+    """State is carried by words and colour, never by emoji."""
+    html = TestClient(create_app()).get("/snapshot").text
+    offenders = [
+        c for c in html
+        if 0x1F300 <= ord(c) <= 0x1FAFF
+        or 0x2600 <= ord(c) <= 0x27BF
+        or ord(c) in (0xFE0F, 0x20E3)
+        or 0x2B00 <= ord(c) <= 0x2BFF
+    ]
+    assert not offenders, offenders
+
+
+def test_snapshot_page_keeps_the_photo_on_screen_beside_the_board():
+    """The captured photo is never hidden behind a disclosure: it is the input every
+    stage refers to, shown at the board's own size, next to it when there is room."""
+    html = TestClient(create_app()).get("/snapshot").text
+    body = html.split("<main>")[1].split("</main>")[0]
+    assert 'class="photo-col"' in body and 'class="board-col"' in body
+    assert body.index('class="photo-col"') < body.index('class="board-col"')
+    assert ".photo-col, .board-col { flex: 1 1 340px; max-width: 440px" in html
+    assert ".photo-frame { width: 100%; aspect-ratio: 1;" in html
+    # The canvas is sized in JS: a percentage max-height would resolve against an
+    # auto-height ancestor, be ignored, and clip a portrait photo at the bottom.
+    assert "function fitPhoto" in html
+    assert "new ResizeObserver(() => { fitPhoto(); renderHandles(); })" in html
 
 
 def test_snapshot_page_is_mobile_first():
@@ -71,8 +131,8 @@ def test_snapshot_page_is_mobile_first():
     assert 'id="file"' in html and 'accept="image/*"' in html  # file input intact
     assert "capture-btn" in html                                # big primary CTA, not a bare input
     assert "await runRead()" in html                            # auto-detect success auto-reads
-    assert "cornersDetails.open = true" in html                 # corner UI opens only as fallback
-    assert 'id="actionBar"' in html                             # sticky bottom action bar
+    assert 'openStep("detect", true)' in html                   # detection failure surfaces itself
+    assert 'id="actionBar"' in html                             # run controls, sticky on a phone
     assert "env(safe-area-inset-bottom)" in html
     assert "min-height: 48px" in html                            # ≥48px tall buttons
 
@@ -101,7 +161,7 @@ def test_snapshot_page_corner_widget_does_not_block_page_scroll():
     html = TestClient(create_app()).get("/snapshot").text
     # The generic canvas rule and the corner stage must not be a blanket touch-action: none.
     assert "canvas { max-width: 100%; touch-action: pan-y" in html
-    assert ".corner-stage { position: relative; line-height: 0; touch-action: pan-y; }" in html
+    assert ".corner-stage { position: relative; line-height: 0; touch-action: pan-y;" in html
     assert ".corner-stage.placing" not in html                     # no state-toggled exception
     assert 'cornerStage.classList.toggle("placing"' not in html
     # touch-action: none exists, but only scoped to the handle itself.
@@ -112,7 +172,7 @@ def test_snapshot_page_corner_widget_does_not_block_page_scroll():
     assert "preventDefault" not in view_listener
     assert "setPointerCapture" not in view_listener
     # The (viewOnly) result board must not block scrolling either.
-    assert ".board-wrap { width: 100%; max-width: 420px; aspect-ratio: 1; touch-action: manipulation" in html
+    assert ".board-wrap { width: 100%; max-width: 460px; aspect-ratio: 1; touch-action: manipulation" in html
 
 
 def test_snapshot_page_handles_three_estimate_response_shapes():
@@ -125,7 +185,7 @@ def test_snapshot_page_handles_three_estimate_response_shapes():
     assert "ev.autocalibrated" in html
     assert 'id="autocalBanner"' in html
     assert "Auto-calibrated from the starting position" in html
-    assert "${autocal.matches}/64" in html
+    assert "${ev.autocalibrated.matches}/64" in html
     assert "setTimeout(() => { el.style.display = \"none\"; }, 6000)" in html  # auto-dismiss
 
     # Mode 3: occupancy-only — no placement/confidence, prominent hint, occupancy on the board.
@@ -135,15 +195,16 @@ def test_snapshot_page_handles_three_estimate_response_shapes():
     assert "ev.occupied" in html
     assert 'fen: "8/8/8/8/8/8/8/8"' in html                     # empty board, occupancy only
     # Placement-dependent UI is hidden in occupancy mode.
-    assert 'id="metaRow"' in html and 'id="linksRow"' in html and 'id="stmRow"' in html
+    assert 'id="boardHint"' in html and 'id="linksRow"' in html and 'id="stmRow"' in html
     # Rotate-labels is meaningless without a placement to validate orientation against.
     assert "updateRotateVisibility" in html
     assert 'lastMode !== "occupancy"' in html
 
 
-def test_snapshot_page_has_tap_to_correct_squares():
-    """Tapping a result square cycles its top-3 classes (protocol.CLASSES order);
-    correct-clicking must never enable chessground's own move interaction.
+def test_snapshot_page_has_click_to_inspect_then_toggle():
+    """First click on a square inspects it (never mutates); clicking the SAME square
+    again toggles through its top-3 classes (protocol.CLASSES order) — the fast fix.
+    Correct-clicking must never enable chessground's own move interaction.
     """
     html = TestClient(create_app()).get("/snapshot").text
     # Canonical board_reader_core.protocol.CLASSES order, verified against the source.
@@ -151,82 +212,116 @@ def test_snapshot_page_has_tap_to_correct_squares():
         'const CLASSES = ["empty", "P", "N", "B", "R", "Q", "K", '
         '"p", "n", "b", "r", "q", "k"];'
     ) in html
-    assert "function cycleSquareCorrection" in html
+    assert "function cycleSquare" in html
     assert "function top3Classes" in html
     assert "function applyCorrections" in html
+    assert (
+        "if (selected && selected.r === r && selected.c === c) cycleSquare(r, c);\n"
+        "  else selectSquare(r, c);"
+    ) in html
     assert 'brush: "blue"' in html                              # corrected-square marker
     assert 'brush: "red"' in html                                # low-confidence marker retained
     # A plain click listener — never preventDefault/setPointerCapture — so a tap
     # that turns into a scroll never gets hijacked (tap = tap, not touch-capture).
-    board_click = html.split('document.getElementById("board").addEventListener("click"')[1]
+    board_click = html.split('$("board").addEventListener("click"')[1]
     board_click = board_click.split("});")[0]
     assert "preventDefault" not in board_click
     assert "setPointerCapture" not in board_click
     assert "viewOnly: true" in html                              # chessground move interaction stays off
 
 
-def test_snapshot_page_has_correction_panel_structure():
-    """Felix's spec: argmax by default; tap advances AND opens a distribution panel with
-    direct selection; empty is privileged; the 12 piece states exploit color symmetry.
+def test_snapshot_page_has_square_inspector_structure():
+    """The piece switcher: the crop the model saw, what it read vs what is shown, the
+    full distribution, and direct assignment. Empty is privileged; the 12 piece states
+    exploit colour symmetry. It sits beside the board, or as a sheet on a phone.
     """
     html = TestClient(create_app()).get("/snapshot").text
 
-    # The panel is a mobile-first bottom sheet, stacked ABOVE the sticky action bar (never
-    # covering the board, which stays inline in the scrollable content above both).
-    assert 'id="bottomStack"' in html
-    assert 'id="correctionPanel"' in html and 'class="correction-panel"' in html
-    bottom_stack = html.split('<div id="bottomStack">')[1].split("<script")[0]
-    assert bottom_stack.index('id="correctionPanel"') < bottom_stack.index('id="actionBar"')
+    # Beside the board when there is room; a bottom sheet on a narrow screen.
+    assert 'id="inspector"' in html
+    body = html.split("<main>")[1].split("</main>")[0]
+    assert body.index('id="board"') < body.index('id="inspector"')
+    assert "#inspector { flex: 1 1 320px; min-width: 0; }" in html
+    assert "@media (max-width: 759px)" in html and "#inspector.open { position: fixed" in html
 
-    # Header: square name + current state/probability + a close affordance.
+    # Header: square name + what the model read + what is shown now + close.
     assert 'id="cpSquare"' in html
-    assert 'id="cpCurrent"' in html
+    assert 'id="cpRead"' in html and 'id="cpCurrent"' in html
     assert 'id="cpClose"' in html
 
-    # Empty is privileged: its own full-width row, first, above the 12-piece grid, with a
-    # probability bar of its own.
-    assert 'id="cpEmptyRow"' in html and 'id="cpEmptyBar"' in html and 'id="cpEmptyPct"' in html
-    panel_html = html.split('id="correctionPanel"')[1].split("</script>")[0]
-    assert panel_html.index('id="cpEmptyRow"') < panel_html.index('id="cpGrid"')
+    # The crop the classifier actually saw, sliced out of the debug mosaic.
+    assert 'id="cpCrop"' in html
+    assert "function setCropThumb" in html
+    assert "background-size: 800% 800%" in html                 # a uniform 8x8 tiling
 
-    # 2x6 grid with color symmetry: White row then Black row, same 6 types in both,
-    # vertically aligned by construction (one shared PANEL_TYPES array drives both rows).
+    # Empty is privileged: its own full-width row, above the 12-piece grids.
+    assert 'id="cpEmptyRow"' in html and 'id="cpEmptyBar"' in html and 'id="cpEmptyPct"' in html
+    insp = html.split('id="inspector"')[1].split("</main>")[0]
+    assert insp.index('id="cpEmptyRow"') < insp.index('id="cpGridWhite"')
+
+    # 2x6 with colour symmetry: a White row then a Black row, same 6 types in both,
+    # vertically aligned by construction (one shared PANEL_TYPES array drives both).
     assert "const PANEL_TYPES" in html
     panel_types_line = html.split("const PANEL_TYPES")[1].split("\n")[0]
     for piece_type in ("K", "Q", "R", "B", "N", "P"):
         assert f'"{piece_type}"' in panel_types_line
-    assert '["white", "black"].forEach' in html                # one shared type list, two colors
+    assert '["white", "black"].forEach' in html                # one shared type list, two colours
     assert ".cp-grid { display: grid; grid-template-columns: repeat(6, 1fr)" in html
 
     # Reused vendored cburnett sprites via chessground's own CSS piece classes — no
     # separate glyph assets.
     assert '<piece class="${color} ${ROLE_NAMES[type]}">' in html
-    assert '"white"' in html and 'cell.className = "cp-cell"' in html   # per-cell selection styling
+    assert 'cell.className = "cp-cell"' in html
 
-    # Current selection outlined; the model's original argmax subtly marked.
+    # Current selection outlined; the model's original argmax subtly marked; the full
+    # ranked distribution spelled out underneath.
     assert "idx === curIdx ? \" selected\"" in html
     assert "cp-argmax-dot" in html and "idx === argmaxIdx" in html
+    assert "function rankedClasses" in html and 'id="cpRanked"' in html
 
     # Negligible-probability cells (<1%) are dimmed but remain tappable (cell.onclick is
     # always assigned, independent of the "faint" class).
     assert '(pct < 1 ? " faint" : "")' in html
-    assert "cell.onclick = () => selectPanelClass(idx);" in html
+    assert "cell.onclick = () => assignClass(idx);" in html
 
-    # Tapping a square both advances (fast path) AND opens the panel for it.
-    assert "function selectPanelClass" in html
-    assert "function openPanelFor" in html
-    assert "function closePanel" in html
-    cycle_fn = html.split("function cycleSquareCorrection")[1].split("\n\n")[0]
-    assert "openPanelFor(r, c)" in cycle_fn
+    # Opening a square never changes it — assignment is always a separate action.
+    assert "function selectSquare" in html
+    assert "function assignClass" in html
+    assert "function closeInspector" in html
+    select_fn = html.split("function selectSquare")[1].split("\n}")[0]
+    assert "assignClass" not in select_fn and "corrections.set" not in select_fn
 
-    # Tapping outside the board/panel closes it — a plain click listener (scroll-safe).
-    outside_click = html.split("Tapping anywhere outside the board and the panel")[1]
-    assert "closePanel()" in outside_click
+    # Keyboard: FEN letters, so case carries colour exactly as in the placement string.
+    assert "/^[kqrbnpKQRBNP]$/.test(k)" in html
+
+    # Clicking outside the board/inspector closes it — a plain click listener
+    # (scroll-safe), and it must use the dispatch-time composedPath, not a live
+    # .contains() check against a subtree its own handlers rebuild.
+    outside_click = html.split("Clicking outside the board and the inspector")[1]
+    assert "closeInspector()" in outside_click
+    assert "ev.composedPath()" in outside_click
     assert "preventDefault" not in outside_click.split("});")[0]
 
     # Highlighting the active square on the board via a distinct autoShape (green, not
     # reused from the existing red/blue low-confidence/corrected brushes).
     assert 'brush: "green"' in html
+
+
+def test_snapshot_page_lists_recent_positions():
+    """Every read this session is logged, and selecting one restores the whole pipeline
+    view — photo, corners, geometry, crops, distributions and its own corrections."""
+    html = TestClient(create_app()).get("/snapshot").text
+    assert 'id="histList"' in html and 'id="histClear"' in html
+    assert "Recent positions" in html
+    assert "function pushRead" in html and "function restoreRead" in html
+    assert "const READS_CAP" in html
+    # Corrections belong to the read they were made against.
+    assert "active.corrections = [...corrections]" in html
+    assert "corrections = new Map(restored ? restored.corrections : [])" in html
+    # Restoring reinstates the earlier photo AND its corner labelling, so the evidence
+    # on screen always belongs to one single read.
+    assert "capState = e.cap; detectState = e.detect;" in html
+    assert "rot = e.rot; cornersEdited = e.cornersEdited;" in html
 
 
 def test_snapshot_page_has_reset_corrections_button():
@@ -240,19 +335,23 @@ def test_snapshot_page_resets_corrections_on_rotate():
     """Rotating labels changes which corner is a8 — stale per-square corrections from
     the old mapping must not silently carry over."""
     html = TestClient(create_app()).get("/snapshot").text
-    rotate_handler = html.split("rotateBtn.onclick = ")[1].split("\n")[0]
+    rotate_handler = html.split("function rotateLabels() {")[1].split("}")[0]
     assert "resetCorrections()" in rotate_handler
 
 
 def test_snapshot_page_has_low_light_warning():
-    """A top-level warnings:["low_light"] array (which may be absent) shows a small
-    amber line near the result, same styling family as the occupancy hint."""
+    """A top-level warnings:["low_light"] array (which may be absent) shows an amber
+    banner near the result, and the stage that measured it explains the threshold."""
     html = TestClient(create_app()).get("/snapshot").text
     assert 'id="lowLightWarning"' in html
-    assert "class=\"low-light-hint\"" in html
+    assert 'class="banner warn"' in html
     assert "function updateLowLightWarning" in html
     assert 'ev.warnings?.includes("low_light")' in html
     assert "Photo is very dark" in html
+    # The geometry stage mirrors the server's own thresholds so a warning is explained,
+    # not just announced (board_reader_inference.server LOW_LIGHT_MEAN / LOW_ANGLE_HW).
+    assert "const LOW_ANGLE_HW = 0.62;" in html
+    assert "const LOW_LIGHT_MEAN = 55.0;" in html
 
 
 def test_snapshot_page_uses_vendored_chessground():
@@ -267,12 +366,26 @@ def test_snapshot_page_uses_vendored_chessground():
     assert "autoShapes" in html                                # low-confidence markers
 
 
-def test_snapshot_page_has_diagnostics_toggle():
-    """Debug images are opt-in and hidden until the server returns a debug payload."""
+def test_snapshot_page_always_shows_the_recognition_evidence():
+    """This page IS the diagnostic surface: the sampling boxes, the model-input mosaic,
+    the per-square confidence map and the raw event are always fetched and always
+    rendered — collapsed, never opt-in."""
     html = TestClient(create_app()).get("/snapshot").text
-    assert "diagToggle" in html
     assert "debug=1" in html
-    assert 'id="diag"' in html
+    assert 'id="diagBoxes"' in html and 'id="diagMosaic"' in html
+    assert 'id="confMap"' in html and "function renderConfMap" in html
+    assert 'id="lowChips"' in html and "function lowConfidenceSquares" in html
+    assert 'id="rawEvent"' in html and "function updateRawEvent" in html
+    # The raw event drops the two base64 images (they are shown as images) and the
+    # 8x8x13 tensor (it is shown as the confidence map + the inspector).
+    raw = html.split("function updateRawEvent")[1].split("\n}")[0]
+    assert "delete shallow.debug;" in raw
+    assert "square_dist" in raw
+    # Estimator-state changes the server volunteers are surfaced, not swallowed.
+    assert "function renderEstimatorNotes" in html
+    assert "ev.bank_refreshed" in html and "ev.autocalibrated" in html
+    # A material census is the cheapest sanity check on a read.
+    assert "function renderMaterial" in html
 
 
 def test_static_vendor_serves_chessground_assets():
@@ -301,3 +414,32 @@ def test_viewer_does_not_depend_on_node_packages():
     text = Path(srv.__file__).read_text(encoding="utf-8")
     for forbidden in ("board_reader_core", "board_reader_edge", "board_reader_inference"):
         assert forbidden not in text
+
+
+def test_snapshot_page_can_confirm_a_position_as_ground_truth():
+    """The correction panel is the only place a human ever states what a board really
+    holds; confirming keeps that answer instead of discarding it on reload."""
+    html = TestClient(create_app()).get("/snapshot").text
+    assert 'id="confirmPosition"' in html and 'id="labelHint"' in html
+    # Posts the board AS SHOWN (base read with corrections layered on) plus how many
+    # squares the operator changed, against the upload id the read came back with.
+    assert '"/labels/" + encodeURIComponent(lastUpload)' in html
+    assert "placement: lastPlacement, corrections: corrections.size" in html
+
+
+def test_snapshot_page_only_offers_labelling_when_a_photo_was_retained():
+    """Without BR_SAVE_UPLOADS the response carries no upload id, so a label would
+    have no image to belong to and could never be replayed by an eval."""
+    html = TestClient(create_app()).get("/snapshot").text
+    assert "lastUpload = ev.upload ?? null" in html
+    offer = html.split("function updateConfirmButton() {")[1].split("\n}")[0]
+    assert 'lastMode === "position"' in offer
+    assert 'btn.style.display = offer ? "inline-block" : "none"' in offer
+
+
+def test_snapshot_page_invalidates_a_saved_label_when_a_square_changes():
+    """A label describes one exact position — editing a square after saving must not
+    leave the button claiming the new board was confirmed."""
+    html = TestClient(create_app()).get("/snapshot").text
+    assert "updateConfirmButton();   // editing a square invalidates any label already saved" in html
+    assert "savedLabel !== null && savedLabel === lastPlacement" in html

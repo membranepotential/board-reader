@@ -3,52 +3,136 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-<title>board-reader · snapshot</title>
+<title>board-reader · pipeline inspector</title>
 <link rel="stylesheet" href="/static/vendor/chessground.base.css" />
 <link rel="stylesheet" href="/static/vendor/chessground.brown.css" />
 <link rel="stylesheet" href="/static/vendor/chessground.cburnett.css" />
 <style>
-  :root { color-scheme: dark; }
+  /* ---------------------------------------------------------------------------
+     The snapshot page is a DIAGNOSTIC INTERFACE for the reading algorithm, not a
+     wizard. It renders the pipeline as an ordered list of stages —
+       1 capture · 2 detect · 3 rectify · 4 sample · 5 classify · 6 orient · 7 output
+     — each a <details> whose summary always shows the stage's state and headline
+     numbers, and whose body holds the full evidence (images, geometry, per-square
+     distributions, raw event). Every body exists on every run: nothing is gated
+     behind an opt-in checkbox, everything starts collapsed.
+     No emoji anywhere: state is text + colour.
+     --------------------------------------------------------------------------- */
+  :root {
+    color-scheme: dark;
+    --bg: #14171c; --panel: #1b1f26; --panel-2: #232833; --line: #272b33;
+    --fg: #e6e6e6; --muted: #9aa3ad; --dim: #7d8590;
+    --accent: #2a6ef0; --accent-soft: #6aa8ff;
+    --ok: #97e0a6; --warn: #ffcf33; --bad: #ff8f8f;
+    --bar-h: 64px;
+  }
   * { box-sizing: border-box; }
   html, body { -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
-  body { font: 16px/1.45 system-ui, sans-serif; margin: 0; background: #14171c; color: #e6e6e6;
+  body { font: 15px/1.45 system-ui, sans-serif; margin: 0; background: var(--bg); color: var(--fg);
          -webkit-tap-highlight-color: transparent; }
-  header { padding: 10px 16px; border-bottom: 1px solid #272b33; }
-  header h1 { font-size: 16px; margin: 0; font-weight: 600; }
-  main { padding: 14px 16px; padding-bottom: 120px; max-width: 480px; margin: 0 auto; }
-  .step { margin-bottom: 16px; }
-  .hint { color: #9aa3ad; font-size: 14px; margin: 6px 0; }
-  .hint b { color: #ffcf33; }
-  .hint-inline { font-weight: 400; color: #9aa3ad; font-size: 13px; }
+  h1, h2, h3 { margin: 0; font-weight: 600; }
+  code, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
 
-  /* Buttons: ≥48px tall everywhere, generous tap targets throughout. */
-  button { background: #2a6ef0; color: #fff; border: 0; border-radius: 10px; padding: 12px 18px;
-           font: inherit; font-size: 16px; font-weight: 600; min-height: 48px;
-           touch-action: manipulation; }
+  header { display: flex; align-items: center; gap: 12px; padding: 10px 16px;
+           border-bottom: 1px solid var(--line); background: var(--panel); }
+  header h1 { font-size: 15px; }
+  header .spacer { flex: 1; }
+
+  main { padding: 14px 16px calc(var(--bar-h) + 96px); max-width: 1240px; margin: 0 auto; }
+  .hint { color: var(--muted); font-size: 13px; margin: 6px 0; }
+  .hint b { color: var(--warn); }
+  .muted { color: var(--muted); }
+
+  /* Buttons: >=44px tall everywhere, generous tap targets throughout. */
+  button { background: var(--accent); color: #fff; border: 0; border-radius: 9px; padding: 10px 16px;
+           font: inherit; font-size: 15px; font-weight: 600; min-height: 48px;
+           touch-action: manipulation; cursor: pointer; }
   button.secondary { background: #333842; }
-  button:disabled { opacity: .4; }
+  button:disabled { opacity: .4; cursor: default; }
+  /* Small, unobtrusive text-button — deliberately NOT the >=48px treatment, since
+     these are occasional side actions, not steps in the main flow. */
+  .text-btn { background: none; border: 0; color: var(--accent-soft); font: inherit; font-size: 13px;
+              font-weight: 600; min-height: auto; padding: 4px 0; text-decoration: underline;
+              touch-action: manipulation; }
 
   /* Big primary capture control: a <label> styled as a button wrapping a visually-hidden
      <input type=file>, so the native file/camera chooser still fires but we control the look. */
   .visually-hidden { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
                      overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; border: 0; }
-  .capture-btn { display: flex; align-items: center; justify-content: center; gap: 10px;
-                 background: #2a6ef0; color: #fff; font-weight: 700; font-size: 18px;
-                 min-height: 64px; border-radius: 14px; cursor: pointer;
+  .capture-btn { display: flex; align-items: center; justify-content: center;
+                 background: var(--accent); color: #fff; font-weight: 700; font-size: 17px;
+                 min-height: 60px; border-radius: 12px; cursor: pointer;
                  touch-action: manipulation; -webkit-tap-highlight-color: transparent; }
-  .capture-btn .icon { font-size: 22px; }
-  /* Shrinks once a photo is in hand — the big CTA has done its job; results take over focus. */
-  .capture-btn.compact { min-height: 44px; font-size: 14px; border-radius: 10px; }
-  .capture-btn.compact .icon { font-size: 16px; }
+  /* Shrinks once a photo is in hand — the big CTA has done its job; the pipeline takes over. */
+  .capture-btn.compact { min-height: 44px; font-size: 14px; border-radius: 9px; }
 
   input[type=file] { max-width: 100%; }
   /* Canvases are non-interactive by default (pan-y = page scroll works normally over them);
      only the drag handles themselves (below) ever set touch-action: none. */
-  canvas { max-width: 100%; touch-action: pan-y; border: 1px solid #272b33; border-radius: 6px; }
-  #loupe { position: fixed; width: 140px; height: 140px; border: 2px solid #2a6ef0; z-index: 40;
-           border-radius: 10px; pointer-events: none; display: none; background: #000;
-           box-shadow: 0 4px 20px rgba(0,0,0,.6); }
-  #result { display: none; }
+  canvas { max-width: 100%; touch-action: pan-y; border: 1px solid var(--line); border-radius: 6px; }
+  img.evidence { max-width: 100%; border-radius: 6px; border: 1px solid var(--line); display: block; }
+  figure { margin: 0 0 14px; }
+  figcaption { font-size: 12px; color: var(--muted); margin-top: 6px; }
+
+  /* ---- layout: one column, in pipeline order ---------------------------------
+     capture -> the seven stages -> the position the pipeline produced -> the log of
+     earlier reads. The only thing that ever sits side-by-side is the piece switcher
+     next to the board, and only when there is room for both. */
+  .steps { margin-top: 18px; }
+  /* Input and output, side by side and the same size: the captured photo (with the
+     detected quad and its drag handles) left of the board it produced, with the piece
+     switcher after them when the window has room. Below that, the stages that explain
+     how one became the other. The photo never leaves the screen — it is what every
+     stage is talking about, and its corners are the one thing an operator may need to
+     fix at any point. */
+  .out-main { display: flex; flex-wrap: wrap; gap: 16px; align-items: flex-start; margin-top: 14px; }
+  .photo-col, .board-col { flex: 1 1 340px; max-width: 440px; min-width: 0; }
+  #inspector { flex: 1 1 320px; min-width: 0; }
+  /* A square frame so the photo block matches the board block exactly, whatever the
+     photo's aspect ratio. */
+  .photo-frame { width: 100%; aspect-ratio: 1; display: flex; align-items: center;
+                 justify-content: center; background: #0f1216; border: 1px solid var(--line);
+                 border-radius: 6px; overflow: hidden; }
+  .col-label { font-size: 11px; text-transform: uppercase; letter-spacing: .06em;
+               color: var(--dim); margin-bottom: 6px; }
+  @media (min-width: 760px) { main { padding-bottom: 40px; } }
+
+  /* ---- a pipeline stage: a plain expanding section, not a card ---------------- */
+  .step { border-bottom: 1px solid var(--line); }
+  .step:first-child { border-top: 1px solid var(--line); }
+  .step > details > summary { display: flex; align-items: center; flex-wrap: wrap; gap: 8px;
+                              padding: 9px 2px; cursor: pointer; list-style: none;
+                              touch-action: manipulation; }
+  .step > details > summary::-webkit-details-marker { display: none; }
+  .step > details > summary:hover .s-name { color: #fff; }
+  .s-caret { color: var(--dim); font-size: 10px; width: 10px; transition: transform .12s; }
+  .step > details[open] > summary .s-caret { transform: rotate(90deg); }
+  .s-idx { color: var(--dim); font-size: 12px; min-width: 12px; }
+  .s-name { font-weight: 600; font-size: 14px; }
+  .s-chip { margin-left: auto; font-size: 11px; font-weight: 600; letter-spacing: .04em;
+            text-transform: uppercase; color: var(--dim); }
+  .step[data-state="run"]  .s-chip { color: var(--accent-soft); }
+  .step[data-state="ok"]   .s-chip { color: var(--ok); }
+  .step[data-state="warn"] .s-chip { color: var(--warn); }
+  .step[data-state="fail"] .s-chip { color: var(--bad); }
+  .s-sum { flex-basis: 100%; color: var(--muted); font-size: 12.5px; padding-left: 22px;
+           word-break: break-word; }
+  .s-body { padding: 0 2px 16px 22px; }
+  .s-body > :first-child { margin-top: 4px; }
+
+  /* Key/value evidence tables — the workhorse of every stage body. */
+  table.kv { width: 100%; border-collapse: collapse; font-size: 13px; margin: 10px 0; }
+  table.kv th, table.kv td { text-align: left; padding: 4px 6px 4px 0; vertical-align: top; }
+  table.kv th { color: var(--muted); font-weight: 500; width: 44%; }
+  table.kv td { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12.5px;
+                -webkit-user-select: text; user-select: text; }
+  td.v-ok { color: var(--ok); } td.v-warn { color: var(--warn); } td.v-bad { color: var(--bad); }
+  .note { font-size: 12.5px; color: var(--muted); margin: 8px 0; }
+  .note.warn { color: var(--warn); }
+  .note.bad { color: var(--bad); }
+  pre.raw { background: #0f1216; border: 1px solid var(--line); border-radius: 8px; padding: 10px;
+            font-size: 11.5px; line-height: 1.4; max-height: 320px; overflow: auto;
+            -webkit-user-select: text; user-select: text; margin: 8px 0; }
 
   /* The photo + its corner handles. The stage/canvas are ALWAYS touch-action: pan-y —
      unconditionally, with no state-dependent exception — so a thumb landing anywhere on
@@ -56,214 +140,448 @@
      is ever touch-action: none; JS never calls preventDefault/setPointerCapture on the
      canvas itself either (see the pointerdown handler below) — every drag, including
      placing a brand-new corner, is captured by a handle element, never the canvas. */
+  /* The canvas's on-screen size is set in JS (fitPhoto): a percentage max-height here
+     would resolve against an auto-height ancestor, be treated as "none", and let a
+     portrait photo overflow the square frame — which is exactly how it got clipped. */
   .corner-stage { position: relative; line-height: 0; touch-action: pan-y; }
+  .corner-stage canvas { border: 0; border-radius: 0; display: block; max-width: none; }
   .corner-handle { position: absolute; width: 44px; height: 44px; margin: -22px 0 0 -22px;
-                   border-radius: 50%; background: rgba(255,207,51,.9); border: 3px solid #2a6ef0;
+                   border-radius: 50%; background: rgba(255,207,51,.9); border: 3px solid var(--accent);
                    display: flex; align-items: center; justify-content: center;
                    font-weight: 800; font-size: 13px; color: #14171c;
                    touch-action: none; -webkit-user-select: none; user-select: none;
                    -webkit-touch-callout: none; box-shadow: 0 2px 10px rgba(0,0,0,.5); }
   .corner-handle:active { background: #ffcf33; }
+  #loupe { position: fixed; width: 140px; height: 140px; border: 2px solid var(--accent); z-index: 40;
+           border-radius: 10px; pointer-events: none; display: none; background: #000;
+           box-shadow: 0 4px 20px rgba(0,0,0,.6); }
+  .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin: 10px 0; }
 
-  /* Corner adjustment is the fallback path, tucked into a native <details> — collapsed by
-     default whenever auto-detect succeeds, forced open only when it fails. */
-  #cornersDetails summary { cursor: pointer; padding: 12px 0; font-size: 15px; font-weight: 600;
-                             color: #c8cdd4; touch-action: manipulation; }
-
+  /* ---- the result board ------------------------------------------------------ */
   /* chessground needs an explicit box; a square wrapper sized by max-width + aspect-ratio,
      with cg-wrap filling it at 100%. viewOnly means no piece dragging, so touch may
      pan — a thumb landing on the (full-width) result board must still scroll the page. */
-  .board-wrap { width: 100%; max-width: 420px; aspect-ratio: 1; touch-action: manipulation;
+  #result { display: none; }
+  .board-wrap { width: 100%; max-width: 460px; aspect-ratio: 1; touch-action: manipulation;
                 -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
   .cg-wrap { width: 100%; height: 100%; }
-  .lowconf-legend { display: inline-flex; align-items: center; gap: 5px; }
-  .lowconf-legend .dot { width: 10px; height: 10px; border-radius: 50%; background: #e25555;
-                         display: inline-block; }
-
-  /* Auto-calibration success banner: non-blocking, near the board, auto-dismissed by JS. */
-  .autocal-banner { display: none; background: #1f3a24; color: #97e0a6; font-size: 13px;
-                     font-weight: 600; padding: 9px 12px; border-radius: 8px; margin-bottom: 10px; }
-  /* Occupancy-only mode: no placement was recognized, so the hint (which tells the user
-     how to unlock full recognition) has to be the prominent thing on screen. */
-  .occupancy-hint { display: none; background: #2a2410; color: #ffcf33; font-size: 14px;
-                     font-weight: 600; border: 1px solid #4a3f10; border-radius: 8px;
-                     padding: 10px 12px; margin-bottom: 10px; }
-  /* Same amber family as the occupancy hint, deliberately smaller/quieter — it's a
-     secondary heads-up ("reads may be degraded"), not the main thing on screen. */
-  .low-light-hint { display: none; background: #2a2410; color: #ffcf33; font-size: 12px;
-                     font-weight: 500; border: 1px solid #4a3f10; border-radius: 6px;
-                     padding: 6px 10px; margin-bottom: 10px; }
-  /* Small, unobtrusive text-button — deliberately NOT the ≥48px primary-button treatment,
-     since it's an occasional undo action, not a step in the main flow. */
-  .text-btn { background: none; border: 0; color: #6aa8ff; font: inherit; font-size: 13px;
-              font-weight: 600; min-height: auto; padding: 6px 0; text-decoration: underline;
-              touch-action: manipulation; }
-  .meta { font-size: 14px; color: #9aa3ad; margin: 10px 0; word-break: break-all; }
-  .meta code { color: #c8cdd4; }
-  #pl { -webkit-user-select: text; user-select: text; }
-  .links a { display: inline-flex; align-items: center; min-height: 48px; background: #1f3a24;
-             color: #97e0a6; text-decoration: none; padding: 10px 16px; border-radius: 10px;
-             margin: 6px 8px 0 0; font-weight: 600; touch-action: manipulation; }
+  .board-legend { display: flex; flex-wrap: wrap; gap: 12px; font-size: 12px; color: var(--muted);
+                  margin: 8px 0; }
+  .board-legend span { display: inline-flex; align-items: center; gap: 5px; }
+  .board-legend i { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
+  .fen { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px;
+         color: #c8cdd4; word-break: break-all; -webkit-user-select: text; user-select: text;
+         background: #0f1216; border: 1px solid var(--line); border-radius: 6px; padding: 8px;
+         margin: 8px 0; display: block; }
+  .stm { margin: 10px 0; font-size: 13px; color: var(--muted); }
+  .stm label { margin-right: 16px; padding: 6px 0; display: inline-block; touch-action: manipulation;
+               color: var(--fg); }
+  .links a { display: inline-flex; align-items: center; min-height: 44px; background: #1f3a24;
+             color: var(--ok); text-decoration: none; padding: 8px 14px; border-radius: 9px;
+             margin: 6px 8px 0 0; font-weight: 600; font-size: 14px; touch-action: manipulation; }
   .links a.secondary { background: #333842; color: #c8cdd4; }
-  .stm { margin: 12px 0; }
-  .stm label { margin-right: 18px; padding: 6px 0; display: inline-block; touch-action: manipulation; }
-  #err { color: #ff9a9a; font-size: 14px; white-space: pre-wrap; margin-top: 10px; }
-  .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin: 8px 0; }
 
-  /* Diagnostics: secondary and collapsed — a plain checkbox toggle, de-emphasized. */
-  .diag-toggle { display: flex; align-items: center; gap: 8px; margin: 14px 0 0; font-size: 13px;
-                 color: #7d8590; touch-action: manipulation; padding: 8px 0; }
-  .diag-toggle input { width: 20px; height: 20px; }
-  #diag { display: none; margin-top: 12px; border-top: 1px solid #272b33; padding-top: 12px; }
-  #diag figure { margin: 0 0 16px; }
-  #diag img { max-width: 100%; border-radius: 6px; border: 1px solid #272b33; display: block; }
-  #diag figcaption { font-size: 12px; color: #9aa3ad; margin-top: 6px; }
+  /* Banners: non-blocking, near the board. Text only — state is carried by colour. */
+  .banner { display: none; font-size: 13px; font-weight: 600; padding: 9px 12px;
+            border-radius: 8px; margin-bottom: 10px; }
+  .banner.info { background: #1f3a24; color: var(--ok); }
+  .banner.warn { background: #2a2410; color: var(--warn); border: 1px solid #4a3f10; }
+  #err { color: var(--bad); font-size: 13px; white-space: pre-wrap; margin-top: 12px; }
 
-  /* Fixed bottom stack: the correction panel (when open) sits directly ABOVE the sticky
-     action bar, never overlapping the board, which lives inline in the scrollable content
-     above both. A flex column lets the panel's height vary without any JS measuring. */
-  #bottomStack { position: fixed; left: 0; right: 0; bottom: 0; z-index: 30;
-                 display: flex; flex-direction: column; }
-
-  /* Sticky bottom action bar: the "Read" step of the fallback flow always lives here,
-     reachable without scrolling, safe-area aware for notched phones. */
-  #actionBar { display: flex; align-items: center; gap: 10px;
-               padding: 10px 16px calc(10px + env(safe-area-inset-bottom));
-               background: #1b1f26; border-top: 1px solid #272b33;
-               box-shadow: 0 -6px 20px rgba(0,0,0,.4); }
-  #actionBar[hidden] { display: none; }
+  #actionBar { display: flex; align-items: center; gap: 8px; margin: 12px 0; }
   #actionBar button { flex: 1 1 auto; }
-  #actionBar #calib { flex: 0 0 auto; font-size: 13px; padding: 10px 14px; }
-  #actionBar #busy { font-size: 13px; color: #9aa3ad; white-space: nowrap; }
+  #actionBar #calib { flex: 0 0 auto; font-size: 13px; padding: 10px 12px; }
+  #busy { font-size: 13px; color: var(--muted); white-space: nowrap; }
+  @media (max-width: 759px) {
+    /* Phone: the run controls stay reachable without scrolling out of the pipeline. */
+    #actionBar { position: fixed; left: 0; right: 0; bottom: 0; z-index: 30; margin: 0;
+                 padding: 8px 16px calc(8px + env(safe-area-inset-bottom));
+                 background: var(--panel); border-top: 1px solid var(--line);
+                 box-shadow: 0 -6px 20px rgba(0,0,0,.4); }
+  }
 
-  /* Tap-to-correct panel: a mobile-first bottom sheet, plain taps only (no touch-action
-     tricks needed — nothing here is a drag/gesture surface, so page scroll is never at
-     risk). Internally scrollable so a small phone never loses access to lower cells. */
-  .correction-panel { background: #1b1f26; border-top: 1px solid #272b33;
-                       padding: 10px 12px; max-height: 42vh; overflow-y: auto;
-                       -webkit-overflow-scrolling: touch; box-shadow: 0 -6px 20px rgba(0,0,0,.4); }
-  .correction-panel[hidden] { display: none; }
-  .cp-header { display: flex; justify-content: space-between; align-items: baseline;
-               gap: 8px; font-size: 13px; color: #9aa3ad; margin-bottom: 8px; }
-  .cp-header b { color: #ffcf33; font-size: 15px; }
-  .cp-header .text-btn { padding: 2px 0; }
-  /* The privileged state — empty↔piece is the most common correction — gets its own
+  /* ---- square inspector: read the distribution, reassign the piece ------------
+     Wide enough: a panel beside the board, so a square and its candidates are in one
+     glance. Phone: a bottom sheet docked above the fixed action bar. Plain taps only —
+     nothing here is a drag surface, so page scrolling is never at risk. */
+  #inspector { display: none; border: 1px solid var(--line); border-radius: 8px;
+               padding: 10px 12px; }
+  #inspector.open { display: block; }
+  @media (max-width: 759px) {
+    #inspector.open { position: fixed; left: 0; right: 0; bottom: var(--bar-h); z-index: 29;
+                      background: var(--panel); margin: 0; border-radius: 12px 12px 0 0;
+                      border-left: 0; border-right: 0;
+                      max-height: 54vh; overflow-y: auto; -webkit-overflow-scrolling: touch;
+                      box-shadow: 0 -6px 20px rgba(0,0,0,.5); }
+  }
+  .insp-head { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
+  .insp-head h3 { font-size: 15px; }
+  .insp-head .sq { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--warn);
+                   font-size: 16px; font-weight: 700; }
+  .insp-head .spacer { flex: 1; }
+  .insp-read { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+  /* The crop the model actually classified for this square, sliced out of the debug
+     mosaic (a uniform 8x8 tiling, so percentage background positioning is exact). */
+  .insp-crop { width: 64px; height: 88px; flex: 0 0 auto; border-radius: 6px;
+               border: 1px solid var(--line); background: #0f1216 no-repeat; background-size: 800% 800%; }
+  .insp-facts { font-size: 13px; line-height: 1.5; }
+  .insp-facts .k { color: var(--muted); }
+  .insp-facts .corrected { color: var(--accent-soft); font-weight: 600; }
+  .insp-nav { display: flex; gap: 8px; align-items: center; margin-top: 10px; flex-wrap: wrap; }
+  .insp-nav button { min-height: 36px; padding: 6px 10px; font-size: 13px; background: #333842; }
+  .kbd-hint { font-size: 11.5px; color: var(--dim); margin-top: 8px; }
+  .kbd-hint kbd { font-family: ui-monospace, monospace; background: var(--panel-2);
+                  border: 1px solid var(--line); border-radius: 4px; padding: 0 4px; }
+
+  /* The privileged state — empty vs piece is the most common correction — gets its own
      full-width row above the 12-piece grid, not just another cell in it. */
   .cp-empty-row { display: flex; align-items: center; gap: 10px; width: 100%;
-                  background: #232833; border: 2px solid transparent; border-radius: 10px;
-                  padding: 8px 12px; margin-bottom: 10px; min-height: 44px;
-                  color: #e6e6e6; font-weight: 600; font: inherit; font-size: 14px;
-                  touch-action: manipulation; }
-  .cp-empty-row.selected { border-color: #6aa8ff; background: #232f42; }
+                  background: var(--panel-2); border: 2px solid transparent; border-radius: 9px;
+                  padding: 8px 12px; margin-bottom: 8px; min-height: 44px;
+                  color: var(--fg); font-weight: 600; font: inherit; font-size: 14px;
+                  touch-action: manipulation; cursor: pointer; }
+  .cp-empty-row.selected { border-color: var(--accent-soft); background: #232f42; }
   .cp-empty-row .cp-bar-track { flex: 1; }
   /* 2 rows x 6 columns: White on top, Black below, same piece type in the same column —
-     the board's own color symmetry, so a miscolored read is a vertical glance, not a hunt. */
-  .cp-grid { display: grid; grid-template-columns: repeat(6, 1fr); gap: 6px; }
+     the board's own colour symmetry, so a miscoloured read is a vertical glance, not a hunt. */
+  .cp-row-label { font-size: 11px; color: var(--dim); text-transform: uppercase;
+                  letter-spacing: .06em; margin: 6px 0 3px; }
+  .cp-grid { display: grid; grid-template-columns: repeat(6, 1fr); gap: 5px; }
   .cp-cell { display: flex; flex-direction: column; align-items: center; gap: 3px;
-             padding: 4px 2px 6px; border-radius: 8px; border: 2px solid transparent;
-             background: #232833; touch-action: manipulation; }
-  .cp-cell.selected { border-color: #6aa8ff; background: #232f42; }
+             padding: 4px 2px 5px; border-radius: 8px; border: 2px solid transparent;
+             background: var(--panel-2); touch-action: manipulation; cursor: pointer; }
+  .cp-cell.selected { border-color: var(--accent-soft); background: #232f42; }
   .cp-cell.faint { opacity: .45; }
-  .cp-cell piece { display: block; position: static; width: 32px; height: 32px; }
+  .cp-cell piece { display: block; position: static; width: 30px; height: 30px; }
   .cp-bar-track { width: 100%; height: 5px; border-radius: 3px; background: #333842; overflow: hidden; }
-  .cp-bar-track > i { display: block; height: 100%; background: #6aa8ff; }
-  .cp-pct { font-size: 10px; color: #9aa3ad; }
-  .cp-argmax-dot { width: 5px; height: 5px; border-radius: 50%; background: #ffcf33; }
+  .cp-bar-track > i { display: block; height: 100%; background: var(--accent-soft); }
+  .cp-pct { font-size: 10px; color: var(--muted); }
+  .cp-argmax-dot { width: 5px; height: 5px; border-radius: 50%; background: var(--warn); }
+
+  /* Ranked full distribution — the numbers behind the grid, all 13 classes. */
+  .rank-list { margin: 10px 0 0; font-size: 12px; }
+  .rank-row { display: grid; grid-template-columns: 3.2em 1fr 3.2em; gap: 8px; align-items: center;
+              padding: 2px 0; }
+  .rank-row .rk-cls { font-family: ui-monospace, monospace; color: #c8cdd4; }
+  .rank-row .rk-pct { text-align: right; color: var(--muted);
+                      font-family: ui-monospace, monospace; }
+
+  /* ---- confidence map: 8x8 of what the classifier believes, click to inspect --- */
+  .confmap { display: grid; grid-template-columns: 1.4em repeat(8, 1fr); gap: 2px;
+             margin: 10px 0; font-size: 10px; }
+  .confmap .lbl { color: var(--dim); display: flex; align-items: center; justify-content: center; }
+  .cm-cell { aspect-ratio: 1; border-radius: 3px; display: flex; flex-direction: column;
+             align-items: center; justify-content: center; line-height: 1.05;
+             font-family: ui-monospace, monospace; color: #0d0f12; font-weight: 700;
+             border: 1px solid transparent; touch-action: manipulation; cursor: pointer; }
+  .cm-cell.sel { border-color: #fff; }
+  .cm-cell .cm-p { font-size: 8px; font-weight: 500; opacity: .8; }
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0; }
+  .chip-sq { font-family: ui-monospace, monospace; font-size: 12px; background: var(--panel-2);
+             border: 1px solid var(--line); border-radius: 6px; padding: 4px 8px; color: var(--fg);
+             min-height: 32px; touch-action: manipulation; cursor: pointer; }
+  /* ---- recent positions: every read this session, restorable ------------------ */
+  .hist { border-top: 1px solid var(--line); padding-top: 10px; margin-top: 18px; }
+  .hist-head { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; }
+  .hist-head h3 { font-size: 14px; }
+  .hist-head .spacer { flex: 1; }
+  .hist-list { display: flex; flex-direction: column; gap: 4px; max-height: 320px; overflow-y: auto; }
+  .hist-row { display: flex; align-items: center; gap: 10px; width: 100%; text-align: left;
+              background: none; border: 0; border-left: 2px solid transparent;
+              padding: 6px 8px; color: var(--fg); font: inherit; min-height: 48px;
+              touch-action: manipulation; cursor: pointer; }
+  .hist-row:hover { background: #1b1f26; }
+  .hist-row.active { border-left-color: var(--accent-soft); background: #1b1f26; }
+  .hist-row img { width: 56px; height: 42px; object-fit: cover; border-radius: 4px;
+                  flex: 0 0 auto; background: #0f1216; }
+  .hist-body { min-width: 0; flex: 1; display: block; }
+  .hist-fen { display: block; font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+              font-size: 11.5px; color: #c8cdd4; white-space: nowrap; overflow: hidden;
+              text-overflow: ellipsis; }
+  .hist-meta { display: block; font-size: 11px; color: var(--muted); margin-top: 2px; }
+  .hist-meta .flag { color: var(--warn); }
+  .hist-empty { font-size: 12.5px; color: var(--muted); padding: 4px 0; }
+
+  .corr-list { margin: 8px 0; font-size: 13px; }
+  .corr-row { display: flex; align-items: center; gap: 8px; padding: 4px 0;
+              border-bottom: 1px solid var(--line); }
+  .corr-row .mono { color: #c8cdd4; }
+  .corr-row .spacer { flex: 1; }
 </style>
 </head>
 <body>
-<header><h1>board-reader · snapshot → position → Lichess</h1></header>
-<main>
-  <div class="step" id="captureStep">
-    <label class="capture-btn" id="captureLabel" for="file">
-      <span class="icon">&#128247;</span><span id="captureLabelText">Take / choose photo</span>
-    </label>
-    <!-- Deliberately NO capture attribute on this input: with it, iOS Safari skips the
-         chooser and forces the camera, making the photo library unreachable. Bare, both
-         iOS and Android present the native sheet offering camera AND camera roll. -->
-    <input type="file" id="file" accept="image/*" class="visually-hidden" />
-    <div class="hint">Point at the board (angled is fine) — the position reads automatically.</div>
-  </div>
+<header>
+  <h1>board-reader · pipeline inspector</h1>
+  <span class="spacer"></span>
+  <span class="s-chip" id="runState">idle</span>
+</header>
 
-  <div class="step" id="pickStep" style="display:none">
-    <details id="cornersDetails">
-      <summary>Adjust corners <span class="hint-inline">(fallback — only needed if the read looks wrong)</span></summary>
-      <div class="hint" id="cornerHint"></div>
-      <div class="corner-stage" id="cornerStage">
-        <canvas id="view"></canvas>
+<main>
+  <label class="capture-btn" id="captureLabel" for="file">
+    <span id="captureLabelText">Take / choose photo</span>
+  </label>
+  <!-- Deliberately NO capture attribute on this input: with it, iOS Safari skips the
+       chooser and forces the camera, making the photo library unreachable. Bare, both
+       iOS and Android present the native sheet offering camera AND camera roll. -->
+  <input type="file" id="file" accept="image/*" class="visually-hidden" />
+  <p class="hint">Point at the board (angled is fine) — detection, rectification and
+    recognition run automatically. Every stage below records what it saw.</p>
+
+  <div id="autocalBanner" class="banner info"></div>
+  <div id="occupancyHint" class="banner warn"></div>
+  <div id="lowLightWarning" class="banner warn"></div>
+
+  <div class="out-main">
+    <!-- Always on screen: the photo as posted, with the detected quad and its handles. -->
+    <div class="photo-col" id="captureView" style="display:none">
+      <div class="col-label">Photo as posted</div>
+      <div class="photo-frame">
+        <div class="corner-stage" id="cornerStage">
+          <canvas id="view"></canvas>
+        </div>
       </div>
+      <div class="hint" id="cornerHint"></div>
       <div class="row">
-        <button id="rotate" style="display:none">&#8635; rotate labels</button>
+        <button id="rotate" style="display:none" class="secondary">Rotate labels</button>
         <button id="undo" class="secondary">Undo</button>
         <button id="reset" class="secondary">Reset corners</button>
       </div>
-      <div class="hint" id="warpStep" style="display:none">
-        Rectified preview — a8 must be top-left:
-        <canvas id="warped" width="512" height="512"></canvas>
+    </div>
+
+    <div class="board-col" id="result">
+      <div class="col-label">Position read</div>
+      <div class="board-wrap" id="board"></div>
+      <div class="board-legend">
+        <span><i style="background:#e25555"></i> confidence &lt; 0.50</span>
+        <span><i style="background:#6aa8ff"></i> corrected by hand</span>
+        <span><i style="background:#7ac77a"></i> inspecting</span>
       </div>
-    </details>
+      <p class="hint" id="boardHint">Click a square to inspect it; click it again to toggle
+        through its most likely readings.</p>
+    </div>
+
+    <!-- Piece switcher: sits beside the board when there is room, otherwise a sheet. -->
+    <div id="inspector">
+      <div class="insp-head">
+        <h3>Square <span class="sq" id="cpSquare">—</span></h3>
+        <span class="spacer"></span>
+        <button id="cpClose" class="text-btn" type="button">Close</button>
+      </div>
+      <div class="insp-read">
+        <div class="insp-crop" id="cpCrop"></div>
+        <div class="insp-facts">
+          <div><span class="k">model read</span> <span id="cpRead">—</span></div>
+          <div><span class="k">shown now</span> <span id="cpCurrent">—</span></div>
+          <div id="cpRevertWrap" style="display:none">
+            <button id="cpRevert" class="text-btn" type="button">Revert to model read</button>
+          </div>
+        </div>
+      </div>
+      <div class="cp-row-label">Assign</div>
+      <div class="cp-empty-row" id="cpEmptyRow">
+        <span>Empty</span>
+        <span class="cp-bar-track"><i id="cpEmptyBar"></i></span>
+        <span class="cp-pct" id="cpEmptyPct"></span>
+      </div>
+      <div class="cp-row-label">White</div>
+      <div class="cp-grid cg-wrap" id="cpGridWhite"></div>
+      <div class="cp-row-label">Black</div>
+      <div class="cp-grid cg-wrap" id="cpGridBlack"></div>
+      <div class="rank-list" id="cpRanked"></div>
+      <div class="insp-nav">
+        <button id="cpPrev" type="button">Prev square</button>
+        <button id="cpNext" type="button">Next square</button>
+        <button id="cpPrevLow" type="button">Next low-confidence</button>
+      </div>
+      <div class="kbd-hint">Keys: <kbd>arrows</kbd> move · <kbd>k q r b n p</kbd> assign black,
+        <kbd>shift</kbd>+key assign white · <kbd>.</kbd> empty · <kbd>esc</kbd> close</div>
+    </div>
   </div>
 
-  <div class="step" id="result">
-    <div id="autocalBanner" class="autocal-banner"></div>
-    <div id="occupancyHint" class="occupancy-hint"></div>
-    <div id="lowLightWarning" class="low-light-hint"></div>
-    <div class="board-wrap" id="board"></div>
-    <div class="meta" id="metaRow">
-      placement <code id="pl"></code><br/>
-      confidence <code id="conf"></code> ·
-      <span class="lowconf-legend"><span class="dot"></span> low-confidence squares</span><br/>
-      <span class="hint-inline">Tap a square to correct it.</span>
-      <button id="resetCorrections" class="text-btn" style="display:none">↺ Reset corrections</button>
-    </div>
-    <div class="stm" id="stmRow">
-      to move:
-      <label><input type="radio" name="stm" value="w" checked /> White</label>
-      <label><input type="radio" name="stm" value="b" /> Black</label>
-    </div>
-    <div class="links" id="linksRow">
-      <a id="lnAnalysis" target="_blank" rel="noopener">Open in Lichess analysis</a>
-      <a id="lnEditor" class="secondary" target="_blank" rel="noopener">Lichess editor</a>
-    </div>
-    <label class="diag-toggle">
-      <input type="checkbox" id="diagToggle" /> Show diagnostics
-    </label>
-    <div id="diag">
-      <figure>
-        <img id="diagBoxes" alt="sampling boxes on your photo" />
-        <figcaption>sampling boxes on your photo, colored by confidence</figcaption>
-      </figure>
-      <figure>
-        <img id="diagMosaic" alt="model input mosaic" />
-        <figcaption>what the model saw per square</figcaption>
-      </figure>
-    </div>
+  <div id="actionBar">
+    <button id="read" disabled>Read position</button>
+    <button id="calib" class="secondary" disabled>Calibrate</button>
+    <span id="busy" style="display:none">estimating…</span>
   </div>
+
+  <div class="steps">
+
+      <section class="step" id="step-capture" data-state="idle">
+        <details>
+          <summary>
+            <span class="s-caret">&#9656;</span><span class="s-idx">1</span>
+            <span class="s-name">Capture</span><span class="s-chip">idle</span>
+            <span class="s-sum">no photo yet</span>
+          </summary>
+          <div class="s-body">
+            <p class="note">The photo is downscaled to a 1600 px long side in the browser; that
+              downscaled image is exactly what is POSTed to <code>/detect</code> and
+              <code>/estimate</code>, so every pixel coordinate on this page shares one
+              coordinate system with the server.</p>
+            <table class="kv" id="capTable"></table>
+          </div>
+        </details>
+      </section>
+
+      <section class="step" id="step-detect" data-state="idle">
+        <details>
+          <summary>
+            <span class="s-caret">&#9656;</span><span class="s-idx">2</span>
+            <span class="s-name">Board detection</span><span class="s-chip">idle</span>
+            <span class="s-sum">waiting for a photo</span>
+          </summary>
+          <div class="s-body">
+            <p class="note"><code>POST /detect</code> returns a geometric quad (TL, TR, BR, BL).
+              Geometry cannot know which physical corner is a8, so the labels start as a guess
+              and the server auto-rotates the reading by chess plausibility — until you touch a
+              handle, at which point your labelling wins and auto-rotation is switched off.
+              The photo above carries the quad; drag a handle there to correct it.</p>
+            <table class="kv" id="cornerTable"></table>
+          </div>
+        </details>
+      </section>
+
+      <section class="step" id="step-rectify" data-state="idle">
+        <details>
+          <summary>
+            <span class="s-caret">&#9656;</span><span class="s-idx">3</span>
+            <span class="s-name">Rectify &amp; geometry</span><span class="s-chip">idle</span>
+            <span class="s-sum">waiting for corners</span>
+          </summary>
+          <div class="s-body">
+            <p class="note">A client-side homography, for checking the labelling only — the server
+              re-derives its own geometry from the corners and reads whole pieces off the original
+              photo. Projected aspect below <code>0.62</code> means the camera is close to board
+              level and pieces occlude each other; mean luma below <code>55</code> is dim enough to
+              degrade recognition.</p>
+            <table class="kv" id="geomTable"></table>
+            <figure>
+              <canvas id="warped" width="512" height="512"></canvas>
+              <figcaption>rectified preview — a8 must be top-left</figcaption>
+            </figure>
+          </div>
+        </details>
+      </section>
+
+      <section class="step" id="step-sample" data-state="idle">
+        <details>
+          <summary>
+            <span class="s-caret">&#9656;</span><span class="s-idx">4</span>
+            <span class="s-name">Square sampling</span><span class="s-chip">idle</span>
+            <span class="s-sum">waiting for a read</span>
+          </summary>
+          <div class="s-body">
+            <p class="note">64 tall full-piece boxes are cut from the original photo (they overlap
+              on purpose — a piece is taller than its square) and resized to the model's input.
+              These are the exact tensors the classifier saw.</p>
+            <figure>
+              <img class="evidence" id="diagBoxes" alt="sampling boxes on the photo" />
+              <figcaption>sampling boxes on the photo, coloured by per-square confidence</figcaption>
+            </figure>
+            <figure>
+              <img class="evidence" id="diagMosaic" alt="per-square model input crops" />
+              <figcaption>the 64 crops as the model received them, rank 8 first, labelled
+                with the predicted class and its confidence</figcaption>
+            </figure>
+          </div>
+        </details>
+      </section>
+
+      <section class="step" id="step-classify" data-state="idle">
+        <details>
+          <summary>
+            <span class="s-caret">&#9656;</span><span class="s-idx">5</span>
+            <span class="s-name">Classification</span><span class="s-chip">idle</span>
+            <span class="s-sum">waiting for a read</span>
+          </summary>
+          <div class="s-body">
+            <p class="note">A 13-class distribution per square, stateless and rule-free — an
+              illegal-looking board is still reported as <code>ok</code>. Click any cell to open it
+              in the inspector.</p>
+            <table class="kv" id="classTable"></table>
+            <div class="confmap" id="confMap"></div>
+            <div class="note">Least confident squares</div>
+            <div class="chips" id="lowChips"></div>
+            <div id="estimatorNotes"></div>
+          </div>
+        </details>
+      </section>
+
+      <section class="step" id="step-orient" data-state="idle">
+        <details>
+          <summary>
+            <span class="s-caret">&#9656;</span><span class="s-idx">6</span>
+            <span class="s-name">Orientation</span><span class="s-chip">idle</span>
+            <span class="s-sum">waiting for a read</span>
+          </summary>
+          <div class="s-body">
+            <p class="note">Which corner is a8 is not knowable from geometry. With untouched
+              auto-detected corners the read is posted with <code>autorotate=1</code> and the server
+              picks the rotation whose reading is most plausible; once you edit a corner or rotate
+              the labels, that is authoritative and no rotation is applied.</p>
+            <table class="kv" id="orientTable"></table>
+            <div class="row">
+              <button id="rotate2" class="secondary" style="display:none">Rotate labels and re-read</button>
+            </div>
+          </div>
+        </details>
+      </section>
+
+      <section class="step" id="step-output" data-state="idle">
+        <details>
+          <summary>
+            <span class="s-caret">&#9656;</span><span class="s-idx">7</span>
+            <span class="s-name">Position output</span><span class="s-chip">idle</span>
+            <span class="s-sum">waiting for a read</span>
+          </summary>
+          <div class="s-body">
+            <code class="fen" id="pl"></code>
+            <div class="row">
+              <button id="copyFen" class="text-btn" type="button">Copy FEN</button>
+              <button id="copyJson" class="text-btn" type="button">Copy raw event</button>
+              <button id="resetCorrections" class="text-btn" type="button" style="display:none">Reset corrections</button>
+              <button id="confirmPosition" class="text-btn" type="button" style="display:none">Confirm as ground truth</button>
+            </div>
+            <div class="note" id="labelHint" style="display:none">
+              Fix any wrong squares below, then confirm — the board as shown is kept as the
+              true position for this photo. Labels are only ever used to <em>score</em> the
+              reader, never to train or calibrate it.
+            </div>
+            <div class="stm" id="stmRow">
+              to move:
+              <label><input type="radio" name="stm" value="w" checked /> White</label>
+              <label><input type="radio" name="stm" value="b" /> Black</label>
+            </div>
+            <div class="links" id="linksRow">
+              <a id="lnAnalysis" target="_blank" rel="noopener">Open in Lichess analysis</a>
+              <a id="lnEditor" class="secondary" target="_blank" rel="noopener">Lichess editor</a>
+            </div>
+            <div class="note">Corrections</div>
+            <div class="corr-list" id="corrList"></div>
+            <table class="kv" id="materialTable"></table>
+            <div class="note">Raw event (debug images stripped)</div>
+            <pre class="raw mono" id="rawEvent"></pre>
+          </div>
+        </details>
+      </section>
+
+  </div>
+
+  <!-- Every read this session, newest first. Selecting one restores the whole pipeline
+       view — photo, corners, geometry, crops, distributions — so two reads can be
+       compared without re-shooting either. -->
+  <section class="hist">
+    <div class="hist-head">
+      <h3>Recent positions</h3>
+      <span class="spacer"></span>
+      <button id="histClear" class="text-btn" type="button" style="display:none">Clear</button>
+    </div>
+    <div class="hist-list" id="histList"></div>
+  </section>
 
   <div id="err"></div>
 </main>
 <canvas id="loupe" width="140" height="140"></canvas>
-
-<div id="bottomStack">
-  <div id="correctionPanel" class="correction-panel" hidden>
-    <div class="cp-header">
-      <span>Correcting <b id="cpSquare"></b></span>
-      <span id="cpCurrent"></span>
-      <button id="cpClose" class="text-btn" type="button">✕ Close</button>
-    </div>
-    <div class="cp-empty-row" id="cpEmptyRow">
-      <span>Empty</span>
-      <span class="cp-bar-track"><i id="cpEmptyBar"></i></span>
-      <span class="cp-pct" id="cpEmptyPct"></span>
-    </div>
-    <div class="cp-grid cg-wrap" id="cpGrid"></div>
-  </div>
-  <div id="actionBar" hidden>
-    <button id="read">Read position</button>
-    <button id="calib" class="secondary">Calibrate (start)</button>
-    <span id="busy" style="display:none">estimating…</span>
-  </div>
-</div>
 
 <script type="module">
 "use strict";
@@ -289,22 +607,59 @@ const MAX_SRC = 1600;   // downscale huge phone photos before detecting/warping/
 const OUT = 512;
 // board_reader_core.protocol.CLASSES — canonical square_dist class order (verified in source).
 const CLASSES = ["empty", "P", "N", "B", "R", "Q", "K", "p", "n", "b", "r", "q", "k"];
+const CLASS_NAMES = {
+  empty: "empty", P: "white pawn", N: "white knight", B: "white bishop", R: "white rook",
+  Q: "white queen", K: "white king", p: "black pawn", n: "black knight", b: "black bishop",
+  r: "black rook", q: "black queen", k: "black king",
+};
+// Server-side thresholds this page mirrors so a stage can say *why* it warned
+// (board_reader_inference.server: LOW_ANGLE_HW, LOW_LIGHT_MEAN).
+const LOW_ANGLE_HW = 0.62;
+const LOW_LIGHT_MEAN = 55.0;
+const LOW_CONF = 0.5;
 
-const fileEl = document.getElementById("file");
-const captureLabelEl = document.getElementById("captureLabel");
-const captureLabelText = document.getElementById("captureLabelText");
-const actionBar = document.getElementById("actionBar");
-const cornersDetails = document.getElementById("cornersDetails");
-const cornerStage = document.getElementById("cornerStage");
-const view = document.getElementById("view"), vctx = view.getContext("2d");
-const warped = document.getElementById("warped"), wctx = warped.getContext("2d");
-const loupe = document.getElementById("loupe"), lctx = loupe.getContext("2d");
-const cornerHint = document.getElementById("cornerHint");
-const rotateBtn = document.getElementById("rotate");
-const readBtn = document.getElementById("read");
-const calibBtn = document.getElementById("calib");
-const errEl = document.getElementById("err");
-const panelEl = document.getElementById("correctionPanel");
+const $ = (id) => document.getElementById(id);
+const fileEl = $("file");
+const captureLabelEl = $("captureLabel");
+const captureLabelText = $("captureLabelText");
+const cornerStage = $("cornerStage");
+const view = $("view"), vctx = view.getContext("2d");
+const warped = $("warped"), wctx = warped.getContext("2d");
+const loupe = $("loupe"), lctx = loupe.getContext("2d");
+const cornerHint = $("cornerHint");
+const rotateBtn = $("rotate");
+const rotateBtn2 = $("rotate2");
+const readBtn = $("read");
+const calibBtn = $("calib");
+const errEl = $("err");
+const inspectorEl = $("inspector");
+
+// ---- pipeline stage state ----------------------------------------------------
+// Every stage always exists and always carries a state + a headline; the body holds
+// the evidence and stays collapsed until asked for. No stage is ever gated behind an
+// opt-in toggle — diagnostics are the point of this page.
+const CHIP = { idle: "idle", run: "running", ok: "ok", warn: "check", fail: "failed" };
+const STEPS = ["capture", "detect", "rectify", "sample", "classify", "orient", "output"];
+
+function setStep(id, state, summary) {
+  const el = $("step-" + id);
+  el.dataset.state = state;
+  el.querySelector(".s-chip").textContent = CHIP[state];
+  if (summary !== undefined) el.querySelector(".s-sum").textContent = summary;
+}
+function openStep(id, open) { $("step-" + id).querySelector("details").open = open; }
+function resetSteps(from) {
+  const start = STEPS.indexOf(from);
+  STEPS.slice(start).forEach((id) => setStep(id, "idle", "waiting"));
+}
+function setRunState(text) { $("runState").textContent = text; }
+
+function kv(tableId, rows) {
+  const t = $(tableId);
+  t.innerHTML = rows
+    .map(([k, v, cls]) => `<tr><th>${k}</th><td class="${cls || ""}">${v}</td></tr>`)
+    .join("");
+}
 
 // Offscreen source canvas (capped size); all corner coords live in ITS pixel space.
 // This same canvas (as JPEG) is what /detect and /estimate receive, so detector
@@ -322,12 +677,20 @@ let dragIdx = null;    // corner being dragged, or null
 let cornersEdited = false;
 let detectFailed = false;
 let lastMode = "position";  // "position" | "occupancy" — which /estimate shape rendered last
+let lastEvent = null;       // the raw /estimate JSON of the current result
+let srcMeanLuma = null;     // client-side mirror of the server's low-light check
+let srcBytes = null;        // posted JPEG size, for the capture stage
+let srcPhoto = null;        // the source photo as a data: URL — what a history entry restores
+let detectMs = null, estimateMs = null;
+let detectState = null;     // { state, summary } of stage 2, kept for the restore path
 
 // Rotating labels only makes sense when the last read could actually validate them (a
-// placement gives you a color/orientation cue to check against); an occupancy-only read
+// placement gives you a colour/orientation cue to check against); an occupancy-only read
 // has no such signal, so the button is pointless until a real placement comes back.
 function updateRotateVisibility() {
-  rotateBtn.style.display = (pts.length === 4 && lastMode !== "occupancy") ? "inline-block" : "none";
+  const show = (pts.length === 4 && lastMode !== "occupancy") ? "inline-block" : "none";
+  rotateBtn.style.display = show;
+  rotateBtn2.style.display = show;
 }
 
 function labelOf(i) { return CORNER_ORDER[(i + rot) % 4]; }
@@ -338,37 +701,112 @@ function orderedCorners() {
 function canvasJpeg(c, quality) {
   return new Promise((res) => c.toBlob(res, "image/jpeg", quality));
 }
+function fmt(n, d = 2) { return Number(n).toFixed(d); }
+
+// ---- 1. capture --------------------------------------------------------------
+// The capture stage's own evidence is kept as data (not just DOM) so restoring a
+// past read can put stage 1 back exactly as it was for that photo.
+let capState = null;   // { summary, rows }
+
+function drawSourceFrom(im) {
+  const k = Math.min(1, MAX_SRC / Math.max(im.naturalWidth, im.naturalHeight));
+  src.width = Math.round(im.naturalWidth * k);
+  src.height = Math.round(im.naturalHeight * k);
+  sctx.drawImage(im, 0, 0, src.width, src.height);
+  view.width = src.width; view.height = src.height;
+  return k;
+}
+
+function applyCapState() {
+  setStep("capture", "ok", capState.summary);
+  kv("capTable", capState.rows);
+  $("captureView").style.display = "block";
+  fitPhoto();
+}
+
+// Scale the photo canvas to sit fully inside its square frame — the same box size as
+// the board next to it — whatever the photo's aspect ratio. Done here rather than in
+// CSS because a percentage max-height against an auto-height ancestor is indefinite
+// (ignored), which is how a portrait photo ended up clipped at the bottom.
+function fitPhoto() {
+  const box = photoFrame.getBoundingClientRect();
+  if (!src.width || !box.width) return;
+  const k = Math.min(box.width / src.width, box.height / src.height);
+  view.style.width = `${Math.floor(src.width * k)}px`;
+  view.style.height = `${Math.floor(src.height * k)}px`;
+}
+
+// The frame's width changes whenever the row re-flows — the piece switcher opening or
+// closing beside the board, a window resize, the columns wrapping. Refit on every one
+// of those, or the canvas keeps a stale size and spills out of the frame.
+const photoFrame = $("captureView").querySelector(".photo-frame");
+new ResizeObserver(() => { fitPhoto(); renderHandles(); }).observe(photoFrame);
 
 fileEl.onchange = (e) => {
   const f = e.target.files[0]; if (!f) return;
   errEl.textContent = "";
   const im = new Image();
-  im.onload = () => {
-    const k = Math.min(1, MAX_SRC / Math.max(im.naturalWidth, im.naturalHeight));
-    src.width = Math.round(im.naturalWidth * k);
-    src.height = Math.round(im.naturalHeight * k);
-    sctx.drawImage(im, 0, 0, src.width, src.height);
+  im.onload = async () => {
+    const k = drawSourceFrom(im);
     URL.revokeObjectURL(im.src);
     pts = []; rot = 0; dragIdx = null; detectFailed = false; cornersEdited = false;
     lastMode = "position";  // a fresh photo has no bearing on a previous occupancy-only read
-    panelSquare = null; panelEl.hidden = true;  // a new photo invalidates any open correction panel
-    view.width = src.width; view.height = src.height;
-    document.getElementById("pickStep").style.display = "block";
-    document.getElementById("warpStep").style.display = "none";
-    document.getElementById("result").style.display = "none";
-    cornersDetails.open = false;   // collapsed until/unless auto-detect fails
+    lastEvent = null;
+    activeReadId = null; renderHistory();   // nothing in the log describes this photo yet
+    detectMs = estimateMs = null;
+    closeInspector();       // a new photo invalidates any open inspection
+    $("result").style.display = "none";
     captureLabelText.textContent = "New photo";
     captureLabelEl.classList.add("compact");
-    actionBar.hidden = false;
+    srcMeanLuma = meanLuma();
+    srcBytes = (await canvasJpeg(src, 0.9)).size;
+    srcPhoto = src.toDataURL("image/jpeg", 0.75);   // kept for the history's restore path
+
+    resetSteps("capture");
+    capState = {
+      summary: `${src.width}x${src.height} px · ${(srcBytes / 1024).toFixed(0)} kB · mean luma ${fmt(srcMeanLuma, 1)}`,
+      rows: [
+        ["source file", `${f.name || "(camera)"} · ${(f.size / 1024).toFixed(0)} kB`],
+        ["original size", `${im.naturalWidth}x${im.naturalHeight} px`],
+        ["posted size", `${src.width}x${src.height} px (scale ${fmt(k, 3)})`],
+        ["posted JPEG", `${(srcBytes / 1024).toFixed(0)} kB at q0.90`],
+        ["mean luma", `${fmt(srcMeanLuma, 1)} / 255 (server warns below ${LOW_LIGHT_MEAN})`,
+          srcMeanLuma < LOW_LIGHT_MEAN ? "v-warn" : "v-ok"],
+      ],
+    };
+    applyCapState();
     draw();
     autoDetect();
   };
   im.src = URL.createObjectURL(f);
 };
 
-// ---- automatic board detection + automatic read: photo -> position, zero taps ----
+// Mean of the RGB channels, sampled on a grid — the browser-side mirror of the
+// server's image.mean() low-light check, so the capture stage can explain the warning.
+function meanLuma() {
+  const step = Math.max(1, Math.round(Math.max(src.width, src.height) / 240));
+  const d = sctx.getImageData(0, 0, src.width, src.height).data;
+  let sum = 0, n = 0;
+  for (let y = 0; y < src.height; y += step) {
+    for (let x = 0; x < src.width; x += step) {
+      const i = (y * src.width + x) * 4;
+      sum += (d[i] + d[i + 1] + d[i + 2]) / 3; n++;
+    }
+  }
+  return n ? sum / n : 0;
+}
+
+// ---- 2. board detection ------------------------------------------------------
+function setDetectStep(state, summary) {
+  detectState = { state, summary };
+  setStep("detect", state, summary);
+}
+
 async function autoDetect() {
+  setStep("detect", "run", "calling /detect…");
+  setRunState("detecting");
   cornerHint.innerHTML = "Detecting board…";
+  const t0 = performance.now();
   try {
     const blob = await canvasJpeg(src, 0.9);
     const r = await fetch(INFERENCE_HTTP + "/detect", {
@@ -377,17 +815,22 @@ async function autoDetect() {
     if (!r.ok) throw new Error("detect " + r.status);
     const d = await r.json();
     if (!d.corners || d.corners.length !== 4) throw new Error("no corners");
+    detectMs = performance.now() - t0;
     // Geometric TL,TR,BR,BL from the server; initial guess: a8=TL, h8=TR, h1=BR, a1=BL.
     pts = d.corners.map((p) => [Math.round(p[0]), Math.round(p[1])]);
     rot = 0;
     cornersEdited = false;  // orientation is a guess — let the server auto-rotate
+    setDetectStep("ok", `auto-detected in ${detectMs.toFixed(0)} ms · labels unconfirmed`);
     draw();
     maybeRectify();
     await runRead();  // corners look good — go straight to a result, no tap needed
-  } catch {
+  } catch (e) {
     detectFailed = true;
+    detectMs = performance.now() - t0;
     pts = []; rot = 0;
-    cornersDetails.open = true;  // fallback path: surface manual corner-tapping immediately
+    setDetectStep("fail", `no board found (${String(e.message || e)}) — set the four corners by hand`);
+    setRunState("needs corners");
+    openStep("detect", true);  // fallback path: surface manual corner-tapping immediately
     draw();
   }
 }
@@ -409,13 +852,29 @@ function draw() {
   } else {
     cornerHint.innerHTML =
       "Check the labels: <b>a8</b> must sit on the board's a8 corner — " +
-      "<b>&#8635; rotate labels</b> if not. Drag any handle to fine-tune.";
+      "use <b>rotate labels</b> if not. Drag any handle to fine-tune.";
   }
   updateRotateVisibility();
-  document.getElementById("undo").disabled =
-    document.getElementById("reset").disabled = pts.length === 0;
+  $("undo").disabled = $("reset").disabled = pts.length === 0;
   readBtn.disabled = calibBtn.disabled = pts.length !== 4;
   renderHandles();
+  renderCornerTable();
+}
+
+function renderCornerTable() {
+  if (pts.length !== 4) {
+    kv("cornerTable", [["corners", `${pts.length}/4 placed`, pts.length ? "v-warn" : ""]]);
+    return;
+  }
+  const oc = orderedCorners();
+  kv("cornerTable", [
+    ["source", detectFailed ? "hand-placed" : (cornersEdited ? "auto-detected, edited" : "auto-detected"),
+      cornersEdited || detectFailed ? "v-warn" : "v-ok"],
+    ["detect latency", detectMs === null ? "—" : `${detectMs.toFixed(0)} ms`],
+    ["label rotation", `${rot * 90}deg applied on this page`],
+    ...CORNER_ORDER.map((lbl, i) => [lbl, `${oc[i][0]}, ${oc[i][1]}`]),
+    ["server auto-rotate", cornersEdited ? "off (your labelling wins)" : "on (labels are a guess)"],
+  ]);
 }
 
 // ---- corner handles: real DOM elements laid over the canvas, not drawn pixels --------
@@ -470,11 +929,6 @@ function attachHandleEvents(el, idx) {
   });
 }
 
-function maybeRectify() {
-  if (pts.length === 4) rectifyAndShow();
-  else document.getElementById("warpStep").style.display = "none";
-}
-
 function canvasPos(ev) {
   const r = view.getBoundingClientRect();
   return [ (ev.clientX - r.left) * (view.width / r.width),
@@ -522,16 +976,27 @@ function showLoupe(ev, p) {
   lctx.moveTo(70, 0); lctx.lineTo(70, 140); lctx.moveTo(0, 70); lctx.lineTo(140, 70); lctx.stroke();
 }
 
-document.getElementById("undo").onclick = () => { pts.pop(); draw(); maybeRectify(); };
-document.getElementById("reset").onclick = () => {
+$("undo").onclick = () => { pts.pop(); draw(); maybeRectify(); };
+$("reset").onclick = () => {
   pts = []; rot = 0; detectFailed = false; draw(); maybeRectify();
 };
 // Rotating labels changes which physical corner is a8 — any per-square corrections made
 // against the OLD mapping no longer refer to the right squares, so they're cleared here
 // rather than silently misapplied to a re-read under the new orientation.
-rotateBtn.onclick = () => { rot = (rot + 1) % 4; cornersEdited = true; resetCorrections(); draw(); maybeRectify(); };
+function rotateLabels() {
+  rot = (rot + 1) % 4; cornersEdited = true; resetCorrections(); draw(); maybeRectify();
+}
+rotateBtn.onclick = rotateLabels;
+rotateBtn2.onclick = () => { rotateLabels(); runRead(); };
 
-// ---- homography: dst (OUT x OUT corners) -> src (labeled corners) ----------
+// ---- 3. rectify + geometry ---------------------------------------------------
+function maybeRectify() {
+  if (pts.length === 4) rectifyAndShow();
+  else setStep("rectify", "idle", "waiting for corners");
+  renderCornerTable();
+}
+
+// homography: dst (OUT x OUT corners) -> src (labeled corners).
 // Solve the standard 8-unknown DLT system with Gaussian elimination, no libs.
 function homography(dstPts, srcPts) {
   const A = [], b = [];
@@ -553,6 +1018,18 @@ function homography(dstPts, srcPts) {
   }
   const h = b.map((v, i) => v / A[i][i]);
   return [...h, 1];                                 // h33 = 1
+}
+
+const dist2 = (p, q) => Math.hypot(p[0] - q[0], p[1] - q[1]);
+
+// Mirror of the server's _quad_aspect: short axis / long axis of the corner quad.
+function quadGeometry() {
+  const [a8, h8, h1, a1] = orderedCorners();
+  const top = dist2(a8, h8), bottom = dist2(a1, h1);
+  const left = dist2(a8, a1), right = dist2(h8, h1);
+  const w = (top + bottom) / 2, h = (left + right) / 2;
+  const aspect = (w > 0 && h > 0) ? Math.min(h / w, w / h) : 1;
+  return { top, bottom, left, right, w, h, aspect };
 }
 
 // Client-side rectified preview only — the server re-derives its own geometry
@@ -578,47 +1055,68 @@ function rectifyAndShow() {
     }
   }
   wctx.putImageData(out, 0, 0);
-  document.getElementById("warpStep").style.display = "block";
+
+  const g = quadGeometry();
+  const flat = g.aspect < LOW_ANGLE_HW;
+  const dim = srcMeanLuma !== null && srcMeanLuma < LOW_LIGHT_MEAN;
+  kv("geomTable", [
+    ["projected aspect", `${fmt(g.aspect, 3)} (warn below ${LOW_ANGLE_HW})`, flat ? "v-warn" : "v-ok"],
+    ["mean edge width", `${fmt(g.w, 1)} px (a8-h8 ${fmt(g.top, 1)}, a1-h1 ${fmt(g.bottom, 1)})`],
+    ["mean edge height", `${fmt(g.h, 1)} px (a8-a1 ${fmt(g.left, 1)}, h8-h1 ${fmt(g.right, 1)})`],
+    ["square pitch", `~${fmt(Math.min(g.w, g.h) / 8, 1)} px on the short axis`],
+    ["mean luma", `${fmt(srcMeanLuma ?? 0, 1)} (warn below ${LOW_LIGHT_MEAN})`, dim ? "v-warn" : "v-ok"],
+  ]);
+  const flags = [];
+  if (flat) flags.push("camera close to board level — pieces occlude each other");
+  if (dim) flags.push("dim photo — recognition degrades");
+  setStep("rectify", flags.length ? "warn" : "ok",
+    `aspect ${fmt(g.aspect, 3)} · luma ${fmt(srcMeanLuma ?? 0, 1)}${flags.length ? " · " + flags.join(" · ") : ""}`);
 }
 
-// ---- estimate + render ------------------------------------------------------
+// ---- 4-7. estimate + render --------------------------------------------------
 // Shared by the automatic zero-tap flow (called right after a successful auto-detect)
-// and the manual fallback (the sticky "Read position" button).
+// and the manual "Read position" button. Diagnostics are always requested: this page
+// is the diagnostic surface, so ?debug=1 is unconditional rather than a checkbox.
 async function runRead() {
   if (pts.length !== 4) return;
-  document.getElementById("busy").style.display = "inline";
+  $("busy").style.display = "inline";
   errEl.textContent = "";
+  setRunState("reading");
+  ["sample", "classify", "orient", "output"].forEach((s) => setStep(s, "run", "estimating…"));
+  const t0 = performance.now();
   try {
     // POST the photo itself + the labeled corners; the server crops each square
     // with headroom from the original view, so pieces are seen whole.
     const qs = orderedCorners().map((p) => p.map(Math.round).join(",")).join(",");
-    const debugFlag = document.getElementById("diagToggle").checked ? "&debug=1" : "";
     const rotFlag = cornersEdited ? "" : "&autorotate=1";
     const blob = await canvasJpeg(src, 0.9);
-    const r = await fetch(INFERENCE_HTTP + "/estimate?corners=" + qs + debugFlag + rotFlag, {
+    const r = await fetch(INFERENCE_HTTP + "/estimate?corners=" + qs + "&debug=1" + rotFlag, {
       method: "POST", body: blob, headers: { "Content-Type": "image/jpeg" },
     });
     if (!r.ok) throw new Error("estimate failed: " + r.status + " " + await r.text());
+    estimateMs = performance.now() - t0;
     render(await r.json());
+    setRunState("done");
   } catch (e) {
     errEl.textContent = String(e) + "\nIs the inference node reachable at " + INFERENCE_HTTP + " ?";
+    ["sample", "classify", "orient", "output"].forEach((s) => setStep(s, "fail", "read failed"));
+    setRunState("failed");
   } finally {
-    document.getElementById("busy").style.display = "none";
+    $("busy").style.display = "none";
   }
 }
 readBtn.onclick = runRead;
 
 // ---- one-tap per-set calibration --------------------------------------------
 // Photograph the STARTING position in your current lighting, set corners as
-// usual, then tap this: the server rebuilds its per-set centroids from that one
+// usual, then press this: the server rebuilds its per-set bank from that one
 // photo (the start position contains all 13 classes). Reads after this are tuned
-// to this set + lighting — recalibrate whenever the light changes noticeably.
-// Secondary/opt-in: normal use no longer needs calibration.
+// to this set + lighting. Secondary/opt-in: normal use no longer needs calibration.
 calibBtn.onclick = async () => {
   if (pts.length !== 4) return;
   if (!confirm("Calibrate from this photo?\n\nThe board must show the STARTING position, " +
                "with the a8/h8/h1/a1 labels on the matching corners.")) return;
-  document.getElementById("busy").style.display = "inline";
+  $("busy").style.display = "inline";
   errEl.textContent = "";
   try {
     const qs = orderedCorners().map((p) => p.map(Math.round).join(",")).join(",");
@@ -631,19 +1129,21 @@ calibBtn.onclick = async () => {
       // showing the claimed position); surface its reason verbatim, cleanly.
       let reason = "calibrate failed: " + r.status;
       try { reason = (await r.json()).error ?? reason; } catch {}
-      errEl.textContent = "🚫 " + reason;
+      errEl.textContent = reason;
       return;
     }
     const d = await r.json();
     errEl.textContent = "";
     const rotNote = d.label_rotation
-      ? ` (corner labels were auto-corrected by ${d.label_rotation * 90}°)` : "";
-    cornerHint.innerHTML = `✅ Calibrated <b>${d.classes_calibrated}/13</b> piece classes ` +
-      `from this photo${rotNote} — now photograph your game position and Read as usual.`;
+      ? ` (corner labels were auto-corrected by ${d.label_rotation * 90} degrees)` : "";
+    showBanner("info", `Calibrated ${d.classes_calibrated}/13 piece classes from this photo` +
+      `${rotNote} — bank now holds ${d.exemplars} exemplars.`);
+    cornerHint.innerHTML = `Calibrated <b>${d.classes_calibrated}/13</b> piece classes ` +
+      `from this photo${rotNote} — now photograph your game position and read as usual.`;
   } catch (e) {
     errEl.textContent = String(e) + "\nIs the inference node reachable at " + INFERENCE_HTTP + " ?";
   } finally {
-    document.getElementById("busy").style.display = "none";
+    $("busy").style.display = "none";
   }
 };
 
@@ -677,28 +1177,35 @@ function squareKey(r, c) { return "abcdefgh"[c] + (8 - r); }
 
 let lastPlacement = null;
 let cgBoard = null;  // lazily created: chessground needs the wrapper to have real size,
-                     // which only happens once #result is shown (display:none => 0×0).
-let autocalTimer = null;
+                     // which only happens once #result is shown (display:none => 0x0).
+let bannerTimer = null;
+let mosaicUrl = null;  // data: URL of the debug mosaic, sliced per square by the inspector
 
-// ---- tap-to-correct squares --------------------------------------------------
+// ---- corrections -------------------------------------------------------------
 // basePlacement/baseSquareDist are the server's own read for the CURRENT result — the
-// uncorrected baseline. `corrections` layers user taps on top without ever mutating them,
+// uncorrected baseline. `corrections` layers user picks on top without ever mutating them,
 // so "reset corrections" can always restore exactly what the server said.
 let basePlacement = null;    // ev.placement from the last real (non-occupancy) read
-let baseSquareDist = null;   // ev.square_dist from the last real read — needed for distribution lookups
+let baseSquareDist = null;   // ev.square_dist from the last real read
 let corrections = new Map(); // squareKey -> corrected class ("empty"|"P"|...|"k"); absent = original
-let panelSquare = null;      // { r, c } of the square the correction panel is open for, or null
+let selected = null;         // { r, c } of the inspected square, or null
 
 function classIndex(cls) { return CLASSES.indexOf(cls); }
 
-// That square's 3 most likely classes, most likely first — [className, probability][].
-function top3Classes(r, c) {
+// The full 13-class distribution for a square, most likely first — [class, p][].
+function rankedClasses(r, c) {
   return baseSquareDist[r][c]
     .map((p, i) => [CLASSES[i], p])
-    .sort((a, b) => b[1] - a[1])
-    .slice(0, 3);
+    .sort((a, b) => b[1] - a[1]);
 }
-
+function argmaxClassAt(r, c) {
+  const d = baseSquareDist[r][c];
+  return CLASSES[d.indexOf(Math.max(...d))];
+}
+function confidenceAt(r, c) {
+  const d = baseSquareDist?.[r]?.[c];
+  return d ? Math.max(...d) : 1;
+}
 // What's actually shown at (r,c) right now: the correction if one exists, else the
 // server's own argmax (read straight off basePlacement, so it never drifts from `render`).
 function currentClassAt(r, c) {
@@ -707,19 +1214,16 @@ function currentClassAt(r, c) {
   return fenToGrid(basePlacement)[r][c] || "empty";
 }
 
-// The panel's active square gets its own autoShape on top of red/blue, so it's obvious
-// which square the open panel refers to (paints last -> on top of a blue "corrected" ring).
-function panelHighlightShape() {
-  // Felix's spec: "a distinct autoShape (e.g. green)" — green, distinct from red
-  // (low-confidence) and blue (already corrected).
-  return panelSquare ? [{ orig: squareKey(panelSquare.r, panelSquare.c), brush: "green" }] : [];
+// The inspected square gets its own autoShape on top of red/blue, so it's obvious
+// which square the panel refers to (paints last -> on top of a blue "corrected" ring).
+function selectionShape() {
+  return selected ? [{ orig: squareKey(selected.r, selected.c), brush: "green" }] : [];
 }
 
 // The single source of truth for "what's actually shown": basePlacement with `corrections`
 // layered on top. Recomputes the live FEN, the board (piece squares + red/blue/green
-// autoShapes), the placement text, and both Lichess links — called after every tap and
-// every reset. Does NOT touch the panel's own contents — callers that changed the
-// correction/selection also call renderPanel() when the panel is open.
+// autoShapes), the placement text, the corrections list and both Lichess links — called
+// after every assignment and every reset.
 function applyCorrections() {
   const grid = fenToGrid(basePlacement);
   const shapes = [];
@@ -731,177 +1235,347 @@ function applyCorrections() {
       shapes.push({ orig: sq, brush: "blue" });
       continue;
     }
-    const conf = baseSquareDist?.[r]?.[c] ? Math.max(...baseSquareDist[r][c]) : 1;
-    if (conf < 0.5) shapes.push({ orig: sq, brush: "red" });
+    if (confidenceAt(r, c) < LOW_CONF) shapes.push({ orig: sq, brush: "red" });
   }
-  shapes.push(...panelHighlightShape());
+  shapes.push(...selectionShape());
   lastPlacement = gridToFen(grid);
   cgBoard.set({ fen: lastPlacement, drawable: { enabled: true, visible: true, autoShapes: shapes } });
-  document.getElementById("pl").textContent = lastPlacement;
+  $("pl").textContent = lastPlacement;
   updateLinks();
-  document.getElementById("resetCorrections").style.display = corrections.size ? "inline-block" : "none";
+  $("resetCorrections").style.display = corrections.size ? "inline-block" : "none";
+  updateConfirmButton();   // editing a square invalidates any label already saved
+  renderCorrectionsList();
+  renderMaterial();
+  renderConfMap();
+  setStep("output", corrections.size ? "warn" : "ok",
+    `${lastPlacement}${corrections.size ? ` · ${corrections.size} hand correction(s)` : ""}`);
+  // Corrections belong to the read they were made against, so leaving and coming back
+  // to a history entry preserves them.
+  const active = reads.find((e) => e.id === activeReadId);
+  if (active) { active.corrections = [...corrections]; renderHistory(); }
 }
 
-// ---- correction panel: full distribution + direct selection ------------------
+function renderCorrectionsList() {
+  const el = $("corrList");
+  if (!corrections.size) {
+    el.innerHTML = '<div class="note">none — the board below is exactly what the model read</div>';
+    return;
+  }
+  el.innerHTML = "";
+  for (const [sq, cls] of corrections) {
+    const c = "abcdefgh".indexOf(sq[0]), r = 8 - Number(sq[1]);
+    const row = document.createElement("div");
+    row.className = "corr-row";
+    row.innerHTML = `<span class="mono">${sq}</span>` +
+      `<span class="muted">${CLASS_NAMES[argmaxClassAt(r, c)]} &rarr; ${CLASS_NAMES[cls]}</span>` +
+      `<span class="spacer"></span>`;
+    const revert = document.createElement("button");
+    revert.className = "text-btn";
+    revert.textContent = "revert";
+    revert.onclick = () => { corrections.delete(sq); applyCorrections(); if (selected) renderInspector(); };
+    row.appendChild(revert);
+    el.appendChild(row);
+  }
+}
+
+// ---- ground truth ------------------------------------------------------------
+// The correction panel is the only place a human ever states what a board REALLY
+// holds, and until now that answer died with the page. Keeping it is what makes an
+// uncontaminated eval set possible at all: every other labeled board we own was fed
+// into the calibration bank, which is why the bank scores 64/64 on exactly the
+// boards it was built from and 43/64 on the one it never saw. Confirmed labels are
+// scoring data only — the server never fits on them.
+//
+// The label is the board AS SHOWN (base read ⊕ corrections), so confirming with zero
+// corrections is just as much a label as fixing four squares: "the model got this
+// one exactly right" is the observation the perfect-board rate is made of.
+let lastUpload = null;   // ev.upload — names the retained photo this read came from
+let savedLabel = null;   // the placement last confirmed for lastUpload, or null
+
+function updateConfirmButton() {
+  const btn = $("confirmPosition");
+  // No retained photo (the server runs without BR_SAVE_UPLOADS) means a label would
+  // have no image to belong to and no eval could ever replay it — don't offer it.
+  const offer = Boolean(lastUpload) && lastMode === "position";
+  btn.style.display = offer ? "inline-block" : "none";
+  $("labelHint").style.display = offer ? "block" : "none";
+  if (!offer) return;
+  const saved = savedLabel !== null && savedLabel === lastPlacement;
+  btn.textContent = saved ? "Ground truth saved" : "Confirm as ground truth";
+  btn.disabled = saved;
+}
+
+$("confirmPosition").onclick = async () => {
+  if (!lastUpload || !lastPlacement) return;
+  const btn = $("confirmPosition");
+  btn.disabled = true;
+  try {
+    const r = await fetch(INFERENCE_HTTP + "/labels/" + encodeURIComponent(lastUpload), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ placement: lastPlacement, corrections: corrections.size }),
+    });
+    if (!r.ok) {
+      let reason = "could not save the label: " + r.status;
+      try { reason = (await r.json()).error ?? reason; } catch {}
+      errEl.textContent = reason;
+      btn.disabled = false;
+      return;
+    }
+    await r.json();
+    savedLabel = lastPlacement;
+    showBanner("info", corrections.size
+      ? `Saved as ground truth with ${corrections.size} correction(s) — this board can now score the reader.`
+      : "Saved as ground truth — the model read this board exactly right.");
+  } catch (e) {
+    errEl.textContent = String(e) + "\nIs the inference node reachable at " + INFERENCE_HTTP + " ?";
+    btn.disabled = false;
+  }
+  updateConfirmButton();
+};
+
+// A material census is the cheapest sanity check on a read: two kings, at most eight
+// pawns a side. The CV layer never applies chess rules (DESIGN D1) — this is the
+// consumer noticing, not the estimator constraining.
+function renderMaterial() {
+  const grid = fenToGrid(lastPlacement);
+  const counts = {};
+  grid.flat().forEach((ch) => { if (ch) counts[ch] = (counts[ch] || 0) + 1; });
+  const line = (set) => set.map((ch) => `${ch}${counts[ch] || 0}`).join(" ");
+  const impossible = [];
+  if ((counts.K || 0) !== 1) impossible.push(`white kings: ${counts.K || 0}`);
+  if ((counts.k || 0) !== 1) impossible.push(`black kings: ${counts.k || 0}`);
+  if ((counts.P || 0) > 8) impossible.push(`white pawns: ${counts.P}`);
+  if ((counts.p || 0) > 8) impossible.push(`black pawns: ${counts.p}`);
+  kv("materialTable", [
+    ["white", line(["K", "Q", "R", "B", "N", "P"])],
+    ["black", line(["k", "q", "r", "b", "n", "p"])],
+    ["occupied squares", String(grid.flat().filter(Boolean).length)],
+    ["implausible", impossible.length ? impossible.join(", ") : "no — counts are legal",
+      impossible.length ? "v-warn" : "v-ok"],
+  ]);
+}
+
+// ---- square inspector --------------------------------------------------------
 // Row 1 = White, row 2 = Black, same piece type in the same column — the board's own
-// visual symmetry, so a miscolored read is a one-glance vertical scan, not a hunt.
+// visual symmetry, so a miscoloured read is a one-glance vertical scan, not a hunt.
 const PANEL_TYPES = ["K", "Q", "R", "B", "N", "P"];
 const ROLE_NAMES = { K: "king", Q: "queen", R: "rook", B: "bishop", N: "knight", P: "pawn" };
 
-function renderPanel() {
-  if (!panelSquare) return;
-  const { r, c } = panelSquare;
+function renderInspector() {
+  if (!selected) return;
+  const { r, c } = selected;
   const dist = baseSquareDist[r][c];
   const argmaxIdx = dist.indexOf(Math.max(...dist));
   const curCls = currentClassAt(r, c);
   const curIdx = classIndex(curCls);
+  const isCorrected = corrections.has(squareKey(r, c));
 
-  document.getElementById("cpSquare").textContent = squareKey(r, c);
-  document.getElementById("cpCurrent").textContent =
-    `${curCls} · ${Math.round(dist[curIdx] * 100)}%`;
+  $("cpSquare").textContent = squareKey(r, c);
+  $("cpRead").textContent =
+    `${CLASS_NAMES[CLASSES[argmaxIdx]]} (${CLASSES[argmaxIdx]}) at ${fmt(dist[argmaxIdx] * 100, 1)}%`;
+  $("cpCurrent").innerHTML = isCorrected
+    ? `<span class="corrected">${CLASS_NAMES[curCls]} — assigned by hand</span>`
+    : `${CLASS_NAMES[curCls]} — as read`;
+  $("cpRevertWrap").style.display = isCorrected ? "block" : "none";
+  setCropThumb($("cpCrop"), r, c);
 
-  const emptyPct = Math.round(dist[0] * 100);
-  document.getElementById("cpEmptyRow").classList.toggle("selected", curIdx === 0);
-  document.getElementById("cpEmptyBar").style.width = emptyPct + "%";
-  document.getElementById("cpEmptyPct").textContent = emptyPct + "%";
+  const emptyPct = dist[0] * 100;
+  $("cpEmptyRow").classList.toggle("selected", curIdx === 0);
+  $("cpEmptyBar").style.width = Math.min(100, emptyPct).toFixed(0) + "%";
+  $("cpEmptyPct").textContent = emptyPct < 1 ? "<1%" : Math.round(emptyPct) + "%";
 
-  const grid = document.getElementById("cpGrid");
-  grid.innerHTML = "";
   ["white", "black"].forEach((color) => {
+    const grid = $(color === "white" ? "cpGridWhite" : "cpGridBlack");
+    grid.innerHTML = "";
     PANEL_TYPES.forEach((type) => {
       const cls = color === "white" ? type : type.toLowerCase();
       const idx = classIndex(cls);
       const pct = dist[idx] * 100;
       const cell = document.createElement("div");
       cell.className = "cp-cell" + (pct < 1 ? " faint" : "") + (idx === curIdx ? " selected" : "");
+      cell.title = `${CLASS_NAMES[cls]} — ${fmt(pct, 1)}%`;
       cell.innerHTML =
         `<piece class="${color} ${ROLE_NAMES[type]}"></piece>` +
         `<div class="cp-bar-track"><i style="width:${Math.min(100, pct).toFixed(0)}%"></i></div>` +
         `<div class="cp-pct">${pct < 1 ? "<1%" : Math.round(pct) + "%"}</div>` +
-        (idx === argmaxIdx ? '<div class="cp-argmax-dot" title="model’s original guess"></div>' : "");
-      cell.onclick = () => selectPanelClass(idx);
+        (idx === argmaxIdx ? '<div class="cp-argmax-dot" title="the model’s own read"></div>' : "");
+      cell.onclick = () => assignClass(idx);
       grid.appendChild(cell);
     });
   });
+
+  $("cpRanked").innerHTML = rankedClasses(r, c).slice(0, 5).map(([cls, p]) =>
+    `<div class="rank-row"><span class="rk-cls">${cls === "empty" ? "." : cls}</span>` +
+    `<span class="cp-bar-track"><i style="width:${Math.min(100, p * 100).toFixed(0)}%"></i></span>` +
+    `<span class="rk-pct">${p * 100 < 0.1 ? "<0.1" : fmt(p * 100, 1)}%</span></div>`).join("");
 }
 
-// Tap a panel cell -> set that state directly. Selecting the model's own top guess is
-// "no correction" (matches the fast-cycle path's semantics), same as any other class.
-function selectPanelClass(idx) {
-  if (!panelSquare) return;
-  const { r, c } = panelSquare;
+// The crop the classifier actually saw, sliced from the debug mosaic — a uniform 8x8
+// tiling of equal cells, so percentage background positioning lands exactly on one cell.
+function setCropThumb(el, r, c) {
+  if (!mosaicUrl) { el.style.backgroundImage = "none"; return; }
+  el.style.backgroundImage = `url("${mosaicUrl}")`;
+  el.style.backgroundPosition = `${(c / 7) * 100}% ${(r / 7) * 100}%`;
+}
+
+// Assign a class to the inspected square. Picking the model's own read is "no
+// correction" — the map only ever holds genuine disagreements with the server.
+function assignClass(idx) {
+  if (!selected) return;
+  const { r, c } = selected;
   const sq = squareKey(r, c);
   const dist = baseSquareDist[r][c];
   const argmaxIdx = dist.indexOf(Math.max(...dist));
   if (idx === argmaxIdx) corrections.delete(sq); else corrections.set(sq, CLASSES[idx]);
   applyCorrections();
-  renderPanel();  // stays open, refreshed — optimizes for fixing several squares in a row
+  renderInspector();  // stays open, refreshed — optimized for fixing several squares in a row
 }
 
-function openPanelFor(r, c) {
-  panelSquare = { r, c };
-  panelEl.hidden = false;
-  renderPanel();
-}
+// That square's 3 most likely classes, most likely first — the toggle ring a repeated
+// click walks around.
+function top3Classes(r, c) { return rankedClasses(r, c).slice(0, 3); }
 
-function closePanel() {
-  if (!panelSquare) return;
-  panelSquare = null;
-  panelEl.hidden = true;
-  if (baseSquareDist) applyCorrections();  // drops the green highlight shape
-}
-document.getElementById("cpClose").onclick = closePanel;
-document.getElementById("cpEmptyRow").onclick = () => selectPanelClass(0);
-
-// Tapping a square (a) advances it to its next-most-probable state — the fast path,
-// preserved — cycling argmax -> 2nd -> 3rd -> back to argmax, and (b) opens/updates the
-// full-distribution panel for that square, per Felix's spec. A correction made via the
-// panel (selectPanelClass, possibly outside the top-3) is a valid "current" state to
-// cycle from too — if it isn't one of the top-3, the next tap resets to argmax.
-function cycleSquareCorrection(r, c) {
+// Clicking the ALREADY-selected square advances it to its next-most-probable reading:
+// argmax -> 2nd -> 3rd -> back to argmax (back to argmax means "no correction"). Fixing
+// a misread piece is usually one extra click, without ever opening the grid. A
+// correction picked from the grid that isn't in the top 3 is still a valid state to
+// toggle from — the next click resets to argmax.
+function cycleSquare(r, c) {
   const sq = squareKey(r, c);
   const top3 = top3Classes(r, c).map(([cls]) => cls);
   const curIdx3 = top3.indexOf(corrections.get(sq) ?? top3[0]);
   const nextCls = top3[(curIdx3 + 1) % 3];
   if (nextCls === top3[0]) corrections.delete(sq); else corrections.set(sq, nextCls);
-  openPanelFor(r, c);   // sets panelSquare before applyCorrections, so its highlight is right
   applyCorrections();
+  renderInspector();
 }
 
-function resetCorrections() {
-  corrections.clear();
-  panelSquare = null;
-  panelEl.hidden = true;
-  if (baseSquareDist) applyCorrections();
+// Opening a square never changes it; clicking it again toggles. Assignment from the
+// grid or the keyboard is always explicit.
+function selectSquare(r, c) {
+  if (!baseSquareDist || lastMode !== "position") return;
+  selected = { r: Math.min(7, Math.max(0, r)), c: Math.min(7, Math.max(0, c)) };
+  inspectorEl.classList.add("open");
+  renderInspector();
+  applyCorrections();  // repaints the green selection ring
 }
-document.getElementById("resetCorrections").onclick = resetCorrections;
+
+function closeInspector() {
+  if (!selected) { inspectorEl.classList.remove("open"); return; }
+  selected = null;
+  inspectorEl.classList.remove("open");
+  if (baseSquareDist) applyCorrections();  // drops the green highlight shape
+}
+$("cpClose").onclick = closeInspector;
+$("cpEmptyRow").onclick = () => assignClass(0);
+$("cpRevert").onclick = () => {
+  if (!selected) return;
+  corrections.delete(squareKey(selected.r, selected.c));
+  applyCorrections(); renderInspector();
+};
+$("cpPrev").onclick = () => { if (selected) stepSquare(-1); };
+$("cpNext").onclick = () => { if (selected) stepSquare(1); };
+$("cpPrevLow").onclick = () => {
+  const low = lowConfidenceSquares();
+  if (!low.length) return;
+  const cur = selected ? selected.r * 8 + selected.c : -1;
+  const next = low.find(({ r, c }) => r * 8 + c > cur) || low[0];
+  selectSquare(next.r, next.c);
+};
+function stepSquare(delta) {
+  const i = (selected.r * 8 + selected.c + delta + 64) % 64;
+  selectSquare(Math.floor(i / 8), i % 8);
+}
 
 // Tap = tap, not touch-capture: a plain click listener never touches touch-action or
 // preventDefault, so a swipe that starts on the board still scrolls the page like anywhere
 // else — only an actual (non-dragged) tap fires a click at all. viewOnly stays true;
 // chessground's own move/drag interaction is never enabled.
-document.getElementById("board").addEventListener("click", (ev) => {
-  if (!baseSquareDist || lastMode !== "position") return;  // nothing to correct yet/occupancy mode
+$("board").addEventListener("click", (ev) => {
+  if (!baseSquareDist || lastMode !== "position") return;  // nothing to inspect yet
   const rect = ev.currentTarget.getBoundingClientRect();
   const x = ev.clientX - rect.left, y = ev.clientY - rect.top;
   if (x < 0 || y < 0 || x >= rect.width || y >= rect.height) return;
   const c = Math.min(7, Math.max(0, Math.floor((x / rect.width) * 8)));
   const r = Math.min(7, Math.max(0, Math.floor((y / rect.height) * 8)));
-  cycleSquareCorrection(r, c);
+  // First click inspects, repeat clicks on the same square toggle through its top-3.
+  if (selected && selected.r === r && selected.c === c) cycleSquare(r, c);
+  else selectSquare(r, c);
 });
 
-// Tapping anywhere outside the board and the panel itself closes the panel — a plain
-// click listener, same as everything else here, so it never touches scroll behavior.
+// Clicking outside the board and the inspector closes it — a plain click listener,
+// same as everything else here, so it never touches scroll behavior.
 document.addEventListener("click", (ev) => {
-  if (!panelSquare) return;
-  // Use the event's dispatch-time composedPath(), NOT a live panelEl.contains(ev.target):
-  // selecting a grid cell rebuilds #cpGrid's innerHTML inside that cell's own click handler,
+  if (!selected) return;
+  // Use the event's dispatch-time composedPath(), NOT a live inspectorEl.contains(ev.target):
+  // assigning a class rebuilds the grids' innerHTML inside that cell's own click handler,
   // so by the time this bubbles up ev.target is a detached node and .contains() returns
   // false — which would wrongly close the panel on every direct pick. composedPath() is
   // captured when the event is dispatched, so it still contains the panel/board.
   const path = ev.composedPath();
-  if (path.includes(panelEl) || path.includes(document.getElementById("board"))) return;
-  closePanel();
+  if (path.includes(inspectorEl) || path.includes($("board")) ||
+      path.includes($("confMap")) || path.includes($("lowChips"))) return;
+  closeInspector();
 });
 
-function updateLowLightWarning(ev) {
-  const el = document.getElementById("lowLightWarning");
-  const msgs = [];
-  if (ev.warnings?.includes("low_light")) {
-    msgs.push("⚠️ Photo is very dark — reads degrade; add light if you can.");
+// Keyboard: the diagnostic fast path on a desktop. FEN letters, so case carries colour
+// exactly as it does in the placement string (K = white king, k = black king).
+document.addEventListener("keydown", (ev) => {
+  if (!selected || ev.ctrlKey || ev.metaKey || ev.altKey) return;
+  if (ev.target instanceof HTMLInputElement) return;
+  const k = ev.key;
+  if (k === "Escape") { closeInspector(); return; }
+  const move = { ArrowLeft: [0, -1], ArrowRight: [0, 1], ArrowUp: [-1, 0], ArrowDown: [1, 0] }[k];
+  if (move) {
+    ev.preventDefault();
+    selectSquare(selected.r + move[0], selected.c + move[1]);
+    return;
   }
-  if (ev.warnings?.includes("very_low_angle")) {
-    msgs.push("📐 Camera is almost level with the board — pieces hide each other and reads collapse. Hold the phone higher, looking down at the board.");
+  if (k === "." || k === "0" || k === "Delete" || k === "Backspace") {
+    ev.preventDefault(); assignClass(0); return;
   }
-  if (msgs.length) {
-    el.textContent = msgs.join(" ");
-    el.style.display = "block";
-  } else {
-    el.style.display = "none";
+  if (/^[kqrbnpKQRBNP]$/.test(k)) {
+    ev.preventDefault();
+    assignClass(classIndex(k));
   }
-}
+});
 
+// ---- render ------------------------------------------------------------------
 // /estimate answers with one of three shapes (DESIGN §4.6 / TESTING Option G):
 //   1. a normal position event (placement + confidence) — the common case.
 //   2. the same event PLUS a top-level "autocalibrated" block — the server just
 //      self-calibrated piece types from a starting-position photo.
 //   3. occupancy-only ({mode:"occupancy", occupied, hint}) — uncalibrated for this
 //      piece set: no placement exists yet, just which squares are occupied.
-function render(ev) {
-  if (ev.mode === "occupancy") { renderOccupancy(ev); return; }
+function render(ev, restored = null) {
+  lastEvent = ev;
+  // Point the correction sync at the right history entry BEFORE anything renders:
+  // a fresh read has no entry yet (pushRead makes it), a restored one owns its own.
+  activeReadId = restored ? restored.id : null;
+  updateSampleStep(ev);
+  updateRawEvent(ev);
+  if (ev.mode === "occupancy") { renderOccupancy(ev, restored); return; }
 
   lastMode = "position";
   basePlacement = ev.placement;
   baseSquareDist = ev.square_dist ?? null;
-  corrections.clear();  // a new read is a fresh baseline; last read's corrections don't carry over
-  panelSquare = null; panelEl.hidden = true;  // a new read invalidates any open correction panel
+  // Which retained photo this reading belongs to, so its position can be confirmed
+  // as ground truth. Restoring a history entry carries its own upload id along, so
+  // an earlier read stays labelable after later ones.
+  lastUpload = ev.upload ?? null;
+  savedLabel = null;
+  // A new read is a fresh baseline; a restored one brings back the corrections that
+  // were made against it, so switching between reads never loses hand work.
+  corrections = new Map(restored ? restored.corrections : []);
+  closeInspector();     // a new read invalidates any open inspection
   // NB: never "show" via style.display = "" — that reverts to the stylesheet's
   // display:none and the section stays invisible. Must precede board creation/sizing.
-  document.getElementById("result").style.display = "block";
-  document.getElementById("occupancyHint").style.display = "none";
-  document.getElementById("metaRow").style.display = "";
-  document.getElementById("stmRow").style.display = "";
-  document.getElementById("linksRow").style.display = "";
+  $("result").style.display = "block";
+  $("occupancyHint").style.display = "none";
+  $("boardHint").style.display = "";
+  $("stmRow").style.display = "";
+  $("linksRow").style.display = "";
 
   const config = {
     orientation: "white",
@@ -909,41 +1583,48 @@ function render(ev) {
     viewOnly: true,
     drawable: { enabled: true, visible: true },
   };
-  if (!cgBoard) cgBoard = Chessground(document.getElementById("board"), config);
+  if (!cgBoard) cgBoard = Chessground($("board"), config);
   else cgBoard.set(config);
   applyCorrections();  // sets fen/autoShapes/#pl/links/reset-button from the fresh baseline
 
-  document.getElementById("conf").textContent = (ev.confidence ?? 0).toFixed(3);
-  updateDiagnostics(ev);
+  updateClassifyStep(ev);
+  updateOrientStep(ev);
   updateLowLightWarning(ev);
-  if (ev.autocalibrated) showAutocalBanner(ev.autocalibrated);
-  else if (ev.autorotated) showBanner(`↻ Orientation auto-corrected (rotated ${ev.autorotated}°) — use "rotate labels" if this looks wrong`);
-  else hideAutocalBanner();
+  if (ev.autocalibrated) {
+    showBanner("info", `Auto-calibrated from the starting position (${ev.autocalibrated.matches}/64 squares)`);
+  } else if (ev.autorotated) {
+    showBanner("info", `Orientation auto-corrected (rotated ${ev.autorotated} degrees) — use "rotate labels" if this looks wrong`);
+  } else hideBanner();
   updateRotateVisibility();
-  document.getElementById("result").scrollIntoView({ behavior: "smooth" });
+  if (restored) markRestored(restored); else pushRead(ev);
 }
 
 // Occupancy-only: the server has no piece-type calibration for this set yet, so there is
 // no placement to show — just which squares have *something* on them, plus the hint that
 // tells the user how to unlock full recognition (photograph the starting position once).
-function renderOccupancy(ev) {
+function renderOccupancy(ev, restored = null) {
   lastMode = "occupancy";
   lastPlacement = null;
   basePlacement = null;
-  baseSquareDist = null;  // no per-square distribution in this mode — nothing to correct
+  baseSquareDist = null;  // no per-square distribution in this mode — nothing to inspect
   corrections.clear();
-  panelSquare = null; panelEl.hidden = true;
-  document.getElementById("resetCorrections").style.display = "none";
-  document.getElementById("result").style.display = "block";
-  hideAutocalBanner();
+  closeInspector();
+  $("resetCorrections").style.display = "none";
+  // Occupancy is not a position, so there is nothing here a human could confirm.
+  lastUpload = null;
+  savedLabel = null;
+  updateConfirmButton();
+  $("result").style.display = "block";
+  hideBanner();
 
-  const hintEl = document.getElementById("occupancyHint");
-  hintEl.textContent = "🔍 " + (ev.hint || "Uncalibrated for this piece set — showing occupancy only.");
+  const occupied = (ev.occupied || []).flat().filter(Boolean).length;
+  const hintEl = $("occupancyHint");
+  hintEl.textContent = ev.hint || "Uncalibrated for this piece set — showing occupancy only.";
   hintEl.style.display = "block";
   // No placement exists in this mode, so nothing that depends on one is meaningful.
-  document.getElementById("metaRow").style.display = "none";
-  document.getElementById("stmRow").style.display = "none";
-  document.getElementById("linksRow").style.display = "none";
+  $("boardHint").style.display = "none";
+  $("stmRow").style.display = "none";
+  $("linksRow").style.display = "none";
 
   const shapes = [];
   for (let r = 0; r < 8; r++) for (let c = 0; c < 8; c++) {
@@ -956,41 +1637,316 @@ function renderOccupancy(ev) {
     viewOnly: true,
     drawable: { enabled: true, visible: true, autoShapes: shapes },
   };
-  if (!cgBoard) cgBoard = Chessground(document.getElementById("board"), config);
+  if (!cgBoard) cgBoard = Chessground($("board"), config);
   else cgBoard.set(config);
 
-  updateDiagnostics(ev);
+  setStep("classify", "warn", `occupancy only — ${occupied}/64 squares occupied, no piece types`);
+  kv("classTable", [
+    ["mode", "occupancy (uncalibrated for this piece set)", "v-warn"],
+    ["occupied squares", `${occupied} / 64`],
+    ["estimate latency", estimateMs === null ? "—" : `${estimateMs.toFixed(0)} ms`],
+    ["how to unlock", "photograph the starting position once — the server self-calibrates"],
+  ]);
+  $("confMap").innerHTML = "";
+  $("lowChips").innerHTML = "";
+  $("estimatorNotes").innerHTML = "";
+  setStep("orient", "idle", "not resolvable without a placement");
+  kv("orientTable", [["orientation", "unknown — occupancy carries no colour cue"]]);
+  setStep("output", "warn", "no placement in occupancy mode");
+  $("pl").textContent = "";
+  $("corrList").innerHTML = "";
+  $("materialTable").innerHTML = "";
   updateLowLightWarning(ev);
   updateRotateVisibility();
-  document.getElementById("result").scrollIntoView({ behavior: "smooth" });
+  if (restored) markRestored(restored); else pushRead(ev);
 }
 
-function showAutocalBanner(autocal) {
-  showBanner(`✓ Auto-calibrated from the starting position (${autocal.matches}/64 squares)`);
+// ---- stage 4: sampling -------------------------------------------------------
+function updateSampleStep(ev) {
+  if (ev.debug?.boxes && ev.debug?.mosaic) {
+    $("diagBoxes").src = "data:image/jpeg;base64," + ev.debug.boxes;
+    mosaicUrl = "data:image/jpeg;base64," + ev.debug.mosaic;
+    $("diagMosaic").src = mosaicUrl;
+    setStep("sample", "ok", "64 full-piece crops cut from the photo and fed to the classifier");
+  } else {
+    mosaicUrl = null;
+    setStep("sample", "warn", "the server returned no debug images for this read");
+  }
 }
-function showBanner(text) {
-  const el = document.getElementById("autocalBanner");
+
+// ---- stage 5: classification -------------------------------------------------
+function updateClassifyStep(ev) {
+  const confs = [];
+  for (let r = 0; r < 8; r++) for (let c = 0; c < 8; c++) confs.push(confidenceAt(r, c));
+  const low = confs.filter((p) => p < LOW_CONF).length;
+  const mean = confs.reduce((a, b) => a + b, 0) / confs.length;
+  const min = Math.min(...confs);
+  setStep("classify", low ? "warn" : "ok",
+    `mean per-square confidence ${fmt(mean, 3)} · ${low} square(s) below ${LOW_CONF} · position confidence ${fmt(ev.confidence ?? 0, 3)}`);
+  kv("classTable", [
+    ["mode", "position (13-class per square)", "v-ok"],
+    ["position confidence", fmt(ev.confidence ?? 0, 3)],
+    ["mean square confidence", fmt(mean, 3)],
+    ["weakest square", `${fmt(min, 3)}`, min < LOW_CONF ? "v-warn" : "v-ok"],
+    ["squares below " + LOW_CONF, String(low), low ? "v-warn" : "v-ok"],
+    ["estimate latency", estimateMs === null ? "—" : `${estimateMs.toFixed(0)} ms`],
+    ["status", ev.status ?? "ok"],
+    ["board / seq", `${ev.board_id ?? "?"} / ${ev.seq ?? "?"}`],
+    ["captured", ev.utc ?? "—"],
+  ]);
+  renderConfMap();
+  renderLowChips();
+  renderEstimatorNotes(ev);
+}
+
+function heatColor(p) {
+  // Same red -> yellow -> green ramp the server draws on the debug images.
+  const stops = p >= 0.8 ? [[255, 200, 60], [130, 210, 130], (p - 0.8) / 0.2]
+    : p >= 0.5 ? [[226, 85, 85], [255, 200, 60], (p - 0.5) / 0.3]
+    : [[150, 45, 45], [226, 85, 85], Math.max(0, p / 0.5)];
+  const [a, b, t] = stops;
+  return `rgb(${a.map((v, i) => Math.round(v + (b[i] - v) * Math.min(1, t))).join(",")})`;
+}
+
+function renderConfMap() {
+  const el = $("confMap");
+  if (!baseSquareDist) { el.innerHTML = ""; return; }
+  const parts = [];
+  for (let r = 0; r < 8; r++) {
+    parts.push(`<div class="lbl">${8 - r}</div>`);
+    for (let c = 0; c < 8; c++) {
+      const p = confidenceAt(r, c);
+      const cls = currentClassAt(r, c);
+      const sel = selected && selected.r === r && selected.c === c ? " sel" : "";
+      parts.push(
+        `<div class="cm-cell${sel}" data-r="${r}" data-c="${c}" title="${squareKey(r, c)} — ` +
+        `${CLASS_NAMES[cls]} ${fmt(p * 100, 1)}%" style="background:${heatColor(p)}">` +
+        `<span>${cls === "empty" ? "." : cls}</span>` +
+        `<span class="cm-p">${Math.round(p * 100)}</span></div>`);
+    }
+  }
+  parts.push('<div class="lbl"></div>');
+  for (const f of "abcdefgh") parts.push(`<div class="lbl">${f}</div>`);
+  el.innerHTML = parts.join("");
+}
+$("confMap").addEventListener("click", (ev) => {
+  const cell = ev.target.closest(".cm-cell");
+  if (!cell) return;
+  const r = Number(cell.dataset.r), c = Number(cell.dataset.c);
+  if (selected && selected.r === r && selected.c === c) cycleSquare(r, c);
+  else selectSquare(r, c);
+});
+
+function lowConfidenceSquares() {
+  const out = [];
+  for (let r = 0; r < 8; r++) for (let c = 0; c < 8; c++) out.push({ r, c, p: confidenceAt(r, c) });
+  return out.sort((a, b) => a.p - b.p).slice(0, 8);
+}
+
+function renderLowChips() {
+  const el = $("lowChips");
+  el.innerHTML = "";
+  lowConfidenceSquares().forEach(({ r, c, p }) => {
+    const b = document.createElement("button");
+    b.className = "chip-sq";
+    b.type = "button";
+    b.textContent = `${squareKey(r, c)} ${currentClassAt(r, c) === "empty" ? "." : currentClassAt(r, c)} ${fmt(p, 2)}`;
+    b.onclick = () => selectSquare(r, c);
+    el.appendChild(b);
+  });
+}
+
+// Whatever the server volunteered about the estimator's own state this read:
+// a bank bootstrapped, refreshed, or auto-calibrated from this very photo.
+function renderEstimatorNotes(ev) {
+  const el = $("estimatorNotes");
+  const bits = [];
+  if (ev.autocalibrated) {
+    const a = ev.autocalibrated;
+    bits.push(`<div class="note">Auto-calibrated from this photo: ${a.matches}/64 squares agreed ` +
+      `with the start position at rotation ${(a.rotation ?? 0) * 90} degrees; bank now holds ` +
+      `${a.exemplars ?? "?"} exemplars${a.saved ? ` (saved to ${a.saved})` : " (in memory only)"}.</div>`);
+  }
+  if (ev.bank_refreshed) {
+    const b = ev.bank_refreshed;
+    bits.push(`<div class="note">Bank self-refreshed: +${b.added} exemplars (total ${b.total}) from ` +
+      `${b.agree} agreeing squares at rotation ${(b.rotation ?? 0) * 90} degrees` +
+      `${b.saved ? `, saved to ${b.saved}` : ""}.</div>`);
+  }
+  if (ev.warnings?.length) {
+    bits.push(`<div class="note warn">Server warnings: ${ev.warnings.join(", ")}</div>`);
+  }
+  el.innerHTML = bits.join("") ||
+    '<div class="note">no estimator-state changes on this read</div>';
+}
+
+// ---- stage 6: orientation ----------------------------------------------------
+function updateOrientStep(ev) {
+  const auto = !cornersEdited;
+  const rotated = ev.autorotated ?? 0;
+  setStep("orient", rotated ? "warn" : "ok",
+    auto
+      ? (rotated ? `server rotated the reading by ${rotated} degrees` : "auto-rotation on, no rotation needed")
+      : "your corner labelling used as-is (auto-rotation off)");
+  kv("orientTable", [
+    ["corner labels", cornersEdited ? "set by you" : "auto-detected guess"],
+    ["autorotate requested", auto ? "yes (&autorotate=1)" : "no"],
+    ["rotation applied", `${rotated} degrees`, rotated ? "v-warn" : "v-ok"],
+    ["page label rotation", `${rot * 90} degrees`],
+    ["reported orientation", ev.orientation ?? "—"],
+  ]);
+}
+
+// ---- recent positions --------------------------------------------------------
+// Every completed read is kept in memory (never persisted — the entries hold full
+// photos and debug images) with everything needed to put the *whole* pipeline back:
+// the photo, the corners and their labelling, the geometry, the event, and any hand
+// corrections made against it. Restoring is how two reads get compared without
+// re-shooting either — the core diagnostic move on this page.
+const READS_CAP = 8;
+const reads = [];        // newest first
+let activeReadId = null;
+let readSeq = 0;
+
+function pushRead(ev) {
+  const id = ++readSeq;
+  reads.unshift({
+    id,
+    at: new Date(),
+    mode: ev.mode === "occupancy" ? "occupancy" : "position",
+    placement: ev.placement ?? null,
+    occupied: ev.mode === "occupancy" ? (ev.occupied || []).flat().filter(Boolean).length : null,
+    confidence: ev.confidence ?? null,
+    warnings: ev.warnings ?? [],
+    autocalibrated: !!ev.autocalibrated,
+    autorotated: ev.autorotated ?? 0,
+    event: ev,
+    corrections: [],
+    // the pipeline context this read ran in
+    photo: srcPhoto, pts: pts.map((p) => p.slice()), rot, cornersEdited, detectFailed,
+    meanLuma: srcMeanLuma, bytes: srcBytes, detectMs, estimateMs,
+    cap: capState, detect: detectState,
+  });
+  while (reads.length > READS_CAP) reads.pop();
+  activeReadId = id;
+  renderHistory();
+}
+
+function markRestored(entry) { activeReadId = entry.id; renderHistory(); }
+
+function renderHistory() {
+  const el = $("histList");
+  $("histClear").style.display = reads.length ? "inline-block" : "none";
+  if (!reads.length) {
+    el.innerHTML = '<div class="hist-empty">no reads yet — every position read this session lands here</div>';
+    return;
+  }
+  el.innerHTML = "";
+  for (const e of reads) {
+    const row = document.createElement("button");
+    row.type = "button";
+    row.className = "hist-row" + (e.id === activeReadId ? " active" : "");
+    row.title = "Restore this read — photo, corners, crops and distributions";
+    const flags = [];
+    if (e.corrections.length) flags.push(`${e.corrections.length} corrected`);
+    if (e.autocalibrated) flags.push("auto-calibrated");
+    if (e.autorotated) flags.push(`rotated ${e.autorotated}deg`);
+    e.warnings.forEach((w) => flags.push(w));
+    const headline = e.mode === "occupancy"
+      ? `occupancy only — ${e.occupied}/64 occupied`
+      : e.placement;
+    row.innerHTML =
+      `<img src="${e.photo}" alt="" />` +
+      `<span class="hist-body">` +
+      `<span class="hist-fen">${headline}</span>` +
+      `<span class="hist-meta">${e.at.toLocaleTimeString()}` +
+      (e.confidence !== null ? ` · conf ${fmt(e.confidence, 3)}` : "") +
+      (e.estimateMs ? ` · ${e.estimateMs.toFixed(0)} ms` : "") +
+      (flags.length ? ` · <span class="flag">${flags.join(", ")}</span>` : "") +
+      `</span></span>`;
+    row.onclick = () => restoreRead(e.id);
+    el.appendChild(row);
+  }
+}
+
+// Put the entire page back into the state that read produced. Stage 1-3 come from the
+// stored photo/corners, stages 4-7 from the stored event — so the evidence on screen
+// always belongs to one and the same read, never a mix of two.
+function restoreRead(id) {
+  const e = reads.find((x) => x.id === id);
+  if (!e || e.id === activeReadId && lastEvent === e.event) { renderHistory(); return; }
+  const im = new Image();
+  im.onload = () => {
+    drawSourceFrom(im);
+    pts = e.pts.map((p) => p.slice());
+    rot = e.rot; cornersEdited = e.cornersEdited; detectFailed = e.detectFailed;
+    srcMeanLuma = e.meanLuma; srcBytes = e.bytes; srcPhoto = e.photo;
+    detectMs = e.detectMs; estimateMs = e.estimateMs;
+    capState = e.cap; detectState = e.detect;
+    applyCapState();
+    setStep("detect", e.detect.state, e.detect.summary);
+    draw();
+    maybeRectify();
+    render(e.event, e);
+    setRunState("restored");
+    errEl.textContent = "";
+  };
+  im.src = e.photo;
+}
+
+$("histClear").onclick = () => {
+  reads.length = 0; activeReadId = null; renderHistory();
+};
+
+// ---- stage 7 helpers ---------------------------------------------------------
+function updateRawEvent(ev) {
+  const shallow = { ...ev };
+  delete shallow.debug;                       // two base64 JPEGs — shown as images instead
+  if (shallow.square_dist) shallow.square_dist = "[8 x 8 x 13 floats — see the confidence map]";
+  $("rawEvent").textContent = JSON.stringify(shallow, null, 2);
+}
+
+function resetCorrections() {
+  corrections.clear();
+  if (baseSquareDist) applyCorrections();
+  if (selected) renderInspector();
+}
+$("resetCorrections").onclick = resetCorrections;
+$("copyFen").onclick = () => copy(fullFen());
+$("copyJson").onclick = () => copy($("rawEvent").textContent);
+function copy(text) {
+  if (!text) return;
+  navigator.clipboard?.writeText(text).catch(() => {});
+}
+
+function updateLowLightWarning(ev) {
+  const el = $("lowLightWarning");
+  const msgs = [];
+  if (ev.warnings?.includes("low_light")) {
+    msgs.push("Photo is very dark — reads degrade; add light if you can.");
+  }
+  if (ev.warnings?.includes("very_low_angle")) {
+    msgs.push("Camera is almost level with the board — pieces hide each other and reads collapse. Hold the phone higher, looking down at the board.");
+  }
+  if (msgs.length) {
+    el.textContent = msgs.join(" ");
+    el.style.display = "block";
+  } else {
+    el.style.display = "none";
+  }
+}
+
+function showBanner(kind, text) {
+  const el = $("autocalBanner");
+  el.className = "banner " + kind;
   el.textContent = text;
   el.style.display = "block";
-  clearTimeout(autocalTimer);
-  autocalTimer = setTimeout(() => { el.style.display = "none"; }, 6000);  // non-blocking, self-dismisses
+  clearTimeout(bannerTimer);
+  bannerTimer = setTimeout(() => { el.style.display = "none"; }, 6000);  // non-blocking, self-dismisses
 }
-function hideAutocalBanner() {
-  clearTimeout(autocalTimer);
-  document.getElementById("autocalBanner").style.display = "none";
-}
-
-// Debug images are opt-in (diagToggle) and only present when the inference
-// server was asked for them; absent debug -> keep the section hidden.
-function updateDiagnostics(ev) {
-  const diag = document.getElementById("diag");
-  if (ev.debug?.boxes && ev.debug?.mosaic) {
-    document.getElementById("diagBoxes").src = "data:image/jpeg;base64," + ev.debug.boxes;
-    document.getElementById("diagMosaic").src = "data:image/jpeg;base64," + ev.debug.mosaic;
-    diag.style.display = "block";
-  } else {
-    diag.style.display = "none";
-  }
+function hideBanner() {
+  clearTimeout(bannerTimer);
+  $("autocalBanner").style.display = "none";
 }
 
 // Castling rights are a downstream convenience, derived here in the consumer:
@@ -1002,14 +1958,33 @@ function castling(grid) {
   return s || "-";
 }
 
+function fullFen() {
+  if (!lastPlacement) return "";
+  const stm = document.querySelector("input[name=stm]:checked").value;
+  return `${lastPlacement} ${stm} ${castling(fenToGrid(lastPlacement))} - 0 1`;
+}
+
 function updateLinks() {
   if (!lastPlacement) return;
-  const stm = document.querySelector("input[name=stm]:checked").value;
-  const fen = `${lastPlacement}_${stm}_${castling(fenToGrid(lastPlacement))}_-_0_1`;
-  document.getElementById("lnAnalysis").href = `https://lichess.org/analysis/standard/${fen}`;
-  document.getElementById("lnEditor").href = `https://lichess.org/editor/${fen}`;
+  const fen = fullFen().replace(/ /g, "_");
+  $("lnAnalysis").href = `https://lichess.org/analysis/standard/${fen}`;
+  $("lnEditor").href = `https://lichess.org/editor/${fen}`;
 }
 document.querySelectorAll("input[name=stm]").forEach((el) => (el.onchange = updateLinks));
+
+// The fixed phone action bar overlaps the bottom of the page and the inspector sheet
+// docks directly above it; publish its real height instead of hard-coding one.
+function syncBarHeight() {
+  const h = $("actionBar").getBoundingClientRect().height;
+  document.documentElement.style.setProperty("--bar-h", `${Math.round(h)}px`);
+}
+window.addEventListener("resize", () => {
+  syncBarHeight();
+  if (src.width) { fitPhoto(); renderHandles(); }   // handles are positioned in CSS px
+});
+syncBarHeight();
+renderCorrectionsList();
+renderHistory();
 </script>
 </body>
 </html>
