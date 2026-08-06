@@ -15,6 +15,7 @@ edge package; it only speaks the wire (:mod:`board_reader_core.wire`).
 
 from __future__ import annotations
 
+import datetime
 import itertools
 import json
 import os
@@ -22,11 +23,11 @@ import time
 from pathlib import Path
 
 import numpy as np
-from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Query, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 
-from board_reader_core.protocol import START_PLACEMENT
+from board_reader_core.protocol import GRID, START_PLACEMENT
 from board_reader_core.wire import Frame, decode_jpeg
 
 from board_reader_inference.estimator import Estimator, StubEstimator
@@ -50,6 +51,20 @@ def _parse_corners(spec: str) -> np.ndarray:
 def _parse_debug(spec: str | None) -> bool:
     """``?debug=1|true`` -> on; absent/anything else -> off."""
     return spec is not None and spec.lower() in ("1", "true")
+
+
+def _id_epoch(upload_id: str) -> float:
+    """Chronological proxy from an upload id's own ``YYYYMMDD-HHMMSS`` prefix.
+
+    ``_save_upload`` always writes a ``ts`` field, so this only matters for a
+    hand-edited or half-written sidecar that lost it — ``GET /uploads`` still
+    needs *some* sortable value, and the id encodes a timestamp too.
+    """
+    try:
+        date, clock = upload_id.split("-")[:2]
+        return datetime.datetime.strptime(date + clock, "%Y%m%d%H%M%S").timestamp()
+    except (ValueError, IndexError):
+        return 0.0
 
 
 # Session-bank persistence is OPT-IN via ``BR_SESSION_BANK=<path>``: /calibrate,
@@ -319,8 +334,25 @@ def create_app(
             return None
         return path
 
-    def _debug_payload(image, corners, square_dist, *, headroom, side_pad, size):
-        """The opt-in ``?debug=1`` visualisation pair, from whatever a branch saw."""
+    def _debug_payload(image, corners, square_dist, *, headroom, side_pad, size, rotate_k=0):
+        """The opt-in ``?debug=1`` visualisation pair, from whatever a branch saw.
+
+        ``rotate_k`` is the same ``np.rot90`` turn count ``autorotate`` applied to
+        ``square_dist``. Boxes/crops are sampled from ``corners`` exactly as
+        recognition saw them (the photo pixels a piece stands in don't move just
+        because a label was wrong) and only THEN reindexed by the identical
+        rot90 permutation — not re-derived from a corner-shifted homography.
+        The two are not equivalent: both ``headroom`` (upward) and ``side_pad``
+        (sideways) extend a box along fixed IMAGE axes using a board-relative
+        width, independent of which corner is labeled a8 — so re-deriving boxes
+        from shifted corners silently rotates that extension too and samples
+        the wrong pixels for a 90°/270° turn (measured up to ~2px at
+        headroom=0.2, ~6px at 0.6, on a small test board — see
+        test_squares.py). Exact agreement only holds with *both* padding
+        params at 0 (no extension to misdirect) or at a 180° turn (central
+        symmetry doesn't swap width/height). Reindexing the already-correct
+        boxes is an exact array-index permutation, unaffected by either.
+        """
         from board_reader_inference.diagnostics import (
             crop_mosaic,
             draw_boxes,
@@ -331,6 +363,16 @@ def create_app(
         crops = crop_squares_photo(
             image, corners, headroom=headroom, side_pad=side_pad, size=size
         )
+        if rotate_k:
+            boxes = np.rot90(
+                boxes.reshape(GRID, GRID, 4, 2), rotate_k, axes=(0, 1)
+            ).reshape(-1, 4, 2)
+            crop_grid = np.rot90(
+                np.stack(crops).reshape(GRID, GRID, *crops[0].shape),
+                rotate_k,
+                axes=(0, 1),
+            )
+            crops = list(crop_grid.reshape(-1, *crops[0].shape))
         return {
             "boxes": to_b64_jpeg(draw_boxes(image, boxes, square_dist)),
             "mosaic": to_b64_jpeg(crop_mosaic(crops, square_dist)),
@@ -677,11 +719,13 @@ def create_app(
         if debug_on:
             # Recompute crops/boxes purely for visualisation — the estimator above
             # already cropped internally; debug is opt-in so this extra pass is
-            # acceptable.
+            # acceptable. rotate_k keeps them in step with square_dist above when
+            # autorotate fired (see _debug_payload).
             size = est.square_size or 224 if photo_fn is not None else 224
             result["debug"] = _debug_payload(
                 debug_image, debug_corners, event.square_dist,
                 headroom=debug_headroom, side_pad=debug_side_pad, size=size,
+                rotate_k=(rotated_deg or 0) // 90,
             )
         return JSONResponse(result)
 
@@ -923,6 +967,114 @@ def create_app(
                 "placement": json.loads(path.read_text())["placement"],
                 "corrections": corrections,
             }
+        )
+
+    @app.get("/uploads")
+    async def list_uploads(limit: int = 100) -> JSONResponse:
+        """List retained uploads (``BR_SAVE_UPLOADS``), newest first.
+
+        The snapshot page's "Recent positions" list was session-only (lost on
+        reload); this makes it server-backed off the same retention the photo
+        endpoint below reads from. Retention off -> ``{"retention": false,
+        "uploads": []}`` rather than an error status, so the page can render its
+        "turn retention on" explainer instead of treating this as a failure.
+        """
+        if not save_dir:
+            return JSONResponse({"retention": False, "uploads": []})
+
+        from board_reader_inference.labels import LABEL_SUFFIX, UPLOAD_ID
+
+        clamped_limit = max(1, min(500, limit))
+        d = Path(save_dir)
+        rows: list[dict] = []
+        for sidecar in d.glob("*.json"):
+            stem = sidecar.name[: -len(".json")]
+            if not UPLOAD_ID.match(stem):
+                continue  # not an estimate/calibrate sidecar — a label sidecar's
+                # stem ends in ".label" and never matches this grammar
+            if not (d / f"{stem}.jpg").exists():
+                continue  # photo missing: nothing to list or serve
+            try:
+                meta = json.loads(sidecar.read_text())
+                ts = meta.get("ts")
+                row = {
+                    "id": stem,
+                    "ts": float(ts) if isinstance(ts, (int, float)) else _id_epoch(stem),
+                    "kind": str(meta["kind"]),
+                    "corners": meta.get("corners"),
+                    "placement": meta.get("placement"),
+                    "autorotated": meta.get("autorotated"),
+                    "labeled": False,
+                    "label_placement": None,
+                    "label_corrections": None,
+                }
+            except (OSError, ValueError, KeyError, TypeError):
+                continue  # half-written sidecar: skip rather than fail the request
+            label_meta_path = d / f"{stem}{LABEL_SUFFIX}"
+            if label_meta_path.exists():
+                try:
+                    label_meta = json.loads(label_meta_path.read_text())
+                    row["labeled"] = True
+                    row["label_placement"] = label_meta["placement"]
+                    row["label_corrections"] = int(label_meta.get("corrections", 0))
+                except (OSError, ValueError, KeyError, TypeError):
+                    pass  # label unreadable: report the upload as unlabeled
+            rows.append(row)
+        rows.sort(key=lambda r: r["ts"], reverse=True)
+        return JSONResponse({"retention": True, "uploads": rows[:clamped_limit]})
+
+    @app.get("/uploads/{upload_id}/photo")
+    async def upload_photo(
+        upload_id: str, max_side: int | None = Query(default=None, alias="max")
+    ) -> Response:
+        """Serve a retained upload's photo (``BR_SAVE_UPLOADS``).
+
+        ``?max=<px>`` downscales the long side for a thumbnail; omitted, the
+        stored bytes go out verbatim. ``upload_id`` is a request parameter, never
+        a path fragment — validated against the same stem grammar as ``/labels``
+        before it ever touches the filesystem.
+        """
+        from board_reader_inference.labels import UPLOAD_ID
+
+        if not save_dir:
+            return JSONResponse(
+                {
+                    "error": (
+                        "photo retention is off (BR_SAVE_UPLOADS unset), so "
+                        "there is no photo to serve"
+                    )
+                },
+                status_code=422,
+            )
+        if not UPLOAD_ID.match(upload_id):
+            return JSONResponse({"error": "not an upload id"}, status_code=400)
+        photo = Path(save_dir) / f"{upload_id}.jpg"
+        if not photo.exists():
+            return JSONResponse({"error": "no such upload"}, status_code=404)
+        body = photo.read_bytes()
+        if max_side is not None:
+            import cv2
+
+            clamped = min(2048, max(32, int(max_side)))
+            image = decode_jpeg(body)
+            h, w = image.shape[:2]
+            long_side = max(h, w)
+            if long_side > clamped:
+                scale = clamped / long_side
+                small = cv2.resize(
+                    image,
+                    (round(w * scale), round(h * scale)),
+                    interpolation=cv2.INTER_AREA,
+                )
+                ok, buf = cv2.imencode(".jpg", small, [cv2.IMWRITE_JPEG_QUALITY, 85])
+                if ok:
+                    body = buf.tobytes()
+        return Response(
+            content=body,
+            media_type="image/jpeg",
+            # Content is immutable per id (uploads are never overwritten), so a
+            # thumbnail or the original can be cached hard.
+            headers={"Cache-Control": "public, max-age=3600"},
         )
 
     @app.post("/detect")

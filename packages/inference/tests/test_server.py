@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 
+import pytest
 from starlette.testclient import TestClient
 
 from board_reader_core.protocol import START_PLACEMENT
@@ -838,6 +839,78 @@ def test_estimate_autorotate_corrects_flipped_corners(tmp_path, monkeypatch):
     body2 = r2.json()
     assert "autorotated" not in body2
     assert body2["placement"] == flipped
+
+
+@pytest.mark.parametrize(
+    ("rendered_turns", "expected_deg"),
+    [(1, 270), (2, 180), (3, 90)],
+)
+def test_estimate_debug_boxes_match_the_rotated_frame_when_autorotate_fires(
+    rendered_turns, expected_deg, tmp_path, monkeypatch
+):
+    """?debug=1&autorotate=1: when autorotate turns the answer, the debug boxes
+    must be turned with it, or mosaic tile (r,c) / box index r*8+c ends up
+    showing a different square than square_dist[r][c] claims (the snapshot
+    page's per-square thumbnail bug this test guards).
+
+    All three quarter-turns are exercised deliberately: 180 alone cannot catch
+    an inverted rotation direction, since np.rot90(x, 2) == np.rot90(x, -2).
+    """
+    import numpy as np
+
+    from board_reader_core.protocol import encode_placement, parse_placement
+    from board_reader_core.wire import encode_jpeg
+    from board_reader_inference import diagnostics
+    from board_reader_inference.squares import full_frame_corners, photo_square_boxes
+    from board_reader_inference.trained import TrainedEstimator
+
+    monkeypatch.chdir(tmp_path)
+    # A board photographed with its corner labels a quarter-turn off: the
+    # estimator reads it exactly as rendered, and resolve_rotation turns the
+    # reading back by the complementary amount (pawns can't stand on ranks 1/8).
+    mid = "3r2k1/ppp2pp1/7p/2Q5/5qbP/3B4/PPPRrP2/2K5"
+    flipped = encode_placement(
+        np.rot90(np.array(parse_placement(mid), dtype="<U5"), rendered_turns).tolist()
+    )
+    trained = TrainedEstimator(
+        _cycling_oracle(flipped), headroom=0.3, side_pad=0.1, square_size=64
+    )
+    client = TestClient(create_app(trained, PositionHub()))
+    photo = render_board(flipped)
+    corners = _corners_query(photo)
+    quad = full_frame_corners(photo)
+
+    # Capture the exact boxes draw_boxes is called with, then let it run for
+    # real so the response's JPEG payloads are still validated below.
+    seen: dict = {}
+    real_draw_boxes = diagnostics.draw_boxes
+
+    def spy(image, boxes, square_dist):
+        seen["boxes"] = boxes
+        return real_draw_boxes(image, boxes, square_dist)
+
+    monkeypatch.setattr(diagnostics, "draw_boxes", spy)
+
+    r = client.post(
+        f"/estimate?corners={corners}&autorotate=1&debug=1",
+        content=encode_jpeg(photo),
+        headers={"Content-Type": "image/jpeg"},
+    )
+    body = r.json()
+    assert body["autorotated"] == expected_deg  # the rotation actually fired
+    assert body["placement"] == mid  # ...and it put the position back upright
+    _assert_valid_jpeg_b64(body["debug"]["boxes"])
+    _assert_valid_jpeg_b64(body["debug"]["mosaic"])
+
+    # The correct debug boxes are the ORIGINAL (unrotated-corner) boxes —
+    # recognition's actual sampling geometry — reindexed by the same rot90
+    # permutation as square_dist, not re-derived from a shifted corner order
+    # (see test_squares.py for why that alternative is wrong once headroom or
+    # side_pad is nonzero: it rotates their fixed image direction too).
+    k = body["autorotated"] // 90
+    original = photo_square_boxes(quad, headroom=0.3, side_pad=0.1)
+    expected = np.rot90(original.reshape(8, 8, 4, 2), k, axes=(0, 1)).reshape(-1, 4, 2)
+    assert np.allclose(seen["boxes"], expected)
 
 
 def test_default_estimator_builds_ensemble_from_session_bank(tmp_path, monkeypatch):

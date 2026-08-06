@@ -106,6 +106,37 @@ def test_photo_square_boxes_are_the_flat_squares_at_zero_headroom_and_pad():
     assert np.allclose(boxes[32], expected32, atol=1e-3)
 
 
+def test_photo_square_boxes_from_shifted_corners_diverges_from_rot90_with_padding():
+    """A pitfall the /estimate autorotate debug fix avoids: both ``headroom``
+    (upward) and ``side_pad`` (sideways) extend a box along fixed IMAGE axes,
+    scaled by a board-relative width — independent of which corner is labeled
+    a8. So re-deriving boxes from a corner order shifted by k is NOT the same
+    as rotating the already-computed boxes by k: the extension direction
+    rotates with the (wrong) re-derivation too, so it samples the wrong pixels
+    for a 90/270-degree turn. Confirmed here for headroom alone, side_pad
+    alone, and both together (each ~1.5-2px on a 32px-square board — the
+    divergence grows with the padding, e.g. ~6px at headroom=0.6). Only with
+    *both* paddings at zero (no extension to misdirect) do the two agree —
+    the special case that made this easy to miss."""
+    board = render_board(square_px=32)
+    photo, quad = simulate_angled_view(board)  # a8,h8,h1,a1, perspective-warped
+    for headroom, side_pad in [(0.2, 0.0), (0.0, 0.15), (0.2, 0.15)]:
+        boxes = photo_square_boxes(quad, headroom=headroom, side_pad=side_pad)
+        grid = boxes.reshape(8, 8, 4, 2)
+        for k in (1, 3):
+            shifted = quad[[(i + k) % 4 for i in range(4)]]
+            recomputed = photo_square_boxes(shifted, headroom=headroom, side_pad=side_pad)
+            rotated = np.rot90(grid, k, axes=(0, 1)).reshape(-1, 4, 2)
+            assert not np.allclose(recomputed, rotated, atol=1e-2)
+
+    boxes0 = photo_square_boxes(quad, headroom=0.0, side_pad=0.0).reshape(8, 8, 4, 2)
+    shifted1 = quad[[(i + 1) % 4 for i in range(4)]]
+    recomputed0 = photo_square_boxes(shifted1, headroom=0.0, side_pad=0.0)
+    assert np.allclose(
+        recomputed0, np.rot90(boxes0, 1, axes=(0, 1)).reshape(-1, 4, 2), atol=1e-2
+    )
+
+
 def test_crop_squares_photo_behavior_unchanged():
     """crop_squares_photo's output is unaffected by exposing photo_square_boxes."""
     board = render_board(START_PLACEMENT, square_px=48)
