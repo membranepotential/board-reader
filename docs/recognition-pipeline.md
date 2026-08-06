@@ -17,7 +17,7 @@ flowchart TD
   corners -->|operator tapped| geom[corner quad a8,h8,h1,a1]
   corners -->|no| detect["POST /detect — detect_board_quad"]
   detect --> geom
-  geom --> boxes["photo_square_boxes<br/>64 projected base quads,<br/>extended upward by headroom"]
+  geom --> boxes["square_boxes(geometry)<br/>bbox: base quads + headroom<br/>pose: projected piece prisms"]
   boxes --> crops["crop_squares_photo<br/>64 x 224² crops"]
   crops --> est[estimator]
   est --> dist["square_dist (8,8,13)"]
@@ -28,10 +28,27 @@ flowchart TD
 
 ## Cropping is where the accuracy is
 
-Each square's crop is **not** a tile of a rectified board. It is the square's projected base
-quad in the *original photo*, extended upward by `headroom` square-widths and outward by
-`side_pad`, then clipped, padded and resized to 224². `photo_square_boxes` returns those
-boxes standalone; `crop_squares_photo` is the clip-pad-resize on top of them.
+Each square's crop is **not** a tile of a rectified board — it is cut from the *original
+photo*, then clipped, padded and resized to 224². How the box is chosen is the
+**`CropGeometry`** decision, and there are two answers. `square_boxes` returns the 64 boxes
+standalone; `crop_squares_photo` is the clip-pad-resize on top of them.
+
+| Geometry | The box is | Needs |
+|---|---|---|
+| **`BboxGeometry(headroom, side_pad)`** | the projected base quad's bounding box, extended **upward in image space** by `headroom` × the square's projected *width* | corners only |
+| **`PoseGeometry(piece_height, piece_radius, focal_ratio)`** | the image-space bounding box of a piece-sized **prism standing on the square**, projected through the recovered camera pose | corners + image size |
+
+`PoseGeometry` exists because the bbox's height is tied to the square's projected *width* —
+which shrinks as the camera rises — while a real piece's projected height does not. One
+scalar therefore cannot cover both a steep view and a shallow one; `headroom=1.6` patched
+the symptom rather than removing the cause. `board_pose` recovers the pose from the board
+homography, **solving** the focal length from the homography itself (Zhang's two plane
+constraints) rather than assuming one, and falling back to `focal_ratio` only for a
+near-top-down view, which genuinely carries no information about focal length. `r1`, `r2`
+and `t` come straight from the homography, so the `Z = 0` face reproduces the bbox base
+quads exactly — only the height is new. Measured on a real angled photo, the near-rank /
+far-rank box-height ratio falls from **1.57** (bbox, tracking foreshortened width) to
+**1.15** (pose, tracking real piece height).
 
 > [!danger] Headroom is load-bearing, and it once silently broke everything
 > The geometry drifted to `headroom=0.15` — near-base-only crops. At a steep camera
@@ -40,17 +57,26 @@ boxes standalone; `crop_squares_photo` is the clip-pad-resize on top of them.
 > **57/64, with every major piece wrong** — q→b, K→Q, R→P, B→P — plus phantom pawns
 > hallucinated from a cut-off head one square up.
 >
-> Deployed geometry is **`headroom=1.6, side_pad=0.15, size=224`**: a whole standing piece.
-> Retraining with tall crops moved the unseen-style holdout from 0.665 to 0.835 and real
-> photos from 415 to 430 of 448. More is not better — `headroom=1.8, side_pad=0.25` ties on
-> the holdout and *loses* on real photos (409).
+> Deployed geometry is **`BboxGeometry(headroom=1.6, side_pad=0.15)`, size 224**: a whole
+> standing piece. Retraining with tall crops moved the unseen-style holdout from 0.665 to
+> 0.835 and real photos from 415 to 430 of 448. More is not better — `headroom=1.8,
+> side_pad=0.25` ties on the holdout and *loses* on real photos (409). That sweep is also
+> the ceiling of what a scalar can do, which is what `PoseGeometry` is for.
 
 Because a mismatch between training crops and serving crops is invisible until accuracy
 quietly collapses, **the geometry travels with the model** in a `<model>.onnx.meta.json`
 sidecar that `TrainedEstimator` reads. Never hard-code it on either side.
 
-The `?debug=1` overlay draws from `photo_square_boxes` — the same function recognition
-crops with — so the visualization cannot drift into showing a re-derivation of the geometry.
+The `?debug=1` overlay draws from `square_boxes` under the active estimator's own geometry —
+the same function recognition crops with — so the visualization cannot drift into showing a
+re-derivation of the geometry.
+
+> [!note] Under `BboxGeometry` the debug boxes must be *reindexed*, not re-derived
+> `headroom` and `side_pad` extend a box along fixed **image** axes, so re-deriving boxes
+> from a rotated corner labelling silently rotates that extension too and samples the wrong
+> pixels. When `autorotate` fires, the already-correct boxes are permuted by the same
+> `rot90` as `square_dist`. `PoseGeometry` does not have this problem — a prism stands along
+> the board *normal*, which relabelling cannot move — and a test pins that difference down.
 
 ## The estimators
 

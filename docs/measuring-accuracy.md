@@ -97,6 +97,41 @@ This matters beyond cosmetics: DESIGN §9 lists confidence calibration as a top 
 precisely because the downstream smoothing plan consumes confidences. Right now a
 consumer that trusted them would be misled.
 
+## Temperature scaling fixes it — measure it by AUC, not by the gap
+
+`--temperature` fits a single temperature `T` and rescales each square's distribution
+as `q ∝ p^(1/T)`. Two properties make it safe to reason about:
+
+- **It cannot change an answer.** The transform is monotone per square, so the argmax —
+  and therefore `placement` — is bit-identical. The report prints `answers changed`, which
+  must always read `0`; anything else is a bug in the implementation, not a finding.
+- **It is fitted leave-one-**board**-out.** Each board is scaled by a `T` fitted on the
+  *other* boards only. Fitting and scoring on the same 23 boards would flatter itself in
+  exactly the way the contamination incident below already taught us once.
+
+Measured on the deployed ensemble over 23 labelled boards:
+
+| | before | after |
+|---|---|---|
+| ECE | 0.255 | **0.004** |
+| board confidence, perfect vs imperfect | 0.789 · 0.654 | 0.989 · 0.971 |
+| perfect−imperfect **gap** | +0.136 | +0.017 |
+| board ranking **AUC** | 0.862 | **0.877** |
+
+`T = 0.251`, and it is stable across folds (0.235–0.257) — that stability is itself the
+evidence the parameter is real rather than fitting noise.
+
+> [!warning] The gap is the wrong statistic, and it says the opposite of the truth
+> Read the gap alone and temperature scaling looks like it destroyed the board-level
+> signal: +0.136 collapses to +0.017. It did not. Scaling squeezes *every* confidence
+> toward 1.0, so any difference of means shrinks mechanically. Only a **rank**-based
+> statistic survives a monotone squeeze — and the AUC (probability a perfect board
+> outranks an imperfect one) slightly *improves*. A consumer thresholding on confidence
+> loses nothing. Report AUC alongside any confidence-gap claim.
+
+Scaling is measured, not served: turning it on for the wire is a deliberate decision, and
+this is the number that decision should be made against.
+
 ## Where truth comes from
 
 Two sources, both read by `board_reader_inference.labels`, both keyed to the frame
@@ -171,10 +206,17 @@ whole-board reading of an unseen position is still the unsolved part.
 > per-square gains this project measures have never yet converted into reliable
 > whole-board reads. See [[training-and-data#How run_e was decided 2026-08-06]].
 
-**There is currently no uncontaminated eval data.** Every labeled board this project
-owns went into the bank. The confirmed-label path exists to fix that: boards
-confirmed through normal use of the snapshot app are, by construction, boards the
-bank was not built from.
+**Every labeled board this project owns went into the bank.** The confirmed-label path
+exists to fix that: boards confirmed through normal use of the snapshot app are, by
+construction, boards the bank was not built from.
+
+> [!tip] There is now one genuinely untouched real-photo set
+> `data/external/chesscog_transfer` — 20 photos of a physical set that appears in no
+> training run and no bank, with its label orientation repaired 2026-08-07 (see
+> [[training-and-data]]). `tools/train/evaluate.py` scores it by default. `run_e` reads
+> it at **0.819** per-square. It is small and it is one style, so it is not a substitute
+> for the user's own boards — but it is the only number here that no part of the stack
+> has ever seen.
 
 > [!tip] Split by session, not by photo
 > A different photo of the same set in the same light is nearly as contaminating as
@@ -188,6 +230,7 @@ uv run board-reader-inference eval                    # data/eval + data/uploads
 BR_MODEL=models/run_e/model.onnx uv run board-reader-inference eval
 uv run board-reader-inference eval --json report.json --autorotate
 uv run board-reader-inference eval --no-prior           # the raw estimator alone
+uv run board-reader-inference eval --temperature        # + confidence calibration
 ```
 
 The harness builds its estimator from the environment through the same
@@ -204,9 +247,16 @@ first, and the decode's **fixed** and **broken** squares are printed apart, beca
 a repair that trades a right square for a wrong one is not an improvement. Pass
 `--no-prior` to isolate the raw estimator.
 
+`--temperature` adds the calibration block described above. It is off by default
+because it costs a leave-one-out fit per board and, unlike the decoder, it does not
+serve — it is a measurement of what honest confidences *would* look like.
+
 Contrast with `tools/train/evaluate.py`, which scores the trained model alone inside
 the training venv and never sees the ensemble. That one answers "did the training
-run improve"; this one answers "can the app read a board".
+run improve"; this one answers "can the app read a board". It scores
+`chesscog_transfer` — the unseen real-photo set — by default, and takes its crop
+geometry from the checkpoint's config or the ONNX sidecar rather than from flags, so
+a geometry mismatch cannot be introduced at the command line.
 
 ## Related
 
