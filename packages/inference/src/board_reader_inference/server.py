@@ -685,8 +685,8 @@ def create_app(
         the running estimator. If the running estimator is already an exemplar
         bank on the same backbone, the new photo's exemplars are ADDED to it
         rather than replacing it — every calibration photo only grows the bank.
-        Persists to ``models/exemplars_session.npz`` (the curated BR_CENTROIDS
-        file is never overwritten).
+        Persistence is opt-in: the bank is written only when ``BR_SESSION_BANK``
+        names a path (the curated ``BR_CENTROIDS`` file is never overwritten).
         """
         nonlocal est
         body = await request.body()

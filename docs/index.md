@@ -1,0 +1,53 @@
+---
+aliases: [docs home, board-reader docs]
+tags: [board-reader/moc]
+---
+
+# board-reader — map of content
+
+A camera watches a chess board and streams **timestamped piece placements with
+per-square confidences**. It reads *positions*, not moves — legality, move
+reconstruction and PGN belong to whatever consumes the stream.
+
+> [!abstract] Two kinds of document
+> **[[DESIGN]]** owns *decisions* — why the system is shaped this way, what is
+> locked, what is out of scope. The notes below own *behaviour* — how it works
+> right now, what it measures, where it breaks. When they disagree, DESIGN wins
+> on intent and the notes are wrong about fact.
+
+## Start here
+
+| Note | Answers |
+|---|---|
+| [[architecture]] | What the pieces are, what may import what, how a frame travels |
+| [[recognition-pipeline]] | How a photo becomes an 8×8 distribution |
+| [[calibration-and-the-bank]] | How it adapts to *your* chess set, and how that goes wrong |
+| [[operating-envelope]] | Where it works, where it fails, and the measured thresholds |
+| [[runbook]] | How to run it, what to check after a restart, how to recover |
+| [[training-and-data]] | The offline harness, the data tiers, the licensing ledger |
+| [[glossary]] | Terms that mean something specific here |
+
+## Reference documents
+
+- [[DESIGN]] — decisions, L3 protocol spec, milestones (`M0`–`M7`), work packages
+- [[TESTING]] — the automated suite and the manual demo path
+- [[STATUS]] — what is done, what is next, what is unresolved
+- [[2026-07-18-zero-shot-campaign|Zero-shot campaign report]] — the investigation that
+  produced the current recognizer
+- [[youtube-streams]] — curated static-camera OTB footage for bring-up
+- `aspects.yaml` — which parts must stay in sync with which, and the contract between them
+
+## The one-paragraph version
+
+The **edge** node (a Pi; a browser in the sim) finds the board, rectifies it, and forwards
+frames. The **inference** node runs a stateless per-frame estimator over 64 square crops and
+publishes a position event. The **viewer** renders it. Edge and inference never import each
+other — they meet only on the wire. Recognition is a multi-style-trained crop classifier
+blended with a per-set nearest-exemplar bank; the trained half is robust where it has never
+been, the bank half is near-perfect where it has, and the blend tracks the better of the two
+square by square.
+
+> [!warning] The load-bearing failure mode
+> Occupancy — *is this square empty?* — transfers across chess sets almost for free.
+> Piece **type** does not. Nearly every accuracy problem in this project is a piece-type
+> problem wearing a different hat. See [[recognition-pipeline#Why piece type is the hard part]].

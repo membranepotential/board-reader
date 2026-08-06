@@ -1,0 +1,241 @@
+# Aspect dependency graph for /drift — which parts of this project must stay in
+# sync with which, and what the contract between them is.
+#
+# Doubles as a project map: touching an aspect tells you what it is
+# documented-by, verified-by, and constrained-by. See docs/index.md.
+version: 1
+
+aspects:
+  design:
+    description: >-
+      DESIGN.md — the authoritative record of *decisions* (locked decisions,
+      D1-D9, the L3 protocol spec, milestones, work packages). Source of truth
+      for why the system is shaped this way; never for how it currently behaves.
+    files: ["docs/DESIGN.md"]
+    affects:
+      - aspect: contract
+        role: >-
+          The position-event schema in DESIGN §5 (fields, class order, status
+          values) must match what board_reader_core.protocol actually emits.
+      - aspect: inference
+        role: >-
+          A changed or struck-through decision (e.g. §4.6 recognition model,
+          decision #15 orientation) must be reflected in the estimator and
+          gateway code, or the code is violating a locked decision.
+      - aspect: docs
+        role: >-
+          Decisions are stated once, in DESIGN; the docs vault explains and
+          links them but must not contradict or silently restate a superseded
+          version.
+
+  contract:
+    description: >-
+      board_reader_core — the shared contract both nodes compile against: the
+      L3 position-event protocol, the L1->L2 wire frame, sim helpers, and
+      geometry-only board detection. Imports neither node, by rule.
+    files: ["packages/core/src/**", "packages/core/tests/**"]
+    affects:
+      - aspect: inference
+        role: >-
+          A change to CLASSES order, PositionEvent fields, or the wire header
+          must be matched in the estimators and the gateway that construct them.
+      - aspect: edge
+        role: >-
+          A change to the wire frame header or JPEG encoding must be matched in
+          the edge adapter that produces frames.
+      - aspect: viewer
+        role: >-
+          A change to the position-event JSON shape must be matched in the
+          viewer and snapshot pages that render it.
+      - aspect: design
+        role: >-
+          A protocol change that is not merely additive needs DESIGN §5 updated
+          — the schema there is meant to be the spec, not a stale sample.
+
+  inference:
+    description: >-
+      board_reader_inference — the stateless per-frame estimator plus the
+      gateway (WS /ingest, WS /viewer, POST /estimate|/calibrate|/detect).
+      Holds the estimator stack: trained model, exemplar bank, ensemble,
+      auto-calibration.
+    files: ["packages/inference/src/**"]
+    affects:
+      - aspect: tests
+        role: >-
+          New estimator behaviour, endpoint, or guardrail (rejection, warning,
+          rotation) ships with a test that exercises it.
+      - aspect: testing-guide
+        role: >-
+          A new operator-visible behaviour (endpoint, warning, env var, failure
+          mode) must appear in the manual test guide, since every milestone has
+          to be runnable and observable by a person.
+      - aspect: docs
+        role: >-
+          Changed thresholds, env vars, estimator precedence, or crop geometry
+          must be updated in the docs vault — the runbook and pipeline notes
+          quote concrete values.
+      - aspect: viewer
+        role: >-
+          A changed request or response shape on /estimate, /calibrate, or
+          /detect must be matched in the snapshot page that calls them.
+      - aspect: deploy
+        role: >-
+          A new or renamed env var that the deployed configuration relies on
+          must be set in compose.yaml.
+
+  edge:
+    description: >-
+      board_reader_edge — the "Pi": capture, board detect + rectify, motion and
+      stability, adaptive frame forwarding. Never imports inference.
+    files: ["packages/edge/src/**"]
+    affects:
+      - aspect: tests
+        role: New forwarding, rectification, or status behaviour ships with a test.
+      - aspect: testing-guide
+        role: >-
+          A change to what the operator sees during setup, a bump, or a
+          reposition must be reflected in the manual test guide.
+
+  viewer:
+    description: >-
+      board_reader_viewer — the live-position UI and the /snapshot phone page,
+      plus vendored chessground.
+    files: ["packages/viewer/src/**"]
+    affects:
+      - aspect: tests
+        role: New UI-serving behaviour or injected configuration ships with a test.
+      - aspect: testing-guide
+        role: >-
+          A change to the phone flow (what the user taps, what banners appear)
+          must be reflected in the manual test guide's snapshot walkthrough.
+
+  tests:
+    description: >-
+      The automated suite — per-package unit tests plus the cross-cutting
+      layer-separation and end-to-end tests. `uv run pytest` is the merge gate.
+    files: ["packages/*/tests/**", "tests/**"]
+    affects:
+      - aspect: testing-guide
+        role: >-
+          The coverage table in TESTING.md §1 must list the test files that
+          actually exist and say what they prove.
+
+  testing-guide:
+    description: >-
+      TESTING.md — the human path. How to run the automated suite, and the
+      manual demo/field procedures that make each milestone observable.
+    files: ["docs/TESTING.md"]
+
+  training:
+    description: >-
+      tools/train — the offline multi-style piece-classifier harness (styles,
+      crop cache, leave-style-out splits, augmentation, export) and its run
+      configs. Runs in a separate torch venv; not part of any deployable package.
+    files: ["tools/train/**", "tools/build_exemplar_bank*.py", "tools/rebuild_session_bank.py", "tools/README.md"]
+    affects:
+      - aspect: inference
+        role: >-
+          Training and serving must cut identical crops. A change to the crop
+          geometry, class order, or preprocessing on the training side must be
+          carried by the model's .onnx.meta.json sidecar and honoured by
+          TrainedEstimator — a silent mismatch decapitates crops.
+      - aspect: docs
+        role: >-
+          A change to the data contract, style registry, or run recipe must be
+          reflected in the training/data note.
+
+  models:
+    description: >-
+      External state — the model and calibration artifacts actually on disk.
+      Git-ignored (non-redistributable training-data licenses), so the repo can
+      only describe them, never contain them.
+    probe: "ls -1 models models/d16 2>/dev/null"
+    affects:
+      - aspect: docs
+        role: >-
+          The runbook names the deployed model path and the reported accuracy
+          numbers; if the artifacts on disk changed, those must be re-verified
+          rather than assumed.
+      - aspect: deploy
+        role: >-
+          BR_MODEL in compose.yaml must point at a model file that exists.
+      - aspect: status
+        role: >-
+          A newly trained or newly deployed model is a state change the
+          dashboard has to reflect.
+
+  evaldata:
+    description: >-
+      External state — the labeled evaluation set. Every accuracy figure quoted
+      anywhere in the repo is relative to this; when it grows, the figures are
+      no longer comparable to the ones on record.
+    probe: "python -c \"import json,pathlib; p=pathlib.Path('data/eval/ground_truth.json'); print(len(json.loads(p.read_text())) if p.exists() else 'absent')\""
+    affects:
+      - aspect: docs
+        role: >-
+          Accuracy figures in the docs vault and campaign reports must state
+          which eval they are on (board and square counts), and must not be
+          silently compared across differently-sized evals.
+      - aspect: status
+        role: >-
+          A changed eval set invalidates the comparison the dashboard's Next
+          section is built on.
+
+  deploy:
+    description: >-
+      How the system is actually run — the parametrised Docker image and the
+      compose file that wires edge, inference, and viewer together.
+    files: ["compose.yaml", "docker/**", ".dockerignore"]
+    affects:
+      - aspect: testing-guide
+        role: >-
+          The canonical `docker compose up` demo in TESTING.md must match the
+          services, ports, and environment the compose file declares.
+      - aspect: docs
+        role: The runbook's serve commands and env table must match compose.
+
+  docs:
+    description: >-
+      The Obsidian docs vault — architecture, recognition pipeline, calibration,
+      operating envelope, runbook, training/data, glossary. Explains how the
+      system currently behaves (DESIGN owns why it was decided that way).
+    files: ["docs/index.md", "docs/architecture.md", "docs/recognition-pipeline.md", "docs/calibration-and-the-bank.md", "docs/operating-envelope.md", "docs/runbook.md", "docs/training-and-data.md", "docs/glossary.md"]
+    affects:
+      - aspect: status
+        role: >-
+          A capability or limit newly documented should be visible in the
+          dashboard's Done/Open questions rather than only buried in a note.
+
+  reports:
+    description: >-
+      Dated campaign reports — the narrative record of an investigation and its
+      measurements. Append-only history; never edited to match later results.
+    files: ["docs/reports/**"]
+    affects:
+      - aspect: docs
+        role: >-
+          A finding a report establishes as durable (a threshold, a refuted
+          approach, an operating limit) belongs in the vault too — the report is
+          the evidence, the vault is the standing guidance.
+      - aspect: status
+        role: A campaign that concluded must be reflected in Done and Next.
+    check: release
+
+  learnings:
+    description: >-
+      .learnings.ndjson — the path-scoped compound-engineering store. Gotchas
+      and how-tos discovered while building, recalled before working in an area.
+    files: [".learnings.ndjson"]
+    affects:
+      - aspect: docs
+        role: >-
+          A learning that constrains everyday operation (not just one past bug)
+          should also be stated where an operator will actually look — the
+          runbook or the operating-envelope note.
+        check: weekly
+
+  status:
+    description: >-
+      STATUS.md — the canonical project dashboard (Goal / Now / Done / Next /
+      Open questions). Reconciled against ground truth, not appended to.
+    files: ["STATUS.md"]

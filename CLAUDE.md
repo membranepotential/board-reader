@@ -2,8 +2,13 @@
 
 Camera-based chess **board reader**: a CV system that reads live OTB positions and
 streams **timestamped piece placements + per-square confidences** (not moves, not
-legality — those are the downstream application layer's job). Full design:
-**[docs/DESIGN.md](docs/DESIGN.md)**.
+legality — those are the downstream application layer's job).
+
+**Read first:** [STATUS.md](STATUS.md) (where the project is) ·
+**[docs/DESIGN.md](docs/DESIGN.md)** (decisions — authoritative) ·
+[docs/index.md](docs/index.md) (how it currently behaves — architecture, recognition
+pipeline, calibration, operating envelope, runbook). `aspects.yaml` maps which parts
+must stay in sync with which.
 
 ## Load-bearing principles (do not violate without updating DESIGN.md)
 
