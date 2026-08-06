@@ -18,12 +18,13 @@ import sys
 
 import cv2
 
+from board_reader_core.boarddetect import detect_board_quad
 from board_reader_core.protocol import START_PLACEMENT
 from board_reader_core.sim import render_board, simulate_angled_view
 
 from board_reader_edge.adapter import FileEdgeAdapter
 from board_reader_edge.client import stream_to_gateway
-from board_reader_edge.rectify import Rectifier, find_board_quad, rectify
+from board_reader_edge.rectify import Rectifier, rectify
 from board_reader_edge.source import (
     ImageDirSource,
     RepeatSource,
@@ -78,7 +79,7 @@ def cmd_rectify(args: argparse.Namespace) -> int:
     if args.corners:
         corners = _parse_corners(args.corners)
     else:
-        corners = find_board_quad(image, min_area_frac=args.min_area_frac)
+        corners = detect_board_quad(image)
         if corners is None:
             raise SystemExit(
                 "no board detected; pass --corners x0,y0,... (operator corner-tap)"
@@ -125,7 +126,6 @@ def build_parser() -> argparse.ArgumentParser:
         "--corners",
         help="manual corners 'x0,y0,x1,y1,x2,y2,x3,y3' (a8,h8,h1,a1); skips detection",
     )
-    r.add_argument("--min-area-frac", dest="min_area_frac", type=float, default=0.1)
     r.set_defaults(func=cmd_rectify)
     return p
 

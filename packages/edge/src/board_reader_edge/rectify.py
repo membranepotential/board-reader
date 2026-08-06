@@ -5,9 +5,13 @@ the angled broadcast view (DESIGN D8) — into a **canonical top-down crop** in 
 fixed orientation, so the inference node can crop 64 squares from a known frame and
 never has to reason about geometry. This module owns that:
 
-* :func:`find_board_quad` — locate the board outline (Canny -> contours -> largest
-  convex quad). The automatic path; brittle on cluttered real photos, which is why
-  the operator corner-tap (:meth:`Rectifier.set_corners`) is the primary sim path.
+Detection itself is **not** implemented here — it is
+:func:`board_reader_core.boarddetect.detect_board_quad`, shared with the inference
+node's ``/detect`` so the browser edge and a real Pi edge locate boards identically.
+(An earlier Canny -> contours -> largest-convex-quad detector lived here; it missed
+real photos this one finds, and having two detectors meant the streaming path was
+quietly worse than the snapshot path.)
+
 * :func:`homography_from_corners` / :func:`rectify` — map a board quad to the
   canonical square crop.
 * :class:`Rectifier` — stateful per-board helper: caches the homography, accepts
@@ -31,6 +35,8 @@ from dataclasses import dataclass
 
 import cv2
 import numpy as np
+
+from board_reader_core.boarddetect import detect_board_quad
 
 # Status values this module can report; a subset of protocol.VALID_STATUS. The edge
 # never emits a position event itself, but it tags each crop so the forwarder (and,
@@ -72,46 +78,6 @@ def rectify(image: np.ndarray, corners: np.ndarray, out_size: int = 384) -> np.n
     return cv2.warpPerspective(image, h, (out_size, out_size))
 
 
-def _largest_quad(contour: np.ndarray) -> np.ndarray | None:
-    """Approximate a contour to a convex 4-gon, sweeping epsilon until it lands on 4."""
-    peri = cv2.arcLength(contour, True)
-    for frac in (0.02, 0.03, 0.05, 0.08, 0.1):
-        approx = cv2.approxPolyDP(contour, frac * peri, True)
-        if len(approx) == 4 and cv2.isContourConvex(approx):
-            return approx.reshape(4, 2).astype(np.float32)
-    return None
-
-
-def find_board_quad(
-    image: np.ndarray, *, min_area_frac: float = 0.1
-) -> np.ndarray | None:
-    """Locate the board outline as an ordered TL,TR,BR,BL quad, or ``None``.
-
-    Canny edges -> dilate to close gaps -> external contours -> the largest convex
-    4-gon covering at least ``min_area_frac`` of the frame. Deliberately simple; the
-    Hough-line clustering of DESIGN A1 and robust real-photo detection are refinements
-    that slot in behind this same signature.
-    """
-    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY) if image.ndim == 3 else image
-    edges = cv2.Canny(gray, 50, 150)
-    edges = cv2.dilate(edges, np.ones((3, 3), np.uint8), iterations=1)
-    contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    if not contours:
-        return None
-    frame_area = float(image.shape[0] * image.shape[1])
-    best: np.ndarray | None = None
-    best_area = min_area_frac * frame_area
-    for c in contours:
-        area = cv2.contourArea(c)
-        if area < best_area:
-            continue
-        quad = _largest_quad(c)
-        if quad is None:
-            continue
-        best, best_area = quad, area
-    return order_quad(best) if best is not None else None
-
-
 @dataclass
 class RectifyResult:
     """Outcome of :meth:`Rectifier.process` for one frame.
@@ -140,15 +106,22 @@ class Rectifier:
       so every frame is rectified directly against the cached homography. This is the
       primary sim path.
     * **Auto** — no corners supplied; each frame is detected with
-      :func:`find_board_quad`. The first successful detection locks the cache; later
-      frames re-detect and the corner displacement vs. the cache classifies the
-      situation: small -> ``ok``; large (a bump) -> ``recalibrating`` with the crop
-      **suppressed** for that frame (we re-lock to the new geometry so the next stable
-      frame returns ``ok``); board not locatable -> ``needs_setup``.
+      :func:`board_reader_core.boarddetect.detect_board_quad`. The first successful
+      detection locks the cache; later frames re-detect and the corner displacement
+      vs. the cache classifies the situation: small -> ``ok``; large (a bump) ->
+      ``recalibrating`` with the crop **suppressed** for that frame (we re-lock to the
+      new geometry so the next stable frame returns ``ok``); board not locatable ->
+      ``needs_setup``.
 
     Suppression during the transient is deliberate (DESIGN §4.4.1): a mis-localized
     crop yields confidently-wrong squares, which is worse for downstream smoothing
     than an honest gap.
+
+    Cost note: detection runs per frame and costs ~90-100 ms on a 1200x1600 photo
+    (vs. ~7 ms for the naive detector it replaced). That is affordable at the
+    at-rest keepalive rate but not during a 10-15 fps burst, so M2 should re-detect
+    on a cadence and rectify intervening frames against the cached homography —
+    which is what DESIGN D4 ("re-runs only on ROI drift") asks for anyway.
     """
 
     def __init__(
@@ -157,11 +130,9 @@ class Rectifier:
         *,
         manual_corners: np.ndarray | None = None,
         drift_tol: float = 0.04,
-        min_area_frac: float = 0.1,
     ) -> None:
         self.out_size = out_size
         self.drift_tol = drift_tol
-        self.min_area_frac = min_area_frac
         self._corners: np.ndarray | None = None
         self._manual = False
         if manual_corners is not None:
@@ -194,7 +165,7 @@ class Rectifier:
                 rectify(image, self._corners, self.out_size), STATUS_OK, self._corners
             )
 
-        detected = find_board_quad(image, min_area_frac=self.min_area_frac)
+        detected = detect_board_quad(image)
         if detected is None:
             # Lost the board (or never had it). Needs operator setup either way.
             return RectifyResult(None, STATUS_NEEDS_SETUP, None)

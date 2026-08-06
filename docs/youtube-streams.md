@@ -19,10 +19,13 @@ Extracted frames live under `tests/data/` (git-ignored). Naming: `<id>_<mmss>_fu
 Pulled with `yt-dlp -f 137 --download-sections` (just the needed seconds, not the full
 multi-hour stream) + `ffmpeg -frames:v 1`.
 
-Note: the simple auto board-detector (`find_board_quad`) does **not** localise these
-real cluttered boards — they need the operator corner-tap (`rectify --corners …`).
-Robust real-photo detection (Hough-line clustering, WP-A1) is later work. Pick corners
-with `tools/corner_picker.html` (load the frame, click the 4 board corners).
+Note: the corners below were picked by hand because the naive Canny/contour detector
+in use at the time could not localise these cluttered broadcast frames. That detector
+is gone — the edge now shares `board_reader_core.boarddetect.detect_board_quad` with
+the snapshot path, which does handle real photos. **Untested on these frames**: they
+were not retained, so re-pull a few and check before assuming the corner-tap is still
+needed here. Pick corners with `tools/corner_picker.html` (load the frame, click the
+4 board corners).
 
 ### Operator corners used for validation (pixel coords, any order)
 

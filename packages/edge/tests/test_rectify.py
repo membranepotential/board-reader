@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import numpy as np
 
+from board_reader_core.boarddetect import detect_board_quad
 from board_reader_core.protocol import START_PLACEMENT
 from board_reader_core.sim import render_board, simulate_angled_view
 from board_reader_edge.rectify import (
@@ -11,7 +12,6 @@ from board_reader_edge.rectify import (
     STATUS_OK,
     STATUS_RECALIBRATING,
     Rectifier,
-    find_board_quad,
     homography_from_corners,
     order_quad,
     rectify,
@@ -48,10 +48,10 @@ def test_homography_maps_corners_to_canonical_square():
     np.testing.assert_allclose(mapped[1], [80, 80], atol=1e-3)
 
 
-def test_find_board_quad_recovers_the_angled_outline():
+def test_detect_board_quad_recovers_the_angled_outline():
     board = render_board(START_PLACEMENT, square_px=48)
     img, gt = simulate_angled_view(board)
-    found = find_board_quad(img)
+    found = detect_board_quad(img)
     assert found is not None
     # Detected corners are within a few pixels of the ground-truth outline.
     err = np.linalg.norm(found - gt, axis=1).mean()
@@ -61,11 +61,11 @@ def test_find_board_quad_recovers_the_angled_outline():
 def test_rectify_round_trip_recovers_the_board():
     board = render_board(START_PLACEMENT, square_px=48)
     img, _ = simulate_angled_view(board)
-    found = find_board_quad(img)
+    found = detect_board_quad(img)
     assert found is not None
     crop = rectify(img, found, out_size=board.shape[0])
-    # The un-warped crop strongly resembles the original top-down board. A few-pixel
-    # Canny/dilate corner error leaves a thin border, so this auto-detect path bars at
+    # The un-warped crop strongly resembles the original top-down board. Residual
+    # sub-pixel corner error leaves a thin border, so this auto-detect path bars at
     # 0.85; the exact-corner path (test_manual_corners_*) clears 0.9.
     assert _gray_corr(crop, board) > 0.85
 
