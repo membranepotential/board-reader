@@ -12,6 +12,7 @@ import pytest
 
 from board_reader_core.recording import FrameRecorder, Recording
 from board_reader_core.wire import Frame
+
 from board_reader_edge.adapter import EnvelopeSource, RecordingReplay
 from board_reader_edge.cli import build_parser, cmd_feed
 
@@ -147,6 +148,18 @@ def test_cli_refuses_a_recording_with_corners(session):
     with pytest.raises(SystemExit) as e:
         cmd_feed(args)
     assert "--corners" in str(e.value)
+
+
+def test_cli_refuses_a_recording_with_jpeg_quality(session):
+    """Re-encoding a replayed recording would perturb the exact pixels the replay
+    exists to reproduce — and silently, since this path never decodes them."""
+    root, _ = session
+    args = build_parser().parse_args(
+        ["feed", "--recording", str(root), "--jpeg-quality", "50"]
+    )
+    with pytest.raises(SystemExit) as e:
+        cmd_feed(args)
+    assert "--jpeg-quality" in str(e.value)
 
 
 def test_cli_reports_a_missing_recording_without_a_traceback(tmp_path):

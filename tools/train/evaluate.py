@@ -19,23 +19,23 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 
+import _bootstrap
 import cv2
 import numpy as np
 import torch
+from augment import IMAGENET_MEAN, IMAGENET_STD, eval_transform, to_rgb_tensor
+from config import Config
+from metrics import SquareStats
 
-import _bootstrap
 from board_reader_core.protocol import CLASS_INDEX, START_PLACEMENT, parse_placement
+from models import build_model
+
 from board_reader_inference.squares import (
     BboxGeometry,
     CropGeometry,
     crop_squares_photo,
     geometry_from_dict,
 )
-
-from augment import IMAGENET_MEAN, IMAGENET_STD, eval_transform, to_rgb_tensor
-from config import Config
-from metrics import SquareStats
-from models import build_model
 
 ROOT = _bootstrap.ROOT
 HEADROOM, SIDE_PAD, SIZE = 0.15, 0.15, 224

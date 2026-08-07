@@ -221,5 +221,6 @@ def test_jpegs_are_sharded_so_a_long_session_stays_navigable(tmp_path):
         rec.record(header, jpeg)
     rec.close()
 
-    paths = [json.loads(l)["jpeg"] for l in (tmp_path / "s1" / INDEX_NAME).read_text().splitlines()]
+    index = (tmp_path / "s1" / INDEX_NAME).read_text().splitlines()
+    paths = [json.loads(line)["jpeg"] for line in index]
     assert paths == ["jpeg/0000/000000.jpg", "jpeg/0000/000001.jpg", "jpeg/0000/000002.jpg"]

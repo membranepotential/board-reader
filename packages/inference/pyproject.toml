@@ -7,6 +7,10 @@ dependencies = [
     "board-reader-core",
     "fastapi>=0.115",
     "uvicorn[standard]>=0.30",
+    # The gateway serves WebSockets through uvicorn, but `positions` is a WS
+    # *client* of our own /viewer egress — an explicit dependency, not a lucky
+    # transitive one from uvicorn's [standard] extra.
+    "websockets>=12",
     "numpy>=2.0",
     "onnxruntime-gpu>=1.20",
     "nvidia-cudnn-cu12>=9.23.0.39",

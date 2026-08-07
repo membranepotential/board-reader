@@ -10,4 +10,4 @@ from board_reader_inference.estimator import Estimator, StubEstimator
 from board_reader_inference.hub import PositionHub
 from board_reader_inference.server import create_app
 
-__all__ = ["Estimator", "StubEstimator", "PositionHub", "create_app"]
+__all__ = ["Estimator", "PositionHub", "StubEstimator", "create_app"]

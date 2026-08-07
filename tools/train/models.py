@@ -20,11 +20,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import _bootstrap  # noqa: F401
 import torch
 import torch.nn as nn
 import torchvision
 
-import _bootstrap  # noqa: F401
 from board_reader_core.protocol import NUM_CLASSES
 
 MODELS = ("resnet18", "resnet50", "dinov2")

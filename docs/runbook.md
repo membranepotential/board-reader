@@ -79,6 +79,28 @@ more than the recorded run did. Anything that would reprocess the stream
 (`--adaptive`, `--rectify`, `--corners`, `--forward-original`, `--loop`) is refused
 with `--recording` rather than silently changing what goes on the wire.
 
+### Capturing a run's positions
+
+Recording captures a run's **input** (the frames); `positions` captures its **output** —
+the L3 position stream itself, headlessly, without a browser in the loop.
+
+```bash
+uv run board-reader-inference positions                        # tail it, readably
+uv run board-reader-inference positions --out run.ndjson --quiet   # capture it
+uv run board-reader-inference positions --board A1 --changes-only  # one board, moves only
+```
+
+`--out` appends each event as one line of the exact protocol JSON the socket carried, so a
+capture *is* the stream and two runs can be diffed — it *appends*, so give each run its own
+file rather than reusing one. `--url` points it at a gateway elsewhere (default
+`ws://127.0.0.1:8000/viewer`). Exit code `1` means the stream produced nothing and `2` that
+no gateway answered — both scriptable, so a scripted demo fails rather than reporting
+success over silence.
+
+Read it as *positions only*: the tail diffs consecutive placements for legibility and
+smooths nothing, so a flickering square shows a transition on every frame. See
+[[architecture#Temporal consistency — the layer nobody has built]].
+
 **Viewer node**
 
 | Variable | Effect |

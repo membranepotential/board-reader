@@ -16,9 +16,13 @@ from starlette.testclient import TestClient
 
 from board_reader_core.protocol import START_PLACEMENT, PositionEvent
 from board_reader_core.wire import Frame
-from board_reader_inference.estimator import StubEstimator
+
+from board_reader_inference.centroid import build_exemplars
+from board_reader_inference.embed import LiteEmbedder
+from board_reader_inference.estimator import CentroidEstimator, StubEstimator
 from board_reader_inference.hub import PositionHub
-from board_reader_inference.ingest import FrameIngest, estimate_frame
+from board_reader_inference.ingest import FrameIngest
+from board_reader_inference.routing import Route, Uncalibrated, WholeFrameRead, route_for
 from board_reader_inference.server import create_app
 
 
@@ -73,6 +77,17 @@ class FakePhotoEstimator:
 QUAD = np.array([[4.0, 6.0], [96.0, 8.0], [98.0, 94.0], [2.0, 92.0]], dtype=np.float32)
 
 
+def _occupancy_bank() -> CentroidEstimator:
+    """The smallest possible occupancy-bank estimator.
+
+    Only its existence matters here: it is what makes the §4.6 uncalibrated route
+    constructible. Nothing in this module ever reads a position through it.
+    """
+    emb = LiteEmbedder()
+    crops = [np.zeros((8, 8, 3), dtype=np.uint8) for _ in range(64)]
+    return CentroidEstimator(emb, build_exemplars(emb, crops, START_PLACEMENT))
+
+
 def _frame(board_id: str = "A1", seq: int = 0, corners=None) -> Frame:
     return Frame(
         board_id=board_id,
@@ -89,7 +104,7 @@ def test_burst_is_prefiltered_to_the_freshest_frame():
     async def run():
         est = FakeEstimator(delay=0.02)
         hub = PositionHub()
-        ingest = FrameIngest(lambda: est, hub)
+        ingest = FrameIngest(lambda frame: route_for(est, frame), hub)
         for seq in range(20):
             ingest.submit(_frame(seq=seq))
             await asyncio.sleep(0.002)  # stream faster than the model
@@ -113,7 +128,7 @@ def test_boards_are_independent_and_a_slow_board_does_not_starve_a_fast_one():
     async def run():
         est = FakeEstimator(delays={"SLOW": 0.3, "FAST": 0.0})
         hub = PositionHub()
-        ingest = FrameIngest(lambda: est, hub)
+        ingest = FrameIngest(lambda frame: route_for(est, frame), hub)
 
         ingest.submit(_frame("SLOW", seq=1))
         for seq in range(1, 4):
@@ -137,7 +152,7 @@ def test_estimator_exception_does_not_end_the_boards_stream():
     async def run():
         est = FakeEstimator(fail_seqs={1})
         hub = PositionHub()
-        ingest = FrameIngest(lambda: est, hub)
+        ingest = FrameIngest(lambda frame: route_for(est, frame), hub)
 
         ingest.submit(_frame(seq=1))
         await asyncio.wait_for(ingest.drain(), timeout=5.0)
@@ -158,7 +173,7 @@ def test_drain_and_close_are_idempotent_and_prompt():
     async def run():
         est = FakeEstimator(delay=1.0)
         hub = PositionHub()
-        ingest = FrameIngest(lambda: est, hub)
+        ingest = FrameIngest(lambda frame: route_for(est, frame), hub)
 
         await asyncio.wait_for(ingest.drain(), timeout=0.5)  # nothing to drain
         await asyncio.wait_for(ingest.drain("nosuchboard"), timeout=0.5)
@@ -218,7 +233,7 @@ def test_ingest_socket_acks_every_frame_promptly_while_the_estimator_is_busy():
 
 def test_corners_route_to_a_photo_mode_estimators_photo_path():
     est = FakePhotoEstimator()
-    event = estimate_frame(est, _frame(seq=7, corners=QUAD))
+    event = route_for(est, _frame(seq=7, corners=QUAD)).read()
 
     assert est.plain_calls == []  # never the rectified path
     assert [seq for seq, _ in est.photo_calls] == [7]
@@ -238,7 +253,7 @@ def test_corners_are_rectified_for_an_estimator_without_a_photo_path():
         burst_id="b7",
         corners=QUAD,
     )
-    event = estimate_frame(est, frame)
+    event = route_for(est, frame).read()
 
     # The estimator saw the warp, not the original photo it cannot read.
     assert est.shapes == [(512, 512)]
@@ -250,12 +265,24 @@ def test_corners_are_rectified_for_an_estimator_without_a_photo_path():
 
 def test_a_frame_without_corners_takes_the_unchanged_path():
     est = FakeEstimator()
-    estimate_frame(est, _frame(seq=1))
+    route = route_for(est, _frame(seq=1))
+    assert isinstance(route, WholeFrameRead)
+    route.read()
     assert est.shapes == [(100, 100)]  # untouched pixels
 
+
+def test_a_photo_estimator_without_corners_reads_the_whole_frame_as_the_board():
+    """A corner-less body is a rectified crop, and a photo-mode estimator reads it
+    through its photo path with the whole frame as the quad — the contract
+    ``POST /estimate`` has always had, and now the stream's too (they share one
+    router, so this can only ever be one behaviour)."""
     photo = FakePhotoEstimator()
-    estimate_frame(photo, _frame(seq=1))
-    assert photo.photo_calls == [] and photo.plain_calls == [1]
+    route_for(photo, _frame(seq=1)).read()
+    assert photo.plain_calls == []
+    assert [seq for seq, _ in photo.photo_calls] == [1]
+    assert np.allclose(
+        photo.photo_calls[0][1], [[0, 0], [100, 0], [100, 100], [0, 100]]
+    )
 
 
 def test_streamed_corners_reach_the_photo_path_end_to_end():
@@ -290,15 +317,18 @@ def test_app_shutdown_stops_the_ingest_workers():
     assert ingest._boards == {}  # lifespan shutdown cancelled and forgot the workers
 
 
-def test_no_ready_estimator_skips_frames_and_the_stream_wakes_on_hot_swap():
-    """§4.6 uncalibrated state: the estimator callable answers None and the stream
+def test_an_uncalibrated_route_skips_frames_and_the_stream_wakes_on_hot_swap():
+    """§4.6 uncalibrated state: the router answers ``Uncalibrated`` and the stream
     publishes NOTHING (the hub carries estimated positions, never a placeholder) —
     then a calibration hot-swap brings the very same stream alive mid-flight."""
 
     async def run():
-        est: dict[str, StubEstimator | None] = {"current": None}
+        stub = StubEstimator(START_PLACEMENT)
+        routes: dict[str, Route] = {
+            "current": Uncalibrated(_occupancy_bank(), _frame(), QUAD)
+        }
         hub = PositionHub()
-        ingest = FrameIngest(lambda: est["current"], hub)
+        ingest = FrameIngest(lambda frame: routes["current"], hub)
 
         ingest.submit(_frame(seq=1))
         await asyncio.wait_for(ingest.drain(), timeout=2.0)
@@ -306,7 +336,7 @@ def test_no_ready_estimator_skips_frames_and_the_stream_wakes_on_hot_swap():
         assert ingest.frames_skipped == 1
         assert ingest.frames_estimated == 0
 
-        est["current"] = StubEstimator(START_PLACEMENT)
+        routes["current"] = WholeFrameRead(stub, _frame(seq=2))
         ingest.submit(_frame(seq=2))
         await asyncio.wait_for(ingest.drain(), timeout=2.0)
         assert hub.latest("A1").seq == 2

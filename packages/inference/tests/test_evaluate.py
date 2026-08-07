@@ -13,7 +13,6 @@ import json
 import numpy as np
 import pytest
 
-from board_reader_inference.squares import BboxGeometry
 from board_reader_core.protocol import (
     CLASS_INDEX,
     GRID,
@@ -35,6 +34,7 @@ from board_reader_inference.evaluate import (
     score_board,
 )
 from board_reader_inference.labels import LabeledBoard, save_label
+from board_reader_inference.squares import BboxGeometry
 
 MIDGAME = "r2qk2r/1b1pbppp/p1n1p3/1ppnP3/5B2/1BNP1N2/PPP2PPP/R2Q1RK1"
 CORNERS = np.array([[0, 0], [100, 0], [100, 100], [0, 100]], dtype=np.float32)
@@ -389,7 +389,7 @@ def test_bank_backed_stacks_are_flagged_as_contaminated():
     does not say so is the exact mistake this harness exists to stop repeating."""
 
     class WithBank(FakeEstimator):
-        class classifier:  # noqa: N801 — stands in for an ExemplarClassifier
+        class classifier:
             exemplars = np.zeros((4096, 8), dtype=np.float32)
             backbone = "dinov2"
 

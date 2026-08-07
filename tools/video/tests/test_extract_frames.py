@@ -14,7 +14,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from extract_frames import (  # noqa: E402
+from extract_frames import (
     even_times,
     format_timestamp,
     parse_time,

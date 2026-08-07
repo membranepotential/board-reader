@@ -15,13 +15,12 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
+import _bootstrap  # noqa: F401
 import numpy as np
 import torch
-
-import _bootstrap  # noqa: F401
-from board_reader_core.protocol import NUM_CLASSES
-
 from config import Config
+
+from board_reader_core.protocol import NUM_CLASSES
 from models import build_model
 
 SIZE = 224

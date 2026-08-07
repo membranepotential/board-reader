@@ -26,9 +26,9 @@ The workers belong to the ingest object, not to a connection: a reconnecting edg
 never interrupts an estimate in flight, and shutdown is the only thing that stops
 them (:meth:`FrameIngest.lifespan`).
 
-What a worker *does* with a frame is :func:`estimate_frame`, which honours the
-optional per-frame board corners the wire may carry — the same routing the
-snapshot ``POST /estimate`` path applies.
+What a worker *does* with a frame is not this module's decision: it asks
+:mod:`board_reader_inference.routing` — the same function ``POST /estimate`` asks —
+and runs the :class:`~board_reader_inference.routing.Route` it gets back.
 """
 
 from __future__ import annotations
@@ -37,58 +37,14 @@ import asyncio
 import contextlib
 import logging
 from collections.abc import AsyncIterator, Callable
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 
-import numpy as np
-from board_reader_core.protocol import PositionEvent
 from board_reader_core.wire import Frame
 
-from board_reader_inference.estimator import Estimator
 from board_reader_inference.hub import PositionHub
-from board_reader_inference.squares import rectify_photo
+from board_reader_inference.routing import Route, Uncalibrated
 
 log = logging.getLogger(__name__)
-
-PhotoEstimate = Callable[[Frame, np.ndarray], PositionEvent]
-
-
-def photo_estimator(est: Estimator) -> PhotoEstimate | None:
-    """``est``'s original-photo entry point, if it is calibrated/trained for one.
-
-    Photo-mode is declared either by the classifier (kNN/centroid banks) or by the
-    estimator itself (the trained crop classifier). Shared with the gateway's
-    ``POST /estimate`` so the streamed and the posted photo can never be routed
-    differently.
-    """
-    photo_mode = (
-        getattr(getattr(est, "classifier", None), "crop_mode", None) == "photo"
-        or getattr(est, "crop_mode", None) == "photo"
-    )
-    if not photo_mode:
-        return None
-    fn = getattr(est, "estimate_photo", None)
-    return fn if callable(fn) else None
-
-
-def estimate_frame(est: Estimator, frame: Frame) -> PositionEvent:
-    """Run ``est`` on ``frame``, honouring the frame's optional corners (§4.5).
-
-    Three cases, mirroring ``POST /estimate``:
-
-    * corners + a photo-mode estimator — hand it the original pixels, so it cuts
-      tall full-piece boxes instead of decapitating pieces in a warped square;
-    * corners + anything else — rectify server-side and estimate the top-down crop,
-      which is what a rectified-mode bank was calibrated on (and what the M0 stub's
-      centroids assume);
-    * no corners — the JPEG *is* the board, exactly as before.
-    """
-    if frame.corners is None:
-        return est.estimate(frame)
-    photo_fn = photo_estimator(est)
-    if photo_fn is not None:
-        return photo_fn(frame, frame.corners)
-    rectified = rectify_photo(frame.image, frame.corners)
-    return est.estimate(replace(frame, image=rectified, corners=None))
 
 
 @dataclass(frozen=True, slots=True)
@@ -103,21 +59,20 @@ class _BoardWorker:
 class FrameIngest:
     """Latest-wins frame ingress: :meth:`submit` never blocks on the model.
 
-    The estimator is resolved *per frame* through a callable rather than captured,
+    The route is resolved *per frame* through a callable rather than captured,
     because ``POST /calibrate`` hot-swaps the gateway's estimator (§4.6) and a live
-    stream must pick the new one up mid-flight. The callable may return ``None`` —
-    "no estimator is ready for real positions yet" (the §4.6 uncalibrated state,
-    where ``POST /estimate`` answers occupancy-only and publishes nothing). A stream
-    has no HTTP response to answer with, so its frames are counted and *skipped*:
-    the hub carries positions someone actually estimated, never a placeholder.
-    Calibrating (the camera page's button, or a snapshot of the start position)
-    hot-swaps a real estimator in and the same stream comes alive mid-flight.
+    stream must pick the new one up mid-flight. The route may come back
+    :class:`~board_reader_inference.routing.Uncalibrated` — "nothing here can read a
+    position yet" (the §4.6 state where ``POST /estimate`` answers occupancy-only
+    and publishes nothing). A stream has no HTTP response to answer with, so its
+    frames are counted and *skipped*: the hub carries positions someone actually
+    estimated, never a placeholder. Calibrating (the camera page's button, or a
+    snapshot of the start position) hot-swaps a real estimator in and the same
+    stream comes alive mid-flight.
     """
 
-    def __init__(
-        self, estimator: Callable[[], Estimator | None], hub: PositionHub
-    ) -> None:
-        self._estimator = estimator
+    def __init__(self, route: Callable[[Frame], Route], hub: PositionHub) -> None:
+        self._route = route
         self._hub = hub
         self._boards: dict[str, _BoardWorker] = {}
         self._warned_unready = False
@@ -198,8 +153,8 @@ class FrameIngest:
             while True:
                 frame = await inbox.get()
                 try:
-                    estimator = self._estimator()
-                    if estimator is None:
+                    route = self._route(frame)
+                    if isinstance(route, Uncalibrated):
                         self.frames_skipped += 1
                         if not self._warned_unready:
                             self._warned_unready = True
@@ -208,7 +163,7 @@ class FrameIngest:
                                 " skipping until a calibration lands", board_id,
                             )
                         continue
-                    event = await asyncio.to_thread(estimate_frame, estimator, frame)
+                    event = await asyncio.to_thread(route.read)
                 except asyncio.CancelledError:
                     raise
                 except Exception:

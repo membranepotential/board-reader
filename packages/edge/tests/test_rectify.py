@@ -7,6 +7,7 @@ import numpy as np
 from board_reader_core.boarddetect import detect_board_quad
 from board_reader_core.protocol import START_PLACEMENT
 from board_reader_core.sim import render_board, simulate_angled_view
+
 from board_reader_edge.rectify import (
     STATUS_NEEDS_SETUP,
     STATUS_OK,

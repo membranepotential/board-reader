@@ -16,8 +16,9 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from board_reader_core.boarddetect import LOW_ANGLE_ASPECT  # noqa: E402
-from check_angle import GOOD_ASPECT, AngleReport, Verdict, render  # noqa: E402
+from check_angle import GOOD_ASPECT, AngleReport, Verdict, render
+
+from board_reader_core.boarddetect import LOW_ANGLE_ASPECT
 
 
 def quad(aspect: float) -> np.ndarray:

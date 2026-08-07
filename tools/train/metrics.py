@@ -14,9 +14,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+import _bootstrap  # noqa: F401
 import numpy as np
 
-import _bootstrap  # noqa: F401
 from board_reader_core.protocol import EMPTY, NUM_CLASSES
 
 

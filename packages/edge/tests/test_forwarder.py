@@ -8,6 +8,7 @@ forwarder must make the same decisions a live edge would.
 from __future__ import annotations
 
 import ast
+import itertools
 from pathlib import Path
 
 import numpy as np
@@ -15,6 +16,7 @@ import pytest
 
 from board_reader_core.sim import render_board
 from board_reader_core.wire import Frame
+
 from board_reader_edge import forwarder as forwarder_module
 from board_reader_edge.forwarder import AdaptiveForwarder, ForwarderConfig
 
@@ -76,7 +78,7 @@ def test_motion_bursts_at_the_burst_rate():
     # 2.0s at 12 fps burst, quantised to the 30 fps capture grid -> every 3rd frame.
     assert 18 <= len(moving) <= 21
     assert len(moving) > 5 * len(at_rest)
-    gaps = [b.capture_ts - a.capture_ts for a, b in zip(moving, moving[1:])]
+    gaps = [b.capture_ts - a.capture_ts for a, b in itertools.pairwise(moving)]
     assert max(gaps) <= 1 / 12.0 + 1 / CAPTURE_FPS
 
 

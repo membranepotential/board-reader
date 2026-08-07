@@ -17,8 +17,9 @@ from __future__ import annotations
 
 import json
 import time
+from collections.abc import Iterator
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any
 
 
 class RunLog:
@@ -26,7 +27,10 @@ class RunLog:
     truncates: one file == one run, so consumers never see two runs interleaved."""
 
     def __init__(self, path: Path) -> None:
-        self._f = open(path, "w", buffering=1)
+        # Held open for the life of the run and closed by `close()` — a `with`
+        # cannot express an owner-scoped handle, and line buffering is what makes
+        # the file tailable while training is still going.
+        self._f = open(path, "w", buffering=1)  # noqa: SIM115
 
     def log(self, kind: str, **fields: Any) -> None:
         self._f.write(json.dumps({"t": round(time.time(), 3), "kind": kind, **fields}) + "\n")

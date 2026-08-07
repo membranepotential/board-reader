@@ -9,6 +9,7 @@ without anyone remembering to wire it up.
 from __future__ import annotations
 
 import json
+import time
 
 import numpy as np
 import pytest
@@ -16,6 +17,7 @@ from starlette.testclient import TestClient
 
 from board_reader_core.recording import INDEX_NAME, Recording
 from board_reader_core.wire import Frame
+
 from board_reader_inference.estimator import StubEstimator
 from board_reader_inference.server import create_app
 
@@ -30,6 +32,24 @@ def _frame(seq: int, *, board_id: str = "A1", corners=None) -> Frame:
         stability=0.25,
         corners=corners,
     )
+
+
+def _await_position(client: TestClient, board_id: str = "A1", timeout: float = 5.0):
+    """Wait for a board's first published position, then return the response.
+
+    An ack means "received", never "estimated" (WP-G1/G2): the ingest worker runs
+    the model off the event loop, so a frame acked on the socket has not yet
+    become an event on the hub. Recording, by contrast, happens inline in the
+    ``/ingest`` handler — so a test that checks a recorder fact and then asserts a
+    position exists is racing two different clocks, and loses about one run in
+    three under `-n auto`.
+    """
+    deadline = time.monotonic() + timeout
+    while True:
+        response = client.get(f"/boards/{board_id}")
+        if response.status_code == 200 or time.monotonic() > deadline:
+            return response
+        time.sleep(0.01)
 
 
 def _send(client: TestClient, *frames: Frame) -> list[tuple[dict, bytes]]:
@@ -150,7 +170,7 @@ def test_a_recording_failure_does_not_break_the_stream(tmp_path, monkeypatch):
         health = client.get("/healthz").json()
         assert health["status"] == "ok"
         assert health["recording"]["active"] is False
-        assert client.get("/boards/A1").status_code == 200
+        assert _await_position(client).status_code == 200
 
 
 def test_max_mb_caps_the_session(tmp_path, monkeypatch):

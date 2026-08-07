@@ -29,10 +29,10 @@ a recorded session instead of processing a live one. Both satisfy
 
 from __future__ import annotations
 
-import time
-from typing import Callable, Iterable, Iterator, Protocol, TypeVar, runtime_checkable
-
 import dataclasses
+import time
+from collections.abc import Callable, Iterable, Iterator
+from typing import Protocol, TypeVar, runtime_checkable
 
 import numpy as np
 
@@ -40,10 +40,15 @@ from board_reader_core.recording import Recording
 from board_reader_core.wire import Frame
 
 from board_reader_edge.forwarder import AdaptiveForwarder
+from board_reader_edge.quadcheck import OperatorQuadError, check_quad_in_frame
 from board_reader_edge.rectify import Rectifier
 from board_reader_edge.source import FrameSource
 
 _T = TypeVar("_T")
+
+# Default JPEG quality of the forwarded frames. Exported so the CLI's
+# ``--jpeg-quality`` advertises the same number the adapter would have used.
+DEFAULT_JPEG_QUALITY = 90
 
 
 @runtime_checkable
@@ -104,9 +109,14 @@ class FileEdgeAdapter:
         (DESIGN §4.5). The order is passed through *verbatim* — it is what tells the
         inference node which physical corner is a1, so it must never be run through
         :func:`~board_reader_edge.rectify.order_quad`, which normalises to TL-first
-        for the warp and throws that orientation away.
+        for the warp and throws that orientation away. Checked against the first
+        frame's resolution before anything is yielded
+        (:mod:`board_reader_edge.quadcheck`); the frame-free shape checks happen
+        earlier still, at the CLI boundary.
     jpeg_quality:
-        JPEG quality for the encoded crop.
+        JPEG quality of the encoded frame (1-100). A full camera frame on the
+        ``wire_corners`` path costs several times the bytes of a 384px crop, which
+        is what a real Pi's uplink pays for.
     throttle:
         If ``True``, pace the output to the stream's own **capture time** — a
         replayed clip then leaves the edge at the rate it was recorded at, and an
@@ -123,7 +133,7 @@ class FileEdgeAdapter:
         forwarder: AdaptiveForwarder | None = None,
         rectifier: Rectifier | None = None,
         wire_corners: np.ndarray | None = None,
-        jpeg_quality: int = 90,
+        jpeg_quality: int = DEFAULT_JPEG_QUALITY,
         throttle: bool = False,
         sleep: Callable[[float], None] = time.sleep,
         monotonic: Callable[[], float] = time.monotonic,
@@ -150,6 +160,15 @@ class FileEdgeAdapter:
         self.throttle = throttle
         self._sleep = sleep
         self._monotonic = monotonic
+        # The quad the operator declared by hand, if any — the one thing that still
+        # needs checking against the source's resolution (see :meth:`frames`). A
+        # rectifier holding corners this early can only be a manual one: auto mode
+        # has not seen a frame yet, so it has nothing cached.
+        self._operator_quad = (
+            self.wire_corners
+            if self.wire_corners is not None
+            else (rectifier.corners if rectifier is not None else None)
+        )
 
     def envelopes(self) -> Iterator[tuple[dict, bytes]]:
         """Yield ``(header, jpeg_bytes)`` per forwarded frame."""
@@ -170,8 +189,25 @@ class FileEdgeAdapter:
         appear, so consumers only ever see crops the edge is confident in, at the
         rate D4 asks for. Under ``wire_corners`` there is nothing to suppress: the
         original frame goes out with the operator's quad attached.
+
+        Raises :class:`~board_reader_edge.quadcheck.OperatorQuadError` if the
+        operator's quad does not fit the frames this source produces — on the first
+        frame, so nothing is yielded and nothing reaches the wire.
         """
+        quad_checked = self._operator_quad is None
         for frame in self.source.frames():
+            if not quad_checked:
+                # First frame: the source's resolution is finally known (it is not
+                # at construction time — a clip, an image directory and a camera all
+                # only reveal it here), so the operator's corners can at last be
+                # checked against the picture they claim to describe.
+                height, width = frame.image.shape[:2]
+                defect = check_quad_in_frame(
+                    self._operator_quad, width=width, height=height
+                )
+                if defect is not None:
+                    raise OperatorQuadError(f"the board quad {defect.message}")
+                quad_checked = True
             if self.forwarder is not None:
                 decided = self.forwarder.decide(frame)
                 if decided is None:

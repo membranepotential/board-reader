@@ -39,7 +39,13 @@ from pathlib import Path
 
 import numpy as np
 
-from board_reader_core.protocol import CLASSES, GRID, NUM_CLASSES, parse_placement
+from board_reader_core.protocol import (
+    CLASSES,
+    GRID,
+    NUM_CLASSES,
+    parse_placement,
+    square_name,
+)
 from board_reader_core.wire import Frame
 
 from board_reader_inference.labels import LabeledBoard
@@ -49,9 +55,6 @@ from board_reader_inference.prior import PriorDecode, decode
 #: choice and keeps each row readable at the ~640-square scale we evaluate at.
 CONF_BINS = 10
 
-
-def _square_name(r: int, c: int) -> str:
-    return f"{'abcdefgh'[c]}{GRID - r}"
 
 
 def error_kind(truth: str, predicted: str) -> str:
@@ -304,7 +307,7 @@ def _ranking_auc(positive: list[float], negative: list[float]) -> float | None:
 
 
 def score_temperature(
-    results: list["BoardResult"],
+    results: list[BoardResult],
     dists: list[np.ndarray],
     truth_indices: list[np.ndarray],
 ) -> TemperatureReport:
@@ -519,7 +522,7 @@ class Report:
                 verdict = change.verdict.value if change else "reverted"
                 truth = change.truth if change else "?"
                 lines.append(
-                    f"    {p.board_id:<32}{str(flip):<16}cost {flip.cost:5.2f}"
+                    f"    {p.board_id:<32}{flip!s:<16}cost {flip.cost:5.2f}"
                     f"  {flip.constraint.value:<17}truth {truth:<6}{verdict.upper()}"
                 )
             if not p.decode.residual.satisfied:
@@ -668,7 +671,7 @@ def score_board(board: LabeledBoard, dist: np.ndarray) -> BoardResult:
     predicted = [[CLASSES[int(idx[r, c])] for c in range(GRID)] for r in range(GRID)]
     errors = [
         SquareError(
-            square=_square_name(r, c),
+            square=square_name(r, c),
             truth=truth[r][c],
             predicted=predicted[r][c],
             kind=error_kind(truth[r][c], predicted[r][c]),
@@ -709,7 +712,7 @@ def score_prior(board: LabeledBoard, dist: np.ndarray) -> PriorBoardResult:
     after = parse_placement(result.placement)
     changes = tuple(
         SquareChange(
-            square=_square_name(r, c),
+            square=square_name(r, c),
             truth=truth[r][c],
             before=before[r][c],
             after=after[r][c],

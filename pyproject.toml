@@ -29,6 +29,80 @@ dev = [
     # CPU-bound and independent per test, so this roughly halves wall clock.
     "pytest-xdist>=3",
     "httpx>=0.27",
+    # The lint gate (`make lint`). Pinned into the dev group rather than run via
+    # `uvx` so every checkout and every agent lints with the same version — a
+    # gate whose ruleset drifts by machine is not a gate.
+    "ruff>=0.14",
+]
+
+[tool.ruff]
+line-length = 92  # what the code already sits at; not a reformat mandate
+extend-exclude = ["scratch", "data", "models"]
+
+[tool.ruff.lint]
+# Chosen to match how this code is already written, not to import a house style
+# from elsewhere. Anything that would have churned working code for taste was
+# left out; everything kept either catches a real defect class or enforces a
+# convention the codebase already follows.
+extend-select = [
+    "I",      # import sorting — encodes the layering below
+    "UP",     # pyupgrade: this is a 3.12-only workspace
+    "B",      # bugbear
+    "SIM",    # simplify
+    "C4",     # comprehensions
+    "RUF",    # ruff's own
+    "DTZ",    # naive datetimes — `utc` is a wire field here (D5), so this matters
+]
+# Not selected: TRY004 (TypeError for a type check). `ValueError` is this
+# codebase's boundary-error currency — the CLIs catch it to turn a
+# misconfiguration into one clean line instead of a traceback, and
+# `labels.parse_corners` documents raising it for a non-string on purpose so a
+# pre-corners label is skipped rather than fatal. Both findings were deliberate,
+# so the rule described a convention we do not hold rather than a defect.
+ignore = [
+    # Boundary code deliberately catches everything and degrades: a bad model
+    # file, a half-written sidecar or an unreadable bank must not take the
+    # server down. Those sites are individually commented with what they absorb
+    # and why; a blanket rule here would only breed `# noqa` noise.
+    "BLE001",
+    "S110",
+    # Best-effort persistence (upload retention, session-bank writes) is written
+    # as try/except-pass on purpose — retention must never fail a request.
+    "SIM105",
+    # The prose here uses real typography (en dashes, ×, −) and `tools/video`
+    # maps filename-hostile characters onto fullwidth lookalikes (｜ ⧸ ＼) on
+    # purpose. "Fixing" those would corrupt the very strings that exist to be
+    # different from ASCII.
+    "RUF001",
+    "RUF002",
+    "RUF003",
+    # zip-without-explicit-strict: worth doing, but the honest fix is `strict=True`
+    # at each of the ~19 sites after checking that the operands really are the same
+    # length — a correctness review, not a lint sweep. Ruff's autofix writes
+    # `strict=False`, which is pure noise and would make the real review harder to
+    # spot later. Left as a tracked follow-up rather than papered over.
+    "B905",
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests reach into internals and repeat themselves on purpose; a test that is
+# clever is a test that is wrong.
+"**/tests/**" = ["B011", "RUF059"]
+# `tools/` are operator scripts, not library code: shebangs without the exec bit
+# and top-level side effects are normal there.
+"tools/**" = ["EXE001"]
+
+[tool.ruff.lint.isort]
+# The import blocks encode the architecture, so the linter is taught it rather
+# than allowed to flatten it: `board_reader_core` is the shared contract every
+# node imports, and it gets its own section ABOVE the node packages. A diff that
+# moves a core import down into a node's block is a layering smell, and this is
+# what makes that visible. See CLAUDE.md "the separation rule".
+known-first-party = ["board_reader_core"]
+known-local-folder = [
+    "board_reader_edge",
+    "board_reader_inference",
+    "board_reader_viewer",
 ]
 
 [tool.pytest.ini_options]

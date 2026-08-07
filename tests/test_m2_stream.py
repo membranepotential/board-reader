@@ -25,6 +25,7 @@ import uvicorn
 import websockets
 
 from board_reader_core.sim import SAMPLE_GAME_PLACEMENTS
+
 from board_reader_edge.adapter import FileEdgeAdapter
 from board_reader_edge.client import stream_to_gateway
 from board_reader_edge.forwarder import AdaptiveForwarder, ForwarderConfig
@@ -47,7 +48,14 @@ def _free_port() -> int:
 class _ServerThread:
     def __init__(self, port: int):
         config = uvicorn.Config(
-            create_app(), host="127.0.0.1", port=port, log_level="warning"
+            create_app(),
+            host="127.0.0.1",
+            port=port,
+            log_level="warning",
+            # Shutdown otherwise waits on the WebSocket connections this test
+            # opened, and the join below burns its full 5s timeout — teardown
+            # cost paid after every assertion has already passed.
+            timeout_graceful_shutdown=1,
         )
         self.server = uvicorn.Server(config)
         self.thread = threading.Thread(target=self.server.run, daemon=True)

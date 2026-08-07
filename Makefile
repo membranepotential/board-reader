@@ -34,7 +34,7 @@
 # the group again — bash recurses until it overflows its stack and segfaults.
 # The trap disarms itself first for the same reason.
 
-.PHONY: dev stop test test-gpu test-all
+.PHONY: dev stop test test-gpu test-all lint lint-fix
 
 # `wait -n` below is a bashism, and the teardown relies on bash trap semantics.
 SHELL := /bin/bash
@@ -92,8 +92,17 @@ dev:
 # the code. The count of what was skipped is printed rather than swallowed:
 # silently narrowing a suite is how a pipeline ends up reporting success over
 # nothing, which this repo has been bitten by three times.
+#
+# CUDA is hidden here, not merely deselected. `-m "not gpu"` drops the tests that
+# build a real ONNX InferenceSession *deliberately*, but other tests still
+# construct sessions incidentally, and `-n auto` runs a dozen workers — a dozen
+# CUDA contexts against one 4GB card. That does not fail cleanly: the workers
+# block inside the driver and the run hangs forever (seen twice at ~94% of the
+# suite; the identical suite passes in ~23s with CUDA hidden). The CPU provider
+# is correct for everything in this selection, so hiding the card makes the
+# default loop both deterministic and faster. `make test-gpu` still gets it.
 test:
-	uv run pytest -n auto -m "not gpu"
+	CUDA_VISIBLE_DEVICES="" uv run pytest -n auto -m "not gpu"
 	@echo "   (GPU tests deselected — run 'make test-gpu' on an idle machine)"
 
 # The deselected remainder, serially: they contend with each other too.
@@ -102,6 +111,20 @@ test-gpu:
 
 test-all:
 	uv run pytest -n auto
+
+# The lint gate. Ruff is pinned in the dev dependency group, not run through
+# `uvx`, so every checkout and every agent lints with the same ruleset — a gate
+# whose rules drift by machine is not a gate. Config and the reasoning behind
+# each selected/ignored rule live in pyproject.toml's [tool.ruff.lint].
+lint:
+	uv run ruff check .
+
+# The autofixable subset, applied. Deliberately a separate target: `lint` is safe
+# to run anywhere, `lint-fix` rewrites your working tree and wants a clean diff
+# to land on. Only the fixes ruff considers safe — `--unsafe-fixes` is never
+# wired up here, because a fix that can change behaviour belongs in a review.
+lint-fix:
+	uv run ruff check --fix .
 
 # The bracket keeps the pattern from matching this recipe's own command line.
 stop:

@@ -59,7 +59,7 @@ def main() -> int:
             super().__init__()
             self.m = m
 
-        def forward(self, pixel_values: "torch.Tensor") -> "torch.Tensor":
+        def forward(self, pixel_values: torch.Tensor) -> torch.Tensor:
             return self.m(pixel_values=pixel_values).pooler_output
 
     class CentralColumnEmbedding(torch.nn.Module):
@@ -80,7 +80,7 @@ def main() -> int:
             self.grid = grid
             self.keep = keep
 
-        def forward(self, pixel_values: "torch.Tensor") -> "torch.Tensor":
+        def forward(self, pixel_values: torch.Tensor) -> torch.Tensor:
             tokens = self.m(pixel_values=pixel_values).last_hidden_state[:, 1:, :]
             # Reshape with a **-1 batch**: tracing a concrete `tokens.shape[0]`
             # bakes the export-time batch into the graph, and the model then

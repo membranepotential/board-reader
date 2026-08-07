@@ -228,7 +228,7 @@ class Recording:
             raise FileNotFoundError(f"not a recording (no {INDEX_NAME}): {self.path}")
 
     @classmethod
-    def open(cls, path: str | Path) -> "Recording":
+    def open(cls, path: str | Path) -> Recording:
         """Open a session directory, or the newest session inside a root directory.
 
         Session ids are timestamp-prefixed, so "newest" is simply the last one in

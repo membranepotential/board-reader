@@ -27,11 +27,16 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import cv2
 import numpy as np
 
-import cv2
-
-from board_reader_core.protocol import CLASS_INDEX, CLASSES, GRID, NUM_CLASSES, parse_placement
+from board_reader_core.protocol import (
+    CLASS_INDEX,
+    CLASSES,
+    GRID,
+    NUM_CLASSES,
+    parse_placement,
+)
 
 from board_reader_inference.embed import Embedder, l2_normalize
 
@@ -119,7 +124,7 @@ class CentroidClassifier:
         )
 
     @classmethod
-    def load(cls, path: str | Path) -> "CentroidClassifier":
+    def load(cls, path: str | Path) -> CentroidClassifier:
         data = np.load(Path(path), allow_pickle=False)
         if tuple(data["classes"].tolist()) != CLASSES:
             raise ValueError("centroid file classes do not match this protocol's CLASSES")
@@ -305,7 +310,7 @@ class ExemplarClassifier:
             raise ValueError(f"expected {GRID * GRID} embeddings, got {embeddings.shape[0]}")
         return self.classify(embeddings, transduce=True).reshape(GRID, GRID, NUM_CLASSES)
 
-    def extended(self, embeddings: np.ndarray, labels: list[str]) -> "ExemplarClassifier":
+    def extended(self, embeddings: np.ndarray, labels: list[str]) -> ExemplarClassifier:
         """Return a new bank with ``embeddings``/``labels`` appended to this one.
 
         Used by in-session calibration to ADD a photo to the bank rather than
@@ -342,7 +347,7 @@ class ExemplarClassifier:
         )
 
     @classmethod
-    def load(cls, path: str | Path) -> "ExemplarClassifier":
+    def load(cls, path: str | Path) -> ExemplarClassifier:
         data = np.load(Path(path), allow_pickle=False)
         if tuple(data["classes"].tolist()) != CLASSES:
             raise ValueError("exemplar file classes do not match this protocol's CLASSES")
@@ -411,7 +416,7 @@ def build_exemplars(
     )
 
 
-def load_classifier(path: str | Path) -> "CentroidClassifier | ExemplarClassifier":
+def load_classifier(path: str | Path) -> CentroidClassifier | ExemplarClassifier:
     """Load a calibration file, dispatching on kind (centroid mean vs kNN exemplar bank).
 
     Both file kinds carry the same ``classes``/``temperature``/``backbone``/

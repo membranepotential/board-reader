@@ -26,9 +26,9 @@ from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
 
+import _bootstrap
 import numpy as np
 
-import _bootstrap  # noqa: F401  (puts board_reader_* on sys.path)
 from board_reader_core.protocol import CLASS_INDEX, GRID, encode_placement
 
 ROOT = _bootstrap.ROOT
@@ -221,10 +221,10 @@ def chessred_style(
             by_game[images[iid]["game_id"]].append(iid)
         per_game = max(1, max_boards // max(1, len(by_game)))
         capped: list[int] = []
-        for game, gids in sorted(by_game.items()):
+        for _game, gids in sorted(by_game.items()):
             gids = sorted(gids, key=lambda i: images[i].get("move_id", i))
             idx = np.linspace(0, len(gids) - 1, min(per_game, len(gids)))
-            capped.extend(gids[int(round(k))] for k in idx)
+            capped.extend(gids[round(k)] for k in idx)
         ids = sorted(set(capped))[:max_boards]
 
     samples: list[StyleSample] = []

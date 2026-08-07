@@ -7,8 +7,12 @@ import base64
 import cv2
 import numpy as np
 
-from board_reader_core.protocol import GRID, NUM_CLASSES, START_PLACEMENT, dist_from_placement
+from board_reader_core.protocol import (
+    START_PLACEMENT,
+    dist_from_placement,
+)
 from board_reader_core.sim import render_board
+
 from board_reader_inference.diagnostics import crop_mosaic, draw_boxes, to_b64_jpeg
 from board_reader_inference.squares import (
     BboxGeometry,

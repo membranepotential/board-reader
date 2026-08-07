@@ -28,13 +28,12 @@ from pathlib import Path
 import matplotlib
 
 matplotlib.use("Agg")
+import _bootstrap  # noqa: F401
 import matplotlib.pyplot as plt
 import numpy as np
-
-import _bootstrap  # noqa: F401
-from board_reader_core.protocol import CLASSES
-
 from runlog import read_events
+
+from board_reader_core.protocol import CLASSES
 
 # Categorical slots (validated fixed order, light mode) + text/surface tokens.
 BLUE, ORANGE, AQUA, YELLOW = "#2a78d6", "#eb6834", "#1baf7a", "#eda100"

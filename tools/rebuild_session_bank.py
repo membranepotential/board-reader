@@ -27,6 +27,7 @@ import numpy as np
 
 from board_reader_core.protocol import CLASSES, encode_placement, parse_placement
 from board_reader_core.wire import Frame
+
 from board_reader_inference.centroid import build_exemplars, load_classifier
 from board_reader_inference.embed import make_embedder
 from board_reader_inference.squares import BboxGeometry, crop_squares_photo

@@ -9,8 +9,9 @@ package manifests declare no cross-dependency).
 from __future__ import annotations
 
 import ast
-import tomllib
 from pathlib import Path
+
+import tomllib
 
 _ROOT = Path(__file__).resolve().parent.parent
 _PKGS = _ROOT / "packages"

@@ -6,8 +6,8 @@ import cv2
 import numpy as np
 import pytest
 
-from board_reader_core.protocol import START_PLACEMENT
 from board_reader_core.sim import render_board, simulate_angled_view
+
 from board_reader_inference.centroid import CentroidClassifier
 from board_reader_inference.cli import main
 from board_reader_inference.squares import BboxGeometry
@@ -71,9 +71,10 @@ def test_calibrate_photo_file_drives_estimator_deterministically(tmp_path):
     """
     from board_reader_core.protocol import placement_from_dist
     from board_reader_core.wire import Frame
+
     from board_reader_inference.embed import LiteEmbedder
     from board_reader_inference.estimator import CentroidEstimator
-    from board_reader_inference.squares import BboxGeometry, crop_squares_photo
+    from board_reader_inference.squares import crop_squares_photo
 
     placement = "r1bqkb1r/pppp1ppp/2n2n2/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R"
     photo, quad = simulate_angled_view(render_board(placement))

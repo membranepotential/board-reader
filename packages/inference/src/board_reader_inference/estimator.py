@@ -13,6 +13,8 @@ from __future__ import annotations
 
 from typing import Protocol, runtime_checkable
 
+import numpy as np
+
 from board_reader_core.protocol import (
     START_PLACEMENT,
     ClockState,
@@ -21,8 +23,6 @@ from board_reader_core.protocol import (
     iso_utc,
 )
 from board_reader_core.wire import Frame
-
-import numpy as np
 
 from board_reader_inference.centroid import CentroidClassifier, ExemplarClassifier
 from board_reader_inference.embed import Embedder
@@ -169,8 +169,8 @@ class EnsembleEstimator:
 
     def __init__(
         self,
-        primary: "Estimator",
-        booster: "Estimator",
+        primary: Estimator,
+        booster: Estimator,
         *,
         weight: float = 0.5,
     ) -> None:

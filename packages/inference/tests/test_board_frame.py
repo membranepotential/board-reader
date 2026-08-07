@@ -9,6 +9,7 @@ from starlette.testclient import TestClient
 from board_reader_core.protocol import START_PLACEMENT
 from board_reader_core.sim import render_board
 from board_reader_core.wire import Frame, decode_jpeg
+
 from board_reader_inference.estimator import StubEstimator
 from board_reader_inference.hub import PositionHub
 from board_reader_inference.server import create_app

@@ -6,6 +6,7 @@ every fixture is built in a tmp_path.
 
 from __future__ import annotations
 
+import re
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -14,7 +15,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from streams import (  # noqa: E402
+from streams import (
     COLUMNS,
     DEFAULT_TABLE,
     CropBox,
@@ -49,7 +50,9 @@ def make_stream(**overrides: object) -> Stream:
         "preview_at_s": 3600.0,
         "median_aspect": 0.65,
         "status": StreamStatus.KEEP,
-        "recorded_at": datetime(2026, 8, 6, 23, 15, 45),
+        # Naive to match what crop_selector actually writes (a local operator
+        # stamp); a tz-aware fixture would not round-trip through the registry.
+        "recorded_at": datetime(2026, 8, 6, 23, 15, 45),  # noqa: DTZ001
     }
     fields.update(overrides)
     return Stream(**fields)  # type: ignore[arg-type]
@@ -169,7 +172,7 @@ def test_unexpected_header_is_rejected(tmp_path: Path) -> None:
 
 
 def test_missing_table_names_the_selector(tmp_path: Path) -> None:
-    with pytest.raises(CropTableError, match="crop_selector.py"):
+    with pytest.raises(CropTableError, match=re.escape("crop_selector.py")):
         load_streams(tmp_path / "nope.csv")
 
 
@@ -206,7 +209,7 @@ def test_path_without_an_id_says_what_to_do() -> None:
 def test_unregistered_video_points_at_the_selector(tmp_path: Path) -> None:
     table = tmp_path / "crops.csv"
     append_stream(make_stream(), table)
-    with pytest.raises(UnknownStreamError, match="crop_selector.py"):
+    with pytest.raises(UnknownStreamError, match=re.escape("crop_selector.py")):
         stream_for_video("Other [Fed1aBzUMcs].mp4", table)
 
 
