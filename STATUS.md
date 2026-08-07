@@ -25,12 +25,39 @@ confidences**. No moves, no legality, no PGN — those are the downstream applic
   `tools/video/**` (registry rekeyed on video id, `check_angle.py`, tests) · **skill-rewrite**
   `.claude/skills/get-frames-from-yt/SKILL.md` · **stream-docs** `docs/youtube-streams.md`,
   `tools/README.md`, `aspects.yaml`.
-- **Live-viewer upgrade (main session, 2026-08-07 04:1x–)** — 2 parallel implementers, disjoint:
-  **frame-endpoint** (sonnet) gateway retains latest JPEG per board + `GET /boards/{id}/frame`
-  (`packages/inference` + architecture.md) · **viewer-live-ui** (opus) chessground board (like
-  /snapshot), expandable live-frame preview left of the board, calibrate-from-stream button via
-  the existing guarded `/calibrate` (`packages/viewer` + TESTING.md). Operator asked: better
-  interface, snapshot-style board rendering, calibrate function.
+- **New broadcast candidate `2sRJ4JuL_m8` (main session, 2026-08-07 04:2x–).** Searched YouTube for
+  a *higher-angle* stream than the 5 already audited: ~40 candidates screened by `yt-dlp ytsearch`
+  + a sampled frame each + `detect_board_quad`/`quad_aspect`. Winner: **Chess League | CCBF |
+  Round 5 Board 1** (Chess Club Bobby Fischer, 3:04:36) — aspect **0.633–0.639 across 5 frames
+  spanning the full 3 h**, fixed camera that never moves, one board, big in frame. Still only the
+  *degraded* band, but the steadiest source found and better than every rejected stream.
+  **The honest finding: nothing on YouTube is both a long real OTB game and ≥0.73** — broadcast
+  cameras frame players, not boards; the ≥0.73 footage that exists is short CV-demo/overhead-rig
+  clips (`kg_whG0Ijh4` 0.790, `B_3v5sqqU0Y` 0.743). **Landed:** 1080p60 on disk (3.9 GB; board
+  ~1150 px in-crop, ~144 px/square — 720p would have given ~430 px, under the skill's own marginal
+  line), crop row `ccbf-r5` (403,228,1280×764 @1920×1080), gate **passed at median 0.635**
+  (11/16), 7 operator-picked frames spread over the 3 h in `data/streams/frames/ccbf-r5_2sRJ4JuL_m8/`
+  auditing at **0.637 (6/7)**. Crop keeps headroom over the far rank, so tall pieces aren't
+  decapitated by the crop itself.
+  **New measurement — the detector's misses here are false negatives, not bad frames.** All 6
+  no-detection frames were pulled and inspected: every one is a clean, fully-framed board (incl.
+  a textbook opening position), zero camera cuts. So `detect_board_quad` has a ~30% false-negative
+  rate on this crop while the *source* is ~100% usable — the earlier "69% detection" number
+  understates stream quality and overstates detector reliability. Consequence for M2: the
+  `Rectifier`'s cadenced re-detection will miss roughly 1 in 3 attempts on real footage, so
+  `feed --corners` is the safe path. Suspected cause (unverified): the board's visible barrel
+  distortion breaks the straight-edge quad model.
+  Next: M2 over this video (`feed --video --adaptive --corners`), still not started.
+- **Live-viewer upgrade — DONE, uncommitted, browser-verified.** Gateway retains the latest
+  JPEG per board → `GET /boards/{id}/frame` (X-Seq/X-Capture-Ts, no-store, 404 pre-ingest);
+  the live page renders via **chessground** (as /snapshot), low-confidence squares ringed
+  yellow / just-changed ringed green, an **expandable preview** docked left of the board
+  showing the live ingested frame, and a **calibrate** button (disabled while stale/moving/
+  not-ok) that posts the live frame through the guarded `/calibrate`. Playwright-verified
+  end-to-end against a live game feed: preview showed the hand mid-burst, calibrate returned
+  "13/13 classes, 256 exemplars" and the board then tracked the game with real estimates.
+  **565 tests green** (`make test`; GPU pair quarantined to `make test-gpu` by the other
+  session). Awaiting operator review + commit word.
 - **M2 — live position stream over a recorded game: DONE, committed** (`c601dea`…`b565d68`, 6
   logical commits). Built 2026-08-07 by
   4 parallel opus implementers + main session finishing the two operator-stopped workstreams

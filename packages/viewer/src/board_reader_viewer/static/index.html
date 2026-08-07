@@ -4,14 +4,23 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>board-reader · live positions</title>
+<link rel="stylesheet" href="/static/vendor/chessground.base.css" />
+<link rel="stylesheet" href="/static/vendor/chessground.brown.css" />
+<link rel="stylesheet" href="/static/vendor/chessground.cburnett.css" />
 <style>
-  :root { color-scheme: dark; }
+  :root {
+    color-scheme: dark;
+    /* One number drives the whole card: the board box, the preview pane and the
+       frame image are all this size, so the preview lines up with the board. */
+    --board-size: 360px;
+  }
+  * { box-sizing: border-box; }
   body { font: 15px/1.4 system-ui, sans-serif; margin: 0; background: #14171c; color: #e6e6e6; }
   header { padding: 14px 20px; border-bottom: 1px solid #272b33; display: flex; align-items: baseline; gap: 14px; }
   header h1 { font-size: 17px; margin: 0; font-weight: 600; }
   #conn { font-size: 13px; padding: 2px 8px; border-radius: 10px; background: #3a2020; color: #ff9a9a; }
   #conn.up { background: #1f3a24; color: #97e0a6; }
-  main { display: flex; flex-wrap: wrap; gap: 22px; padding: 20px; }
+  main { display: flex; flex-wrap: wrap; gap: 22px; padding: 20px; align-items: flex-start; }
   .board-card { background: #1b1f26; border: 1px solid #272b33; border-radius: 10px; padding: 14px; }
   .board-card h2 { font-size: 14px; margin: 0 0 10px; display: flex; justify-content: space-between; gap: 12px; align-items: center; }
   .chips { display: flex; gap: 6px; align-items: center; }
@@ -31,26 +40,63 @@
   /* A stream that dies mid-move must not pulse "moving" forever. */
   .board-card.stale .motion-chip { opacity: 0.45; animation: none; }
   @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
-  .board { display: grid; grid-template-columns: repeat(8, 40px); grid-template-rows: repeat(8, 40px); }
-  .sq { display: flex; align-items: center; justify-content: center; font-size: 28px; position: relative; }
-  .sq.light { background: #b9c4d0; } .sq.dark { background: #5a7390; }
-  .sq .pc { transition: opacity 180ms linear; }
-  .sq .pc.white { color: #fafafa; text-shadow: 0 0 2px #000; }
-  .sq .pc.black { color: #14171c; }
-  .sq .pc.dim { opacity: 0.45; }
-  .sq .lc { display: none; position: absolute; top: 2px; right: 3px; width: 6px; height: 6px; border-radius: 50%; background: #e25; }
-  .sq .lc.on { display: block; }
-  .sq.changed { animation: flash 600ms ease-out; }
-  @keyframes flash {
-    from { box-shadow: inset 0 0 0 3px #ffd166; }
-    to   { box-shadow: inset 0 0 0 3px rgba(255, 209, 102, 0); }
-  }
-  .meta { margin-top: 10px; font-size: 12px; color: #9aa3ad; display: grid; gap: 4px; }
+
+  /* ---- card body: [preview tab][preview pane][board column] ------------------
+     The preview is docked on the board's left and grows rightward from its tab, so
+     the tab stays anchored where the operator last clicked it. */
+  .card-body { display: flex; align-items: flex-start; gap: 12px; }
+  .preview { display: flex; align-items: flex-start; }
+  .preview-tab { writing-mode: vertical-rl; text-orientation: mixed; width: 26px;
+                 height: var(--board-size); background: #232833; color: #9aa3ad;
+                 border: 1px solid #2f3540; border-radius: 6px; cursor: pointer;
+                 font: inherit; font-size: 12px; letter-spacing: .04em; padding: 6px 0;
+                 display: flex; align-items: center; justify-content: center; gap: 6px; }
+  .preview-tab:hover { color: #e6e6e6; border-color: #3c434f; }
+  .preview.open .preview-tab { color: #8fb6e8; border-color: #35507a; }
+  .preview-tab .chev { transition: transform 200ms ease; }
+  .preview.open .preview-tab .chev { transform: rotate(180deg); }
+  /* Width is the only animated axis; the pane clips its contents while it grows. */
+  .preview-pane { width: 0; overflow: hidden; transition: width 220ms ease;
+                  height: var(--board-size); position: relative; }
+  .preview.open .preview-pane { width: var(--board-size); margin-left: 8px; }
+  /* Explicit box, never a percentage through an auto-height ancestor. */
+  .preview-pane img { width: var(--board-size); height: var(--board-size);
+                      object-fit: contain; display: block; background: #0f1216;
+                      border: 1px solid #272b33; border-radius: 6px; }
+  .preview-pane img.absent { visibility: hidden; }
+  .frame-note { position: absolute; inset: 0; display: none; align-items: center;
+                justify-content: center; font-size: 13px; color: #7d8590; text-align: center;
+                border: 1px dashed #2f3540; border-radius: 6px; padding: 12px; }
+  .frame-note.on { display: flex; }
+
+  /* ---- the board ------------------------------------------------------------
+     Chessground takes over this element (it adds .cg-wrap to it and sizes cg-container
+     from its box), so the box must already be square and real-sized when Chessground()
+     runs — hence explicit px here and the card being in the DOM before creation. */
+  .board { width: var(--board-size); height: var(--board-size); }
+  .board-actions { display: flex; align-items: center; gap: 10px; margin-top: 10px; }
+  .calib { font: inherit; font-size: 13px; padding: 6px 12px; border-radius: 8px;
+           border: 1px solid #35507a; background: #1e2a3d; color: #8fb6e8; cursor: pointer; }
+  .calib:hover:not(:disabled) { background: #24344b; color: #cfe0f7; }
+  .calib:disabled { opacity: 0.4; cursor: not-allowed; }
+  .legend { font-size: 12px; color: #7d8590; display: flex; gap: 10px; flex-wrap: wrap; }
+  .legend i { width: 9px; height: 9px; border-radius: 50%; display: inline-block;
+              vertical-align: -1px; margin-right: 4px; }
+  .legend .lo { background: #ffcf33; } .legend .ch { background: #5ad17a; }
+  .banner { display: none; font-size: 13px; padding: 8px 11px; border-radius: 8px; margin-bottom: 10px;
+            max-width: var(--board-size); }
+  .banner.ok { display: block; background: #1f3a24; color: #97e0a6; }
+  .banner.err { display: block; background: #3a2020; color: #ff9a9a; white-space: pre-wrap; }
+
+  .meta { margin-top: 10px; font-size: 12px; color: #9aa3ad; display: grid; gap: 4px;
+          max-width: var(--board-size); }
   .live { color: #c8cdd4; font-variant-numeric: tabular-nums; }
+  .pl { word-break: break-all; }
   .bar { height: 6px; border-radius: 3px; background: #2b2f37; overflow: hidden; }
   .bar > i { display: block; height: 100%; }
   .bar.conf > i { background: #5ad17a; } .bar.stab > i { background: #6aa8ff; }
   code { color: #c8cdd4; }
+  @media (max-width: 900px) { :root { --board-size: 288px; } }
 </style>
 </head>
 <body>
@@ -61,23 +107,40 @@
 </header>
 <main id="boards"></main>
 
-<script>
+<script type="module">
+import { Chessground } from "/static/vendor/chessground.min.js";
+
 const WS_URL = "__BR_INFERENCE_WS__";
 document.getElementById("wsurl").textContent = WS_URL;
 
-const GLYPH = { P:"♙",N:"♘",B:"♗",R:"♖",Q:"♕",K:"♔", p:"♟",n:"♞",b:"♝",r:"♜",q:"♛",k:"♚" };
+// The inference node serves both the viewer socket and its HTTP API, so the frame
+// and calibrate endpoints live at the same origin as WS_URL — no second placeholder.
+function httpOrigin(wsUrl) {
+  try {
+    const u = new URL(wsUrl, location.href);
+    u.protocol = u.protocol === "wss:" ? "https:" : "http:";
+    return u.origin;
+  } catch {
+    return wsUrl.replace(/^ws/, "http").replace(/\/[^/]*$/, "");
+  }
+}
+const INFERENCE_HTTP = httpOrigin(WS_URL);
 
 const STALE_MS = 5000;         // no event for this long -> the card reads as stale
 const RATE_WINDOW_MS = 3000;   // rolling window behind the events/sec figure
 const MOVING_BELOW = 0.7;      // ev.stability under this reads as "moving" (DESIGN D3)
-const LOW_CONF = 0.5;          // per-square max prob under this -> the piece is dimmed
-const TICK_MS = 200;           // one ticker for every card's age + rate
+const LOW_CONF = 0.5;          // per-square max prob under this -> the square is ringed
+const FLASH_MS = 900;          // how long a changed square keeps its green ring
+const TICK_MS = 200;           // one ticker for every card's age, rate and flash decay
+const BANNER_MS = 9000;        // calibrate result fades from the card after this
 
 const boards = new Map();
 
+function squareKey(r, c) { return "abcdefgh"[c] + (8 - r); }
+
 // Always 8x8 of strings, whatever the placement looks like: the change diff and the
-// square nodes are indexed positionally, so a short or malformed rank must not
-// shift the grid or leave holes in it.
+// FEN we hand chessground are indexed positionally, so a short or malformed rank must
+// not shift the grid or leave holes in it.
 function fenToGrid(placement) {
   const ranks = String(placement ?? "").split("/");
   const grid = [];
@@ -93,6 +156,120 @@ function fenToGrid(placement) {
   return grid;
 }
 
+// Inverse of fenToGrid. Chessground is fed from the sanitized grid, never from the raw
+// wire string: a malformed placement then degrades to empty squares instead of
+// throwing inside the board renderer and freezing the card.
+function gridToFen(grid) {
+  return grid.map((rank) => {
+    let out = "", empty = 0;
+    for (const cell of rank) {
+      if (!cell) { empty++; continue; }
+      if (empty) { out += empty; empty = 0; }
+      out += cell;
+    }
+    return out + (empty || "");
+  }).join("/");
+}
+
+function squareConfidence(dist, r, c) {
+  if (!dist || !dist[r] || !dist[r][c]) return 1;
+  return Math.max(...dist[r][c]);
+}
+
+// Per-square signals as chessground autoShapes: a yellow ring where the reading is
+// unsure, a green ring that decays to pale on squares that just changed. Both are
+// derived from state the card already holds, so the ticker can repaint the decay
+// without any per-event timer.
+function shapesFor(rec, now) {
+  const shapes = rec.low.map((key) => ({ orig: key, brush: "yellow" }));
+  for (const [key, at] of rec.changedAt) {
+    const age = now - at;
+    if (age > FLASH_MS) { rec.changedAt.delete(key); continue; }
+    shapes.push({ orig: key, brush: age < FLASH_MS / 2 ? "green" : "paleGreen" });
+  }
+  return shapes;
+}
+
+function paintShapes(rec, now) {
+  rec.cg.set({ drawable: { enabled: true, visible: true, autoShapes: shapesFor(rec, now) } });
+}
+
+function frameUrl(rec, bust) {
+  return `${INFERENCE_HTTP}/boards/${encodeURIComponent(rec.id)}/frame?seq=${bust}`;
+}
+
+// Only ever fetched while the panel is open: a collapsed preview costs nothing.
+function refreshPreview(rec) {
+  if (!rec.previewOpen) return;
+  rec.img.src = frameUrl(rec, rec.lastSeq ?? Date.now());
+}
+
+function showBanner(rec, kind, text) {
+  rec.banner.textContent = text;
+  rec.banner.className = "banner " + kind;
+  clearTimeout(rec.bannerTimer);   // one timer per card, replaced not stacked
+  rec.bannerTimer = setTimeout(() => { rec.banner.className = "banner"; }, BANNER_MS);
+}
+
+// Calibration rebuilds the piece bank from one frame, so it is only meaningful on a
+// live, settled, ok reading — anything else would poison the bank with motion blur or
+// a half-set-up board. The reason is the button's title, never a silent disable.
+function calibBlockReason(rec) {
+  if (rec.stale) return "the stream is stale — no live frame to calibrate from";
+  if (rec.lastSeq === null) return "no frame has arrived yet";
+  if (rec.status !== "ok") return `the reading is "${rec.status}" — calibrate from an ok reading`;
+  if (rec.stability !== null && rec.stability < MOVING_BELOW)
+    return "the board is moving — calibrate with the pieces at rest";
+  return null;
+}
+
+function updateCalibState(rec) {
+  const reason = rec.calibBusy ? "calibrating…" : calibBlockReason(rec);
+  rec.calib.disabled = reason !== null;
+  rec.calib.title = reason ??
+    "rebuild the piece bank from the live frame (the board must show the starting position)";
+}
+
+async function calibrate(rec) {
+  if (!confirm(
+    "Calibrate from the live frame?\n\n" +
+    "The board must CURRENTLY show the STARTING position, with the pieces at rest. " +
+    "The node rebuilds its piece bank from that one frame.")) return;
+  rec.calibBusy = true;
+  updateCalibState(rec);
+  try {
+    const got = await fetch(frameUrl(rec, rec.lastSeq ?? Date.now()), { cache: "no-store" });
+    if (!got.ok) throw new Error(`no frame available from the inference node (${got.status})`);
+    const blob = await got.blob();
+    // The ingested frame IS the rectified board, so the whole image is the board:
+    // its corners in a8,h8,h1,a1 order are TL,TR,BR,BL of the crop.
+    const bmp = await createImageBitmap(blob);
+    const qs = [0, 0, bmp.width, 0, bmp.width, bmp.height, 0, bmp.height].join(",");
+    bmp.close?.();
+    const r = await fetch(`${INFERENCE_HTTP}/calibrate?corners=${qs}`, {
+      method: "POST", body: blob, headers: { "Content-Type": "image/jpeg" },
+    });
+    if (!r.ok) {
+      // The server refuses calibrations that would poison the bank (the frame not
+      // showing the claimed position); surface its reason verbatim.
+      let reason = "calibrate failed: " + r.status;
+      try { reason = (await r.json()).error ?? reason; } catch {}
+      showBanner(rec, "err", reason);
+      return;
+    }
+    const d = await r.json();
+    const rotNote = d.label_rotation
+      ? ` (corner labels auto-corrected by ${d.label_rotation * 90} degrees)` : "";
+    showBanner(rec, "ok", `Calibrated ${d.classes_calibrated}/13 classes${rotNote} — ` +
+      `bank now holds ${d.exemplars} exemplars`);
+  } catch (e) {
+    showBanner(rec, "err", `${e}\nIs the inference node reachable at ${INFERENCE_HTTP} ?`);
+  } finally {
+    rec.calibBusy = false;
+    updateCalibState(rec);
+  }
+}
+
 function ensureCard(id) {
   if (boards.has(id)) return boards.get(id);
   const card = document.createElement("div");
@@ -103,45 +280,78 @@ function ensureCard(id) {
       <span class="stale-chip" title="no event for over ${STALE_MS / 1000}s">stale</span>
       <span class="status ok">ok</span>
     </span></h2>
-    <div class="board"></div>
-    <div class="meta">
-      <div class="live"><span class="age" title="age of the last event">just now</span> ·
-        <span class="eps" title="events/sec over the last ${RATE_WINDOW_MS / 1000}s">— ev/s</span> ·
-        seq <code class="seq"></code></div>
-      <div>placement: <code class="pl"></code></div>
-      <div>confidence <div class="bar conf"><i></i></div></div>
-      <div>stability <div class="bar stab"><i></i></div></div>
-      <div>utc <code class="utc"></code> · clock <code class="clk"></code></div>
+    <div class="card-body">
+      <div class="preview">
+        <button class="preview-tab" aria-expanded="false"
+                title="show the latest frame the node ingested"><span class="chev">›</span>preview</button>
+        <div class="preview-pane">
+          <img class="frame absent" alt="latest ingested frame for board ${id}" />
+          <div class="frame-note on">no frame yet</div>
+        </div>
+      </div>
+      <div class="board-col">
+        <div class="banner"></div>
+        <div class="board"></div>
+        <div class="board-actions">
+          <button class="calib">calibrate</button>
+          <span class="legend"><span><i class="lo"></i>low confidence</span>
+            <span><i class="ch"></i>just changed</span></span>
+        </div>
+        <div class="meta">
+          <div class="live"><span class="age" title="age of the last event">just now</span> ·
+            <span class="eps" title="events/sec over the last ${RATE_WINDOW_MS / 1000}s">— ev/s</span> ·
+            seq <code class="seq"></code></div>
+          <div>placement: <code class="pl"></code></div>
+          <div>confidence <div class="bar conf"><i></i></div></div>
+          <div>stability <div class="bar stab"><i></i></div></div>
+          <div>utc <code class="utc"></code> · clock <code class="clk"></code></div>
+        </div>
+      </div>
     </div>`;
+  // Appended before Chessground runs: the wrapper must already have its real size.
   document.getElementById("boards").appendChild(card);
-  const boardEl = card.querySelector(".board");
-  const sqs = [];
-  for (let r = 0; r < 8; r++) for (let c = 0; c < 8; c++) {
-    const el = document.createElement("div");
-    el.className = "sq " + ((r + c) % 2 === 0 ? "light" : "dark");
-    // Persistent children: every event updates these in place, so the dim
-    // transition and the change flash survive from one event to the next.
-    el.innerHTML = `<span class="pc"></span><span class="lc" title="low confidence"></span>`;
-    // One listener per square, registered once — the flash clears itself, so no
-    // per-event timer is ever created.
-    el.addEventListener("animationend", () => el.classList.remove("changed"));
-    boardEl.appendChild(el);
-    sqs.push({ el, pc: el.querySelector(".pc"), lc: el.querySelector(".lc") });
-  }
+
   const rec = {
-    card, sqs,
+    id, card,
+    cg: Chessground(card.querySelector(".board"), {
+      orientation: "white", coordinates: true, viewOnly: true,
+      drawable: { enabled: true, visible: true, autoShapes: [] },
+    }),
+    preview: card.querySelector(".preview"),
+    img: card.querySelector(".frame"),
+    note: card.querySelector(".frame-note"),
+    calib: card.querySelector(".calib"),
+    banner: card.querySelector(".banner"),
+    bannerTimer: null,
+    calibBusy: false,
+    previewOpen: false,
     lastAt: performance.now(),  // arrival, not ev.utc: this is stream freshness
+    lastSeq: null,
     stamps: [],                 // arrival times still inside the rate window
     prevGrid: null,             // the ONLY history we keep (DESIGN D1)
+    changedAt: new Map(),       // square -> when it last changed, for the fading ring
+    low: [],                    // squares currently under LOW_CONF
     stale: false,
+    status: "ok",
+    stability: null,
   };
+
+  // The frame endpoint 404s until the node has ingested one, and an older node may
+  // not serve it at all — either way the rest of the card keeps working.
+  rec.img.onload = () => { rec.img.classList.remove("absent"); rec.note.className = "frame-note"; };
+  rec.img.onerror = () => { rec.img.classList.add("absent"); rec.note.className = "frame-note on"; };
+
+  card.querySelector(".preview-tab").addEventListener("click", (ev) => {
+    rec.previewOpen = !rec.previewOpen;
+    rec.preview.classList.toggle("open", rec.previewOpen);
+    ev.currentTarget.setAttribute("aria-expanded", String(rec.previewOpen));
+    refreshPreview(rec);
+  });
+  rec.calib.addEventListener("click", () => calibrate(rec));
+  updateCalibState(rec);
+
   boards.set(id, rec);
   return rec;
-}
-
-function squareConfidence(dist, r, c) {
-  if (!dist || !dist[r] || !dist[r][c]) return 1;
-  return Math.max(...dist[r][c]);
 }
 
 function fmtAge(ms) {
@@ -152,8 +362,9 @@ function fmtAge(ms) {
   return m + "m " + Math.round(s - m * 60) + "s ago";
 }
 
-// Age + rate, recomputed for one card. Called from the ticker and again on every
-// event, so a card that was stale recovers on arrival rather than up to a tick later.
+// Age + rate + flash decay, recomputed for one card. Called from the ticker and again
+// on every event, so a card that was stale recovers on arrival rather than up to a
+// tick later.
 function freshen(rec, now) {
   const age = now - rec.lastAt;
   rec.card.querySelector(".age").textContent = fmtAge(age);
@@ -161,8 +372,8 @@ function freshen(rec, now) {
   if (stale !== rec.stale) {
     rec.stale = stale;
     rec.card.classList.toggle("stale", stale);
+    updateCalibState(rec);
   }
-
   while (rec.stamps.length && now - rec.stamps[0] > RATE_WINDOW_MS) rec.stamps.shift();
   const n = rec.stamps.length;
   const span = n >= 2 ? (rec.stamps[n - 1] - rec.stamps[0]) / 1000 : 0;
@@ -174,37 +385,36 @@ function freshen(rec, now) {
 
 function render(ev) {
   const rec = ensureCard(ev.board_id);
-  const { card, sqs } = rec;
+  const { card } = rec;
+  const now = performance.now();
   const grid = fenToGrid(ev.placement);
 
+  rec.low = [];
   for (let r = 0; r < 8; r++) for (let c = 0; c < 8; c++) {
-    const { el, pc, lc } = sqs[r * 8 + c];
-    const cell = grid[r][c];
-    // Occluded/uncertain squares stop asserting a piece: dimmed, plus the dot.
-    const lowConf = squareConfidence(ev.square_dist, r, c) < LOW_CONF;
-    pc.textContent = cell ? GLYPH[cell] : "";
-    pc.className = "pc" +
-      (cell ? (cell === cell.toUpperCase() ? " white" : " black") : "") +
-      (lowConf ? " dim" : "");
-    lc.className = lowConf ? "lc on" : "lc";
-    if (rec.prevGrid !== null && rec.prevGrid[r][c] !== cell) {
-      el.classList.remove("changed");
-      void el.offsetWidth;            // restart the animation on a re-change
-      el.classList.add("changed");
+    // Occluded/uncertain squares stop asserting a piece: they carry a ring.
+    if (squareConfidence(ev.square_dist, r, c) < LOW_CONF) rec.low.push(squareKey(r, c));
+    if (rec.prevGrid !== null && rec.prevGrid[r][c] !== grid[r][c]) {
+      rec.changedAt.set(squareKey(r, c), now);
     }
   }
   rec.prevGrid = grid;
+  // One board instance per card, updated in place — never re-created per event.
+  rec.cg.set({
+    fen: gridToFen(grid),
+    drawable: { enabled: true, visible: true, autoShapes: shapesFor(rec, now) },
+  });
 
+  rec.status = ev.status ?? "ok";
   const st = card.querySelector(".status");
-  st.textContent = ev.status ?? "ok";
-  st.className = "status " + (ev.status ?? "ok");
+  st.textContent = rec.status;
+  st.className = "status " + rec.status;
 
-  const stability = typeof ev.stability === "number" ? ev.stability : null;
+  rec.stability = typeof ev.stability === "number" ? ev.stability : null;
   const motion = card.querySelector(".motion-chip");
-  motion.textContent = stability === null ? "motion unknown"
-    : stability < MOVING_BELOW ? "moving" : "at rest";
-  motion.className = "motion-chip " + (stability === null ? "unknown"
-    : stability < MOVING_BELOW ? "moving" : "rest");
+  motion.textContent = rec.stability === null ? "motion unknown"
+    : rec.stability < MOVING_BELOW ? "moving" : "at rest";
+  motion.className = "motion-chip " + (rec.stability === null ? "unknown"
+    : rec.stability < MOVING_BELOW ? "moving" : "rest");
 
   card.querySelector(".pl").textContent = ev.placement;
   card.querySelector(".conf > i").style.width = Math.round((ev.confidence ?? 0) * 100) + "%";
@@ -213,15 +423,22 @@ function render(ev) {
   card.querySelector(".utc").textContent = ev.utc;
   card.querySelector(".clk").textContent = (ev.clock && ev.clock.running) || "none";
 
-  const now = performance.now();
+  rec.lastSeq = ev.seq ?? null;
   rec.lastAt = now;
   rec.stamps.push(now);
-  freshen(rec, now);
+  freshen(rec, now);          // clears "stale" first, so the button sees a live card
+  updateCalibState(rec);
+  refreshPreview(rec);
 }
 
 setInterval(() => {
   const now = performance.now();
-  for (const rec of boards.values()) freshen(rec, now);
+  for (const rec of boards.values()) {
+    freshen(rec, now);
+    // The change rings fade on this one shared ticker rather than on a timer per
+    // event; render() paints its own, so this only ever advances the decay.
+    if (rec.changedAt.size) paintShapes(rec, now);
+  }
 }, TICK_MS);
 
 function connect() {

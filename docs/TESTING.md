@@ -63,15 +63,30 @@ docker compose up --build
 Then open **http://localhost:8080**. The edge replays a **synthetic recorded
 game** (looped forever) and forwards it adaptively (DESIGN D4), so you should see:
 
-- the connection chip turn **“live”** (green), a board card for **A1**,
-- the position **evolving move by move** — changed squares flash briefly,
+- the connection chip turn **“live”** (green), a board card for **A1** with the
+  position drawn by **chessground** (real pieces, coordinates) — the same board
+  the snapshot page uses,
+- the position **evolving move by move** — each changed square ringed **green**,
+  fading pale and gone within a second,
 - the rhythm of an adaptive stream: **~1 ev/s at rest** (keepalive), jumping to
   **~10–12 ev/s** with a pulsing **“moving”** chip whenever the synthetic hand
   reaches over the board — the **stability** bar dips at the same moments,
-- squares under the hand rendering **dimmed** pieces (low per-square confidence —
-  honest occlusion, not a guess),
+- squares under the hand ringed **yellow** (low per-square confidence — honest
+  occlusion, not a guess); the legend under the board names both rings,
+- the **preview** tab on the board's left sliding open onto the **latest frame the
+  node ingested**, refreshing as events arrive — it reads “no frame yet” until one
+  has been forwarded, and closing it stops fetching,
 - the **age** readout ticking and the card fading to **stale** if you stop the
   edge container (`docker compose stop edge`) — and recovering when it returns.
+
+The **calibrate** button under each board rebuilds the node's piece bank from the
+live frame, for the set and lighting in front of the camera. Set the board to the
+**starting position**, let it settle, then press it: the card reports how many of
+the 13 classes were calibrated and how big the bank now is. It is disabled (hover
+it for the reason) while the card is stale, mid-motion, or not reading `ok`, and a
+frame that does not actually show the starting position is **refused** by the node
+with its reason shown on the card — calibrating from the wrong frame would poison
+the bank.
 
 This runs three containers: `edge` (game feed) → `inference` (estimator +
 gateway) → `viewer` (UI). The browser loads the UI from `viewer` but connects for

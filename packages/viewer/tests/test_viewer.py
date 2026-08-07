@@ -44,8 +44,11 @@ def test_index_page_shows_per_board_freshness(monkeypatch):
     # Freshness is arrival time at the viewer, not the event's capture stamp — a skewed
     # edge clock must not make a live stream look stale.
     assert "lastAt: performance.now()," in html
-    # Recovery is immediate: an event re-runs the same update rather than waiting a tick.
-    assert "  freshen(rec, now);\n}" in html
+    # Recovery is immediate: an event re-runs the same update rather than waiting a
+    # tick — and it runs before the calibrate button is re-evaluated, so the button
+    # does not stay disabled-as-stale for a tick after the stream comes back.
+    render_fn = html.split("function render(ev) {")[1].split("\nsetInterval(")[0]
+    assert render_fn.index("freshen(rec, now);") < render_fn.index("updateCalibState(rec);")
 
 
 def test_index_page_shows_per_board_event_rate():
@@ -67,51 +70,69 @@ def test_index_page_shows_motion_state_from_stability():
     html = TestClient(create_app()).get("/").text
     assert "const MOVING_BELOW = 0.7;" in html
     assert 'class="motion-chip' in html
-    assert 'const stability = typeof ev.stability === "number" ? ev.stability : null;' in html
-    assert 'stability === null ? "motion unknown"' in html
-    assert 'stability < MOVING_BELOW ? "moving" : "at rest"' in html
+    assert 'rec.stability = typeof ev.stability === "number" ? ev.stability : null;' in html
+    assert 'rec.stability === null ? "motion unknown"' in html
+    assert 'rec.stability < MOVING_BELOW ? "moving" : "at rest"' in html
     assert ".motion-chip.moving {" in html and "animation: pulse" in html
     assert 'card.querySelector(".stab > i").style.width' in html   # the bar stays
 
 
+def test_index_page_renders_the_board_with_vendored_chessground():
+    """The live board is the same chessground the snapshot page uses, from the same
+    local vendor assets — no CDN, no hand-rolled glyph grid. Chessground needs a box
+    that already has real size, so the card is in the DOM before the board is made."""
+    html = TestClient(create_app()).get("/").text
+    assert 'import { Chessground } from "/static/vendor/chessground.min.js";' in html
+    assert "/static/vendor/chessground.base.css" in html
+    assert "/static/vendor/chessground.brown.css" in html
+    assert "/static/vendor/chessground.cburnett.css" in html
+    assert 'orientation: "white", coordinates: true, viewOnly: true,' in html
+    assert 'document.getElementById("boards").appendChild(card);' in html
+    assert ".board { width: var(--board-size); height: var(--board-size); }" in html
+    # The wire string never reaches chessground raw: it goes through the 8x8 sanitizer.
+    assert "fen: gridToFen(grid)," in html
+
+
 def test_index_page_flashes_squares_that_changed():
     """A replay is followable by eye only if the squares that changed announce
-    themselves. The diff is against the previous event's grid — the only history the
-    viewer keeps (DESIGN D1: no moves, no legality, no game state)."""
+    themselves — a green autoShape ring decaying to pale, then gone. The diff is
+    against the previous event's grid — the only history the viewer keeps
+    (DESIGN D1: no moves, no legality, no game state)."""
     html = TestClient(create_app()).get("/").text
     assert "prevGrid: null," in html
-    assert "if (rec.prevGrid !== null && rec.prevGrid[r][c] !== cell) {" in html
+    assert "if (rec.prevGrid !== null && rec.prevGrid[r][c] !== grid[r][c]) {" in html
     assert "rec.prevGrid = grid;" in html
-    assert ".sq.changed { animation: flash 600ms ease-out; }" in html
-    # Re-triggering the animation needs the class dropped + a forced reflow.
-    assert 'el.classList.remove("changed");\n      void el.offsetWidth;' in html
-    # The flash clears itself off an animationend listener bound once per square —
-    # never a setTimeout per event, which would leak a timer per changed square.
-    assert 'el.addEventListener("animationend", () => el.classList.remove("changed"));' in html
+    assert "const FLASH_MS = 900;" in html
+    assert 'brush: age < FLASH_MS / 2 ? "green" : "paleGreen"' in html
+    # The ring decays on the one shared ticker — never a setTimeout per changed
+    # square, which would leak a timer per event.
+    assert "if (age > FLASH_MS) { rec.changedAt.delete(key); continue; }" in html
+    assert "if (rec.changedAt.size) paintShapes(rec, now);" in html
 
 
-def test_index_page_dims_occluded_squares():
-    """A hand over the board should visibly gray out, not assert pieces confidently:
-    under 0.5 max per-square probability the piece is dimmed as well as dotted."""
+def test_index_page_marks_occluded_squares():
+    """A hand over the board should not assert pieces confidently: under 0.5 max
+    per-square probability the square gets a yellow ring, and the legend says so."""
     html = TestClient(create_app()).get("/").text
     assert "const LOW_CONF = 0.5;" in html
-    assert "const lowConf = squareConfidence(ev.square_dist, r, c) < LOW_CONF;" in html
-    assert ".sq .pc.dim { opacity: 0.45; }" in html
-    assert '(lowConf ? " dim" : "")' in html
-    assert 'lc.className = lowConf ? "lc on" : "lc";' in html      # the red dot stays
+    assert "if (squareConfidence(ev.square_dist, r, c) < LOW_CONF) rec.low.push(squareKey(r, c));" in html
+    assert 'rec.low.map((key) => ({ orig: key, brush: "yellow" }))' in html
+    assert "low confidence" in html and "just changed" in html   # the legend
     # An event without square_dist must still render: unknown reads as confident.
     assert "if (!dist || !dist[r] || !dist[r][c]) return 1;" in html
 
 
-def test_index_page_updates_squares_in_place_with_one_ticker():
-    """Per-event DOM work stays surgical — the grid is built once and every event
-    writes into the same nodes (innerHTML in render would kill the CSS transitions).
-    Ageing is one interval for all boards, not one per board or per event."""
+def test_index_page_updates_the_board_in_place_with_one_ticker():
+    """Per-event DOM work stays surgical — one Chessground per card, created once and
+    fed with .set() (re-creating it per event would rebuild 64 squares and kill the
+    piece transitions). Ageing is one interval for all boards, not one per board."""
     html = TestClient(create_app()).get("/").text
     render_fn = html.split("function render(ev) {")[1].split("\nsetInterval(")[0]
     assert "innerHTML" not in render_fn
     assert "setInterval" not in render_fn and "setTimeout" not in render_fn
-    assert "sqs.push({ el, pc: el.querySelector(\".pc\"), lc: el.querySelector(\".lc\") });" in html
+    assert "Chessground(" not in render_fn         # created in ensureCard, once
+    assert "rec.cg.set({" in render_fn
+    assert html.count("Chessground(card.querySelector(\".board\"), {") == 1
     assert html.count("setInterval(") == 1
     assert "const TICK_MS = 200;" in html
 
@@ -132,6 +153,73 @@ def test_index_page_keeps_no_game_state():
     html = TestClient(create_app()).get("/").text.lower()
     for forbidden in ("legal", "pgn", "castl", "en passant", "san("):
         assert forbidden not in html, forbidden
+
+
+def test_index_page_derives_the_inference_http_origin_from_the_ws_url():
+    """The node serves the socket and its HTTP API on one origin, so the frame and
+    calibrate endpoints are derived from the injected WS URL — no second placeholder
+    to get out of step with it."""
+    html = TestClient(create_app()).get("/").text
+    assert "__BR_INFERENCE_HTTP__" not in html
+    assert "const INFERENCE_HTTP = httpOrigin(WS_URL);" in html
+    assert 'u.protocol = u.protocol === "wss:" ? "https:" : "http:";' in html
+    assert 'return wsUrl.replace(/^ws/, "http").replace(/\\/[^/]*$/, "");' in html
+
+
+def test_index_page_has_a_collapsible_frame_preview_left_of_the_board():
+    """Seeing what the node actually ingested is how you tell a bad reading from a bad
+    frame. It docks on the board's left, is fetched only while open, and survives a
+    node that has no frame (or no such endpoint) with a placeholder."""
+    html = TestClient(create_app()).get("/").text
+    assert 'class="preview-tab"' in html and 'class="preview-pane"' in html
+    # Tab first, then the pane, then the board column: the preview grows between the
+    # tab and the board, so the tab stays anchored where it was clicked.
+    body = html.split('<div class="card-body">')[1].split('<div class="meta">')[0]
+    assert body.index("preview-tab") < body.index("preview-pane") < body.index('class="board"')
+    assert ".preview-pane { width: 0; overflow: hidden; transition: width 220ms ease;" in html
+    assert ".preview.open .preview-pane { width: var(--board-size); margin-left: 8px; }" in html
+    # Explicit pixel box, never a percentage height through an auto-height ancestor.
+    assert ".preview-pane img { width: var(--board-size); height: var(--board-size);" in html
+    # Collapsed costs nothing; open refetches per event, cache-busted by seq.
+    assert "if (!rec.previewOpen) return;" in html
+    assert "`${INFERENCE_HTTP}/boards/${encodeURIComponent(rec.id)}/frame?seq=${bust}`" in html
+    assert 'rec.img.onerror = () => { rec.img.classList.add("absent");' in html
+    assert "no frame yet" in html
+
+
+def test_index_page_calibrates_from_the_live_frame():
+    """One-tap calibration from the stream: the ingested frame IS the rectified board,
+    so its four corners are the board's. The server's verdict is surfaced verbatim —
+    it refuses calibrations that would poison the bank."""
+    html = TestClient(create_app()).get("/").text
+    assert 'class="calib"' in html
+    assert "The board must CURRENTLY show the STARTING position" in html
+    assert "const bmp = await createImageBitmap(blob);" in html
+    assert "const qs = [0, 0, bmp.width, 0, bmp.width, bmp.height, 0, bmp.height].join(\",\");" in html
+    assert '`${INFERENCE_HTTP}/calibrate?corners=${qs}`' in html
+    assert 'method: "POST", body: blob, headers: { "Content-Type": "image/jpeg" },' in html
+    # Refusals keep the server's own words; success states what the bank now holds.
+    assert 'reason = (await r.json()).error ?? reason;' in html
+    assert 'showBanner(rec, "err", reason);' in html
+    assert "`Calibrated ${d.classes_calibrated}/13 classes${rotNote} — `" in html
+    assert "`bank now holds ${d.exemplars} exemplars`" in html
+    # One banner timer per card, replaced rather than stacked.
+    assert "clearTimeout(rec.bannerTimer);" in html
+
+
+def test_index_page_refuses_to_calibrate_from_a_reading_that_is_not_worth_it():
+    """Calibrating off a stale, non-ok or mid-motion reading poisons the bank. The
+    button disables itself and says why in its title rather than failing silently."""
+    html = TestClient(create_app()).get("/").text
+    reason = html.split("function calibBlockReason(rec) {")[1].split("\n}")[0]
+    assert 'if (rec.stale) return "the stream is stale' in reason
+    assert 'if (rec.lastSeq === null) return "no frame has arrived yet";' in reason
+    assert 'if (rec.status !== "ok")' in reason
+    assert "rec.stability !== null && rec.stability < MOVING_BELOW" in reason
+    assert "rec.calib.disabled = reason !== null;" in html
+    assert "rec.calib.title = reason ??" in html
+    # Re-evaluated when the reading changes AND when the card goes stale on the ticker.
+    assert html.count("updateCalibState(rec);") >= 4
 
 
 def test_snapshot_served_and_http_url_injected(monkeypatch):
