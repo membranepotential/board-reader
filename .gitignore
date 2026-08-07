@@ -28,6 +28,11 @@ models/
 # tools/train/configs/*.yaml; see docs/reports/ for the results that matter)
 scratch/
 
+# Recorded ingress sessions (WP-H2) — the raw input of a run, replayable with
+# `board-reader-edge feed --recording`. Large and machine-local; promote a
+# session into data/ deliberately if it is worth keeping.
+recordings/
+
 # Browser-automation captures (playwright-mcp session snapshots)
 .playwright-mcp/
 

@@ -12,6 +12,7 @@ inference node. The edge and inference processes meet only on the wire.
         --corners 120,80,900,80,960,860,60,860       # real footage, corners tapped
     board-reader-edge feed --video otb.mp4 --forward-original \
         --corners 120,80,900,80,960,860,60,860       # ... unwarped, corners on the wire
+    board-reader-edge feed --recording recordings/ --throttle   # re-run a recorded session
     board-reader-edge rectify board.jpg -o crop.png   # one-shot rectify (debug)
 """
 
@@ -31,7 +32,7 @@ from board_reader_core.boarddetect import detect_board_quad
 from board_reader_core.protocol import START_PLACEMENT
 from board_reader_core.sim import render_board, simulate_angled_view
 
-from board_reader_edge.adapter import FileEdgeAdapter
+from board_reader_edge.adapter import FileEdgeAdapter, RecordingReplay
 from board_reader_edge.client import stream_to_gateway
 from board_reader_edge.forwarder import AdaptiveForwarder, ForwarderConfig
 from board_reader_edge.rectify import Rectifier, rectify
@@ -118,7 +119,38 @@ def _build_wire_corners(args: argparse.Namespace) -> "np.ndarray | None":
     return _parse_corners(args.corners)
 
 
+# Flags that reprocess frames on their way out. A recording already holds the
+# edge's *output*, so replaying it through any of these would send something other
+# than what was recorded — which is the one thing replay exists not to do.
+_REPROCESSING_FLAGS = {
+    "adaptive": "--adaptive",
+    "rectify": "--rectify",
+    "corners": "--corners",
+    "forward_original": "--forward-original",
+    "loop": "--loop",
+}
+
+
+def _build_replay(args: argparse.Namespace) -> RecordingReplay:
+    """The verbatim re-run path (``--recording``), or a clear error."""
+    conflicts = [flag for attr, flag in _REPROCESSING_FLAGS.items() if getattr(args, attr)]
+    if conflicts:
+        raise SystemExit(
+            f"--recording replays a recorded session verbatim; {', '.join(conflicts)} "
+            "would change what goes on the wire and is therefore refused"
+        )
+    try:
+        return RecordingReplay(args.recording, throttle=args.throttle)
+    except FileNotFoundError as e:
+        raise SystemExit(str(e)) from e
+
+
 def cmd_feed(args: argparse.Namespace) -> int:
+    if args.recording:
+        replay = _build_replay(args)
+        sent = asyncio.run(stream_to_gateway(replay, args.url))
+        print(f"replayed {sent} frames from {replay.recording.path} to {args.url}")
+        return 0
     wire_corners = _build_wire_corners(args)  # validates the mode before any I/O
     adapter = FileEdgeAdapter(
         _build_source(args),
@@ -175,6 +207,11 @@ def build_parser() -> argparse.ArgumentParser:
     f.add_argument("--board", default="A1")
     f.add_argument("--video", help="path to a video file")
     f.add_argument("--images", help="path to a directory of images")
+    f.add_argument(
+        "--recording",
+        help="re-run a recorded session verbatim (a session dir, or a root dir "
+             "whose newest session is taken); pair with --throttle (WP-H2)",
+    )
     f.add_argument(
         "--game", action="store_true",
         help="synthetic recorded game: positions, hands, transitions (the M2 demo)",

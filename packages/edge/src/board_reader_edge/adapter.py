@@ -21,22 +21,62 @@ it is one 32x32 resize, and the motion meter needs the full camera view *and* th
 undropped stream to difference against — and only the frames it forwards are then
 rectified. Detection is the expensive step (~90-100 ms), so a dropped frame must
 never pay for it.
+
+:class:`RecordingReplay` is the second envelope source in this module: it re-sends
+a recorded session instead of processing a live one. Both satisfy
+:class:`EnvelopeSource`, which is all the WS client needs.
 """
 
 from __future__ import annotations
 
 import time
-from typing import Callable, Iterator
+from typing import Callable, Iterable, Iterator, Protocol, TypeVar, runtime_checkable
 
 import dataclasses
 
 import numpy as np
 
+from board_reader_core.recording import Recording
 from board_reader_core.wire import Frame
 
 from board_reader_edge.forwarder import AdaptiveForwarder
 from board_reader_edge.rectify import Rectifier
 from board_reader_edge.source import FrameSource
+
+_T = TypeVar("_T")
+
+
+@runtime_checkable
+class EnvelopeSource(Protocol):
+    """Anything that can be streamed to the gateway's ``/ingest`` socket."""
+
+    def envelopes(self) -> Iterator[tuple[dict, bytes]]:
+        ...
+
+
+def pace_by_capture_ts(
+    items: Iterable[tuple[float, _T]],
+    *,
+    sleep: Callable[[float], None] = time.sleep,
+    monotonic: Callable[[], float] = time.monotonic,
+) -> Iterator[_T]:
+    """Yield each item so the gaps between them match its own ``capture_ts`` gaps.
+
+    Pacing replays capture-time *gaps* rather than a fixed period, because with
+    adaptive forwarding there is no fixed period: the gap between two forwarded
+    frames is 1 s at rest and 1/12 s inside a burst. Timestamps are taken relative
+    to the first item, so a stream whose clock starts at 0 (a replayed clip) and
+    one stamped with wall-clock epochs pace identically.
+    """
+    started = monotonic()
+    first_ts: float | None = None
+    for capture_ts, item in items:
+        if first_ts is None:
+            first_ts = capture_ts
+        behind = started + max(capture_ts - first_ts, 0.0) - monotonic()
+        if behind > 0:
+            sleep(behind)
+        yield item
 
 
 class FileEdgeAdapter:
@@ -112,22 +152,15 @@ class FileEdgeAdapter:
         self._monotonic = monotonic
 
     def envelopes(self) -> Iterator[tuple[dict, bytes]]:
-        """Yield ``(header, jpeg_bytes)`` per forwarded frame.
-
-        Throttling replays capture-time gaps rather than a fixed period, because
-        with adaptive forwarding there *is* no fixed period: the gap between two
-        forwarded frames is 1 s at rest and 1/12 s inside a burst.
-        """
-        started = self._monotonic()
-        first_ts: float | None = None
-        for frame in self.frames():
-            if self.throttle:
-                if first_ts is None:
-                    first_ts = frame.capture_ts
-                due = started + max(frame.capture_ts - first_ts, 0.0)
-                behind = due - self._monotonic()
-                if behind > 0:
-                    self._sleep(behind)
+        """Yield ``(header, jpeg_bytes)`` per forwarded frame."""
+        frames: Iterable[Frame] = self.frames()
+        if self.throttle:
+            frames = pace_by_capture_ts(
+                ((f.capture_ts, f) for f in frames),
+                sleep=self._sleep,
+                monotonic=self._monotonic,
+            )
+        for frame in frames:
             yield frame.encode(self.jpeg_quality)
 
     def frames(self) -> Iterator[Frame]:
@@ -154,3 +187,75 @@ class FileEdgeAdapter:
             if not result.ok:
                 continue  # suppressed during a bump / awaiting setup
             yield dataclasses.replace(frame, image=result.crop)
+
+
+class RecordingReplay:
+    """Re-send a recorded session (WP-H2) to the gateway, byte for byte.
+
+    This is the reproduce-a-run path: the frames a gateway once received are put
+    back on the wire **verbatim** — the recorded header dict and the recorded JPEG
+    bytes, untouched. Nothing is decoded and re-encoded on the way through, because
+    a JPEG round trip perturbs pixels, and a recognition run fed perturbed pixels
+    is not a reproduction of the original one.
+
+    Deliberately *not* a :class:`~board_reader_edge.source.FrameSource` feeding
+    :class:`FileEdgeAdapter`: a recording already holds the edge's output — motion
+    gating and rectification have happened — so re-running those stages over it
+    would produce a different stream and defeat the point. Use :meth:`frames` (or
+    ``RecordingSource``) when reprocessing is what you actually want.
+
+    Parameters
+    ----------
+    recording:
+        The session to replay, or a path — a session directory, or a root
+        directory whose newest session is taken.
+    board_id:
+        Replay only this board. Default replays every board, interleaved exactly
+        as they arrived.
+    throttle:
+        Pace output to the recording's own capture time, i.e. re-run it at the
+        speed it happened. Worth preferring for a faithful re-run: the gateway's
+        latest-wins pre-filter drops frames as a function of arrival rate, so a
+        flat-out replay makes it drop more than the original run did.
+    """
+
+    def __init__(
+        self,
+        recording: Recording | str,
+        *,
+        board_id: str | None = None,
+        throttle: bool = False,
+        sleep: Callable[[float], None] = time.sleep,
+        monotonic: Callable[[], float] = time.monotonic,
+    ) -> None:
+        self.recording = (
+            recording if isinstance(recording, Recording) else Recording.open(recording)
+        )
+        self.board_id = board_id
+        self.throttle = throttle
+        self._sleep = sleep
+        self._monotonic = monotonic
+
+    def envelopes(self) -> Iterator[tuple[dict, bytes]]:
+        """Yield the recorded ``(header, jpeg_bytes)`` pairs, unmodified."""
+        pairs = (
+            (rec.capture_ts, (rec.header, rec.jpeg))
+            for rec in self.recording.frames(board_id=self.board_id)
+        )
+        if self.throttle:
+            yield from pace_by_capture_ts(
+                pairs, sleep=self._sleep, monotonic=self._monotonic
+            )
+            return
+        for _, envelope in pairs:
+            yield envelope
+
+    def frames(self) -> Iterator[Frame]:
+        """The same stream decoded to :class:`Frame` objects — for offline reruns.
+
+        Lets a recording stand in as a :class:`~board_reader_edge.source.FrameSource`
+        when the point *is* to reprocess it (a different rectifier, a new motion
+        threshold) rather than to reproduce it.
+        """
+        for rec in self.recording.frames(board_id=self.board_id):
+            yield rec.frame()

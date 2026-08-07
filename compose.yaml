@@ -23,8 +23,14 @@ services:
       # (non-redistributable training data licenses); when absent the server
       # degrades gracefully to the stub, so a fresh clone still composes up.
       BR_MODEL: /models/run_e/model.onnx
+      # Every ingested frame is recorded (WP-H2) so the run can be replayed:
+      #   board-reader-edge feed --recording recordings/ --throttle
+      # Bind-mounted, or the recording would die with the container.
+      BR_RECORD_DIR: /recordings
+      BR_RECORD_MAX_MB: "4000"
     volumes:
       - ./models:/models:ro
+      - ./recordings:/recordings
     ports:
       - "8000:8000"
     healthcheck:

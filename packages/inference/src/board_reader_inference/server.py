@@ -17,6 +17,7 @@ edge package; it only speaks the wire (:mod:`board_reader_core.wire`).
 
 from __future__ import annotations
 
+import contextlib
 import datetime
 import itertools
 import json
@@ -31,6 +32,7 @@ from fastapi.responses import JSONResponse, Response
 
 from board_reader_core.boarddetect import LOW_ANGLE_ASPECT, quad_aspect
 from board_reader_core.protocol import GRID, START_PLACEMENT
+from board_reader_core.recording import FrameRecorder
 from board_reader_core.wire import Frame, decode_jpeg
 
 from board_reader_inference.estimator import Estimator, StubEstimator
@@ -79,6 +81,32 @@ def _id_epoch(upload_id: str) -> float:
 # default made ordinary test runs silently overwrite the real bank — twice.
 def _session_bank_path() -> str | None:
     return os.environ.get("BR_SESSION_BANK") or None
+
+
+# Ingress recording is opt-in the same way (``BR_RECORD_DIR=<dir>``), but the
+# ``serve`` command opts in on the operator's behalf — see create_app.
+def _make_recorder() -> FrameRecorder | None:
+    """The ingress recorder for this app, or ``None`` when recording is off."""
+    root = os.environ.get("BR_RECORD_DIR")
+    if not root:
+        return None
+    return FrameRecorder(root, writer="inference-gateway", max_bytes=_record_max_bytes())
+
+
+def _record_max_bytes() -> int | None:
+    """``BR_RECORD_MAX_MB`` as bytes — a disk-fill stop, off (unlimited) by default.
+
+    A three-hour session at burst rate is a couple of GB; a recorder left running
+    on a small Jetson disk is not something to discover by filling it.
+    """
+    raw = os.environ.get("BR_RECORD_MAX_MB")
+    if not raw:
+        return None
+    try:
+        return max(int(float(raw) * 1_000_000), 0)
+    except (ValueError, OverflowError):
+        print(f"BR_RECORD_MAX_MB={raw!r} is not a number; recording without a cap")
+        return None
 
 
 # Below this mean pixel value a photo is dim enough that recognition measurably
@@ -248,7 +276,31 @@ def create_app(
     # it is independent of the hub's estimated PositionEvent.
     latest_frames: dict[str, tuple[dict, bytes]] = {}
 
-    app = FastAPI(title="board-reader inference node", lifespan=ingest_.lifespan)
+    # Ingress recording (WP-H2): every frame that crosses the wire is appended to
+    # a session directory, so any run can be replayed later with
+    # ``board-reader-edge feed --recording <dir>``. ``/ingest`` is the one
+    # chokepoint every edge passes through — the CLI feed, the Pi, and the phone
+    # ``/camera`` page (which reaches it through the viewer's proxy) — so
+    # recording here covers all of them and cannot be bypassed by a new edge.
+    #
+    # Enabled by ``BR_RECORD_DIR=<dir>``, which ``serve`` sets for you: a real run
+    # always records, while ``create_app()`` in a test writes nothing unless it
+    # asks to. That asymmetry is deliberate — cwd-relative writes on by default
+    # have twice cost us real user state (see ``BR_SESSION_BANK``).
+    recorder = _make_recorder()
+    if recorder is not None:
+        print(f"recording ingress frames to {recorder.path}")
+
+    @contextlib.asynccontextmanager
+    async def lifespan(app_: FastAPI):
+        try:
+            async with ingest_.lifespan(app_):
+                yield
+        finally:
+            if recorder is not None:
+                recorder.close()
+
+    app = FastAPI(title="board-reader inference node", lifespan=lifespan)
     # The viewer is served from a different origin (its own container), and the
     # browser connects here over WS; allow it.
     app.add_middleware(
@@ -261,10 +313,25 @@ def create_app(
     app.state.estimator = est
     app.state.hub = hub_
     app.state.ingest = ingest_
+    app.state.recorder = recorder
+
+    def _record(header: dict, jpeg: bytes) -> None:
+        """Best-effort ingress recording — a failed write stops the recorder, never
+        the stream it observes. The transition is announced once, because a run
+        that silently stopped recording is worse than one that never started."""
+        if recorder is None or not recorder.active:
+            return
+        if not recorder.record(header, jpeg):
+            print(f"frame recording stopped: {recorder.stopped_reason}")
 
     @app.get("/healthz")
     async def healthz() -> dict:
-        return {"status": "ok", "subscribers": hub_.subscriber_count}
+        # The recording stats ride on liveness so an operator can confirm frames
+        # are landing on disk without shelling into the container.
+        health = {"status": "ok", "subscribers": hub_.subscriber_count}
+        if recorder is not None:
+            health["recording"] = recorder.stats()
+        return health
 
     @app.get("/boards/{board_id}")
     async def board_latest(board_id: str) -> JSONResponse:
@@ -1206,11 +1273,16 @@ def create_app(
                     await ws.send_json({"error": f"bad frame: {e}"})
                     continue
                 boards.add(frame.board_id)
-                # The frame's own header, not the client's: retention then holds
-                # values the wire has already validated and normalised (corners
-                # as 8 floats, seq an int), never whatever JSON arrived.
+                # The frame's own header, not the client's: retention and the
+                # recording then hold values the wire has already validated and
+                # normalised (corners as 8 floats, seq an int), never whatever
+                # JSON arrived.
                 normalised = frame.header()
                 latest_frames[frame.board_id] = (normalised, jpeg)
+                # Record what ARRIVED, before the latest-wins pre-filter has had a
+                # chance to drop it: a recording is the input to a run, not a log
+                # of what the estimator got round to.
+                _record(normalised, jpeg)
                 ingest_.submit(frame)
                 await ws.send_json({"ack": frame.seq, "board_id": frame.board_id})
         except WebSocketDisconnect:

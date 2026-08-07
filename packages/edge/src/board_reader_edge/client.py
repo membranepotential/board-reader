@@ -1,9 +1,10 @@
 """Edge -> inference WebSocket client (DESIGN.md §4.5 ingress).
 
-Streams wire envelopes from a :class:`FileEdgeAdapter` to the gateway's ``/ingest``
-socket: a JSON header text message followed by the binary JPEG, per frame. This is
-the real network path the browser "virtual Pi" will mirror later (WP-C4); for now
-it lets the file-based adapter drive a running inference node.
+Streams wire envelopes from any :class:`EnvelopeSource` to the gateway's
+``/ingest`` socket: a JSON header text message followed by the binary JPEG, per
+frame. This is the real network path the browser "virtual Pi" will mirror later
+(WP-C4); for now it lets the file-based adapter — or a replayed recording — drive
+a running inference node.
 """
 
 from __future__ import annotations
@@ -12,11 +13,11 @@ import json
 
 import websockets
 
-from board_reader_edge.adapter import FileEdgeAdapter
+from board_reader_edge.adapter import EnvelopeSource
 
 
 async def stream_to_gateway(
-    adapter: FileEdgeAdapter,
+    adapter: EnvelopeSource,
     url: str = "ws://127.0.0.1:8000/ingest",
     *,
     drain_acks: bool = True,

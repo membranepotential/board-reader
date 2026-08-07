@@ -2,6 +2,7 @@
 
     board-reader-inference serve --host 0.0.0.0 --port 8000
     board-reader-inference serve --centroids centroids.npz      # use the M1 estimator
+    board-reader-inference serve --record-dir runs/             # ingress recorded here
     board-reader-inference calibrate --image rect.png --placement <FEN1> -o centroids.npz
     board-reader-inference eval                                  # score the deployed stack
 
@@ -17,12 +18,23 @@ import os
 import sys
 
 
+DEFAULT_RECORD_DIR = "recordings"
+
+
 def cmd_serve(args: argparse.Namespace) -> int:
     import uvicorn
 
     if args.centroids:
         # Picked up by server._default_estimator() at import time.
         os.environ["BR_CENTROIDS"] = args.centroids
+
+    # Every served run records its ingress by default (WP-H2), so a session can
+    # always be replayed afterwards — including one driven by the phone /camera
+    # page, whose frames reach the same /ingest socket through the viewer's proxy.
+    # The default lives here rather than in ``create_app`` on purpose: a real
+    # server always records, a test app never writes unless it asks to.
+    if args.record_dir:
+        os.environ["BR_RECORD_DIR"] = args.record_dir
 
     uvicorn.run(
         "board_reader_inference.server:app",
@@ -131,6 +143,15 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--port", type=int, default=8000)
     s.add_argument(
         "--centroids", help="path to a centroids .npz (use the M1 CentroidEstimator)"
+    )
+    s.add_argument(
+        "--record-dir", dest="record_dir", default=DEFAULT_RECORD_DIR,
+        help=f"record every ingested frame under here (default {DEFAULT_RECORD_DIR}/); "
+             "replay with `board-reader-edge feed --recording <dir>`",
+    )
+    s.add_argument(
+        "--no-record", dest="record_dir", action="store_const", const=None,
+        help="do not record ingested frames (runs are then not reproducible)",
     )
     s.set_defaults(func=cmd_serve)
 
