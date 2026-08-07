@@ -9,7 +9,30 @@ confidences**. No moves, no legality, no PGN — those are the downstream applic
 
 ## Now
 
-- **M2 — live position stream over a recorded game: DONE, uncommitted.** Built 2026-08-07 by
+- **Broadcast capture tooling absorbed + the streams audited (main session, 2026-08-07 04:00–).**
+  `../otb_video_recognition` is pulled in and deleted: scripts → `tools/video/`, videos/frames →
+  `data/streams/` (git-ignored), skill → `.claude/skills/get-frames-from-yt/`. Legacy Hough/scipy
+  detector + notebook dropped (superseded by `boarddetect`). **`quad_aspect` + `LOW_ANGLE_ASPECT`
+  moved into `board_reader_core.boarddetect`** (was private in `inference.server`, which now
+  imports them) so the capture-side gate and the `very_low_angle` warning cannot drift.
+  **The angle gate rejected 4 of 5 broadcasts** — medians 0.445 / 0.450 / 0.508 / 0.573 vs the
+  0.62 floor; only `JTmovXvZnPM` survives at **0.65, i.e. "degraded", never the ≥0.73 good band**.
+  Their videos are deleted; ids + crop coords + frames are kept, so `yt-dlp` reproduces any of
+  them. One lost crop (`62h7O9Ns_eA`) was recovered by template-matching a frame back into the
+  source (corr 1.0). Also measured: `detect_board_quad` is *not* usable to find the crop on full
+  broadcast frames (3/6 failures, one latched onto the 2D overlay board) — crop stays manual,
+  detection is the QC step. 3 parallel implementers in flight, disjoint files: **video-tools**
+  `tools/video/**` (registry rekeyed on video id, `check_angle.py`, tests) · **skill-rewrite**
+  `.claude/skills/get-frames-from-yt/SKILL.md` · **stream-docs** `docs/youtube-streams.md`,
+  `tools/README.md`, `aspects.yaml`.
+- **Live-viewer upgrade (main session, 2026-08-07 04:1x–)** — 2 parallel implementers, disjoint:
+  **frame-endpoint** (sonnet) gateway retains latest JPEG per board + `GET /boards/{id}/frame`
+  (`packages/inference` + architecture.md) · **viewer-live-ui** (opus) chessground board (like
+  /snapshot), expandable live-frame preview left of the board, calibrate-from-stream button via
+  the existing guarded `/calibrate` (`packages/viewer` + TESTING.md). Operator asked: better
+  interface, snapshot-style board rendering, calibrate function.
+- **M2 — live position stream over a recorded game: DONE, committed** (`c601dea`…`b565d68`, 6
+  logical commits). Built 2026-08-07 by
   4 parallel opus implementers + main session finishing the two operator-stopped workstreams
   inline. Shipped: edge `MotionMeter`+`AdaptiveForwarder` (WP-C2/C3, keepalive ~1 fps / burst
   12 fps, hysteresis, `burst_id`) · cadenced `Rectifier` re-detection (~1 s capture-time; dropped
@@ -19,7 +42,7 @@ confidences**. No moves, no legality, no PGN — those are the downstream applic
   change flash, dimmed occluded squares) · `feed --game --adaptive --loop --throttle` = the
   compose demo. **477/477 tests green (serial + parallel)** incl. new e2e `tests/test_m2_stream.py`;
   CLI smoke: 540-frame game → 208 adaptively forwarded through a real gateway. Docs updated
-  (TESTING.md Option A/C, architecture.md, index.md). **Awaiting operator: review + commit.**
+  (TESTING.md Option A/C, architecture.md, index.md).
 - **run_f — the pose-aware-crop bet** — **NOT RUNNING; stopped by the operator at e0 (03:24),
   ready to relaunch.** The harness is fixed and verified (below); nothing blocks it. Relaunch
   with `tools/train/run_f.sh` — no `PY=`, the script now resolves and preflights its own
@@ -87,6 +110,10 @@ confidences**. No moves, no legality, no PGN — those are the downstream applic
 
 ## Open questions
 
+- **We have no real footage inside the good angle band.** All five absorbed broadcasts measure
+  ≤0.65 projected aspect and four are below the 0.62 floor; table-level broadcast cameras are
+  simply outside the envelope. M2's recorded-game demo therefore rests on one *degraded* video.
+  A steeper/overhead source (or own footage) is now a sourcing requirement, not a nice-to-have.
 - **Bank writes are not monotone.** A board that read 64/64 lost a square after two `/calibrate`
   writes, and trained-alone still gets it right. Nothing measures that before a write lands.
 - **Confidence is not usable today.** Trained-alone has no board-level signal (0.978 vs 0.939) and the ensemble is under-confident, though it ranks boards roughly right. Top risk in DESIGN §9.

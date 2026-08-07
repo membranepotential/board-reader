@@ -39,6 +39,10 @@ aspects:
         role: >-
           A change to CLASSES order, PositionEvent fields, or the wire header
           must be matched in the estimators and the gateway that construct them.
+          Also holds `LOW_ANGLE_ASPECT` / `quad_aspect` (moved here from a
+          private `_quad_aspect` in board_reader_inference.server so the
+          camera-angle threshold has one source): a changed threshold changes
+          the `very_low_angle` serving warning.
       - aspect: edge
         role: >-
           A change to the wire frame header or JPEG encoding must be matched in
@@ -46,11 +50,26 @@ aspects:
       - aspect: viewer
         role: >-
           A change to the position-event JSON shape must be matched in the
-          viewer and snapshot pages that render it.
+          viewer and snapshot pages that render it. The viewer also asserts the
+          literal `0.62` of `LOW_ANGLE_ASPECT` in its HTML
+          (packages/viewer/tests/test_viewer.py) — it cannot import core, so
+          this copy has to be updated by hand if the threshold moves.
       - aspect: design
         role: >-
           A protocol change that is not merely additive needs DESIGN §5 updated
           — the schema there is meant to be the spec, not a stale sample.
+      - aspect: docs
+        role: >-
+          `LOW_ANGLE_ASPECT` (0.62) and the underlying aspect bands are quoted
+          as concrete numbers in docs/operating-envelope.md; a changed threshold
+          must be re-quoted there, not just in code.
+      - aspect: capture-tooling
+        role: >-
+          tools/video/check_angle.py imports `LOW_ANGLE_ASPECT` / `quad_aspect`
+          rather than hardcoding its own copy, so a changed threshold changes
+          which streams the capture-side gate accepts without a code change
+          there — but docs/youtube-streams.md's recorded verdicts need
+          re-checking.
 
   inference:
     description: >-
@@ -145,6 +164,23 @@ aspects:
           A change to the data contract, style registry, or run recipe must be
           reflected in the training/data note.
 
+  capture-tooling:
+    description: >-
+      tools/video — downloads a YouTube chess broadcast, records an operator's
+      manual board crop, gates it on camera angle, and extracts cropped still
+      frames for training/eval. Not part of any deployable package. Documented
+      by docs/youtube-streams.md and the get-frames-from-yt skill
+      (.claude/skills/get-frames-from-yt/SKILL.md), which drive it end to end.
+    files: ["tools/video/**"]
+    affects:
+      - aspect: docs
+        role: >-
+          `tools/video/crops.csv` is the committed, reproducible record of every
+          absorbed broadcast (video id, crop, angle-gate verdict) — a newly
+          absorbed or culled stream, a re-selected crop, or a changed verdict
+          must be reflected in docs/youtube-streams.md, since a deleted video's
+          crop and audit numbers only survive there and in the registry itself.
+
   models:
     description: >-
       External state — the model and calibration artifacts actually on disk.
@@ -201,7 +237,7 @@ aspects:
       The Obsidian docs vault — architecture, recognition pipeline, calibration,
       operating envelope, runbook, training/data, glossary. Explains how the
       system currently behaves (DESIGN owns why it was decided that way).
-    files: ["docs/index.md", "docs/architecture.md", "docs/recognition-pipeline.md", "docs/calibration-and-the-bank.md", "docs/measuring-accuracy.md", "docs/operating-envelope.md", "docs/runbook.md", "docs/training-and-data.md", "docs/glossary.md"]
+    files: ["docs/index.md", "docs/architecture.md", "docs/recognition-pipeline.md", "docs/calibration-and-the-bank.md", "docs/measuring-accuracy.md", "docs/operating-envelope.md", "docs/runbook.md", "docs/training-and-data.md", "docs/glossary.md", "docs/youtube-streams.md"]
     affects:
       - aspect: status
         role: >-
