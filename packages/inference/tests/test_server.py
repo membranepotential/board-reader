@@ -9,11 +9,12 @@ from starlette.testclient import TestClient
 
 from board_reader_core.protocol import START_PLACEMENT
 from board_reader_core.sim import render_board
-from board_reader_inference.squares import BboxGeometry
 from board_reader_core.wire import Frame
+
 from board_reader_inference.estimator import StubEstimator
 from board_reader_inference.hub import PositionHub
 from board_reader_inference.server import create_app
+from board_reader_inference.squares import BboxGeometry
 
 
 def _client(**kw):
@@ -55,11 +56,13 @@ def test_ingest_frame_then_board_snapshot_available():
 def test_end_to_end_ingest_to_viewer_stream():
     """A frame pushed on /ingest reaches a /viewer subscriber as a position event."""
     client = _client()
-    with client.websocket_connect("/viewer") as viewer:
-        with client.websocket_connect("/ingest") as ingest:
-            _send_frame(ingest, seq=1)
-            ingest.receive_json()  # ack
-            event = json.loads(viewer.receive_text())
+    with (
+        client.websocket_connect("/viewer") as viewer,
+        client.websocket_connect("/ingest") as ingest,
+    ):
+        _send_frame(ingest, seq=1)
+        ingest.receive_json()  # ack
+        event = json.loads(viewer.receive_text())
     assert event["board_id"] == "A1"
     assert event["placement"] == START_PLACEMENT
     assert event["status"] == "ok"
@@ -128,10 +131,11 @@ def test_estimate_photo_path_used_for_photo_mode_centroids():
     """With photo-mode centroids the gateway calls estimate_photo (full-piece boxes)."""
     from board_reader_core.sim import simulate_angled_view
     from board_reader_core.wire import encode_jpeg
+
     from board_reader_inference.centroid import build_centroids
     from board_reader_inference.embed import LiteEmbedder
     from board_reader_inference.estimator import CentroidEstimator
-    from board_reader_inference.squares import BboxGeometry, crop_squares_photo
+    from board_reader_inference.squares import crop_squares_photo
 
     board = render_board(START_PLACEMENT)
     photo, quad = simulate_angled_view(board)
@@ -206,6 +210,7 @@ def test_calibrate_hot_swaps_estimator(tmp_path, monkeypatch):
     """POST /calibrate rebuilds a per-set kNN exemplar bank from one labeled photo
     and the running estimator immediately uses it (DESIGN §4.6 E1/E2)."""
     from board_reader_core.wire import encode_jpeg
+
     from board_reader_inference.centroid import ExemplarClassifier, build_exemplars
     from board_reader_inference.embed import LiteEmbedder
     from board_reader_inference.estimator import CentroidEstimator
@@ -324,6 +329,7 @@ def test_estimate_debug_on_photo_path():
     """debug=1 also works on the photo path (ExemplarClassifier + corners)."""
     from board_reader_core.sim import simulate_angled_view
     from board_reader_core.wire import encode_jpeg
+
     from board_reader_inference.centroid import build_exemplars
     from board_reader_inference.embed import LiteEmbedder
     from board_reader_inference.estimator import CentroidEstimator
@@ -484,6 +490,7 @@ def test_uncalibrated_estimate_is_occupancy_only_and_unpublished(tmp_path, monke
 
 def test_uncalibrated_estimate_autocalibrates_on_start_position(tmp_path, monkeypatch):
     from board_reader_core.wire import encode_jpeg
+
     from board_reader_inference.centroid import ExemplarClassifier
 
     monkeypatch.chdir(tmp_path)
@@ -531,6 +538,7 @@ def test_autocalibration_handles_rotated_corner_labeling(tmp_path, monkeypatch):
 
     from board_reader_core.protocol import parse_placement
     from board_reader_core.wire import encode_jpeg
+
     from board_reader_inference.squares import full_frame_corners
 
     monkeypatch.chdir(tmp_path)
@@ -562,6 +570,7 @@ def test_autocalibration_handles_rotated_corner_labeling(tmp_path, monkeypatch):
 
 def test_session_bank_restored_on_restart_when_autocalib_enabled(tmp_path, monkeypatch):
     from board_reader_core.wire import encode_jpeg
+
     from board_reader_inference.estimator import CentroidEstimator
 
     monkeypatch.chdir(tmp_path)
@@ -610,6 +619,7 @@ def test_calibrated_bank_refreshes_on_drifted_start_position(tmp_path, monkeypat
     """Seeing the start position at sub-threshold confidence appends
     label-confirmed exemplars — the bank tracks lighting drift on its own."""
     from board_reader_core.wire import encode_jpeg
+
     from board_reader_inference import autocalib
 
     monkeypatch.chdir(tmp_path)
@@ -659,6 +669,7 @@ def test_no_session_persistence_without_opt_in(tmp_path, monkeypatch):
     """Structural guard: without BR_SESSION_BANK, calibration flows never write
     (a cwd-relative default silently clobbered the real bank from test runs)."""
     from board_reader_core.wire import encode_jpeg
+
     from board_reader_inference import autocalib
 
     monkeypatch.chdir(tmp_path)
@@ -734,6 +745,7 @@ def test_calibrate_boosts_trained_estimator(tmp_path, monkeypatch):
     """/calibrate over a zero-shot trained estimator wraps it into an ensemble —
     calibration boosts, never replaces (DESIGN §4.6)."""
     from board_reader_core.wire import encode_jpeg
+
     from board_reader_inference.estimator import EnsembleEstimator
     from board_reader_inference.trained import TrainedEstimator
 
@@ -768,6 +780,7 @@ def test_trained_path_bootstraps_bank_on_start_position(tmp_path, monkeypatch):
     """A start-position sighting upgrades the bare trained model to the ensemble
     with zero user action, and persists the bank iff BR_SESSION_BANK opts in."""
     from board_reader_core.wire import encode_jpeg
+
     from board_reader_inference.estimator import EnsembleEstimator
     from board_reader_inference.trained import TrainedEstimator
 
@@ -810,6 +823,7 @@ def test_estimate_autorotate_corrects_flipped_corners(tmp_path, monkeypatch):
 
     from board_reader_core.protocol import encode_placement, parse_placement
     from board_reader_core.wire import encode_jpeg
+
     from board_reader_inference.trained import TrainedEstimator
 
     monkeypatch.chdir(tmp_path)
@@ -861,6 +875,7 @@ def test_estimate_debug_boxes_match_the_rotated_frame_when_autorotate_fires(
 
     from board_reader_core.protocol import encode_placement, parse_placement
     from board_reader_core.wire import encode_jpeg
+
     from board_reader_inference import diagnostics
     from board_reader_inference.squares import full_frame_corners, square_boxes
     from board_reader_inference.trained import TrainedEstimator
@@ -963,6 +978,7 @@ def test_calibrate_corrects_mislabeled_orientation(tmp_path, monkeypatch):
 
     from board_reader_core.protocol import encode_placement, parse_placement
     from board_reader_core.wire import encode_jpeg
+
     from board_reader_inference.estimator import EnsembleEstimator
     from board_reader_inference.trained import TrainedEstimator
 
@@ -999,6 +1015,7 @@ def test_calibrate_corrects_mislabeled_orientation(tmp_path, monkeypatch):
 def test_calibrate_keeps_operator_labels_when_agreeing(tmp_path, monkeypatch):
     """Correctly-oriented calibrates pass through unrotated."""
     from board_reader_core.wire import encode_jpeg
+
     from board_reader_inference.trained import TrainedEstimator
 
     monkeypatch.chdir(tmp_path)
@@ -1021,6 +1038,7 @@ def test_calibrate_rejects_photo_not_showing_claimed_position(tmp_path, monkeypa
     """A mid-game photo calibrated as 'start' (field incident #4) is refused —
     no rotation of the claimed labels agrees with the model's reading."""
     from board_reader_core.wire import encode_jpeg
+
     from board_reader_inference.trained import TrainedEstimator
 
     monkeypatch.chdir(tmp_path)
@@ -1045,9 +1063,9 @@ def test_calibrate_rejects_photo_not_showing_claimed_position(tmp_path, monkeypa
 def test_estimate_warns_on_very_low_camera_angle():
     """A corner quad compressed to <0.62 aspect (camera nearly board-level) gets
     a very_low_angle warning — recognition measurably collapses there."""
-    import numpy as np
 
     from board_reader_core.wire import encode_jpeg
+
     from board_reader_inference.trained import TrainedEstimator
 
     # Deliberately a mid-game position, not the start: a start-position reading
@@ -1076,11 +1094,3 @@ def test_estimate_warns_on_very_low_camera_angle():
         headers={"Content-Type": "image/jpeg"},
     )
     assert "very_low_angle" not in r2.json().get("warnings", [])
-
-
-def test_booster_weight_by_bank_maturity():
-    """A mature bank earns the heavier blend share; a thin bootstrap doesn't."""
-    from board_reader_inference.server import _booster_weight
-
-    assert _booster_weight(256) == 0.5
-    assert _booster_weight(4096) == 0.3

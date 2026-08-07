@@ -35,14 +35,19 @@ from board_reader_core.protocol import GRID, START_PLACEMENT
 from board_reader_core.recording import FrameRecorder
 from board_reader_core.wire import Frame, decode_jpeg
 
-from board_reader_inference.estimator import Estimator, StubEstimator
+from board_reader_inference.estimator import CentroidEstimator, Estimator, StubEstimator
 from board_reader_inference.hub import PositionHub
-from board_reader_inference.ingest import FrameIngest, photo_estimator
+from board_reader_inference.ingest import FrameIngest
+from board_reader_inference.routing import PhotoRead, ReadView, Uncalibrated
+from board_reader_inference.session import (
+    CalibrationRejected,
+    EstimatorSession,
+    booster_weight,
+    session_bank_path,
+)
 from board_reader_inference.squares import (
     BboxGeometry,
     crop_squares_photo,
-    full_frame_corners,
-    rectify_photo,
     square_boxes,
 )
 
@@ -69,21 +74,19 @@ def _id_epoch(upload_id: str) -> float:
     """
     try:
         date, clock = upload_id.split("-")[:2]
-        return datetime.datetime.strptime(date + clock, "%Y%m%d%H%M%S").timestamp()
+        # Naive on purpose: the id was stamped by `time.strftime` in _save_upload,
+        # i.e. in LOCAL time, so reading it back as local is what recovers the
+        # instant it named. Forcing UTC here would shift every fallback timestamp
+        # by the machine's offset and mis-sort /uploads against the ids' own text.
+        return datetime.datetime.strptime(  # noqa: DTZ007
+            date + clock, "%Y%m%d%H%M%S"
+        ).timestamp()
     except (ValueError, IndexError):
         return 0.0
 
 
-# Session-bank persistence is OPT-IN via ``BR_SESSION_BANK=<path>``: /calibrate,
-# auto-calibration, and the calibrated-path refresh persist there, and an
-# autocalib-enabled server restores it on startup. Unset -> calibration lives in
-# memory only and NOTHING is ever written. Opt-in is deliberate: a cwd-relative
-# default made ordinary test runs silently overwrite the real bank — twice.
-def _session_bank_path() -> str | None:
-    return os.environ.get("BR_SESSION_BANK") or None
-
-
-# Ingress recording is opt-in the same way (``BR_RECORD_DIR=<dir>``), but the
+# Ingress recording is opt-in the same way session-bank persistence is
+# (``BR_RECORD_DIR=<dir>``; see :mod:`board_reader_inference.session`), but the
 # ``serve`` command opts in on the operator's behalf — see create_app.
 def _make_recorder() -> FrameRecorder | None:
     """The ingress recorder for this app, or ``None`` when recording is off."""
@@ -117,27 +120,6 @@ LOW_LIGHT_MEAN = 55.0
 # recognition to survive; defined in core beside the detector. Warn, don't block.
 LOW_ANGLE_HW = LOW_ANGLE_ASPECT
 
-# /calibrate sanity floor: of the squares the claimed placement says hold a
-# PIECE, at least this fraction must agree with a stateless probe of the photo
-# (best rotation). Empty squares are excluded — a mid-game board and the start
-# position share a mostly-empty middle, which inflates whole-board agreement
-# (~40/64) and hides the mismatch. Below the floor the photo is not showing the
-# claimed position (mid-game sent as "start", corners off the surface, unusably
-# flat angle) and calibrating would poison the bank — reject (incidents #3, #4).
-CALIBRATE_MIN_PIECE_AGREE = 0.6
-
-
-def _booster_weight(bank_exemplars: int) -> float:
-    """Trained-model share of the ensemble blend, by bank maturity.
-
-    A mature bank (many calibrates/appends) is the stronger member under its
-    own conditions — lean on it (measured 2026-07-18 on the 10-board eval:
-    30/70 = 633/640 vs 50/50 = 625). A thin bootstrap bank (one photo) hasn't
-    earned that trust — blend evenly.
-    """
-    return 0.3 if bank_exemplars >= 1024 else 0.5
-
-
 # The metric and its threshold live in core beside the detector that produces the
 # quads, so the serving warning and the capture-side stream QC (tools/video) can
 # never drift apart.
@@ -166,7 +148,9 @@ def _prior_decode(event):
     return decode(np.asarray(event.square_dist))
 
 
-def _estimator_from_bank(path: str, *, share_from: "Estimator | None" = None):
+def _estimator_from_bank(
+    path: str, *, share_from: Estimator | None = None
+) -> CentroidEstimator:
     """Build a :class:`CentroidEstimator` from a saved calibration file.
 
     Rebuilds the same backbone and box geometry the bank was calibrated with
@@ -176,7 +160,6 @@ def _estimator_from_bank(path: str, *, share_from: "Estimator | None" = None):
     """
     from board_reader_inference.centroid import load_classifier
     from board_reader_inference.embed import make_embedder
-    from board_reader_inference.estimator import CentroidEstimator
 
     classifier = load_classifier(path)
     shared = getattr(share_from, "embedder", None)
@@ -191,7 +174,7 @@ def _estimator_from_bank(path: str, *, share_from: "Estimator | None" = None):
     )
 
 
-def _default_estimator(occupancy_est: "Estimator | None" = None) -> Estimator:
+def _default_estimator(occupancy_est: CentroidEstimator | None = None) -> Estimator:
     """Pick the style (piece-type) estimator from the environment.
 
     ``BR_CENTROIDS=<path>`` -> that calibration. Unset but auto-calibration
@@ -216,34 +199,34 @@ def _default_estimator(occupancy_est: "Estimator | None" = None) -> Estimator:
 
         try:
             trained = TrainedEstimator(model)
-        except Exception as e:  # noqa: BLE001 — boundary: any load failure (missing
+        except Exception as e:
             # file, ORT version, truncated ONNX) degrades to the next tier so
             # `docker compose up` works on a fresh clone without models/.
             print(f"BR_MODEL={model!r} not usable ({e}); serving without it")
             trained = None
         if trained is not None:
-            session = _session_bank_path()
-            if session and Path(session).exists():
+            bank = session_bank_path()
+            if bank and Path(bank).exists():
                 try:
-                    bank_est = _estimator_from_bank(session, share_from=occupancy_est)
+                    bank_est = _estimator_from_bank(bank, share_from=occupancy_est)
                     return EnsembleEstimator(
                         trained,
                         bank_est,
-                        weight=_booster_weight(bank_est.classifier.exemplars.shape[0]),
+                        weight=booster_weight(bank_est.classifier.exemplars.shape[0]),
                     )
                 except (OSError, ValueError, KeyError):
                     pass  # unreadable/stale bank: zero-shot still works without it
             return trained
-    session = _session_bank_path()
-    if occupancy_est is not None and session and Path(session).exists():
-        return _estimator_from_bank(session, share_from=occupancy_est)
+    bank = session_bank_path()
+    if occupancy_est is not None and bank and Path(bank).exists():
+        return _estimator_from_bank(bank, share_from=occupancy_est)
     return StubEstimator()
 
 
 def create_app(
     estimator: Estimator | None = None,
     hub: PositionHub | None = None,
-    occupancy_estimator: Estimator | None = None,
+    occupancy_estimator: CentroidEstimator | None = None,
 ) -> FastAPI:
     """Build the gateway app. Estimator/hub/occupancy are injectable for tests.
 
@@ -253,23 +236,26 @@ def create_app(
     moment a photo's occupancy matches the chess starting position, the server
     auto-calibrates piece types from that photo (DESIGN §4.6).
     """
-    occ_est: Estimator | None = occupancy_estimator
+    occ_est: CentroidEstimator | None = occupancy_estimator
     if occ_est is None and os.environ.get("BR_OCCUPANCY_BANK"):
         occ_est = _estimator_from_bank(os.environ["BR_OCCUPANCY_BANK"])
     est: Estimator = estimator if estimator is not None else _default_estimator(occ_est)
     hub_: PositionHub = hub if hub is not None else PositionHub()
+    # Every swap of the active estimator goes through the session, which mirrors
+    # the new one onto ``app.state`` (bound just below — a swap can only happen
+    # inside a request, long after this function returns).
+    session = EstimatorSession(
+        est,
+        occupancy=occ_est,
+        on_swap=lambda swapped: setattr(app.state, "estimator", swapped),
+    )
     # Streaming ingress (WP-G1/G2): frames are estimated off the event loop by
-    # per-board workers. Resolved per frame so /calibrate's hot-swap reaches the
-    # stream. ``None`` while the §4.6 uncalibrated state holds — the same condition
-    # that routes /estimate to occupancy-only — so the stream skips frames instead
-    # of publishing the stub's fabricated placement; the moment any calibration
-    # lands, the very same stream starts publishing real positions.
-    def _live_estimator() -> Estimator | None:
-        if occ_est is not None and photo_estimator(est) is None:
-            return None
-        return est
-
-    ingest_ = FrameIngest(_live_estimator, hub_)
+    # per-board workers, through the same routing decision ``POST /estimate``
+    # takes. Resolved per frame so /calibrate's hot-swap reaches the stream —
+    # including out of the §4.6 uncalibrated state, where the route is
+    # ``Uncalibrated`` and the worker skips the frame instead of publishing the
+    # stub's fabricated placement.
+    ingest_ = FrameIngest(session.route, hub_)
     # Latest-wins raw-frame retention, one entry per board, in-memory only (no
     # disk write, unbounded board count — mirrors the hub's own retention). This
     # is what ``GET /boards/{id}/frame`` serves for the live video-like preview;
@@ -310,7 +296,8 @@ def create_app(
         allow_headers=["*"],
         expose_headers=["X-Seq", "X-Capture-Ts", "X-Corners"],
     )
-    app.state.estimator = est
+    app.state.estimator = session.estimator
+    app.state.session = session
     app.state.hub = hub_
     app.state.ingest = ingest_
     app.state.recorder = recorder
@@ -327,8 +314,21 @@ def create_app(
     @app.get("/healthz")
     async def healthz() -> dict:
         # The recording stats ride on liveness so an operator can confirm frames
-        # are landing on disk without shelling into the container.
-        health = {"status": "ok", "subscribers": hub_.subscriber_count}
+        # are landing on disk without shelling into the container. The ingest
+        # counters ride along for the same reason: "frames are arriving but none
+        # are being estimated" is the §4.6 uncalibrated state, and it is otherwise
+        # invisible from outside the process — the stream simply looks quiet.
+        health = {
+            "status": "ok",
+            "subscribers": hub_.subscriber_count,
+            "ingest": {
+                "received": ingest_.frames_received,
+                "estimated": ingest_.frames_estimated,
+                "dropped": ingest_.frames_dropped,
+                "failed": ingest_.frames_failed,
+                "skipped": ingest_.frames_skipped,
+            },
+        }
         if recorder is not None:
             health["recording"] = recorder.stats()
         return health
@@ -420,48 +420,11 @@ def create_app(
         except (OSError, ValueError):
             pass
 
-    def _photo_estimator():
-        """The *currently active* estimator's photo path, if it has one.
-
-        Kept as a closure because calibration hot-swaps ``est`` mid-request
-        (bootstrap/refresh), and every reader must resolve the current one.
-        """
-        return photo_estimator(est)
-
-    def _base_trained():
-        """The zero-shot trained member of the active estimator, if any."""
-        from board_reader_inference.estimator import EnsembleEstimator
-        from board_reader_inference.trained import TrainedEstimator
-
-        if isinstance(est, EnsembleEstimator):
-            return est.primary
-        return est if isinstance(est, TrainedEstimator) else None
-
-    def _centroid_part():
-        """The per-set exemplar/centroid member of the active estimator, if any."""
-        from board_reader_inference.estimator import CentroidEstimator, EnsembleEstimator
-
-        if isinstance(est, EnsembleEstimator):
-            return est.booster if isinstance(est.booster, CentroidEstimator) else None
-        return est if isinstance(est, CentroidEstimator) else None
-
-    def _save_session(classifier) -> str | None:
-        """Persist the session bank iff ``BR_SESSION_BANK`` opts in (best-effort)."""
-        path = _session_bank_path()
-        if path is None:
-            return None
-        try:
-            Path(path).parent.mkdir(parents=True, exist_ok=True)
-            classifier.save(path)
-        except OSError:
-            return None
-        return path
-
-    def _debug_payload(image, corners, square_dist, *, geometry, size, rotate_k=0):
-        """The opt-in ``?debug=1`` visualisation pair, from whatever a branch saw.
+    def _debug_payload(view: ReadView, square_dist, *, rotate_k: int = 0) -> dict:
+        """The opt-in ``?debug=1`` visualisation pair, from what the branch saw.
 
         ``rotate_k`` is the same ``np.rot90`` turn count ``autorotate`` applied to
-        ``square_dist``. Boxes/crops are sampled from ``corners`` exactly as
+        ``square_dist``. Boxes/crops are sampled from ``view`` exactly as
         recognition saw them (the photo pixels a piece stands in don't move just
         because a label was wrong) and only THEN reindexed by the identical
         rot90 permutation — not re-derived from a corner-shifted homography.
@@ -482,8 +445,10 @@ def create_app(
             to_b64_jpeg,
         )
 
-        boxes = square_boxes(corners, geometry, image.shape)
-        crops = crop_squares_photo(image, corners, geometry=geometry, size=size)
+        boxes = square_boxes(view.corners, view.geometry, view.image.shape)
+        crops = crop_squares_photo(
+            view.image, view.corners, geometry=view.geometry, size=view.size
+        )
         if rotate_k:
             boxes = np.rot90(
                 boxes.reshape(GRID, GRID, 4, 2), rotate_k, axes=(0, 1)
@@ -495,153 +460,16 @@ def create_app(
             )
             crops = list(crop_grid.reshape(-1, *crops[0].shape))
         return {
-            "boxes": to_b64_jpeg(draw_boxes(image, boxes, square_dist)),
+            "boxes": to_b64_jpeg(draw_boxes(view.image, boxes, square_dist)),
             "mosaic": to_b64_jpeg(crop_mosaic(crops, square_dist)),
         }
 
-    def _maybe_refresh_bank(frame: Frame, corners: np.ndarray, event) -> dict | None:
-        """Calibrated-path self-refresh (DESIGN §4.6): seeing the START position
-        read at drifted (low) confidence appends label-confirmed exemplars from
-        this photo, so the bank tracks new lighting without the user calibrating.
-        Gates: exemplar-bank estimator only; mean confidence below
-        ``autocalib.APPEND_MAX_CONF``; prediction agrees with the (rotated) start
-        placement on ≥ ``APPEND_MIN_AGREE`` squares (only those squares are
-        learned, so mid-game photos and misreads can't pollute the bank); bank
-        below ``APPEND_BANK_CAP``.
-        """
-        nonlocal est
-        from board_reader_core.protocol import CLASSES, position_confidence
-        from board_reader_inference import autocalib
-        from board_reader_inference.centroid import ExemplarClassifier, build_exemplars
-        from board_reader_inference.estimator import CentroidEstimator, EnsembleEstimator
-
-        cent = _centroid_part()
-        if cent is None or not isinstance(cent.classifier, ExemplarClassifier):
-            return None
-        if cent.classifier.exemplars.shape[0] >= autocalib.APPEND_BANK_CAP:
-            return None
-        if position_confidence(event.square_dist) >= autocalib.APPEND_MAX_CONF:
-            return None
-        dist = np.asarray(event.square_dist).reshape(-1, len(CLASSES))
-        pred = [CLASSES[i] for i in dist.argmax(axis=1)]
-        rotation, agree, mask = autocalib.match_predicted_start(pred)
-        if agree < autocalib.APPEND_MIN_AGREE:
-            return None
-        crops = crop_squares_photo(
-            frame.image,
-            corners,
-            geometry=cent.geometry,
-            size=cent.square_size or 224,
-        )
-        new = build_exemplars(
-            cent.embedder,
-            crops,
-            autocalib.start_placement_for_rotation(rotation),
-            mask=mask,
-            backbone=cent.classifier.backbone,
-            box_headroom=cent.headroom,
-            box_side_pad=cent.side_pad,
-        )
-        classifier = cent.classifier.extended(new.exemplars, new.labels)
-        refreshed = CentroidEstimator(
-            cent.embedder,
-            classifier,
-            geometry=cent.geometry,
-            square_size=cent.square_size,
-            orientation=cent.orientation,
-        )
-        base = _base_trained()
-        est = (
-            EnsembleEstimator(
-                base, refreshed, weight=_booster_weight(classifier.exemplars.shape[0])
-            )
-            if base is not None
-            else refreshed
-        )
-        app.state.estimator = est
-        return {
-            "added": int(new.exemplars.shape[0]),
-            "total": int(classifier.exemplars.shape[0]),
-            "agree": agree,
-            "rotation": rotation,
-            "saved": _save_session(classifier),
-        }
-
-    def _maybe_bootstrap_bank(frame: Frame, corners: np.ndarray, event) -> dict | None:
-        """Zero-tap per-set calibration ON TOP of the zero-shot model (§4.6).
-
-        When the trained model runs WITHOUT a booster bank and its own reading
-        matches the start position, build the first exemplar bank from this very
-        photo and upgrade to the ensemble — same trigger and pollution guard as
-        auto-calibration (only label-agreeing squares are learned), but labeled
-        by the trained model's full 13-class reading instead of occupancy alone.
-        """
-        nonlocal est
-        from board_reader_core.protocol import CLASSES
-        from board_reader_inference import autocalib
-        from board_reader_inference.centroid import build_exemplars
-        from board_reader_inference.estimator import CentroidEstimator, EnsembleEstimator
-
-        base = _base_trained()
-        if base is None or _centroid_part() is not None:
-            return None
-        dist = np.asarray(event.square_dist).reshape(-1, len(CLASSES))
-        pred = [CLASSES[i] for i in dist.argmax(axis=1)]
-        rotation, agree, mask = autocalib.match_predicted_start(pred)
-        if agree < autocalib.APPEND_MIN_AGREE:
-            return None
-        if isinstance(occ_est, CentroidEstimator):
-            embedder, backbone = occ_est.embedder, occ_est.classifier.backbone
-        else:
-            from board_reader_inference.embed import make_embedder
-
-            backbone = "dinov2"
-            try:
-                embedder = make_embedder(backbone)
-            except (OSError, FileNotFoundError):
-                # No embedder available (e.g. DINOv2 weights not shipped): the
-                # zero-shot answer stands on its own, just without the booster.
-                return None
-        crops = crop_squares_photo(
-            frame.image,
-            corners,
-            # The bank is bbox-only; a pose-geometry model reports the deployed
-            # bank default here rather than inventing scalars (see TrainedEstimator).
-            geometry=BboxGeometry(headroom=base.headroom, side_pad=base.side_pad),
-            size=base.square_size or 224,
-        )
-        classifier = build_exemplars(
-            embedder,
-            crops,
-            autocalib.start_placement_for_rotation(rotation),
-            mask=mask,
-            backbone=backbone,
-            box_headroom=base.headroom,
-            box_side_pad=base.side_pad,
-        )
-        bank_est = CentroidEstimator(
-            embedder,
-            classifier,
-            geometry=BboxGeometry(headroom=base.headroom, side_pad=base.side_pad),
-        )
-        est = EnsembleEstimator(
-            base, bank_est, weight=_booster_weight(classifier.exemplars.shape[0])
-        )
-        app.state.estimator = est
-        return {
-            "matches": agree,
-            "rotation": rotation,
-            "exemplars": int(classifier.exemplars.shape[0]),
-            "saved": _save_session(classifier),
-        }
-
     async def _uncalibrated_estimate(
-        frame: Frame,
-        corners: np.ndarray,
+        route: Uncalibrated,
         debug_on: bool,
         warns: list[str],
         sidecar: Path | None = None,
-    ):
+    ) -> JSONResponse:
         """Zero-setup path: occupancy-only readout + start-position auto-calibration.
 
         Piece type does not transfer across piece styles on frozen features
@@ -652,26 +480,15 @@ def create_app(
         from the photo itself via the exemplar-bank machinery and answer with a
         full, published position event — the user never pressed anything.
         """
-        nonlocal est
-        from board_reader_inference.autocalib import detect_start, occupancy_grid
-        from board_reader_inference.centroid import build_exemplars
-        from board_reader_inference.estimator import CentroidEstimator
+        from board_reader_inference.autocalib import occupancy_grid
 
-        assert occ_est is not None
-        size = occ_est.square_size or 224
-        crops = crop_squares_photo(
-            frame.image,
-            corners,
-            geometry=occ_est.geometry,
-            size=size,
-        )
-        dist = occ_est.classifier.classify_board(occ_est.embedder.embed(crops))
-        match = detect_start(dist, crops)
-        if match is None:
+        reading = route.read()
+        auto = session.adopt_start(route, reading)
+        if auto is None:
             result = {
-                "board_id": frame.board_id,
+                "board_id": route.frame.board_id,
                 "mode": "occupancy",
-                "occupied": occupancy_grid(dist).tolist(),
+                "occupied": occupancy_grid(reading.dist).tolist(),
                 "hint": (
                     "uncalibrated for this piece set: showing occupancy only — "
                     "photograph the starting position once to enable full recognition"
@@ -680,35 +497,16 @@ def create_app(
             if warns:
                 result["warnings"] = warns
             if debug_on:
-                result["debug"] = _debug_payload(
-                    frame.image, corners, dist,
-                    geometry=occ_est.geometry, size=size,
-                )
+                result["debug"] = _debug_payload(route.view(), reading.dist)
             return JSONResponse(result)
 
-        classifier = build_exemplars(
-            occ_est.embedder,
-            crops,
-            match.placement,
-            mask=match.calib_mask,
-            backbone=occ_est.classifier.backbone,
-            box_headroom=occ_est.headroom,
-            box_side_pad=occ_est.side_pad,
-        )
-        est = CentroidEstimator(
-            occ_est.embedder,
-            classifier,
-            geometry=occ_est.geometry,
-        )
-        app.state.estimator = est
-        saved = _save_session(classifier)
-        event = est.estimate_photo(frame, corners)
+        event = auto.reread(route.frame, route.corners)
         await hub_.publish(event)
         result = event.to_dict()
         # This branch answers with real piece types, so it gets the same repair as
         # the calibrated path. (The occupancy-only branch above does not: with no
         # piece identity and no colour there is nothing the constraints can read.)
-        # ``match.rotation`` *would* be an established frame here — it comes from
+        # ``auto.rotation`` *would* be an established frame here — it comes from
         # the start-position occupancy pattern, not from the circular pawn
         # heuristic — but a start position has no pawn on rank 1/8 by
         # construction, so the one frame-dependent constraint could never fire.
@@ -716,10 +514,10 @@ def create_app(
         repair = _prior_decode(event)
         result["prior"] = repair.to_dict()
         result["autocalibrated"] = {
-            "matches": match.matches,
-            "rotation": match.rotation,
-            "exemplars": int(classifier.exemplars.shape[0]),
-            "saved": saved,
+            "matches": auto.matches,
+            "rotation": auto.rotation,
+            "exemplars": auto.exemplars,
+            "saved": auto.saved,
         }
         # This branch answers with a real position too, so it is labelable like any
         # other read (see /labels).
@@ -733,10 +531,7 @@ def create_app(
         if warns:
             result["warnings"] = warns
         if debug_on:
-            result["debug"] = _debug_payload(
-                frame.image, corners, event.square_dist,
-                geometry=occ_est.geometry, size=size,
-            )
+            result["debug"] = _debug_payload(route.view(), event.square_dist)
         return JSONResponse(result)
 
     @app.post("/estimate")
@@ -761,64 +556,39 @@ def create_app(
                 return JSONResponse({"error": str(e)}, status_code=400)
 
         debug_on = _parse_debug(debug)
-        photo_fn = _photo_estimator()
         warns = ["low_light"] if float(image.mean()) < LOW_LIGHT_MEAN else []
         if quad is not None and _quad_aspect(quad) < LOW_ANGLE_HW:
             warns.append("very_low_angle")
 
-        if photo_fn is None and occ_est is not None:
-            # No piece-type calibration active but auto-calibration is enabled:
-            # the zero-setup path handles this photo entirely.
-            frame = Frame(
-                board_id=board_id,
-                seq=next(snapshot_seq),
-                capture_ts=time.time(),
-                image=image,
-            )
-            corners_q = quad if quad is not None else full_frame_corners(image)
-            return await _uncalibrated_estimate(frame, corners_q, debug_on, warns, sidecar)
-
-        # What the debug boxes/mosaic should be drawn from — defaults to "whole
-        # posted image is the board", overridden below by whichever branch the
-        # estimate itself actually took (kept in lockstep with that branch so the
-        # visualisation always matches what recognition saw).
-        debug_image, debug_corners = image, full_frame_corners(image)
-        debug_geometry = BboxGeometry(headroom=0.0, side_pad=0.0)
-
-        if quad is not None and photo_fn is None:
-            # Rectified-mode estimator handed an original photo: warp server-side
-            # so the classifier still sees what it was calibrated on (exact for
-            # rectified-mode centroids; the M0 stub ignores pixels anyway).
-            image = rectify_photo(image, quad)
-            quad = None
-            debug_image, debug_corners = image, full_frame_corners(image)
         frame = Frame(
             board_id=board_id,
             seq=next(snapshot_seq),
             capture_ts=time.time(),
             image=image,
+            corners=quad,
         )
-        autocal = None
-        if photo_fn is not None:
-            # Photo-mode centroids: use full-piece boxes. Without corners the body
-            # is a rectified crop — treat the whole frame as the board (approximate
-            # but keeps the old rectified-crop contract working).
-            debug_corners = quad if quad is not None else full_frame_corners(image)
-            debug_geometry = est.geometry
-            event = photo_fn(frame, debug_corners)
-            autocal = _maybe_bootstrap_bank(frame, debug_corners, event)
+        # The one routing decision — the same one the live stream takes (§4.5,
+        # :mod:`.routing`), so a photo posted here and the same photo streamed can
+        # never be read through different branches.
+        route = session.route(frame)
+        if isinstance(route, Uncalibrated):
+            # No piece-type calibration active but auto-calibration is enabled:
+            # the zero-setup path handles this photo entirely.
+            return await _uncalibrated_estimate(route, debug_on, warns, sidecar)
+
+        event = route.read()
+        autocal = refresh = None
+        if isinstance(route, PhotoRead):
+            autocal = session.bootstrap_bank(frame, route.corners, event)
             if autocal is not None:
                 # Answer through the just-upgraded ensemble, not the bare model.
-                event = _photo_estimator()(frame, debug_corners)
-                refresh = None
+                event = autocal.reread(frame, route.corners)
             else:
-                refresh = _maybe_refresh_bank(frame, debug_corners, event)
-        else:
-            event = est.estimate(frame)
-            refresh = None
+                refresh = session.refresh_bank(frame, route.corners, event)
         rotated_deg = None
-        if photo_fn is not None and _parse_debug(autorotate):
+        if isinstance(route, PhotoRead) and _parse_debug(autorotate):
             from board_reader_core.protocol import PositionEvent
+
             from board_reader_inference.autocalib import resolve_rotation
 
             k, rotated = resolve_rotation(np.asarray(event.square_dist))
@@ -838,10 +608,21 @@ def create_app(
         result = event.to_dict()
         repair = _prior_decode(event)
         result["prior"] = repair.to_dict()
-        if autocal:
-            result["autocalibrated"] = autocal
-        if refresh:
-            result["bank_refreshed"] = refresh
+        if autocal is not None:
+            result["autocalibrated"] = {
+                "matches": autocal.matches,
+                "rotation": autocal.rotation,
+                "exemplars": autocal.exemplars,
+                "saved": autocal.saved,
+            }
+        if refresh is not None:
+            result["bank_refreshed"] = {
+                "added": refresh.added,
+                "total": refresh.total,
+                "agree": refresh.agree,
+                "rotation": refresh.rotation,
+                "saved": refresh.saved,
+            }
         if rotated_deg:
             result["autorotated"] = rotated_deg
         _annotate_upload(
@@ -860,13 +641,11 @@ def create_app(
         if debug_on:
             # Recompute crops/boxes purely for visualisation — the estimator above
             # already cropped internally; debug is opt-in so this extra pass is
-            # acceptable. rotate_k keeps them in step with square_dist above when
-            # autorotate fired (see _debug_payload).
-            size = est.square_size or 224 if photo_fn is not None else 224
+            # acceptable. The view comes from the route, so it is always the
+            # geometry recognition used. rotate_k keeps it in step with
+            # square_dist above when autorotate fired (see _debug_payload).
             result["debug"] = _debug_payload(
-                debug_image, debug_corners, event.square_dist,
-                geometry=debug_geometry, size=size,
-                rotate_k=(rotated_deg or 0) // 90,
+                route.view(), event.square_dist, rotate_k=(rotated_deg or 0) // 90
             )
         return JSONResponse(result)
 
@@ -887,7 +666,6 @@ def create_app(
         Persistence is opt-in: the bank is written only when ``BR_SESSION_BANK``
         names a path (the curated ``BR_CENTROIDS`` file is never overwritten).
         """
-        nonlocal est
         body = await request.body()
         try:
             image = decode_jpeg(body)
@@ -895,141 +673,31 @@ def create_app(
         except ValueError as e:
             return JSONResponse({"error": str(e)}, status_code=400)
         _save_upload("calibrate", body, corners=corners, placement=placement)
-
-        from board_reader_inference.centroid import ExemplarClassifier, build_exemplars
-        from board_reader_inference.estimator import CentroidEstimator, EnsembleEstimator
-
-        # Orientation guard (2026-07-18 field incident). Auto-detected corners
-        # carry arbitrary orientation and `autorotate` hides mislabeling from the
-        # user — so trusting `placement` in corner order let a 180°-off calibrate
-        # push a color-swapped bank to disk. Resolve the label rotation against a
-        # stateless probe of THIS photo (the trained member if present — it can't
-        # have been poisoned) and only accept a rotation that clearly beats the
-        # as-given labels.
-        label_rotation = 0
-        probe_est = _base_trained()
-        probe_fn = (
-            probe_est.estimate_photo if probe_est is not None else _photo_estimator()
-        )
-        if probe_fn is not None:
-            from board_reader_core.protocol import (
-                CLASSES,
-                encode_placement,
-                parse_placement,
-            )
-
-            try:
-                probe = probe_fn(
-                    Frame(
-                        board_id="calibrate-probe",
-                        seq=next(snapshot_seq),
-                        capture_ts=time.time(),
-                        image=image,
-                    ),
-                    quad,
-                )
-                pred = [
-                    CLASSES[i]
-                    for i in np.asarray(probe.square_dist).reshape(64, len(CLASSES)).argmax(-1)
-                ]
-                grid = np.array(parse_placement(placement), dtype="<U5")
-                pred_arr = np.array(pred)
-                agrees = [
-                    int((np.rot90(grid, k).reshape(-1) == pred_arr).sum())
-                    for k in range(4)
-                ]
-                best = int(np.argmax(agrees))
-                claimed = np.rot90(grid, best).reshape(-1)
-                pieces = claimed != "empty"
-                piece_agree = int((claimed[pieces] == pred_arr[pieces]).sum())
-                if piece_agree < CALIBRATE_MIN_PIECE_AGREE * int(pieces.sum()):
-                    # The photo is not showing the claimed position (mid-game
-                    # board sent as "start", corners off the surface, unusably
-                    # flat camera): calibrating would poison the bank.
-                    return JSONResponse(
-                        {
-                            "error": (
-                                "calibration rejected: the photo does not match the "
-                                f"given position (only {piece_agree}/{int(pieces.sum())} "
-                                "claimed piece squares agree, even at the best rotation). "
-                                "Check that the board shows the position being calibrated, "
-                                "the corners sit on the playing surface, and the camera "
-                                "is not too flat."
-                            )
-                        },
-                        status_code=422,
-                    )
-                if best != 0 and agrees[best] >= agrees[0] + 8:
-                    label_rotation = best
-                    placement = encode_placement(np.rot90(grid, best).tolist())
-            except ValueError:
-                pass  # unparseable placement is rejected below as before
-
-        # Reuse the running estimator's bank member's embedder + box geometry
-        # when it has one (dims and crops must match); otherwise start a fresh
-        # DINOv2 setup with the shipped photo-box defaults.
-        cent = _centroid_part()
-        if cent is not None:
-            embedder, backbone = cent.embedder, cent.classifier.backbone
-            headroom, side_pad = cent.headroom, cent.side_pad
-        elif isinstance(occ_est, CentroidEstimator):
-            # Uncalibrated but autocalib-enabled: share the occupancy bank's
-            # embedder/geometry (one ONNX session; crops cut identically).
-            embedder, backbone = occ_est.embedder, occ_est.classifier.backbone
-            headroom, side_pad = occ_est.headroom, occ_est.side_pad
-        else:
-            from board_reader_inference.embed import make_embedder
-
-            backbone = "dinov2"
-            embedder = make_embedder(backbone)
-            headroom, side_pad = 0.3, 0.15
         try:
-            crops = crop_squares_photo(
-                image, quad, geometry=BboxGeometry(headroom=headroom, side_pad=side_pad)
-            )
-            new = build_exemplars(
-                embedder,
-                crops,
-                placement,
-                backbone=backbone,
-                box_headroom=headroom,
-                box_side_pad=side_pad,
-            )
+            outcome = session.calibrate_from(image, quad, placement)
         except ValueError as e:
             return JSONResponse({"error": str(e)}, status_code=400)
-        if (
-            cent is not None
-            and isinstance(cent.classifier, ExemplarClassifier)
-            and cent.classifier.backbone == backbone
-        ):
-            classifier = cent.classifier.extended(new.exemplars, new.labels)
-        else:
-            classifier = new
-        bank_est = CentroidEstimator(
-            embedder,
-            classifier,
-            geometry=BboxGeometry(headroom=headroom, side_pad=side_pad),
-        )
-        # Calibration BOOSTS a zero-shot trained model rather than replacing it
-        # (the blend beats either member alone — see EnsembleEstimator).
-        base = _base_trained()
-        est = (
-            EnsembleEstimator(
-                base, bank_est, weight=_booster_weight(classifier.exemplars.shape[0])
+        if isinstance(outcome, CalibrationRejected):
+            return JSONResponse(
+                {
+                    "error": (
+                        "calibration rejected: the photo does not match the "
+                        f"given position (only {outcome.piece_agree}/"
+                        f"{outcome.piece_squares} claimed piece squares agree, even "
+                        "at the best rotation). Check that the board shows the "
+                        "position being calibrated, the corners sit on the playing "
+                        "surface, and the camera is not too flat."
+                    )
+                },
+                status_code=422,
             )
-            if base is not None
-            else bank_est
-        )
-        app.state.estimator = est
-        classes_calibrated = len(set(new.labels.tolist()))
-        path = _save_session(classifier)
         return JSONResponse(
             {
-                "classes_calibrated": classes_calibrated,
-                "backbone": backbone,
-                "saved": path,
-                "exemplars": int(classifier.exemplars.shape[0]),
-                "label_rotation": label_rotation,
+                "classes_calibrated": outcome.classes_calibrated,
+                "backbone": outcome.backbone,
+                "saved": outcome.saved,
+                "exemplars": outcome.exemplars,
+                "label_rotation": outcome.label_rotation,
             }
         )
 
