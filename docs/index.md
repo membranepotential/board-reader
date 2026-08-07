@@ -44,9 +44,9 @@ The **edge** node (a Pi; a phone browser in the sim — `/camera`) finds the boa
 forwards frames — rectified, or original with the corner quad on each frame header —
 adaptively since M2: a ~1 fps keepalive at rest, a burst through motion, with a
 measured `stability` on every frame. The browser edge also **tracks the board plane**,
-so the quad follows the camera with its `a8` labelling intact (DESIGN §4.4.1(a)) —
-which is what lets it be walked around the board to calibrate the piece bank from
-several angles at once. The **inference** node runs a stateless per-frame estimator over 64 square crops and
+so the quad follows the camera with its `a8` labelling intact (DESIGN §4.4.1(a))
+through a bump, a hand sweeping over the board, or the phone moving to a new angle.
+The **inference** node runs a stateless per-frame estimator over 64 square crops and
 publishes a position event. The **viewer** renders it. Edge and inference never import each
 other — they meet only on the wire. Recognition is a multi-style-trained crop classifier
 blended with a per-set nearest-exemplar bank; the trained half is robust where it has never

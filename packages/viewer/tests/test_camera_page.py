@@ -8,6 +8,8 @@ edge semantics it mirrors, the touch invariants, the secure-context explainer).
 
 from __future__ import annotations
 
+import re
+
 from starlette.testclient import TestClient
 
 from board_reader_viewer import tls
@@ -18,6 +20,28 @@ def camera_html() -> str:
     response = TestClient(create_app()).get("/camera")
     assert response.status_code == 200
     return response.text
+
+
+def _uncommented(source: str) -> str:
+    """`source` with its comments stripped.
+
+    The page names several of the anti-patterns these tests assert the absence of —
+    `object-fit: contain`, `cg.redrawAll()` — precisely *because* its comments explain
+    why it does not use them. A negative assertion therefore has to be made against the
+    code, never against the prose.
+    """
+    source = re.sub(r"/\*.*?\*/", "", source, flags=re.S)
+    return re.sub(r"^[ \t]*//.*$", "", source, flags=re.M)
+
+
+def camera_css() -> str:
+    return _uncommented(camera_html().split("<style>")[1].split("</style>")[0])
+
+
+def camera_script() -> str:
+    return _uncommented(
+        camera_html().split('<script type="module">')[1].split("</script>")[0]
+    )
 
 
 def test_camera_page_is_served():
@@ -192,12 +216,21 @@ def test_camera_page_reconnects_the_ingest_socket_with_backoff():
 
 
 def test_camera_page_corner_handles_are_finger_sized_and_scroll_safe():
-    """Same touch contract as the snapshot page: only a drag that starts ON a handle
-    ever takes the pointer, so a thumb anywhere else still scrolls the page."""
+    """Half of the old touch contract is unchanged and still load-bearing: only a drag
+    that starts ON a handle ever takes the pointer, so the stage and the video never
+    capture a pointer and never preventDefault a touch.
+
+    The other half changed with the rework. The stage is a full-screen viewfinder now and
+    nothing on the page scrolls, so it is `touch-action: none` rather than the `pan-y` it
+    carried inside a card stack — which also stops iOS pull-to-refresh firing over the
+    picture. The one surface that does scroll is the sheet, and its scroll stays inside
+    it. Handles are the 44px touch minimum: this is an instrument held at arm's length,
+    not a thumbnail."""
     html = camera_html()
-    assert ".corner-handle { position: absolute; width: 34px; height: 34px;" in html
-    assert "margin: -17px 0 0 -17px" in html
-    assert ".camera-stage { position: relative; line-height: 0; touch-action: pan-y;" in html
+    assert (".corner-handle { position: absolute; width: 44px; height: 44px; "
+            "margin: -22px 0 0 -22px;") in html
+    assert ".camera-stage { position: fixed; inset: 0; height: 100dvh; background: #000;" in html
+    assert "touch-action: none; overflow: hidden; z-index: 0;" in html
     assert ".camera-stage.placing" not in html            # no state-toggled exception
     handle = html.split("function attachHandleEvents(el, idx) {")[1].split("\n}")[0]
     assert "el.setPointerCapture(ev.pointerId);" in handle
@@ -205,8 +238,60 @@ def test_camera_page_corner_handles_are_finger_sized_and_scroll_safe():
     # Neither the stage nor the video ever captures a pointer or preventDefaults a touch.
     assert "cameraStage.setPointerCapture" not in html
     assert 'video.addEventListener("pointerdown"' not in html
-    # Handles are positioned in CSS px off the video's rect, so a reflow must re-lay them.
-    assert "new ResizeObserver(() => draw()).observe(cameraStage);" in html
+    # The sheet is the exception, and the only one: it scrolls, and its overscroll does
+    # not become the page's.
+    sheet = html.split("#sheet { ")[1].split("}")[0]
+    assert "overflow-y: auto" in sheet and "overscroll-behavior: contain" in sheet
+    assert "touch-action: pan-y" in sheet
+    # Handles are positioned in CSS px off the video's rect, so a reflow must re-lay them
+    # — and re-fit the picture they are laid out against.
+    assert "new ResizeObserver(() => { fitPicture(); draw(); }).observe(cameraStage);" in html
+
+
+def test_camera_page_is_landscape_first_with_portrait_as_the_override():
+    """iOS Safari implements no `screen.orientation.lock()`, so "landscape by default"
+    can only ever be a layout default and never a lock: the base stylesheet IS the
+    landscape layout and `@media (orientation: portrait)` overrides it.
+
+    The chrome's own thickness is stated once per orientation as a custom property and
+    read back by JS, so fitting the picture does not duplicate the layout in script."""
+    html = camera_html()
+    assert "@media (orientation: portrait) {" in html
+    assert "--rail: 150px; --dock: 0px;" in html                     # landscape: a rail
+    assert ".camera-stage { --rail: 0px; --dock: 150px; }" in html   # portrait: a dock
+    inner = html.split("function stageInner() {")[1].split("\n}")[0]
+    assert 'parseFloat(cs.getPropertyValue("--rail"))' in inner
+    assert 'parseFloat(cs.getPropertyValue("--dock"))' in inner
+    # One DOM order serves both: a right-hand column in landscape, a 3x2 grid dock in
+    # portrait. The primary control is last, where the thumb rests.
+    assert "grid-template-columns: repeat(3, 1fr);" in html
+    rail = html.split('<nav class="rail">')[1].split("</nav>")[0]
+    assert re.findall(r'id="(\w+)"', rail) == ["more", "position", "detect", "rotate",
+                                               "calib", "stream"]
+
+
+def test_camera_page_picture_is_a_sized_wrapper_not_a_letterboxed_element():
+    """One coordinate space, deliberately. JS gives `.picture` exactly the video's aspect
+    ratio inside the stage's inner box, so the element's box IS the picture and
+    `rect.width / video.videoWidth` stays a single uniform scale.
+
+    `object-fit: contain` would letterbox INSIDE the element and introduce a second space
+    that every touch and every handle would have to be routed through. The one thing that
+    must never happen is screen space leaking into `cropBox()`/`sendFrame()`: the preview
+    would still look correct while the corners on the wire pointed at the wrong pixels."""
+    html = camera_html()
+    fit = html.split("function fitPicture() {")[1].split("\n}")[0]
+    assert "const k = Math.min(box.w / src.w, box.h / src.h);" in fit
+    assert 'picture.style.width = w + "px";' in fit
+    assert 'picture.style.height = h + "px";' in fit
+    # The video and the overlay fill that box exactly; nothing fits itself inside it.
+    assert (".picture video { position: absolute; inset: 0; width: 100%; height: 100%; "
+            "display: block; }") in html
+    assert 'preserveAspectRatio="none"' in html
+    assert "object-fit" not in camera_css()
+    # ...so the same single scale converts in both directions, with no letterbox term.
+    assert "const scale = video.videoWidth ? rect.width / video.videoWidth : 1;" in html
+    assert "const x = (ev.clientX - r.left) * (video.videoWidth / r.width);" in html
 
 
 def test_camera_page_orientation_is_the_operators():
@@ -216,13 +301,85 @@ def test_camera_page_orientation_is_the_operators():
     assert 'id="rotate"' in html and "rotate labels" in html
     assert "rot = (rot + 1) % 4;" in html
     assert "function labelOf(i) { return CORNER_ORDER[(i + rot) % 4]; }" in html
-    detect = html.split("async function detectCorners() {")[1].split("\n}\n")[0]
+    detect = html.split(
+        "async function detectCorners({ auto = false } = {}) {")[1].split("\n}\n")[0]
     assert "pts = corners.map(([x, y]) => [Math.round(x / k), Math.round(y / k)]);" in detect
     assert "rot = 0" not in detect                       # a detection never relabels
     assert "geometry cannot tell which corner " in html
     # Detection is offered at a sane size, and its refusal is the node's own words.
     assert "const DETECT_LONG_SIDE = 1600;" in html
     assert "(await r.json()).error ?? reason" in detect
+
+
+def test_camera_page_looks_for_the_board_by_itself():
+    """The common case should need no framing step at all: point the phone at the board
+    and the page finds it. Each of the four gates on that path is a measurement rather
+    than a preference.
+
+    `MotionMeter.update` returns 1.0 on its very first frame by construction, so a bare
+    stability gate passes on frame one — before autoexposure and autofocus have settled,
+    spending the attempt on a dark, soft frame. Hence a settle delay, and a floor
+    stricter than MOVING_BELOW so a detect frame is exemplar-grade rather than merely
+    "not moving". `PlaneTracker.lose()` freezes the quad and keeps tracking from it
+    precisely so a hand sweeping over the board recovers by itself, so `lost` fires on
+    essentially every move of a real game — hence loss must be SUSTAINED before it counts
+    as a reason to re-detect. And `/detect` costs ~0.1 s on a hit but 2-4 s on a MISS,
+    because a miss exhausts every coarse candidate — hence retries back off and
+    eventually give up rather than poll a page pointed at a wall forever."""
+    html = camera_html()
+    assert "const AUTO_SETTLE_MS = 2500;" in html
+    assert "const AUTO_STABILITY = 0.9;" in html
+    assert "const AUTO_LOST_MS = 6000;" in html
+    assert "const AUTO_BACKOFF_MS = [4000, 8000, 16000, 32000];" in html
+    tick = html.split("function autoDetectTick() {")[1].split("\n}\n")[0]
+    # Nothing else may own the camera or the quad, and a hidden page sees nothing.
+    assert "if (detectBusy || calibBusy || dragIdx !== null || document.hidden) return;" in tick
+    assert "if (!video.videoWidth || autoGaveUp()) return;" in tick
+    assert "if (now - cameraLiveAt < AUTO_SETTLE_MS || now < autoNextAt) return;" in tick
+    assert "if (meter.stability < AUTO_STABILITY) return;" in tick
+    assert 'if (trackState === "lost") { if (lostSince === null) lostSince = now; }' in tick
+    assert "const sustainedLoss = lostSince !== null && now - lostSince >= AUTO_LOST_MS;" in tick
+    # First sight, or a sustained loss — never a board that is already framed and tracked.
+    assert "if (quadKnown && !sustainedLoss) return;" in tick
+    assert "cameraLiveAt = performance.now();" in html
+    # Every attempt costs the back-off, hit or miss; a hit has already zeroed the count.
+    detect = html.split(
+        "async function detectCorners({ auto = false } = {}) {")[1].split("\n}\n")[0]
+    assert "autoNextAt = performance.now()" in detect
+    assert "+ AUTO_BACKOFF_MS[Math.min(autoFails, AUTO_BACKOFF_MS.length - 1)];" in detect
+    assert "function autoGaveUp() { return autoFails >= AUTO_BACKOFF_MS.length; }" in html
+    # Giving up is not silence: the hint line says so and offers the retry as a tap.
+    hint = html.split("function paintHint() {")[1].split("\n}\n")[0]
+    assert "if (autoGaveUp()) {" in hint
+    assert '{ label: "look again", run: () => detectCorners() });' in hint
+    # An automatic miss IS silent, though — four toasts for one wall helps nobody.
+    assert 'if (!auto) showBanner("warn", reason' in detect
+    # A re-detection keeps `rot`, so it can land the labels on a different physical
+    # corner than the operator chose. That is the one case where the page changes a quad
+    # the operator authored, so the warning stays up until rotate labels is pressed.
+    assert "if (auto && reframing) {" in detect
+    assert 'rotateBtn.classList.add("attention");' in detect
+    assert "{ sticky: true });" in detect
+    assert 'rotateBtn.classList.remove("attention");' in html
+
+
+def test_camera_page_auto_detection_reuses_the_manual_path():
+    """The automatic path calls the same `detectCorners()` the button does, with a flag.
+
+    That is what keeps `test_camera_page_orientation_is_the_operators` honest: it slices
+    on `detectCorners` alone to assert that a detection never relabels, so a parallel
+    auto implementation would silently stop covering the code that test exists to cover."""
+    html = camera_html()
+    assert html.count("async function detectCorners") == 1
+    assert html.count('fetch("/api/detect"') == 1
+    assert "detectCorners({ auto: true });" in html
+    assert 'detectBtn.addEventListener("click", () => detectCorners());' in html
+    detect = html.split(
+        "async function detectCorners({ auto = false } = {}) {")[1].split("\n}\n")[0]
+    # The two callers differ only in what they say and what they reset — never in what
+    # they do to the quad.
+    assert "if (!auto) resetAutoDetect();" in detect
+    assert "quadKnown = true;" in detect
 
 
 def test_camera_page_persists_the_crop_per_board_as_fractions():
@@ -237,6 +394,31 @@ def test_camera_page_persists_the_crop_per_board_as_fractions():
     # A quad always exists, so the page is streamable the moment the camera opens.
     assert "function defaultCorners()" in html
     assert "if (!loadCorners()) defaultCorners();" in html
+
+
+def test_camera_page_survives_the_frame_changing_shape():
+    """Rotating the phone can swap videoWidth/videoHeight under a LIVE track — iOS Safari
+    rotates it, Android Chrome usually does not, so a landscape-first page has to handle
+    both. Corners are stored as FRACTIONS of the frame, so the same fraction becomes a
+    different physical point the moment the aspect flips, and cropBox() would start
+    clamping against dimensions its corners were never expressed in."""
+    html = camera_html()
+    assert "let frameW = 0, frameH = 0;" in html
+    resized = html.split('video.addEventListener("resize", () => {')[1].split("\n});")[0]
+    assert "if (!w || !h || (w === frameW && h === frameH)) return;" in resized
+    assert "pts = pts.map(([x, y]) => [x * w / frameW, y * h / frameH]);" in resized
+    assert "saveCorners();" in resized
+    # A new frame size is a new tracker, re-anchored on the rescaled quad as it is built.
+    assert "tracker = null;" in resized
+    assert "ensureTracker();" in resized
+    # ...and a new picture to lay the handles out against.
+    assert "fitPicture();" in resized and "draw();" in resized
+    # Only the operator can confirm the quad still sits on the board, so the page asks.
+    assert 'showBanner("warn", "The camera frame changed shape' in resized
+    # Opening a lens forgets the old size, so the incoming frame reads as a first
+    # sighting rather than as the phone having been rotated mid-stream.
+    assert "frameW = 0; frameH = 0;" in html
+    assert "frameW = video.videoWidth; frameH = video.videoHeight;" in html
 
 
 def test_camera_page_calibrates_from_a_full_resolution_frame():
@@ -257,7 +439,9 @@ def test_camera_page_calibrates_from_a_full_resolution_frame():
 
 def test_camera_page_refuses_to_calibrate_from_a_view_that_is_not_worth_it():
     """Calibrating mid-motion, or with no live camera at all, poisons the bank. The
-    button disables itself and says why in its title rather than failing silently.
+    button disables itself and says why rather than failing silently — and it says it in
+    BOTH places, because `title` is unreachable on a touch screen and this page runs on
+    nothing else. The hint line is the one an operator can actually read.
 
     The gate is the CAMERA, not the socket: calibration reads the live video element and
     posts it to /api/calibrate, so requiring the ingest stream to be up would be a
@@ -268,12 +452,15 @@ def test_camera_page_refuses_to_calibrate_from_a_view_that_is_not_worth_it():
     assert "if (!streaming)" not in reason
     assert 'if (pts.length !== 4) return "set the four board corners first";' in reason
     assert "meter.stability < MOVING_BELOW" in reason
-    # A walk owns the camera while it runs; a second calibration on top of it would
-    # interleave bank writes with the walk's own.
-    assert 'if (walk.active) return "a calibration walk is under way";' in reason
     assert "const MOVING_BELOW = 0.7;" in html
     assert "calibBtn.disabled = reason !== null;" in html
     assert "calibBtn.title = reason ??" in html
+    hint = html.split("function paintHint() {")[1].split("\n}\n")[0]
+    assert ('if (reason !== null) { setHint("calib:" + reason, '
+            '"Calibrate is unavailable — " + reason); return; }') in hint
+    # Not while streaming: during a game the board is moving half the time, and the
+    # sentence would flicker on every move for no gain.
+    assert "const reason = streaming ? null : calibBlockReason();" in hint
 
 
 def test_camera_page_tracks_the_board_plane():
@@ -308,7 +495,8 @@ def test_camera_page_re_anchors_tracking_on_every_deliberate_corner_change():
     assert html.count("anchorTracker();") >= 5      # drag, detect, reset, board switch, toggle
     handle = html.split("function attachHandleEvents(el, idx) {")[1].split("\n}\n")[0]
     assert "anchorTracker();" in handle
-    detect = html.split("async function detectCorners() {")[1].split("\n}\n")[0]
+    detect = html.split(
+        "async function detectCorners({ auto = false } = {}) {")[1].split("\n}\n")[0]
     assert "anchorTracker();" in detect
     anchor = html.split("function anchorTracker() {")[1].split("\n}")[0]
     assert "tracker.reset(pts.map(([x, y]) => [x / video.videoWidth, y / video.videoHeight]));" in anchor
@@ -319,75 +507,26 @@ def test_camera_page_re_anchors_tracking_on_every_deliberate_corner_change():
 
 
 def test_camera_page_capture_loop_belongs_to_the_camera_not_the_stream():
-    """Tracking, the stability reading and the walk are live instruments in their own
-    right, so the loop starts when the camera does — the stream is one consumer of it."""
+    """Tracking, the stability reading and automatic detection are live instruments in
+    their own right, so the loop starts when the camera does — the stream is one consumer
+    of it, and the only thing streaming decides is whether a frame is forwarded."""
     html = camera_html()
     assert "frameTimer = setInterval(frameTick, Math.round(1000 / CAPTURE_FPS));" in html
     loop = html.split("function frameTick() {")[1].split("\n}\n")[0]
     assert "trackFrame();" in loop
-    # Not streaming still has to feed the meter: `calibBlockReason` reads stability, and
-    # a meter that is only fed while streaming would report a stale 1.0.
+    assert "autoDetectTick();" in loop
+    # Not streaming still has to feed the meter: `calibBlockReason` and the automatic
+    # detector both read stability, and a meter fed only while streaming would report a
+    # stale 1.0.
     assert "(meter.update(video), null)" in loop
-    assert "const forwarding = streaming && !walk.active;" in loop
+    assert "const decision = streaming" in loop
+    assert "? forwarder.decide(video, { boardId: boardId(), captureTs })" in loop
     started = html.split('video.addEventListener("loadedmetadata", () => {')[1].split("\n}")[0]
     assert "startFrameLoop();" in started
     assert "ensureTracker();" in started
     # Stopping the stream must not stop tracking.
     stop = html.split("function stopStreaming() {")[1].split("\n}\n")[0]
     assert "frameTimer" not in stop
-
-
-def test_camera_page_calibration_walk_collects_distinct_viewpoints():
-    """A bank built from one angle reads that angle. POST /calibrate is additive, so the
-    walk collects several vantages of the SAME start position and sends them all."""
-    html = camera_html()
-    assert "const WALK_TARGET = 6;" in html
-    assert "const WALK_MIN_SEP = 0.14;" in html
-    assert "const WALK_MIN_STABILITY = 0.92;" in html
-    # Distinctness is judged on the quad's SHAPE — translation and scale divided out —
-    # so it is a threshold on the viewing ANGLE, not on where the operator is standing.
-    shape = html.split("function quadShape(quad) {")[1].split("\n}")[0]
-    assert "const radii = quad.map(([x, y]) => [x - cx, y - cy]);" in shape
-    assert "return radii.map(([x, y]) => [x / scale, y / scale]);" in shape
-    hold = html.split("function walkHold() {")[1].split("\n}\n")[0]
-    assert "if (shapeDistance(shape, shot.shape) < WALK_MIN_SEP)" in hold
-    assert 'if (trackState === "lost")' in hold
-    assert "meter.stability < WALK_MIN_STABILITY" in hold
-    # Calibration exemplars are cut from full resolution, exactly as the single-frame
-    # path does: every pixel of a piece is evidence.
-    capture = html.split("async function walkCapture() {")[1].split("\n}\n")[0]
-    assert "full.width = video.videoWidth;" in capture
-    assert "const corners = orderedCorners().map(([x, y]) => [x, y]);" in capture
-    assert "await toBlob(full, 0.95)" in capture
-
-
-def test_camera_page_calibration_walk_sends_one_viewpoint_at_a_time():
-    """Each POST rebuilds the node's running estimator around the extended bank, so
-    concurrent writes would race that swap. One refusal is not fatal to the rest."""
-    html = camera_html()
-    send = html.split("async function walkSend() {")[1].split("\n}\n")[0]
-    assert "for (const [i, shot] of walk.shots.entries()) {" in send
-    assert "`/api/calibrate?corners=${qs}`" in send
-    assert "if (!r.ok) { results.push({ ok: false, why: d.error ?? `HTTP ${r.status}` }); continue; }" in send
-    report = html.split("function reportWalk(results, rotated) {")[1].split("\n}\n")[0]
-    assert "No viewpoint was accepted, so the bank is unchanged." in report
-    # The node corrects the labelling for its own use but cannot reach back and fix the
-    # corners the page keeps streaming — so the page has to say so.
-    assert "Press rotate labels until they match" in report
-
-
-def test_camera_page_calibration_walk_pauses_forwarding():
-    """A camera being carried around the table IS the mis-localised camera DESIGN §4.4.1
-    says to suppress: the crops would be geometrically wrong, and a confident lie
-    corrupts a downstream consumer's state in a way an honest gap does not."""
-    html = camera_html()
-    assert "const forwarding = streaming && !walk.active;" in html
-    end = html.split("function endWalk() {")[1].split("\n}\n")[0]
-    assert "if (streaming) forwarder.reset();" in end
-    start = html.split("function startWalk() {")[1].split("\n}\n")[0]
-    # An orbit with tracking off would send every vantage the first vantage's corners.
-    assert "if (!trackingOn()) setTracking(true);" in start
-    assert "The board must CURRENTLY show the STARTING position" in start
 
 
 def test_camera_page_lets_the_operator_choose_the_lens():
@@ -421,9 +560,11 @@ def test_camera_page_shows_what_the_reader_sees():
     assert "/static/vendor/chessground.base.css" in html
     assert "/static/vendor/chessground.cburnett.css" in html
     assert 'orientation: "white", coordinates: true, viewOnly: true,' in html
-    # Chessground takes over the element it is handed and sizes itself from its box, so
-    # that box must already be square and real when it is created.
-    assert ".board-wrap { width: 100%; max-width: 380px; aspect-ratio: 1;" in html
+    # `aspect-ratio: 1` is LOAD-BEARING, not cosmetic: chessground derives its
+    # container's height from this wrap's own aspect ratio, so a wrap that is not square
+    # renders non-square squares and stretched pieces. The panel sizes the wrap; the wrap
+    # keeps it square.
+    assert ".board-wrap { width: 100%; aspect-ratio: 1;" in html
     assert "#board { width: 100%; height: 100%; }" in html
     # One board, set in place; the wire string is sanitized to 8x8 before it gets there.
     assert html.count("Chessground($(\"board\"), {") == 1
@@ -431,6 +572,49 @@ def test_camera_page_shows_what_the_reader_sees():
     assert "if (ev.board_id !== boardId()) return;" in html
     assert "const LOW_CONF = 0.5;" in html
     assert 'autoShapes: low.map((key) => ({ orig: key, brush: "yellow" }))' in html
+
+
+def test_camera_page_position_panel_lets_chessground_size_itself():
+    """chessground takes over the element it is handed, sizes itself from that element's
+    box, and re-measures through its OWN ResizeObserver. So the panel must never take the
+    box away, and must never rebuild the board.
+
+    `display: none` here is not merely worse than `visibility: hidden`, it is broken: a
+    0x0 box makes chessground's own observer fire, and it then computes the container
+    size as 0/0 and writes `NaNpx`. `cg.redrawAll()` is the other trap — it re-runs the
+    full teardown (`innerHTML = ""`) and re-observes WITHOUT disconnecting the previous
+    observer, i.e. one leaked observer and one rebuild per call, which wired to a drag
+    would be per pointermove. The panel calls nothing on resize; chessground heals
+    itself."""
+    html = camera_html()
+    assert ".pos-panel.hidden { visibility: hidden; pointer-events: none; }" in html
+    assert 'posPanel.classList.toggle("hidden", !posState.shown);' in html
+    assert "posPanel.style.display" not in html
+    assert "redrawAll" not in camera_script()
+    # ...and it is a SIBLING of the stage, not a child of it, for the same reason: with no
+    # camera the stage is display: none'd outright, which would take the board's box with
+    # it if the board lived inside.
+    stage = html.split('<div class="camera-stage" id="stage">')[1].split("\n</div>")[0]
+    assert 'id="posPanel"' not in stage
+    assert '$("stage").style.display = "none";' in html
+    # One degree of freedom, on purpose: the grip writes the WIDTH, and .board-wrap's
+    # aspect ratio supplies the height.
+    grip = html.split('posGrip.addEventListener("pointermove", (ev) => {')[1].split("\n});")[0]
+    assert "posState.width = posResize.width + (ev.clientX - posResize.x);" in grip
+    assert "applyPos();" in grip
+    assert "posState.height" not in html
+    # Geometry survives a reload and is clamped back into the viewport every time: a
+    # panel parked against the edge of a landscape phone would otherwise be off-screen in
+    # portrait, with no way to reach its own drag strip.
+    assert 'const POS_KEY = "board-reader.camera.position";' in html
+    apply_pos = html.split("function applyPos() {")[1].split("\n}")[0]
+    assert "Math.round(Math.max(POS_MIN, Math.min(POS_MAX, posState.width)))" in apply_pos
+    assert "posState.left = Math.max(4, Math.min(window.innerWidth - width - 4, left));" in apply_pos
+    assert "posState.top = Math.max(4, Math.min(window.innerHeight - height - 4, top));" in apply_pos
+    assert "localStorage.setItem(POS_KEY, JSON.stringify(posState));" in html
+    assert 'window.addEventListener("resize", () => { fitPicture(); draw(); applyPos(); });' in html
+    # And the box is real BEFORE chessground is ever handed the element.
+    assert html.rindex("applyPos();") < html.index('Chessground($("board"), {')
 
 
 def test_camera_page_status_strip_states_the_stream():

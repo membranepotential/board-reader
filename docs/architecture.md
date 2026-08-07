@@ -61,14 +61,15 @@ JPEG *is* the board crop, as before. Corners ride on every frame rather than in 
 `set_corners` control message, so a reconnecting edge, a restarted gateway and a
 mid-stream re-crop all need zero handshake.
 
-**The browser edge (`GET /camera` on the viewer)** — DESIGN §6's "virtual Pi", live.
-The phone's browser captures with `getUserMedia`, the operator drags the four board
-corners onto the preview (or lets `/detect` propose them; **rotate labels** decides
-which corner is a8 — orientation is the operator's, decision #15), and the page streams
-JPEG crops (the quad's bounding box plus headroom, long side ≤960 px) with rebased
-per-frame `corners`, throttled by a JS mirror of the edge's `MotionMeter` +
-`AdaptiveForwarder` (~1 fps at rest, ~10 fps through motion). Its **calibrate** button
-grabs a full-resolution frame and posts it through the guarded `/calibrate`.
+**The browser edge (`GET /camera` on the viewer)** — DESIGN §6's "virtual Pi", live, and
+a landscape-first full-screen viewfinder rather than a card stack. The phone's browser
+captures with `getUserMedia`, the operator drags the four board corners onto the preview
+(or lets `/detect` propose them; **rotate labels** decides which corner is a8 —
+orientation is the operator's, decision #15), and the page streams JPEG crops (the
+quad's bounding box plus headroom, long side ≤960 px) with rebased per-frame `corners`,
+throttled by a JS mirror of the edge's `MotionMeter` + `AdaptiveForwarder` (~1 fps at
+rest, ~10 fps through motion). Its **calibrate** button grabs a full-resolution frame
+and posts it through the guarded `/calibrate`.
 
 Three things make it an instrument rather than a wizard, and all three hang off the
 tracker:
@@ -83,16 +84,16 @@ tracker:
   fitted and says so, rather than streaming a confidently wrong crop; it re-locks by
   itself when the view comes back. Any deliberate corner change — a handle drag, a
   detection, a reset — re-anchors it, so the operator always wins.
-- **The calibration walk.** `POST /calibrate` is *additive* — each photo's exemplars
-  extend the bank rather than replacing it — so the page collects one full-resolution
-  frame per genuinely new vantage while the operator carries the phone around a board in
-  its starting position, then posts them one at a time. "Genuinely new" is measured on
-  the quad's *shape* with translation and scale divided out, which is the viewing angle
-  and nothing else. Forwarding pauses for the duration (§4.4.1: suppress, don't stream a
-  mis-localised camera), a viewpoint the node refuses is reported and skipped rather than
-  being fatal, and a non-zero `label_rotation` in the reply is surfaced — the node can
-  fix the labelling for its own use but cannot reach back and fix the corners the page
-  keeps streaming.
+- **Detection is automatic.** It fires on first sight of a board the page has never
+  framed, and again once tracking reports the board **lost for a sustained period**
+  (raw instantaneous loss fires on essentially every move of a real game, since
+  `PlaneTracker.lose()` deliberately freezes the quad rather than dropping it). Retries
+  back off exponentially and give up rather than poll on a flat timer: measured,
+  `detect_board_quad` returns in 91–198 ms on a hit but **2066–3865 ms on a miss**,
+  because a miss exhausts every coarse candidate. A re-detect after loss can land the
+  labels on a different physical corner — geometry alone can't tell (decision #15) — so
+  it deliberately keeps `rot` and raises a non-dismissing warning pointing at **rotate
+  labels**.
 - **The lens is the operator's.** iOS ≥16.3 exposes every rear lens through
   `enumerateDevices` (only once permission has populated the labels), but nothing
   identifies which is the ultra wide: deviceIds are per-session, labels are localised,

@@ -191,6 +191,71 @@ def test_detect_endpoint_rejects_garbage():
     assert r.status_code == 400
 
 
+def test_detect_does_not_block_the_event_loop(monkeypatch):
+    """A slow /detect (real misses run 2-4s) must not stall the gateway.
+
+    Regression for the bug where detect_board_quad ran synchronously inside
+    the async handler: while it churned, WS /ingest could not ack and the
+    /viewer hub could not publish. Proxy that here with /healthz -- if
+    /detect blocks the loop, a concurrent /healthz queues behind it instead
+    of answering immediately.
+    """
+    import sys
+    import threading
+    import time
+    import types
+
+    import numpy as np
+
+    from board_reader_core.wire import encode_jpeg
+
+    quad = np.array([[10, 10], [90, 10], [90, 90], [10, 90]], dtype=np.float32)
+
+    def slow_detect(image):
+        time.sleep(0.4)
+        return quad
+
+    fake = types.ModuleType("board_reader_core.boarddetect")
+    fake.detect_board_quad = slow_detect
+    monkeypatch.setitem(sys.modules, "board_reader_core.boarddetect", fake)
+
+    body = encode_jpeg(render_board())
+    app = create_app(StubEstimator(START_PLACEMENT), PositionHub())
+    # A shared portal (single event loop) is required: without `with`, each
+    # TestClient call gets its own throwaway portal/loop and would never
+    # contend for the same loop regardless of whether the handler blocks it.
+    with TestClient(app) as client:
+        detect_done = threading.Event()
+        detect_response: dict[str, object] = {}
+
+        def run_detect():
+            detect_response["r"] = client.post(
+                "/detect", content=body, headers={"Content-Type": "image/jpeg"}
+            )
+            detect_done.set()
+
+        t = threading.Thread(target=run_detect)
+        t.start()
+        time.sleep(0.1)  # let /detect actually enter its slow call first
+
+        healthz_start = time.perf_counter()
+        r = client.get("/healthz")
+        healthz_elapsed = time.perf_counter() - healthz_start
+
+        assert r.status_code == 200
+        assert healthz_elapsed < 0.2, (
+            f"/healthz took {healthz_elapsed:.3f}s -- it queued behind /detect"
+        )
+        assert not detect_done.is_set(), (
+            "/detect already finished -- this run cannot tell blocking from fast"
+        )
+
+        t.join(timeout=2)
+        assert detect_done.is_set()
+        assert detect_response["r"].status_code == 200
+        assert detect_response["r"].json()["corners"] == quad.tolist()
+
+
 def test_viewer_replays_retained_latest_on_connect():
     client = _client()
     with client.websocket_connect("/ingest") as ingest:

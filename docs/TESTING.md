@@ -478,62 +478,89 @@ uv run board-reader-viewer --host 0.0.0.0 --port 8443 --ssl
 #    http://localhost:8443/camera — localhost is a secure context, no cert.)
 ```
 
-Flow: allow the camera → drag the four corner handles onto the playing surface
-(**detect board** proposes them; **rotate labels** decides which corner is a8 —
-geometry cannot know) → **start streaming**. The dashed box shows exactly what
-is sent: the quad's bounding box with headroom above, downscaled, with the quad
-riding on every frame header as `corners` — the gateway then cuts full-piece
-boxes from the original view, exactly as a snapshot read would. The rate is
-adaptive (~1 fps at rest, bursts through motion — watch the stability bar dip
-when a hand enters). **Calibrate from this view** grabs a full-resolution frame and
-posts it through the guarded `/calibrate` (board must show the starting position,
-pieces at rest). "What the reader sees" at the bottom is the live position event
-stream for this board id; the desktop live viewer (`/`) shows the same card,
-where the preview pane displays the very frames the phone is sending and its
-calibrate button now honours the streamed corners (`X-Corners`).
+Flow: open the page **in landscape** — it is landscape-first by design; portrait works
+too, as a media-query override, but landscape is the case the layout is built for.
+Allow the camera and the preview fills the screen. **The board is found on its own**:
+once the picture holds still, after a short settle delay (~2.5 s, so autoexposure and
+autofocus have caught up) the page detects the board without being asked — no framing
+step in the common case. Six controls sit on a rail (a right-hand column in landscape,
+a 3×2 dock at the bottom in portrait): `more` · `position` · `detect board` ·
+`rotate labels` · `calibrate` · `start`/`stop`.
 
-What to check: stability ~1.0 and ~1 fps with the board at rest; a burst and a
-dipping stability bar while a piece moves; the moved piece appearing on both
-boards within a second or two of the hand leaving; after **calibrate**, a
-banner reporting 13/13 classes and the bank size.
+**rotate labels** is still how the operator states which corner is a8 — geometry
+cannot know that (decision #15) — and it matters more now than with a manual flow,
+because detection can fire unattended and needs the same check every time. **detect
+board** re-runs detection on demand, for the cases automatic detection does not reach
+(a bad angle, nothing recognisable as a board); the four corner handles are always
+there to drag by hand too. **calibrate** grabs one full-resolution frame and posts it
+through the guarded `/calibrate` (board must show the starting position, pieces at
+rest); because `/calibrate` is additive, tapping it again from a second or third angle
+grows the same bank rather than replacing it, and the button's own label carries the
+running count (`calibrate · 3`). **position** shows or hides a floating live-position
+board that can be dragged by its header and resized from a corner grip. **more** opens
+a slide-up sheet holding the board id, the lens picker, tracking on/off, reset crop,
+the stats strip (frames/rate/stability), a **what the reader sees** section carrying the
+placement string and the low-confidence legend, and the framing explanation.
+**start**/**stop** toggles streaming.
 
-**Tracking (DESIGN §4.4.1(a)).** Once the corners are set they follow the board:
-pick the phone up, move it, put it down somewhere else and the quad — with its
-`a8` labelling intact — is still on the board. The chip beside "Frame the board"
-reads `tracking — locked`. Things to try:
+What streams is not the raw frame, and the page shows you exactly what does: the dashed
+box drawn around the quad is the crop being sent — the quad's bounding box with a margin,
+and considerably more headroom above the top edge, which is where tall pieces stand up out
+of the board. It goes downscaled, with the quad riding on every frame header as `corners`
+— the gateway then cuts full-piece boxes from the original view, exactly as a snapshot
+read would. The
+rate is adaptive (~1 fps at rest, bursts through motion). The desktop live viewer
+(`/`) shows the same board id, where the preview pane displays the very frames the
+phone is sending and its calibrate button now honours the streamed corners
+(`X-Corners`).
+
+What to check:
+- Stability ~1.0 and ~1 fps with the board at rest; a burst and a dipping stability
+  bar the moment a hand enters; the moved piece appearing on both boards within a
+  second or two of the hand leaving.
+- Point the page at a real board for the first time: it detects the board on its own
+  within a few seconds of holding still, no tap needed. Point it at something with no
+  board in it instead (a wall, an empty table) — it retries with a growing gap between
+  attempts rather than on a flat timer, gives up after four tries, and says so as a
+  tappable line in the hint bar (`No board found — drag the handles onto it, or
+  look again`). Measured in a browser: four attempts, gaps of 8.7 s, 18.5 s and 32.7 s,
+  then silence. That matters more than it looks — a miss costs `/detect` 2-4 s of
+  OpenCV, so a flat 5 s retry would have kept the inference node busy roughly half the
+  time it was pointed at a wall.
+- After a re-detection that follows losing the board (see Tracking below), the labels
+  may have landed on a different physical corner: the warning banner does not
+  auto-dismiss, and **rotate labels** is the fix — nothing else clears it.
+- Rotate the phone mid-session (landscape to portrait and back) — the quad stays on
+  the board throughout.
+- Drag **position**'s header to move it and its corner grip to resize it; it survives
+  a rotation without ending up off-screen.
+- After **calibrate**, a banner reports the class count and the bank size, and the
+  button's own count goes up.
+
+**Tracking (DESIGN §4.4.1(a)).** Once the corners are set they follow the board: pick
+the phone up, move it, put it down somewhere else and the quad — with its `a8`
+labelling intact — is still on the board. The status chip reads `tracking — locked`.
+Things to try:
 
 - Cover the lens with a hand. The chip turns red to `tracking — lost, quad frozen`
   and the quad goes dashed red and **stops moving** rather than wandering. Take the
-  hand away: it re-locks by itself within a frame or two.
-- Move fast enough to smear the picture — same thing, and it recovers when you stop.
+  hand away quickly and it re-locks by itself, no re-detection involved — a hand
+  sweeping over the board during a real game must not, and does not, trigger one.
+  Leave it lost for longer instead (several seconds, sustained) and the page
+  escalates: it re-runs detection on its own, deliberately keeps the labels as they
+  were, and raises the non-auto-dismissing warning described above.
+- Move fast enough to smear the picture — same short-loss recovery, and it re-locks
+  when you stop.
 - Drag a handle at any point: that re-anchors tracking on what you just said, so a
-  quad that has drifted is one touch from right. **tracking off** disables it outright.
+  quad that has drifted is one touch from right. **tracking off** (in the **more**
+  sheet) disables it outright.
 
-**Calibration walk** — the reason a bank survives the camera moving. Set the board
-to the starting position, press **start calibration walk**, confirm, then carry the
-phone slowly around the table. The panel shows six slots; each fills with a thumbnail
-as you reach a genuinely new vantage, and the line under it says what it is waiting
-for (`keep going round — this is a view already taken`, `hold still — a moving frame
-makes a blurred exemplar`, `the board is lost — hold still until tracking re-locks`).
-**capture now** forces a shot at the current angle; **calibrate now** sends what you
-have so far. When the sixth lands, the page posts them one at a time and reports e.g.
-*"Calibrated from 5 of 6 viewpoints — 13/13 classes on the last, bank now holds 384
-exemplars"*, listing any the node refused. Streaming pauses for the whole walk (a
-camera being carried is exactly the mis-localised camera §4.4.1 says to suppress) and
-resumes after.
-
-What to check: the walk refuses to collect while you are moving; a viewpoint the node
-rejects is reported but does not abort the rest; recognition afterwards holds up from
-angles a single-frame calibration could not read. If the banner warns that the node
-turned the corner labels, press **rotate labels** until they match — the node fixed
-the labelling for its own bank but cannot fix the corners the page keeps streaming.
-
-**Lens (iPhone).** With more than one camera a **lens** picker appears under the
-buttons. Pick *Back Ultra Wide Camera* when the board will not fit the main lens from
-where the phone can sit; the choice is remembered by label. Expect visible barrel
-distortion near the frame edges — the four-corner quad is a projective model and fits
-the board progressively less well out there, so keep the board near the middle.
-Re-check the corners after switching: the frame size changes with the lens.
+**Lens (iPhone).** With more than one camera a **lens** picker is offered in the
+**more** sheet. Pick *Back Ultra Wide Camera* when the board will not fit the main
+lens from where the phone can sit; the choice is remembered by label. Expect visible
+barrel distortion near the frame edges — the four-corner quad is a projective model
+and fits the board progressively less well out there, so keep the board near the
+middle. Re-check the corners after switching: the frame size changes with the lens.
 
 ### Option K — Reproduce a run from its recording (WP-H2)
 

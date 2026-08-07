@@ -47,6 +47,23 @@ Also staged and waiting on a decision to start:
 
 ## Done (recent)
 
+- 08-07: **`/camera` becomes a viewfinder, and finds the board by itself.** Landscape-first
+  full-screen preview (iOS Safari has no `screen.orientation.lock()`, so landscape is the base
+  stylesheet and portrait the `@media` override); six rail controls — `more · position ·
+  detect board · rotate labels · calibrate · start` — with everything else in a slide-up sheet,
+  and a draggable/resizable live-position overlay. **Detection is automatic**: first sight of an
+  unframed board, and after a *sustained* loss of track. Four gates, each a measurement:
+  `MotionMeter` returns 1.0 on its first frame so a bare stability gate passes before AE/AF
+  settle (settle delay); `PlaneTracker.lose()` self-heals so raw `lost` fires on essentially
+  every move of a real game (sustained-loss threshold); and `detect_board_quad` is **91-198 ms
+  on a hit but 2066-3865 ms on a miss** (exponential back-off + give-up). Browser-measured:
+  4 attempts, gaps 8.7/18.5/32.7 s, then stop. `/detect` also moved off the event loop
+  (`asyncio.to_thread`) — a prerequisite, not a nicety. **The calibration walk was removed**
+  (`/calibrate` is additive, so tapping calibrate from several angles already is a walk); its
+  novelty and blur gates are the honest loss. Geometry uses a JS-sized `.picture` wrapper, not
+  `object-fit: contain`, so `pts` stay in video pixels and screen space cannot leak onto the
+  wire. Verified in Chromium at both orientations, which caught a 31 px recovery button.
+  **701 tests green.**
 - 08-07: **Board-detection FN hunt closed** (`3f93e57`, calibration session, worktree).
   The ~30% misses on clean ccbf-r5 frames root-caused and fixed — NOT barrel distortion
   (refuted: k1 unidentifiable from the interior grid). Causes: `findChessboardCornersSB`
@@ -150,9 +167,14 @@ Also staged and waiting on a decision to start:
    `exemplars_chessred_central.npz` and score it under the uncontaminated cross-style protocol.
 6. **Crop attribution / occlusion** — pose fixed coverage and resolution, not attribution: the
    box is still the prism's *bounding* box, so a piece behind can fall inside it unflagged.
-7. **Detection review follow-ups** (`3f93e57`, non-blocking): `/detect` calls
-   `detect_board_quad` synchronously on the event loop — a boardless frame now blocks it
-   ~2-3 s (offload to a thread; the edge's lost-board per-frame re-detect pays the same);
+7. **Event loop: `/estimate` and `/calibrate` still block it.** Same bug class as `/detect`,
+   which is now **fixed** (`asyncio.to_thread`, regression-tested by reverting) — measured
+   91-198 ms on a hit but **2066-3865 ms on a miss**, since a miss exhausts every coarse
+   candidate. Still synchronous inside their `async def`: `/estimate` (`server.py:743`,
+   `photo_fn`/`est.estimate`/`rectify_photo` — ONNX) and `/calibrate` (`server.py:875`, the
+   orientation-guard `probe_fn` and `build_exemplars`, likely the most expensive of the three
+   since it embeds a crop per square). Both stall `/ingest` acks and the `/viewer` hub.
+8. **Detection review follow-ups** (`3f93e57`, non-blocking):
    `_alternation`'s partial scoring can read a pure brightness gradient as alternation
    (mean-subtract per row/col, or require full 2x2 neighbourhoods); hexamind carries one
    pre-existing 142 px outlier detection worth a look.

@@ -17,6 +17,7 @@ edge package; it only speaks the wire (:mod:`board_reader_core.wire`).
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import datetime
 import itertools
@@ -1242,7 +1243,10 @@ def create_app(
             from board_reader_core.boarddetect import detect_board_quad
         except ImportError:
             return JSONResponse({"error": "detector unavailable"}, status_code=422)
-        quad = detect_board_quad(image)
+        # A miss (no board in frame) exhausts every coarse candidate and can run
+        # multiple seconds; run it off the event loop so /ingest acks and the
+        # /viewer hub keep flowing while this photo is searched.
+        quad = await asyncio.to_thread(detect_board_quad, image)
         if quad is None:
             return JSONResponse({"error": "no board found"}, status_code=422)
         return JSONResponse({"corners": np.asarray(quad, dtype=float).tolist()})
