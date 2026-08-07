@@ -122,6 +122,44 @@ def split_by_group(
     return np.nonzero(~is_val)[0], np.nonzero(is_val)[0]
 
 
+def subsample_val(
+    val_idx: np.ndarray, labels: np.ndarray, cap: int, *, seed: int = 0
+) -> np.ndarray:
+    """Deterministic, class-stratified cap on a validation index set.
+
+    Validation is ~25% of epoch wall time at the full 16k leave-style-out holdout,
+    and a screening run only needs enough resolution to *rank* candidates, not to
+    quote a deployable number. Capping to a few thousand crops buys that back.
+
+    Stratified rather than a flat random draw: piece-type accuracy is decided by the
+    rare classes (queens and kings are ~4% of a board each), and an unstratified
+    sample lets their counts wobble enough to move the metric on sampling noise
+    alone. Largest-remainder rounding keeps each class's share of the original set.
+
+    Returns ``val_idx`` unchanged when it already fits under ``cap``.
+    """
+    if cap <= 0:
+        raise ValueError(f"val_max must be positive, got {cap}")
+    if cap >= len(val_idx):
+        return val_idx
+    rng = np.random.default_rng(seed)
+    cls_labels = labels[val_idx]
+    classes, counts = np.unique(cls_labels, return_counts=True)
+    exact = counts * (cap / len(val_idx))
+    quota = np.floor(exact).astype(int)
+    spare = cap - int(quota.sum())
+    if spare > 0:
+        # Hand leftover slots to the largest fractional parts, ties by class order.
+        quota[np.argsort(-(exact - quota), kind="stable")[:spare]] += 1
+    quota = np.minimum(quota, counts)
+    picked = [
+        rng.choice(val_idx[cls_labels == c], size=q, replace=False)
+        for c, q in zip(classes, quota)
+        if q > 0
+    ]
+    return np.sort(np.concatenate(picked))
+
+
 def class_sample_weights(labels: np.ndarray) -> np.ndarray:
     """Inverse-frequency weight per sample for a WeightedRandomSampler.
 

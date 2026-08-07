@@ -24,6 +24,11 @@ class Config:
     holdout: str | None = None  # leave-style-out validation style; None -> group split
     max_boards: int | None = None  # cap ChessReD boards (smoke)
     val_frac: float = 0.25  # group-split fraction when holdout is None
+    # Cap the validation set to N crops (seeded, class-stratified). Val is ~25% of
+    # epoch wall time at the full 16k holdout, and screening runs only need enough
+    # resolution to RANK candidates: 4000 crops puts the standard error near 0.006,
+    # well under the gaps we act on. None = use the whole holdout (scoring runs).
+    val_max: int | None = None
     require_mode: str | None = None  # "board" | "crop": filter discovered styles by geometry
 
     # crop geometry (crop_squares_photo). Two ways to say it, and the cache is

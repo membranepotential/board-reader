@@ -1,7 +1,6 @@
 # STATUS — board-reader
 
-*Canonical dashboard. Last reconciled 2026-08-07 against `git log`, `data/uploads/` (23 labels), a re-run eval.*
-Design decisions live in [docs/DESIGN.md](docs/DESIGN.md); this file is state, not design.
+_reconciled: 2026-08-07 @ `5a6a19a`_ · decisions live in [docs/DESIGN.md](docs/DESIGN.md); this is state.
 
 ## Goal
 
@@ -10,297 +9,77 @@ confidences**. No moves, no legality, no PGN — those are the downstream applic
 
 ## Now
 
-- **run_f — the pose-aware-crop bet** (launched 2026-08-07 by operator request, main
-  session) — **in flight.** `PY=/usr/bin/python tools/train/run_f.sh`, detached, logging
-  to `scratch/runs/run_f/run.log`; a persistent monitor watches for epoch lines and
-  failure signatures. 11 styles, holdout `chessr_vlab_wooden`, crop geometry
-  `pose h1.9/r0.5`; everything else identical to run_e. Baselines to beat: **0.898**
-  synthetic holdout, **0.819** chesscog_transfer (unseen real photos). Cache at this
-  geometry was already warm; device resolved to CUDA (GPU was free). The prior
-  OOM-killed dir was archived to `scratch/runs/run_f.oom-killed-0207`.
-  Next: read `eval.txt` + `history.json` when `===F_DONE===` lands, compare to run_e.
-- **Training harness acceleration + observability** (main session, 2026-08-07) — **done,
-  committed `f5a0356`.**
-  Measured verdict: the GTX 1650 is compute-bound at ~165 img/s fp32 (batch 48–96 and
-  workers 6–12 all flat; channels_last hurts; no triton → no torch.compile), so the wins
-  are fail-fast (non-finite-loss abort), 2× val batch (val was ~40% of epoch wall time),
-  and per-worker thread pinning. Every run dir now self-documents: `events.jsonl`
-  (agents) + `history.json` w/ confusion + per-epoch `curves/diagnostics/confusion.png`
-  (humans). 406 tests green, smoke run verified.
-  **Incident:** the first run_f launch (from this session) was OOM-killed — Python
-  3.14's forkserver default pickled the ~9 GB dataset into all 8 workers, *and* the
-  GPU was full so it silently fell to CPU. Both fixed in `f5a0356` (fork workers,
-  CoW verified via Pss; busy-GPU now aborts instead of CPU fallback).
-  Launch: `PY=/usr/bin/python tools/train/run_f.sh` (GPU was free as of 02:45).
-- **Snapshot quality push** — make the snapshot app read a board reliably before M2.
-  Landed: ground-truth capture + the eval harness (below). Next: act on what it measured.
-- **snapshot.html rewrite** — the page is a stage-by-stage pipeline inspector; `test_viewer.py`
-  matches. Committed in `bf2ae0b` (this entry previously said uncommitted; it is clean).
-- **Snapshot orientation + labelling UX** (uncommitted, 2026-08-06) — auto-rotation now
-  reaches the whole page, not just the board; hover magnifier; server-backed Recent list.
-  Detail in Done. Still uncommitted, along with the new `Makefile` (`make dev` = the
-  deployed env) and the 23 labels the two labelling sessions produced.
-- **Act on the first honest eval** (opened 2026-08-06). The number exists now (Done below),
-  and the labels behind it are confirmed correct (2026-08-07, operator), so it is a real
-  measurement rather than the ensemble grading itself. Now re-run on 23 labels: **13/23
-  perfect, 1450/1472**, and the bank accounts for all of the margin on the set it was
-  calibrated on while doing nothing on the nine broadcast frames. Next: decide the prior
-  (Next 1), then temperature scaling.
-- **Hard-constraint decoder** (`implementer` agent, spawned 2026-08-07) — objective: a pure
-  `prior.py` in `inference` that repairs *impossible* boards (≤1 king/colour, no pawn on rank
-  1/8, ≤16 pieces/colour, promotion budget) by flipping the lowest-margin offending square.
-  Landed: `prior.py`, the eval scoring it, and the circular-frame fix below
-  (`quarter_turns=None` → the back-rank constraint sits out). **406 tests green.**
-  `kings` does nearly all the work — fired 19× trained-alone / 11× ensemble, vs `piece_count`
-  6/3 and `promotion_budget` 5/1.
-  **Re-measured on all 23 labelled boards** — trained-alone **5/23 → 10/23 perfect**, 1410 →
-  1428 squares (fixed 21 · broken 3); ensemble 13/23 → 14/23, 1450 → 1458 (fixed 9 · broken 1).
-  The domain split is the point: on the nine uncalibrated broadcast frames it goes 3/9 → 6/9
-  alone, which is the regime the bank cannot touch. Framed as a **decoder over
-  `square_dist`**, never an estimator — the raw distribution stays on the wire so a downstream
-  legality smoother cannot double-count the prior (D1). Soft priors (two queens, bishop
-  parity, castled motifs) deliberately excluded until confidences are calibrated (Next 3).
-  **Decided 2026-08-07 (operator): it serves, banked and unbanked — and it is wired.**
-  `/estimate` keeps `square_dist` + `placement` as the estimator produced them (§5 invariant
-  intact, hub still publishes the raw event) and adds `result["prior"] = {placement, flips,
-  residual}`; the snapshot page shows it as pipeline stage 7, *Impossible-board repair*, with
-  every relabelled square listed, and takes the repaired board as its corrections baseline.
-  The eval is prior-**on** by default (`--no-prior` isolates) because the harness scores what
-  serves. Both full-position server paths carry it; the occupancy-only branch does not (no
-  piece identity, no colour, nothing the constraints can read). `quarter_turns` is never passed
-  in serving either — same circular guesser — so the back-rank rule sits out there too, with a
-  comment at the call site saying why. Verified end-to-end: a two-white-king read comes back
-  raw *and* repaired, and all four eval numbers reproduce (5/23 → 10/23 alone, 13/23 → 14/23
-  ensemble). Label sidecars record `prior_flips`, un-rotated into the corner frame and locked
-  by a property test against `rotate_placement`, so decoder-inherited truth stays *detectable*.
-- **The back-rank constraint consumed a circular frame guess (found 2026-08-07).** The eval fed
-  `decode()` the rotation from `autocalib.resolve_rotation`, which picks the frame that
-  *minimizes pawns on ranks 1/8* — the very quantity `BACK_RANK_PAWNS` measures. So when the
-  guess is right the constraint can never fire, and when it *can* fire that residual is
-  evidence the guess is wrong. 16/21 boards get a nonzero turn; on `20260806-235526-0005`
-  (counts `[2,1,2,1]` → `k=1`) it destroyed a correct 3.70-nat pawn at `a3` — provably a bad
-  frame, since ground truth has a pawn there and no pawn can stand on a back rank. **Fixed**
-  (`evaluate.py:526` now passes `None`; the eval prints "frame unknown here, so the back-rank
-  pawn constraint sits out"): `quarter_turns: int | None`, `None` = frame unknown = skip the one
-  rank-dependent constraint; the three count constraints are rotation-invariant and carry the
-  whole win. Pass a real `int` only where orientation is *established* rather than inferred —
-  the snapshot operator confirms it. **Caveat: the constraint therefore never fires in the
-  eval, so it is the one rule with no evidence behind it on real boards.**
+- **run_f — the pose-aware-crop bet** — **NOT RUNNING; stopped by the operator at e0 (03:24),
+  ready to relaunch.** The harness is fixed and verified (below); nothing blocks it. Relaunch
+  with `tools/train/run_f.sh` — no `PY=`, the script now resolves and preflights its own
+  interpreter. 20 epochs, `patience: 8`, ~40 min, crop cache warm. The partial dir
+  (`scratch/runs/run_f/`, one epoch, val 0.666) is disposable; the driver overwrites it.
+  **The early evidence is good — the first attempt (02:42) proved the bet by accident:**
+  `patience: 5` truncated it at e8
+  with a mere **0.8466 @ e3** checkpoint, and that badly undertrained model still scored
+  **0.855 on `chesscog_transfer` vs run_e's 0.819** — with piece-type errors cut 173 → **115**,
+  exactly the steep-angle decapitation pose crops were meant to fix. It *loses* on the user's
+  own sets so far (user_photos 0.894 vs 0.938, uploads_calibrate 0.804 vs 0.864), which may
+  just be the undertraining. Both numbers come from a same-code, same-data re-eval of run_e
+  (`scratch/runs/run_e/eval_rerun.txt`); run_e's on-disk `eval.txt` is from 19 Jul and predates
+  the `chesscog_transfer` repair, so it is NOT comparable. Evidence kept in
+  `scratch/runs/run_f.e3-truncated/`. Next: relaunch, then compare fully-trained run_f
+  against **0.898** holdout / **0.819** transfer on `===F_DONE===`.
+- **Training harness: env preflight + a screening tier** (main session, 03:05–03:20) — **done.**
+  Root cause of the above: the run was launched with `PY=/usr/bin/python` (CUDA
+  torch, *no* ONNX stack) instead of the documented `scratch/torchvenv`, so training completed
+  and then `export.py` (needs `onnxscript`: torch ≥2.9 exports via dynamo) and `evaluate.py`
+  (needs `onnxruntime`) both died — while `run_f.sh`, lacking `set -e`, printed a blank
+  `CANDIDATE_RESULT` and `F_DONE` over the wreckage. Third instance of "the pipeline reports
+  success over nothing". Fixed: `onnxscript`+`matplotlib`+`pytest` installed into the venv via
+  `uv` (seasoned to the repo's pinned date); new `_env.sh` defaults `PY` to the venv and
+  **preflights** it before any GPU time; `set -e` in `run_f.sh`; `patience: 8`.
+  New `screen.sh` + `val_max` give a ~13-min **ranking** tier (8 epochs, val capped 4000,
+  stratified) — measured: training data volume is *not* a time lever (`steps_per_epoch` already
+  caps each epoch at 2.2% of the corpus), val and epochs are. 406 workspace tests green + 7 new
+  harness tests (`tools/train/tests/`, run under the torch venv — the workspace stays torch-free).
 
-- ~~**Another session is mid-refactor of the crop geometry, and the suite is red**~~ —
-  **finished and green, committed `f362f78` (2026-08-07).** The refactor was the
-  `CropGeometry` ADT below; the red suite was its call sites mid-migration. **406 tests
-  pass.** The warning stands though: two sessions had `server.py` open at once, which the
-  working agreement forbids. Nothing was lost this time.
+## Done (recent)
 
-- **The `run_f` campaign** (2026-08-07) — set up the next training run and land the four
-  things it needs. Three are done and committed; the run itself is in flight.
-  1. **`chesscog_transfer` repaired** (was Next 7) — see Done.
-  2. **Pose-aware crop geometry** (was Next 6) — see Done.
-  3. **Temperature scaling** (was Next 3) — see Done.
-  4. **Central-column patch pooling** (was Next 5) — exported to
-     `models/dinov2_small_central.onnx` and verified (384-d, dynamic batch, cosine
-     0.58–0.80 vs CLS, i.e. genuinely different features). **Not wired into any deployed
-     bank.** The A/B bank build was started and then **killed deliberately**: it ran DINOv2
-     on CPU at ~5.5 cores, which would have corrupted the harness benchmarks the other
-     session is running. Re-run it on a quiet machine with
-     `BR_DINOV2_ONNX=models/dinov2_small_central.onnx uv run python
-     tools/build_exemplar_bank_chessred.py --out models/exemplars_chessred_central.npz`
-     (~40 min on CPU; force the GPU EP and it is minutes), then score it against
-     `models/exemplars_chessred.npz` — the same uncontaminated cross-style protocol the
-     +9/320 came from. Deployed bank untouched until it wins.
-  - **State: staged, deliberately NOT started.** The pose crop cache is **built and
-    complete** — `data/external/_cropcache/pose_h1.9_r0.5_f1`, 8.8 GB, all 11 styles
-    (same size as the `hr1.6` cache it parallels). `configs/run_f.yaml` and
-    `tools/train/run_f.sh` are written, and the harness import-checks clean against the
-    pose geometry. **The run is held because another session is editing
-    `tools/train/{config,dataset,metrics,train}.py` right now** (operator instruction,
-    2026-08-07). Launch with `PY=/usr/bin/python tools/train/run_f.sh` once that
-    settles — the training venv is system python, not the workspace `uv` venv.
-  - **Targets to beat, both `run_e`:** holdout `chessr_vlab_wooden` **0.898**, and the
-    repaired real-photo `chesscog_transfer` **0.819**. Only the geometry differs from
-    `run_e` — same 11 styles, same holdout, same optimiser, same seed — so the
-    comparison is clean.
-
-## Done
-
-- **M0 — walking skeleton.** `edge → inference → viewer` over WebSocket, `docker compose up`.
-- **M1 — single-frame estimation.** Board detect + rectify on the edge; per-square 13-class
-  distributions on the inference node. Exceeded: it reads real phone photos, not just clips.
-- **Snapshot application** (built on M1, not a milestone). `GET /snapshot` on the viewer →
-  `POST /estimate`: photo in, position out, zero taps. Corner auto-detect (`/detect`),
-  drag-editable corners, orientation auto-correction, distribution correction panel,
-  Lichess links. Mobile-verified.
-- **Zero-shot recognition.** Seven training-free routes measured dead (~80% ceiling, all
-  gated by piece *type*, never occupancy). A multi-style ResNet18 (`d16`, tall crops) reads
-  an unseen set at 92.5% per-square with no calibration. Full write-up:
-  [docs/reports/2026-07-18-zero-shot-campaign.md](docs/reports/2026-07-18-zero-shot-campaign.md).
-- **Calibration as a booster.** kNN exemplar bank ⊕ trained model, blended by bank maturity.
-  Superseded as a *number* by the honest eval below; the mechanism is what stands.
-- **`run_e` deployed (2026-08-06).** The wave-2 11-style retrain replaced `d16` as `BR_MODEL`
-  on the strength of the dim regime (**653 vs 600 / 768 squares**) and the deployed-ensemble
-  comparison; it loses 6 squares model-alone on the bright set. Verified live.
-  Detail: [docs/training-and-data.md](docs/training-and-data.md#how-run_e-was-decided-2026-08-06).
-- **Test suite: 35s → ~10s (2026-08-07).** `make test` fans the 406 tests across all cores
-  (`pytest-xdist -n auto`, kept out of `addopts` so focused runs stay fast). The single
-  biggest test, `test_estimate_warns_on_very_low_camera_angle` (9.4s), was paying for a
-  DINOv2 bank bootstrap it never asserted on — its oracle read the start position, which
-  fires `_maybe_bootstrap_bank`; reading a mid-game position instead took it to 0.05s.
-- **Guardrails from four bank-corruption incidents.** Opt-in persistence, orientation probe
-  on `/calibrate`, piece-square agreement gate (422), `very_low_angle` / `low_light` warnings.
-- **The labelling loop.** `Confirm as ground truth` → `POST /labels/{upload}`, stored beside
-  the retained photo in the corner frame (autorotation undone, so truth never inherits a model
-  guess); labels are scoring data only, never fed back into the bank. Supported by a
-  server-backed Recent list (`GET /uploads`), a hover magnifier, and auto-rotation that
-  reaches the whole page rather than just the board (commits `bf2ae0b`, `5c3fe59`).
-- **Eval harness.** `uv run board-reader-inference eval` scores the estimator
-  `_default_estimator()` builds — i.e. what actually serves — and leads with **perfect-board
-  rate**. Reports error kinds, confusions, a reliability diagram, and warns when a bank is
-  active. Write-up: [docs/measuring-accuracy.md](docs/measuring-accuracy.md).
-- **The honest eval, on 23 confirmed labels (2026-08-07).** Ten more labels took the set from
-  13 to **23**, all correct, and **all ten new ones post-date the bank's last write** (23:55),
-  so they cannot be in it. The domain split does not soften with the bigger set — it hardens:
-
-  | | boards | trained alone (`run_e`) | deployed ensemble |
-  |---|---|---|---|
-  | broadcast stream frames (1116×646, **uncalibrated**) | 9 | 3/9 perfect · 557/576 | **3/9 · 560/576** |
-  | own phone photos (the set the bank **was** calibrated on) | 13 | 2/13 perfect · 798/832 | **9/13 · 826/832** |
-  | one 748×396 stream frame (see caveat) | 1 | 0/1 · 55/64 | **1/1 · 64/64** |
-  | all | 23 | 5/23 · 1410/1472 (95.8%) | **13/23 (56.5%) · 1450/1472 (98.5%)** |
-
-  Read it as: **the bank is the entire margin, and only where it was calibrated.** On the
-  calibrated set it turns 2/13 into 9/13 (+28 squares); across the nine same-format broadcast
-  frames it moves **zero boards** and 3 squares. At 13 labels that row read 2/6 → 3/6 and
-  looked like a modest win; at 9 boards it is flat. The headline 56.5% perfect is a
-  calibrated-condition number. Caveat on the 748×396 row: that photo is from 22:58, *before*
-  the three `/calibrate` writes, so unlike the rest it may actually be in the bank — its
-  55→64 jump is the one gain here that cannot be trusted. Reproduce with
-  `BR_MODEL=models/run_e/model.onnx [BR_SESSION_BANK=models/exemplars_session.npz] uv run
-  board-reader-inference eval [--prior] data/uploads`.
-- **The `chesscog_transfer` holdout is repaired, not replaced (2026-08-07).** It sat unused
-  for weeks as "geometrically broken" on a 0.597 self-kNN score. That was a real number
-  pointing at the wrong *layer*: all 22 warps grid-align and the crops were always fine.
-  What was broken is that `build_transfer_labels.py` resolved each photo's orientation **by
-  eye** (`WHITE_NEAR`) and got it wrong on **14 of 22 boards**, rotating every label 180°;
-  two more (`test/22,24`) were *silent* `detect_board_quad` failures returning a quad of the
-  table. `data/external/chesscog_transfer/repair_orientation.py` now resolves it from pixels
-  — checkerboard parity of *empty* cells for the 90° ambiguity, light-vs-dark piece wood for
-  the 180°, each cell read against the empty-cell median of its own square colour so the
-  checkerboard cancels — and drops the non-boards. Margins are decisive on every kept board
-  (parity ≥ +92, piece ≥ +37 grey levels) and ≈0 on the two failures. **`run_e`, which never
-  trained on it: 0.500 → 0.819** over the 20 survivors, confirmed independently by the
-  photometric method and the model agreeing board-for-board. `tools/train/evaluate.py` scores
-  it by default. This is now the only real-photo set no bank and no run has ever seen.
-  Two durable lessons: *"the data is broken" localises a problem but not its layer*, and *a
-  per-image choice made by eye needs an exhaustive check* — the original validation
-  spot-checked four boards, missed three broken ones, and declared "no mislabels observed".
-- **Pose-aware crop geometry (2026-08-07, `f362f78`).** Crop geometry is now a `CropGeometry`
-  ADT — `BboxGeometry(headroom, side_pad)` or `PoseGeometry(piece_height, piece_radius,
-  focal_ratio)` — that travels in the `.onnx.meta.json` sidecar and keys the crop cache, so a
-  train/serve mismatch is unrepresentable rather than merely discouraged. `PoseGeometry`
-  recovers the camera pose from the board homography and projects a piece-sized prism
-  standing on each square; the focal length is **solved** from the homography (Zhang's two
-  plane constraints) rather than assumed, falling back to `focal_ratio` only for a
-  near-top-down view that genuinely carries no focal information. `r1, r2, t` come straight
-  from the homography so the `Z=0` face reproduces the existing base quads exactly — only the
-  height is new. Measured on a real angled photo, near/far box height **1.57 → 1.15**.
-  Bonus property, pinned by a test: pose boxes are `rot90`-invariant under corner relabelling
-  (a prism stands along the board normal), which bbox boxes provably are not.
-- **Temperature scaling (2026-08-07, `f362f78`).** `calibration.py` + `eval --temperature`.
-  Fitted **leave-one-board-out** so no board is graded by its own labels. On the deployed
-  ensemble over 23 boards: **ECE 0.255 → 0.004**, T=0.251 and stable across folds
-  (0.235–0.257), **answers changed 0** — the transform is monotone per square, so a placement
-  cannot move. The trap worth remembering: the perfect/imperfect confidence *gap* collapses
-  +0.136 → +0.017 and reads as a loss, but that is a monotone squeeze toward 1.0; the
-  rank-based **AUC improves 0.862 → 0.877**. Report AUC beside any confidence-gap claim.
-  Measured, not served — see Next 3.
-- **Central-column DINOv2 export (2026-08-07, `f362f78`).** `export_dinov2_onnx.py --pooling
-  central` → `models/dinov2_small_central.onnx`, the +9/320 cross-style pooling from the
-  frozen-backbone bakeoff. Two export traps found: torch 2.12's default dynamo exporter
-  **silently bakes the batch size in** despite `dynamic_axes` (the graph validates at batch 1
-  and dies on the first 64-crop board) — pass `dynamo=False`; and the legacy exporter leaves
-  the output width *symbolic*, which crashed `DinoV2Embedder` on load, now resolved by
-  probing. A/B pending; no deployed bank touched.
-- **Next 1 done — the label set nearly doubled (2026-08-07).** 13 → 23 confirmed labels; all
-  ten new ones land after the last bank write and five of them needed corrections. This is
-  what made the flat broadcast row visible.
+- 08-07: **Training harness observable + fail-fast** (`c3fecbb`, `34c88ad`); run dirs self-document,
+  and the GTX 1650 measures compute-bound at ~165 img/s fp32. **`make test` 35s → ~10s** (`5a6a19a`).
+- 08-07: **Hard-constraint prior decoder ships and is wired** (`bbddded`). Flips the lowest-margin
+  offending square on *impossible* boards: **5/23 → 10/23** perfect trained-alone, 13/23 → 14/23
+  ensemble, **3/9 → 6/9** on uncalibrated broadcast frames — where the bank does nothing. A decoder
+  over `square_dist`, never an estimator: the raw distribution stays on the wire (D1).
+- 08-07: **`chesscog_transfer` repaired, not replaced** (`f362f78`). Never geometrically broken: 14 of
+  22 labels were rotated 180° by eye, now resolved from pixels. `run_e` **0.500 → 0.819**, and it is
+  the only real-photo set no bank and no run has ever seen.
+- 08-07: **Pose-aware crop geometry** (`f362f78`). A `CropGeometry` ADT rides the `.onnx` sidecar and
+  keys the crop cache, so a train/serve mismatch is unrepresentable; the focal length is *solved* from
+  the homography. Near/far box height **1.57 → 1.15**, and the boxes are `rot90`-invariant.
+- 08-07: **Temperature scaling measured** (`f362f78`): LOBO ECE **0.255 → 0.004**, AUC 0.862 → 0.877, **0 answers changed**. Not served — see Next 3.
+- 08-07: **The honest eval, 23 confirmed labels.** Ensemble **13/23 perfect · 1450/1472** vs 5/23
+  alone — *the bank is the entire margin, and only where calibrated*: 2/13 → 9/13 on own photos,
+  **zero boards** on nine broadcast frames ([docs](docs/measuring-accuracy.md)).
+- 07→08: **M0 skeleton · M1 single-frame · snapshot app · `run_e` deployed** — photo in, position out, zero taps; the labelling loop; kNN bank ⊕ trained model.
 
 ## Next
 
-1. **Decide whether the hard-constraint prior serves.** It is now the only thing measured to
-   move the *uncalibrated* regime: trained-alone on the nine broadcast frames it goes
-   **3/9 → 6/9 perfect** (557 → 573 squares), where the bank does nothing. On the ensemble it
-   adds 7 squares on that same set and one board overall (13/23 → 14/23). Cost across all 23:
-   fixed 21 · broken 3 alone, fixed 9 · broken 1 with the bank — positive in every cut
-   measured. Remaining call: ship it as a decode step behind the raw `square_dist` (D1), and
-   decide whether the viewer shows the repaired board, the raw one, or both.
-2. **Attack the type confusions.** On the 23-board set, trained-alone errors are 53 type / 5
-   hallucination / 4 colour, led by `p->b` (11) then `b->k` · `p->r` · `q->k` · `Q->K` (5
-   each) — the same silhouette family, with pawn→bishop now clearly the single worst. The
-   ensemble cuts it to 14 type / 7 hallucination / 1 colour, and what it leaves is different
-   in kind: `empty->p` (3) and `empty->P` (2) are now a third of its remaining errors, i.e.
-   hallucinated pieces on empty squares — the failure mode Next 6's crop attribution predicts.
-3. ~~**Calibrate confidence.**~~ **Answered 2026-08-07 — see Done.** Temperature scaling
-   takes the ensemble's ECE **0.255 → 0.004** (leave-one-board-out, T=0.251) and the
-   separation survives: the *gap* collapses but board ranking **AUC goes 0.862 → 0.877**.
-   Remaining call, and it is a decision not an experiment: **does it serve?** Argmax is
-   invariant so no placement can change; the only question is whether the wire should carry
-   calibrated confidences (DESIGN §9 says the downstream smoother wants them). Reported by
-   `eval --temperature`; nothing is scaled on the wire today.
-4. **M2 — live position stream over a full recorded game** (the headline demo). The whole
-   recognition stack so far is single-frame; M2 is adaptive forwarding + stability + streaming
-   through hands and transitions. This is the actual next milestone.
-5. **Central-column patch pooling** — **exported, A/B in flight.**
-   `models/dinov2_small_central.onnx` (`--pooling central --keep-columns 8`) is built and
-   verified (384-d, dynamic batch, cosine 0.58–0.80 vs CLS). Building
-   `models/exemplars_chessred_central.npz` to re-run the uncontaminated cross-style protocol
-   the +9/320 came from. **No deployed bank has been touched** and none will be before the
-   A/B lands — a bank swap is a deployed-stack change, and the ensemble A/B gate applies.
-6. **Pose-aware crop boxes — built; the retrain is what remains.** `PoseGeometry` ships
-   (see Done). Of the three defects the idea targeted, **(a) coverage** is addressed — box
-   height now follows the piece's real height through the recovered pose, near/far ratio
-   1.57 → 1.15 — and **(c) effective resolution** improves visibly, since the prism box is
-   tighter than a 2.75:1 padded bbox. **(b) attribution is NOT addressed:** the box is still
-   the prism's axis-aligned *bounding box*, so a piece on the square behind can still fall
-   inside it, and nothing yet flags an occluded crop. That is the remaining idea, and it is
-   the one Next 2's `empty->p` residual points at — a true cylinder/occlusion test would let
-   contaminated crops be flagged rather than guessed. Deliberately kept out of this run so
-   the retrain has exactly one variable.
-7. ~~**Repair or replace the `chesscog_transfer` holdout**~~ — **repaired 2026-08-07, see
-   Done.** 20 usable boards, `run_e` at 0.819, scored by `tools/train/evaluate.py` by
-   default. It was never geometrically broken; the labels were rotated.
-8. **Optional: rebuild the session bank against `run_e`.** Not required — the crop geometry is
-   identical (hr1.6/sp0.15), so the existing bank stays valid, and it is validated at 638/640
-   with `run_e`. `tools/rebuild_session_bank.py` now points at `run_e` for whenever it is next
-   run for other reasons.
+1. **Score run_f against run_e** on both holdouts; deploy only if it wins both. If pose crops lose, the geometry bet is answered and item 6 is what survives it.
+2. **Attack the type confusions.** Trained-alone: 53 type / 5 hallucination / 4 colour, led by
+   `p->b` (11). The ensemble's residual differs in kind — `empty->p`/`empty->P` is a third of it.
+3. **Decide whether calibrated confidences go on the wire** — a decision, not an experiment: argmax is invariant, and DESIGN §9 says the downstream smoother wants them.
+4. **M2 — live position stream over a recorded game.** The headline demo and the actual next
+   milestone: adaptive forwarding, stability, streaming through hands and transitions.
+5. **Central-column pooling A/B.** `dinov2_small_central.onnx` is exported and verified; build
+   `exemplars_chessred_central.npz` and score it under the uncontaminated cross-style protocol the
+   +9/320 came from — no deployed bank moves before it wins.
+6. **Crop attribution / occlusion** — pose fixed coverage and resolution, not attribution: the box is
+   still the prism's *bounding* box, so a piece behind can fall inside it unflagged.
 
 ## Open questions
 
-- ~~**The eval's truth is partly the model's own answer**~~ — **closed 2026-08-07.** The
-  worry was that 11 of the first 13 labels saved with `corrections: 0` meant the operator had
-  rubber-stamped the displayed read. They did not: the labels are confirmed correct, so the
-  numbers are real. What actually explains the high read rate is **the session bank**, not
-  soft labelling — see the domain split in Done. Both contamination questions are closed for
-  the 22 post-bank-write boards; only the 748×396 frame from 22:58 remains unresolved.
-- **Calibration is not monotone (found 2026-08-06).** `20260806-231719-0000` read 64/64 live
-  at 23:17 and was confirmed as read; re-scored after the 23:28 and 23:33 `/calibrate` writes
-  it is 63/64 (`e6 empty->p`) — and trained-alone still gets it right, so the *bank* caused
-  the regression. Adding exemplars can cost squares elsewhere, and nothing measures that
-  before a write lands. Fifth entry in the bank-incident family.
-- **Confidence is measured and it is not usable — but the ensemble may be salvageable.**
-  Trained-alone has no board-level signal at all (perfect 0.978 vs imperfect 0.939). The
-  ensemble is systematically under-confident (ECE 0.226) yet ranks boards roughly right
-  (0.801 vs 0.678). DESIGN §9 flags this as a top risk because downstream smoothing consumes
-  confidences; a consumer trusting them today would still be misled. See Next 3.
-- **The 638/640 baseline can no longer be reproduced.** Five of the ten curated boards
-  (`up_20260718_*`) point at `data/uploads/` photos that have since been deleted, so
-  `ground_truth.json` now loads only `img_0565`–`img_0569`. Either recover those photos or
-  prune the dead entries so the curated set stops silently shrinking under us.
-- Is `run_e`'s bright-board regression real or eval noise? Still open, and now on thinner
-  ground: the 10-board bright set it was measured on is down to 5 loadable boards.
-- Does `stability` earn its keep (DESIGN D3)? Undecided until M2 produces a stream to judge.
-- Licensing: the deployed model is trained on ChessReD (CC BY-NC-SA) + murky-license
-  geometry — personal use only. A clean-data retrain is the path if that ever changes.
-- No lint gate. `ruff` is a system binary with no project config; ~109 findings and 41
-  unformatted files sit unaddressed. Adopt it deliberately or drop it — currently it is
-  neither.
+- **Bank writes are not monotone.** A board that read 64/64 lost a square after two `/calibrate`
+  writes, and trained-alone still gets it right. Nothing measures that before a write lands.
+- **Confidence is not usable today.** Trained-alone has no board-level signal (0.978 vs 0.939) and the ensemble is under-confident, though it ranks boards roughly right. Top risk in DESIGN §9.
+- **The 638/640 baseline is unreproducible** — 5 of 10 curated boards point at deleted photos, and
+  the same erosion makes `run_e`'s bright-board regression unjudgeable. Recover them or prune.
+- Does `stability` earn its keep (D3)? Undecided until M2 produces a stream to judge.
+- Licensing: ChessReD (CC BY-NC-SA) + murky geometry → personal use only.
+- No lint gate: `ruff` has no project config, ~109 findings unaddressed. Adopt it or drop it.

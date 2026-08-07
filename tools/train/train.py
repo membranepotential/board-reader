@@ -37,6 +37,7 @@ from dataset import (
     loader_worker_init,
     split_by_group,
     split_by_style,
+    subsample_val,
 )
 from metrics import SquareStats
 from models import build_model, param_summary, trainable_parameters
@@ -141,6 +142,11 @@ def train(cfg: Config) -> Path:
     else:
         train_idx, val_idx = split_by_group(data, val_frac=cfg.val_frac, seed=cfg.seed)
         print(f"single style: leave-groups-out val_frac={cfg.val_frac}")
+    if cfg.val_max is not None:
+        full_val = len(val_idx)
+        val_idx = subsample_val(val_idx, data.labels, cfg.val_max, seed=cfg.seed)
+        if len(val_idx) < full_val:
+            print(f"val capped {full_val} -> {len(val_idx)} crops (val_max) — SCREENING, not a score")
     print(f"train {len(train_idx)} / val {len(val_idx)} crops")
 
     device = pick_device(cfg.device)
@@ -342,6 +348,12 @@ def main() -> None:
                     help="override config styles (explicit warm set; avoids pulling in "
                          "partial/uncached styles that ['all'] would). Include the holdout.")
     ap.add_argument("--epochs", type=int, default=None)
+    ap.add_argument("--patience", type=int, default=None,
+                    help="early-stop after N epochs with no val gain (0 disables)")
+    ap.add_argument("--steps-per-epoch", type=int, default=None)
+    ap.add_argument("--val-max", type=int, default=None,
+                    help="cap val to N crops (stratified). Screening only — a capped "
+                         "val accuracy ranks candidates, it does not score them.")
     ap.add_argument("--out-dir", default=None)
     args = ap.parse_args()
     cfg = Config.load(args.config)
@@ -351,6 +363,12 @@ def main() -> None:
         cfg.styles = args.styles
     if args.epochs is not None:
         cfg.epochs = args.epochs
+    if args.patience is not None:
+        cfg.patience = args.patience
+    if args.steps_per_epoch is not None:
+        cfg.steps_per_epoch = args.steps_per_epoch
+    if args.val_max is not None:
+        cfg.val_max = args.val_max
     if args.out_dir is not None:
         cfg.out_dir = args.out_dir
     train(cfg)

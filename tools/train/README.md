@@ -36,29 +36,99 @@ hard-code it on either side; let the sidecar carry it.
 | `plots.py` | Learning curves + diagnostics + confusion heatmap PNGs, re-rendered each epoch; also a CLI for any (old) run dir. |
 | `evaluate.py` | Final held-out eval on the user's own set (`data/eval` + dim-light `data/uploads` calibrate shots). Torch or ONNX. |
 | `export.py` | Checkpoint → ONNX (`crop`→`logits`, dynamic batch) + onnxruntime round-trip parity check. |
-| `configs/` | `smoke.yaml` (10-min sanity), `loso_resnet.yaml`, `loso_dinov2.yaml`. |
+| `configs/` | `smoke.yaml` (10-min sanity), `loso_resnet.yaml`, `loso_dinov2.yaml`, `run_f.yaml`. |
+| `_env.sh` | Resolves `PY` to the scratch torch venv and **preflights** it (torch+CUDA, onnx, onnxscript, onnxruntime, cv2, yaml) before any GPU time. Sourced by the driver scripts. |
+| `run_f.sh` | Self-driving scoring run: cache → train → export → evaluate → summary. `set -e`, so a dead stage aborts instead of printing a blank result. |
+| `screen.sh` | Same pipeline, ~1/3 the wall clock — for **ranking** candidates, not scoring them. See below. |
+| `tests/` | Unit tests for the split/sampling helpers. Run under the torch venv (see Tests). |
 
 ## Setup (scratch venv)
 
+The venv lives at **`scratch/torchvenv`** (gitignored), and the driver scripts
+default `PY` to it — you should not need to set `PY` at all.
+
 ```bash
-uv venv "$SCRATCH/torchvenv" --python 3.12
-VIRTUAL_ENV="$SCRATCH/torchvenv" uv pip install --index-strategy unsafe-best-match \
+uv venv scratch/torchvenv --python 3.12
+uv pip install --python scratch/torchvenv/bin/python \
+  --exclude-newer 2026-06-09T00:00:00Z \
+  --index-strategy unsafe-best-match \
   --extra-index-url https://download.pytorch.org/whl/cu124 \
-  torch torchvision timm opencv-python-headless numpy pyyaml onnx onnxruntime pillow
+  torch torchvision timm opencv-python-headless numpy pyyaml pillow \
+  onnx onnxscript onnxruntime matplotlib pytest
 ```
 
-(GTX 1650 / driver 610 resolves to a working `torch 2.12+cu13x` wheel.)
+(GTX 1650 / driver 610 resolves to a working `torch 2.12+cu13x` wheel.
+`--exclude-newer` mirrors the workspace's 7-day dependency seasoning — see the
+root `pyproject.toml`; bump both together.)
+
+**`onnxscript` is not optional.** From torch 2.9 on, `torch.onnx.export` routes
+through the dynamo exporter, which imports it — without it `export.py` dies
+*after* training has already spent the GPU. `matplotlib` backs `plots.py`, and
+`pytest` runs the harness tests below. All three were missing once, and a run was
+launched against `/usr/bin/python` (CUDA torch, no ONNX stack) instead of this
+venv: training completed, then export and evaluate both crashed. `_env.sh` now
+preflights the interpreter for exactly this and aborts before any GPU time.
+
+## Tests
+
+The harness cannot be tested by the workspace suite — that venv is deliberately
+torch-free, and `dataset.py` imports torch. Run them with the torch venv:
+
+```bash
+scratch/torchvenv/bin/python -m pytest tools/train/tests -q
+```
 
 ## Run
 
 ```bash
-PY="$SCRATCH/torchvenv/bin/python"
 cd tools/train
+./run_f.sh                            # a full self-driving candidate run
+./screen.sh configs/run_f.yaml        # ~1/3 the time — RANKS candidates, see below
+
+PY="$ROOT/scratch/torchvenv/bin/python"   # only if driving the stages by hand
 $PY cropcache.py                      # cache all discovered styles
 $PY train.py --config configs/loso_resnet.yaml --holdout <style>   # one LOSO fold
 $PY export.py   --ckpt <run>/best.pt  # -> <run>/model.onnx + round-trip check
 $PY evaluate.py --onnx  <run>/model.onnx     # final numbers on the user's set
 ```
+
+## Iterating faster (`screen.sh`)
+
+A scoring run is ~40 min. Two measured facts decide where that can be cut, and
+one popular idea is ruled out:
+
+- **Less training data saves nothing.** `steps_per_epoch: 300` × `batch_size: 48`
+  = 14,400 images an epoch out of 663,680 available — **2.2%**, or 0.43 passes
+  over the corpus across a whole 20-epoch run. Halving the dataset changes wall
+  clock by zero. (`max_boards` only helps the one-off `cropcache` build for a
+  *new* geometry, which is where data volume genuinely costs.)
+- **Validation does cost.** The full leave-style-out holdout is 16,000 crops =
+  ~30s of each 120s epoch. `val_max` caps it with a seeded, class-stratified
+  draw — stratified because piece-type accuracy turns on the rare classes.
+- **The curve does not converge early.** run_e: e6 0.835, e11 0.880, **e17
+  0.898**. Truncating to 8 epochs reads 0.859 — a "failure" against a bar it
+  goes on to clear.
+
+So short runs cannot produce a deployable **number**, but they can produce a
+**ranking**: at matched epoch 6, run_e was 0.835 and run_f 0.846.
+
+```bash
+./screen.sh configs/run_f.yaml            # 8 epochs, val capped to 4000, no early stop
+SCREEN_EPOCHS=12 ./screen.sh configs/x.yaml   # or tune it
+```
+
+~13 min of training plus ~1 min of export+evaluate (the `chesscog_transfer`
+number is the honest one and is cheap, so screening includes it). Promote a
+survivor to a full driver before believing any absolute figure.
+
+**Caveat:** this assumes candidate curves do not cross between e8 and e20. We
+have one run-pair supporting that. A screen filters out losers; it does not pick
+winners.
+
+**Do not shrink `patience` to save time.** It buys back almost nothing on a
+40-minute run and truncates real ones: run_f's first attempt died at e8 on a
+4-epoch stall, having peaked at 0.847, and answered nothing. Scoring configs use
+`patience: 8`; `screen.sh` disables it outright.
 
 ## Watching a run
 

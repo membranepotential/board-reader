@@ -32,7 +32,11 @@ init: imagenet
 shape_bias: true
 
 epochs: 20
-patience: 5
+# 8, not 5: run_e's curve rises to e17 (0.898) with a 3-epoch stall at e8-e10, and
+# run_f's first attempt died at e8 on a 4-epoch stall having peaked at 0.847 — an
+# early stop that answered nothing. On a 40-minute run patience buys almost no
+# compute back, so set it wide enough that only a genuinely dead run trips it.
+patience: 8
 batch_size: 48
 lr: 0.0005
 weight_decay: 0.05

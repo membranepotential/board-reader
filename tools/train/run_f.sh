@@ -7,9 +7,14 @@
 # synthetic holdout (comparable to run_e's 0.898) and the repaired real-photo
 # chesscog_transfer set (run_e: 0.819) — the latter is the honest generalisation
 # number, since no run has ever trained on it.
-set -uo pipefail
-PY="${PY:?set PY}"; HERE="$(cd "$(dirname "$0")" && pwd)"; cd "$HERE"
-ROOT="$(cd ../.. && pwd)"
+#
+# `set -e` is load-bearing: the first attempt at this run had export and evaluate
+# both die, and the driver still printed CANDIDATE_RESULT with a blank accuracy
+# followed by F_DONE. A dead stage must abort, never summarise.
+set -euo pipefail
+HERE="$(cd "$(dirname "$0")" && pwd)"
+. "$HERE/_env.sh"   # sets ROOT and PY; refuses an interpreter missing the stack
+cd "$HERE"
 GEO="$ROOT/data/external/_cropcache/pose_h1.9_r0.5_f1"
 STYLES=(chessred chessrender360 chessr_cana chessr_russiangreytown chessr_vlab_wooden
         w2_bellanger w2_cemkalyoncu w2_chessr_cana w2_chessr_rgt w2_pjhanzlik w2_polyhaven)
