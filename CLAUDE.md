@@ -17,7 +17,7 @@ must stay in sync with which.
    We never land a milestone that can't be demoed live. New behaviour ships with
    both automated tests **and** a path in [docs/TESTING.md](docs/TESTING.md). The
    walking skeleton (M0) exists precisely to make this true from day one.
-2. **Everything is tested.** No feature merges without tests. `uv run pytest` is
+2. **Everything is tested.** No feature merges without tests. `make test` (~12 s) is
    green before any commit **that changes something the suite covers**. Don't run
    it when nothing testable changed — a docs, comment, `Makefile` or `STATUS.md`
    edit is not a reason to spend a suite run. Logic-heavy code gets unit tests;
@@ -54,13 +54,21 @@ glue that wires both, and only across the network.
 
 ## Dev workflow
 
+**Testing costs ~12 s. If it is costing you more, read
+[docs/TESTING.md §0](docs/TESTING.md#0-read-this-first-the-60-second-version)** —
+it is the 60-second agent briefing: which command to run when, the four habits that
+waste the most time, what a hang means, and the one `/ingest` gotcha
+(`packages/inference/tests/conftest.py`). Don't read the rest of TESTING.md unless
+you are adding a test.
+
 ```bash
 uv sync                       # install the whole workspace + dev tools
-make test                     # the suite in parallel (-n auto), minus GPU tests, ~10s
+make test                     # the whole suite in parallel (-n auto), minus GPU, ~12s
 make test-gpu                 # the 2 real-ONNX-session tests; needs an idle GPU
 make test-all                 # everything, GPU included
-uv run pytest                 # the same suite, serially (~23s)
+uv run pytest <path>[::<test>] -q   # one file/test while iterating — no `-n`, it costs more
 uv run pytest packages/core   # one package's tests
+uv run pytest                 # the whole suite SERIALLY (~23s) — prefer `make test`
 
 # Run locally (one terminal): inference + viewer on http :8080 (live, /snapshot)
 # and a second viewer bind on https :8443, whose secure origin /camera needs.

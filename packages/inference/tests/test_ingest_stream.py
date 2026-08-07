@@ -199,10 +199,12 @@ def test_drain_and_close_are_idempotent_and_prompt():
     asyncio.run(run())
 
 
-def test_ingest_socket_acks_every_frame_promptly_while_the_estimator_is_busy():
+def test_ingest_socket_acks_every_frame_promptly_while_the_estimator_is_busy(
+    gateway, drain_ingest
+):
     """The /ingest contract: one ack per received frame, in order, never behind the model."""
     est = FakeEstimator(delay=0.05)
-    client = TestClient(create_app(est, PositionHub()))
+    client = gateway(create_app(est, PositionHub()))
     frames = 10
 
     with client.websocket_connect("/ingest") as ws:
@@ -218,15 +220,11 @@ def test_ingest_socket_acks_every_frame_promptly_while_the_estimator_is_busy():
 
         ingest = client.app.state.ingest
         assert ingest.frames_received == frames
-        hub = client.app.state.hub
-        deadline = time.monotonic() + 5.0
-        while time.monotonic() < deadline:  # the workers keep going after the acks
-            latest = hub.latest("A1")
-            if latest is not None and latest.seq == frames - 1:
-                break
-            time.sleep(0.01)
-        assert hub.latest("A1").seq == frames - 1
 
+    # The workers keep going after the acks — wait for them, don't sleep-poll.
+    drain_ingest(client)
+    hub = client.app.state.hub
+    assert hub.latest("A1").seq == frames - 1
     assert ingest.frames_estimated + ingest.frames_dropped == frames
     assert ingest.frames_failed == 0
 
@@ -285,20 +283,17 @@ def test_a_photo_estimator_without_corners_reads_the_whole_frame_as_the_board():
     )
 
 
-def test_streamed_corners_reach_the_photo_path_end_to_end():
+def test_streamed_corners_reach_the_photo_path_end_to_end(gateway, drain_ingest):
     est = FakePhotoEstimator()
-    client = TestClient(create_app(est, PositionHub()))
+    client = gateway(create_app(est, PositionHub()))
     with client.websocket_connect("/ingest") as ws:
         header, jpeg = _frame(seq=3, corners=QUAD).encode()
         ws.send_text(json.dumps(header))
         ws.send_bytes(jpeg)
         assert ws.receive_json() == {"ack": 3, "board_id": "A1"}
 
-        hub = client.app.state.hub
-        deadline = time.monotonic() + 5.0
-        while time.monotonic() < deadline and hub.latest("A1") is None:
-            time.sleep(0.01)
-
+    drain_ingest(client)
+    hub = client.app.state.hub
     assert hub.latest("A1").seq == 3
     assert [seq for seq, _ in est.photo_calls] == [3]
     assert np.allclose(est.photo_calls[0][1], QUAD)

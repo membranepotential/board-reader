@@ -8,11 +8,86 @@ Two layers, both required by the project's "user-testable from the start" princi
 
 ---
 
+## 0. Read this first (the 60-second version)
+
+The suite is **fast — ~12 s for all 783 tests**. If testing is costing you more than
+that, you are doing one of the things in this section. Read it before you run
+anything; do not read the remaining 600 lines unless you are adding a test.
+
+**The only two commands you normally need:**
+
+```bash
+make test                                  # everything, ~12s. The gate before a commit.
+uv run pytest packages/inference/tests/test_server.py -q    # one file, while iterating
+```
+
+| Want | Run | Cost (measured, idle machine) |
+|---|---|---|
+| The gate (before committing) | `make test` | **12 s** — all 783 |
+| One file / one test | `uv run pytest <path>[::<test>] -q` | 2–7 s |
+| One package | `uv run pytest packages/<pkg> -q` | core 5 s · edge 2 s · viewer 6 s · **inference 20 s** |
+| Recognition changes only | `make test-gpu` | 2 s, **needs an idle GPU** |
+
+Note the trap in row 3: `packages/inference` is 371 of the 783 tests and runs
+*serially*, so scoping to it (20 s) is **slower than running everything** with
+`make test` (12 s). Narrow to a file, or just run the gate.
+
+**Rules that save the most time:**
+
+- **Don't run the suite when nothing it covers changed.** A docs, comment,
+  `Makefile` or `STATUS.md` edit is not a reason to spend a run (CLAUDE.md §2).
+- **Don't add `-n auto` to a focused run.** Worker startup costs more than the tests
+  you selected; `make test` already parallelises the full suite. Plain `uv run
+  pytest <path>` is the fast path for one file.
+- **Don't run `uv run pytest` bare to check your work** — that is the whole suite
+  *serially*, ~23 s, and it re-enables the GPU tests. `make test` is strictly better.
+- **Never run two suites at once**, or a suite alongside a training run. The tests
+  are CPU-saturating by design (`-n auto`); two at once is how the flakes below get
+  triggered, and it makes both runs slower than running them in sequence.
+- **`make test` is green or the code is broken.** It is not "usually green". If it
+  is red, that is a real finding — investigate it, don't re-run and hope.
+
+**If something goes wrong:**
+
+| Symptom | What it means | Do this |
+|---|---|---|
+| Suite hangs with no output | A test is wedged | Wait 120 s: `faulthandler_timeout` dumps every thread's stack and names the test. Then read the stack — do not just re-run. |
+| Port already in use / e2e weirdness | A previous session left `make dev` running | `make stop`, then check `pgrep -af board-reader` |
+| GPU test fails (`BFCArena`, OOM) | The GPU is busy, not a code bug | Re-run `make test-gpu` when idle. `make test` excludes these for exactly this reason. |
+| A `/boards/{id}` 404 or a WS read that never returns | You asserted on an estimate before it landed | See **the ingest rule** below |
+
+**The ingest rule (the one gotcha worth knowing).** `WS /ingest` acks a frame when
+it is **received**, not when it is **estimated** — the estimate happens later on a
+per-board worker task. So a test that ingests a frame and then asserts on a
+*published* position (`GET /boards/{id}`, a `/viewer` event, `frames_estimated`)
+must wait for that worker. Use the fixtures in
+[`packages/inference/tests/conftest.py`](../packages/inference/tests/conftest.py):
+
+```python
+def test_something(gateway, drain_ingest):
+    client = gateway(create_app(...))      # NOT a bare TestClient(...)
+    with client.websocket_connect("/ingest") as ws:
+        ...                                 # send frames, read acks
+    drain_ingest(client)                    # deterministic; no sleep, no polling
+    assert client.get("/boards/A1").status_code == 200
+```
+
+A bare `TestClient` gets a fresh event loop per call, so the worker dies with the
+websocket and the estimate is **lost** — about 1 % of the time under load. That
+single bug produced both a flaky 404 *and* a suite that hung for a quarter of an
+hour (a `/viewer` read waiting forever for an event nobody would publish). Don't
+reintroduce it by reaching for `TestClient` + `time.sleep`. If the test only checks
+what the handler wrote *before* acking — `/boards/{id}/frame`, the ingress
+recording — a plain `TestClient` is correct and cheaper. `conftest.py` has the full
+reasoning.
+
+---
+
 ## 1. Automated tests
 
 ```bash
 uv sync                # once, to set up the workspace venv
-make test              # the suite across all cores, minus GPU tests (green), ~10s
+make test              # the suite across all cores, minus GPU tests (green), ~12s
 make test-gpu          # the 2 GPU tests alone — an idle GPU, or they flake
 make test-all          # everything, GPU included
 uv run pytest          # the whole suite, serially (~23s)

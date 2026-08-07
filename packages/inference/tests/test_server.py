@@ -42,20 +42,27 @@ def test_boards_404_before_any_frame():
     assert _client().get("/boards/A1").status_code == 404
 
 
-def test_ingest_frame_then_board_snapshot_available():
-    client = _client()
+def test_ingest_frame_then_board_snapshot_available(gateway, drain_ingest):
+    # The ack means "received", not "estimated" — hence gateway + drain_ingest
+    # rather than a bare client (see conftest.py).
+    client = gateway(create_app(StubEstimator(START_PLACEMENT), PositionHub()))
     with client.websocket_connect("/ingest") as ingest:
         _send_frame(ingest, seq=5)
         ack = ingest.receive_json()
         assert ack == {"ack": 5, "board_id": "A1"}
+    drain_ingest(client)
     snap = client.get("/boards/A1")
     assert snap.status_code == 200
     assert snap.json()["placement"] == START_PLACEMENT
 
 
-def test_end_to_end_ingest_to_viewer_stream():
+def test_end_to_end_ingest_to_viewer_stream(gateway):
     """A frame pushed on /ingest reaches a /viewer subscriber as a position event."""
-    client = _client()
+    # Both sockets must share ONE event loop. On a bare TestClient each
+    # `websocket_connect` gets its own portal, so the hub's subscriber queue would
+    # live on the viewer's loop while `publish` runs on the ingest loop — waking a
+    # future across loops, which strands `receive_text()` below forever.
+    client = gateway(create_app(StubEstimator(START_PLACEMENT), PositionHub()))
     with (
         client.websocket_connect("/viewer") as viewer,
         client.websocket_connect("/ingest") as ingest,
@@ -273,11 +280,15 @@ def test_detect_does_not_block_the_event_loop(monkeypatch):
         assert detect_response["r"].json()["corners"] == quad.tolist()
 
 
-def test_viewer_replays_retained_latest_on_connect():
-    client = _client()
+def test_viewer_replays_retained_latest_on_connect(gateway, drain_ingest):
+    # Draining first is what keeps this test from HANGING the suite: if the frame
+    # is never estimated, nothing is retained, and `receive_text()` below waits
+    # forever for an event that will never come (see conftest.py).
+    client = gateway(create_app(StubEstimator(START_PLACEMENT), PositionHub()))
     with client.websocket_connect("/ingest") as ingest:
         _send_frame(ingest, seq=9)
         ingest.receive_json()
+    drain_ingest(client)
     # A viewer connecting AFTER the frame still gets the retained latest immediately.
     with client.websocket_connect("/viewer") as viewer:
         event = json.loads(viewer.receive_text())

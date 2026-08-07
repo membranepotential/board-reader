@@ -139,7 +139,7 @@ aspects:
   tests:
     description: >-
       The automated suite — per-package unit tests plus the cross-cutting
-      layer-separation and end-to-end tests. `uv run pytest` is the merge gate.
+      layer-separation and end-to-end tests. `make test` is the merge gate.
     files: ["packages/*/tests/**", "tests/**"]
     affects:
       - aspect: testing-guide

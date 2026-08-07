@@ -116,6 +116,18 @@ testpaths = ["tests", "packages", "tools/video/tests"]
 # contention from a training run or a second agent session). `make test`
 # deselects them and says so; `make test-gpu` runs exactly them.
 markers = ["gpu: needs the GPU (real ONNX InferenceSession); deselected by `make test`"]
+# A hung test must never again be a silent hang. The suite's slowest test is ~8s,
+# so 120s means "something is wedged, not slow": faulthandler dumps every thread's
+# stack to stderr and names the test, turning a run that sits there for a quarter
+# of an hour with no output into one that says where it is stuck. Diagnosis only —
+# it does not fail or kill the test, so it can never make a green run red.
+#
+# The hang this was written for: `WS /ingest` acks on *receipt* and estimates on a
+# worker task, and Starlette's TestClient tears the event loop down under that
+# worker (see packages/inference/tests/conftest.py). A test that then read the
+# retained position off `WS /viewer` waited forever for an event nobody would
+# publish. Fixed at the source there; this is the net under it.
+faulthandler_timeout = 120
 filterwarnings = [
     # Starlette's TestClient warns about httpx vs httpx2; harmless for our suite.
     "ignore:Using `httpx` with `starlette.testclient`",

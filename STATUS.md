@@ -9,6 +9,22 @@ confidences**. No moves, no legality, no PGN — those are the downstream applic
 
 ## Now
 
+- **Svelte/SvelteKit frontend rewrite (this session, 2026-08-07) — in flight.**
+  Port all three pages (`index.html` 465 · `camera.html` 1682 · `snapshot.html` 2407 +
+  `tracker.js` 536) to a SvelteKit app at `packages/viewer/ui/`, prerendered by
+  `adapter-static` into `packages/viewer/src/board_reader_viewer/web/` (generated,
+  gitignored, built by `make ui`). **`proxy.py`/`tls.py` are untouched** — the viewer stays
+  a Python byte-forwarder importing no `board_reader_*` package, so today's single-origin
+  and tunnel work survives intact. Logic duplicated across the three pages (`fenToGrid`,
+  corner labelling, `squareKey`) collapses into one typed `src/lib`. Toolchain verified:
+  build emits exactly the three files `server.py` serves. Deps 7-day seasoned via pnpm
+  `minimumReleaseAge: 10080`; vendored chessground 9 replaced by npm
+  `@lichess-org/chessground` 10.1.1 (the unscoped package is deprecated).
+  **Test shape changes:** ~85 Python tests string-grep the served HTML and cannot survive a
+  bundler — invariants move to Vitest (lib maths) + Playwright (page behaviour); Python
+  keeps the ~15 genuine `server`/`proxy`/`tls` tests. Agents: lib+types (blocking) → three
+  page ports + server/build integration (parallel, disjoint files) → test port → docs/aspects
+  → review + live verify. **Next:** land lib, then fan out the pages.
 - **Single-origin viewer + tunnel access (this session, 2026-08-07) — done, uncommitted.**
   All three pages are now same-origin: the viewer relays the node's whole HTTP API under
   a catch-all `/api/<path>` (was: two hardcoded routes) and injects nothing into the HTML.
@@ -60,6 +76,25 @@ Also staged and waiting on a decision to start:
 
 ## Done (recent)
 
+- 08-07: **The flaky/hanging suite, root-caused — and a testing guide agents can act on.**
+  The `ack≠estimated` race closed earlier was a symptom, not the cause. `WS /ingest` acks on
+  *receipt* and estimates on a per-board worker task; a `TestClient` **not entered as a
+  context manager gets a fresh event loop per call**, so that worker died with the websocket
+  and its position was never published (`WebSocketTestSession.__exit__` also cancels the app's
+  scope before the handler's own `drain()` runs). Three faces of the one bug: a flaky
+  `GET /boards/A1` 404; `test_viewer_replays_retained_latest_on_connect` **blocking forever**
+  on a `/viewer` read — the silent 14-minute whole-suite hang, caught in the act by a
+  faulthandler dump; and two sockets on one bare client landing on *two* loops, so
+  `hub.publish()` wakes a Future owned by the other loop. **Production is unaffected** —
+  uvicorn has one long-lived loop. Fix: `packages/inference/tests/conftest.py` with `gateway`
+  (one portal per client) + `drain_ingest` (waits on the workers' own idle events); 6 tests
+  moved onto it, 3 sleep-poll loops with 5 s deadlines deleted. Measured under identical heavy
+  load: **old 6/600 frames lost, fixed 0/600**; 10/10 loaded full-suite runs green.
+  `faulthandler_timeout = 120` now makes any future hang name its test instead of burning a
+  session. **[TESTING.md §0](docs/TESTING.md)** is the new 60-second agent briefing — measured
+  cost per command, the habits that waste time, hang/port triage, and the ingest rule; linked
+  from CLAUDE.md. (Note the trap it documents: `pytest packages/inference` is 20 s, *slower*
+  than `make test`'s 12 s for all 783.)
 - 08-07: **The position stream has a consumer, and the gateway has one routing decision**
   (`chore/mvp-cleanup`, merged `5f2a0a4`; 776 green, lint clean). The project's output was
   observable only in a browser, so a run could never be captured, diffed or asserted —

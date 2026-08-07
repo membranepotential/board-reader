@@ -11,7 +11,6 @@ confidence at stream rate — a fabricated position on the hub.
 from __future__ import annotations
 
 import json
-import time
 
 import numpy as np
 import pytest
@@ -159,26 +158,20 @@ def _http_calls(app_state, image, corners) -> list:
     return spy.calls
 
 
-def _stream_calls(app_state, image, corners) -> list:
+def _stream_calls(app_state, image, corners, gateway, drain_ingest) -> list:
     """...and when the very same photo arrived over ``WS /ingest``."""
     spy, app = app_state()
-    client = TestClient(app)
+    client = gateway(app)
     with client.websocket_connect("/ingest") as ws:
         header, jpeg = _frame(image, corners).encode()
         ws.send_text(json.dumps(header))
         ws.send_bytes(jpeg)
         ws.receive_json()  # ack — the estimate is still in flight
-        # Wait for the worker to FINISH the frame, not for the spy to be called.
-        # On the uncalibrated branch the spy is never called by design, so waiting
-        # on `spy.calls` would burn the whole deadline on every run of that case
-        # and still assert the same thing. The ingest counters say "this frame is
-        # done" for every branch, including the one whose answer is "nothing".
-        ingest = client.app.state.ingest
-        deadline = time.monotonic() + 5.0
-        while time.monotonic() < deadline and not (
-            ingest.frames_estimated + ingest.frames_skipped + ingest.frames_failed
-        ):
-            time.sleep(0.005)
+    # Wait for the worker to FINISH the frame, not for the spy to be called: on the
+    # uncalibrated branch the spy is never called by design, so waiting on
+    # `spy.calls` would assert the same thing while burning a whole deadline.
+    # Draining covers every branch, including the one whose answer is "nothing".
+    drain_ingest(client)
     return spy.calls
 
 
@@ -199,8 +192,10 @@ def _uncalibrated_gateway():
     return spy, create_app(spy, PositionHub(), occupancy_estimator=_occupancy_bank())
 
 
+# The parameter is `build_gateway`, not `gateway`: `gateway` is the conftest
+# fixture that builds the client, and a parametrize id would shadow it.
 @pytest.mark.parametrize(
-    ("gateway", "with_corners"),
+    ("build_gateway", "with_corners"),
     [
         (_photo_gateway, True),  # branch 1: photo mode + corners
         (_rectified_gateway, True),  # branch 2: corners -> server-side warp
@@ -208,21 +203,27 @@ def _uncalibrated_gateway():
         (_uncalibrated_gateway, True),  # branch 4: §4.6 — no position, either way
     ],
 )
-def test_the_posted_and_the_streamed_frame_take_the_same_branch(gateway, with_corners):
+def test_the_posted_and_the_streamed_frame_take_the_same_branch(
+    build_gateway, with_corners, gateway, drain_ingest
+):
     """One decision, two ingresses. A branch that reaches ``POST /estimate`` and
     not the stream (or the reverse) is exactly the bug this parity pins down."""
     image = render_board(MIDGAME, square_px=24)
     corners = full_frame_corners(image) if with_corners else None
 
-    assert _http_calls(gateway, image, corners) == _stream_calls(gateway, image, corners)
+    assert _http_calls(build_gateway, image, corners) == _stream_calls(
+        build_gateway, image, corners, gateway, drain_ingest
+    )
 
 
-def test_the_uncalibrated_stream_publishes_nothing_and_counts_the_frame():
+def test_the_uncalibrated_stream_publishes_nothing_and_counts_the_frame(
+    gateway, drain_ingest
+):
     """A stream has no response to answer with, so it skips — it must never fall
     back to the stub's fixed start placement (the incident)."""
     image = render_board(MIDGAME, square_px=24)
     spy, app = _uncalibrated_gateway()
-    client = TestClient(app)
+    client = gateway(app)
 
     with client.websocket_connect("/ingest") as ws:
         header, jpeg = _frame(image, full_frame_corners(image)).encode()
@@ -230,10 +231,8 @@ def test_the_uncalibrated_stream_publishes_nothing_and_counts_the_frame():
         ws.send_bytes(jpeg)
         ws.receive_json()
 
+    drain_ingest(client)
     ingest = client.app.state.ingest
-    deadline = time.monotonic() + 5.0
-    while time.monotonic() < deadline and ingest.frames_skipped == 0:
-        time.sleep(0.01)
     assert ingest.frames_skipped == 1
     assert ingest.frames_estimated == 0
     assert spy.calls == []
