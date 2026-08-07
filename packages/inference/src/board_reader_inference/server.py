@@ -28,6 +28,7 @@ from fastapi import FastAPI, Query, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
 
+from board_reader_core.boarddetect import LOW_ANGLE_ASPECT, quad_aspect
 from board_reader_core.protocol import GRID, START_PLACEMENT
 from board_reader_core.wire import Frame, decode_jpeg
 
@@ -82,11 +83,9 @@ def _session_bank_path() -> str | None:
 # degrades (evening-room shots measured ~37/255) — responses carry a warning.
 LOW_LIGHT_MEAN = 55.0
 
-# Below this projected board aspect (short/long side of the corner quad) the
-# camera is so close to board level that pieces occlude whole ranks and crops
-# mostly contain the *next* rank's piece — recognition collapses (measured
-# 2026-07-18: near-random output at 0.56 vs usable at 0.73+). Warn, don't block.
-LOW_ANGLE_HW = 0.62
+# Projected board aspect below which the camera is too close to board level for
+# recognition to survive; defined in core beside the detector. Warn, don't block.
+LOW_ANGLE_HW = LOW_ANGLE_ASPECT
 
 # /calibrate sanity floor: of the squares the claimed placement says hold a
 # PIECE, at least this fraction must agree with a stateless probe of the photo
@@ -109,16 +108,10 @@ def _booster_weight(bank_exemplars: int) -> float:
     return 0.3 if bank_exemplars >= 1024 else 0.5
 
 
-def _quad_aspect(quad: np.ndarray) -> float:
-    """Projected board aspect: short axis / long axis of the corner quad, in
-    (0, 1]. Rotation-of-labeling agnostic (both axis ratios tried); ~1 means
-    top-down, small values mean a nearly board-level camera."""
-    q = np.asarray(quad, dtype=np.float32).reshape(4, 2)
-    w = 0.5 * (np.linalg.norm(q[1] - q[0]) + np.linalg.norm(q[2] - q[3]))
-    h = 0.5 * (np.linalg.norm(q[3] - q[0]) + np.linalg.norm(q[2] - q[1]))
-    if w <= 0 or h <= 0:
-        return 1.0
-    return float(min(h / w, w / h))
+# The metric and its threshold live in core beside the detector that produces the
+# quads, so the serving warning and the capture-side stream QC (tools/video) can
+# never drift apart.
+_quad_aspect = quad_aspect
 
 
 def _prior_decode(event):

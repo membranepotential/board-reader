@@ -296,6 +296,32 @@ def _validate(image: np.ndarray, quad: np.ndarray) -> bool:
     return bool((np.sign(d) == np.sign(np.median(d))).all())
 
 
+# Below this projected board aspect the camera is so close to board level that
+# pieces occlude whole ranks and each square's crop mostly contains the *next*
+# rank's piece — recognition collapses (measured 2026-07-18: near-random output
+# at 0.56 vs usable at 0.73+). The serving layer warns rather than blocks; the
+# capture-side tooling uses it to reject a stream outright. See
+# docs/operating-envelope.md, which is the authority on this number.
+LOW_ANGLE_ASPECT = 0.62
+
+
+def quad_aspect(quad: np.ndarray) -> float:
+    """Projected board aspect: short axis / long axis of the corner quad, in
+    (0, 1]. Rotation-of-labeling agnostic (both axis ratios tried); ~1 means
+    top-down, small values mean a nearly board-level camera.
+
+    A calibration-free proxy for camera elevation — it needs only the corners
+    the caller already has, which is why it works equally on a served photo and
+    on a :func:`detect_board_quad` result from a broadcast frame.
+    """
+    q = np.asarray(quad, dtype=np.float32).reshape(4, 2)
+    w = 0.5 * (np.linalg.norm(q[1] - q[0]) + np.linalg.norm(q[2] - q[3]))
+    h = 0.5 * (np.linalg.norm(q[3] - q[0]) + np.linalg.norm(q[2] - q[1]))
+    if w <= 0 or h <= 0:
+        return 1.0
+    return float(min(h / w, w / h))
+
+
 def detect_board_quad(image: np.ndarray) -> np.ndarray | None:
     """Locate the chess board playing surface in a real photo.
 
