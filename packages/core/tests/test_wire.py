@@ -47,3 +47,45 @@ def test_frame_encode_decode_roundtrip():
     assert back.stability == 0.2
     assert back.clock == "black"
     assert back.image.shape == f.image.shape
+
+
+QUAD = [[10.0, 20.0], [110.0, 22.0], [112.0, 121.0], [8.0, 119.0]]  # a8,h8,h1,a1
+
+
+def test_corners_are_normalised_to_a_float32_quad():
+    f = Frame(board_id="A1", seq=0, capture_ts=0.0, image=_img(), corners=QUAD)
+    assert f.corners.shape == (4, 2)
+    assert f.corners.dtype == np.float32
+
+
+def test_corners_travel_as_eight_flat_floats():
+    f = Frame(board_id="A1", seq=1, capture_ts=0.0, image=_img(), corners=QUAD)
+    h = f.header()
+    assert h["corners"] == [10.0, 20.0, 110.0, 22.0, 112.0, 121.0, 8.0, 119.0]
+    assert all(isinstance(v, float) for v in h["corners"])  # JSON-safe, not np.float32
+
+
+def test_corners_roundtrip_through_header_and_the_jpeg_envelope():
+    f = Frame(board_id="A1", seq=2, capture_ts=3.0, image=_img(2), corners=QUAD)
+    back = Frame.decode(*f.encode())
+    assert np.allclose(back.corners, f.corners)
+    assert back.header() == f.header()
+
+
+def test_frame_without_corners_stays_uncornered():
+    f = Frame(board_id="A1", seq=0, capture_ts=0.0, image=_img())
+    assert f.corners is None
+    assert "corners" not in f.header()
+    assert Frame.decode(*f.encode()).corners is None
+    # An explicit null is the same as absent — the edge may send either.
+    assert Frame.from_header({**f.header(), "corners": None}, _img()).corners is None
+
+
+@pytest.mark.parametrize("bad", [[1.0, 2.0], [0.0] * 7, [0.0] * 9, [[1.0, 2.0]] * 3])
+def test_corners_of_the_wrong_length_are_rejected(bad):
+    with pytest.raises(ValueError):
+        Frame(board_id="A1", seq=0, capture_ts=0.0, image=_img(), corners=bad)
+    with pytest.raises(ValueError):
+        Frame.from_header(
+            {"board_id": "A1", "seq": 0, "capture_ts": 0.0, "corners": bad}, _img()
+        )

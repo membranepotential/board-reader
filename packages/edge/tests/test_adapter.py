@@ -5,12 +5,20 @@ from __future__ import annotations
 import json
 
 import numpy as np
+import pytest
 
 from board_reader_core.sim import render_board, simulate_angled_view
 from board_reader_core.wire import Frame, decode_jpeg
 from board_reader_edge.adapter import FileEdgeAdapter
 from board_reader_edge.rectify import Rectifier
 from board_reader_edge.source import SyntheticSource
+
+# Deliberately NOT top-left-first: this is the operator's semantic a8,h8,h1,a1 order
+# starting at a board whose a8 sits top-right in the image. order_quad() would
+# reshuffle it; the forward-original path must not.
+ROTATED_CORNERS = np.array(
+    [[300.0, 20.0], [300.0, 300.0], [20.0, 300.0], [20.0, 20.0]], dtype=np.float32
+)
 
 
 def _adapter(n=3, **kw):
@@ -149,3 +157,66 @@ def test_dropped_frames_never_pay_for_rectification():
     assert CountingRectifier.calls == len(frames)  # dropped frames cost nothing
     assert CountingRectifier.calls < 30
     assert frames[0].image.shape == board.shape  # and forwarded ones are crops
+
+
+def test_forward_original_keeps_the_image_and_attaches_corners_verbatim():
+    # The photo path (§4.5): no warp at the edge, geometry rides the header instead.
+    board = render_board(square_px=48)
+    angled, _ = simulate_angled_view(board)
+    src = SyntheticSource([angled, angled], board_id="A1")
+    frames = list(FileEdgeAdapter(src, wire_corners=ROTATED_CORNERS).frames())
+    assert len(frames) == 2
+    for f in frames:
+        assert f.image.shape == angled.shape  # original pixels, not a 384px crop
+        # Verbatim: the semantic a8,h8,h1,a1 order is what declares the orientation,
+        # so it must survive unreordered (order_quad would put [20,20] first).
+        assert np.array_equal(f.corners, ROTATED_CORNERS)
+
+
+def test_forward_original_corners_survive_caller_mutation():
+    # The adapter must own its quad: a recalibration UI writing new corners into
+    # the caller's array in place must not rewrite frames already handed out.
+    board = render_board(square_px=48)
+    src = SyntheticSource([board, board], board_id="A1")
+    caller_quad = ROTATED_CORNERS.copy()
+    adapter = FileEdgeAdapter(src, wire_corners=caller_quad)
+    it = adapter.frames()
+    first = next(it)
+    caller_quad[:] = 999.0
+    assert np.array_equal(first.corners, ROTATED_CORNERS)
+    assert np.array_equal(next(it).corners, ROTATED_CORNERS)
+
+
+def test_forward_original_puts_eight_corner_floats_on_the_wire():
+    board = render_board(square_px=48)
+    src = SyntheticSource([board], board_id="A1")
+    header, jpeg = next(FileEdgeAdapter(src, wire_corners=ROTATED_CORNERS).envelopes())
+    assert header["corners"] == ROTATED_CORNERS.reshape(-1).tolist()
+    json.dumps(header)  # still JSON-safe with corners attached
+    assert np.array_equal(Frame.decode(header, jpeg).corners, ROTATED_CORNERS)
+
+
+def test_forward_original_still_obeys_the_forwarder():
+    # The motion gate is upstream of the corner story: it scores raw frames either way.
+    from board_reader_edge.forwarder import AdaptiveForwarder, ForwarderConfig
+
+    board = render_board(square_px=48)
+    src = SyntheticSource([board] * 30, board_id="A1", fps=30.0)
+    fwd = AdaptiveForwarder(ForwarderConfig(keepalive_fps=1.0))
+    frames = list(
+        FileEdgeAdapter(src, forwarder=fwd, wire_corners=ROTATED_CORNERS).frames()
+    )
+    assert 1 <= len(frames) <= 3  # ~1 s of capture at 1 fps keepalive
+    assert all(np.array_equal(f.corners, ROTATED_CORNERS) for f in frames)
+
+
+def test_rectifier_and_wire_corners_are_rejected_together():
+    src = SyntheticSource([render_board()], board_id="A1")
+    with pytest.raises(ValueError, match="exclusive"):
+        FileEdgeAdapter(src, rectifier=Rectifier(), wire_corners=ROTATED_CORNERS)
+
+
+def test_wire_corners_must_be_four_points():
+    src = SyntheticSource([render_board()], board_id="A1")
+    with pytest.raises(ValueError, match="4"):
+        FileEdgeAdapter(src, wire_corners=np.array([[1.0, 2.0], [3.0, 4.0]]))

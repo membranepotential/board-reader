@@ -35,7 +35,7 @@ from board_reader_core.wire import Frame, decode_jpeg
 
 from board_reader_inference.estimator import Estimator, StubEstimator
 from board_reader_inference.hub import PositionHub
-from board_reader_inference.ingest import FrameIngest
+from board_reader_inference.ingest import FrameIngest, photo_estimator
 from board_reader_inference.squares import (
     BboxGeometry,
     crop_squares_photo,
@@ -79,6 +79,7 @@ def _id_epoch(upload_id: str) -> float:
 # default made ordinary test runs silently overwrite the real bank — twice.
 def _session_bank_path() -> str | None:
     return os.environ.get("BR_SESSION_BANK") or None
+
 
 # Below this mean pixel value a photo is dim enough that recognition measurably
 # degrades (evening-room shots measured ~37/255) — responses carry a warning.
@@ -230,8 +231,17 @@ def create_app(
     est: Estimator = estimator if estimator is not None else _default_estimator(occ_est)
     hub_: PositionHub = hub if hub is not None else PositionHub()
     # Streaming ingress (WP-G1/G2): frames are estimated off the event loop by
-    # per-board workers. ``lambda: est`` so /calibrate's hot-swap reaches the stream.
-    ingest_ = FrameIngest(lambda: est, hub_)
+    # per-board workers. Resolved per frame so /calibrate's hot-swap reaches the
+    # stream. ``None`` while the §4.6 uncalibrated state holds — the same condition
+    # that routes /estimate to occupancy-only — so the stream skips frames instead
+    # of publishing the stub's fabricated placement; the moment any calibration
+    # lands, the very same stream starts publishing real positions.
+    def _live_estimator() -> Estimator | None:
+        if occ_est is not None and photo_estimator(est) is None:
+            return None
+        return est
+
+    ingest_ = FrameIngest(_live_estimator, hub_)
     # Latest-wins raw-frame retention, one entry per board, in-memory only (no
     # disk write, unbounded board count — mirrors the hub's own retention). This
     # is what ``GET /boards/{id}/frame`` serves for the live video-like preview;
@@ -246,7 +256,7 @@ def create_app(
         allow_origins=os.environ.get("BR_ALLOW_ORIGINS", "*").split(","),
         allow_methods=["*"],
         allow_headers=["*"],
-        expose_headers=["X-Seq", "X-Capture-Ts"],
+        expose_headers=["X-Seq", "X-Capture-Ts", "X-Corners"],
     )
     app.state.estimator = est
     app.state.hub = hub_
@@ -268,21 +278,24 @@ def create_app(
         """Most recent raw JPEG ingested for ``board_id`` — a video-like preview.
 
         Served as-received (no re-encode) so the viewer can show what the camera
-        actually sent, independent of whatever the estimator made of it.
+        actually sent, independent of whatever the estimator made of it. When the
+        stream carried the playing-surface quad, ``X-Corners`` reports it in the
+        same ``x0,y0,...,x3,y3`` spelling ``?corners=`` takes — so the viewer can
+        calibrate straight from a live frame without asking the edge anything.
         """
         entry = latest_frames.get(board_id)
         if entry is None:
             return JSONResponse({"error": "no frame for board"}, status_code=404)
         header, jpeg = entry
-        return Response(
-            content=jpeg,
-            media_type="image/jpeg",
-            headers={
-                "X-Seq": str(header["seq"]),
-                "X-Capture-Ts": str(header["capture_ts"]),
-                "Cache-Control": "no-store",
-            },
-        )
+        headers = {
+            "X-Seq": str(header["seq"]),
+            "X-Capture-Ts": str(header["capture_ts"]),
+            "Cache-Control": "no-store",
+        }
+        corners = header.get("corners")
+        if corners:
+            headers["X-Corners"] = ",".join(str(v) for v in corners)
+        return Response(content=jpeg, media_type="image/jpeg", headers=headers)
 
     # One-shot HTTP ingress for the phone snapshot page (viewer /snapshot).
     #
@@ -341,20 +354,12 @@ def create_app(
             pass
 
     def _photo_estimator():
-        """The active estimator's photo path, if calibrated/trained for it.
+        """The *currently active* estimator's photo path, if it has one.
 
-        Photo-mode is declared either by the classifier (kNN/centroid banks) or
-        by the estimator itself (the trained crop classifier).
+        Kept as a closure because calibration hot-swaps ``est`` mid-request
+        (bootstrap/refresh), and every reader must resolve the current one.
         """
-        photo_mode = (
-            getattr(getattr(est, "classifier", None), "crop_mode", None) == "photo"
-            or getattr(est, "crop_mode", None) == "photo"
-        )
-        if photo_mode:
-            fn = getattr(est, "estimate_photo", None)
-            if callable(fn):
-                return fn
-        return None
+        return photo_estimator(est)
 
     def _base_trained():
         """The zero-shot trained member of the active estimator, if any."""
@@ -1188,11 +1193,24 @@ def create_app(
         boards: set[str] = set()
         try:
             while True:
-                header = json.loads(await ws.receive_text())
+                raw = await ws.receive_text()
                 jpeg = await ws.receive_bytes()
-                frame = Frame.from_header(header, decode_jpeg(jpeg))
+                try:
+                    header = json.loads(raw)
+                    frame = Frame.from_header(header, decode_jpeg(jpeg))
+                except (ValueError, TypeError, KeyError) as e:
+                    # One bad frame (malformed corners, truncated JPEG, missing
+                    # header field) must not kill the whole stream: a browser
+                    # edge would reconnect-loop forever on its own bug. Refuse
+                    # the frame in the ack slot and keep the socket.
+                    await ws.send_json({"error": f"bad frame: {e}"})
+                    continue
                 boards.add(frame.board_id)
-                latest_frames[frame.board_id] = (header, jpeg)
+                # The frame's own header, not the client's: retention then holds
+                # values the wire has already validated and normalised (corners
+                # as 8 floats, seq an int), never whatever JSON arrived.
+                normalised = frame.header()
+                latest_frames[frame.board_id] = (normalised, jpeg)
                 ingest_.submit(frame)
                 await ws.send_json({"ack": frame.seq, "board_id": frame.board_id})
         except WebSocketDisconnect:

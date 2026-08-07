@@ -10,6 +10,8 @@ inference node. The edge and inference processes meet only on the wire.
     board-reader-edge feed --game --adaptive --loop --throttle   # the M2 demo
     board-reader-edge feed --video otb.mp4 --adaptive --loop \
         --corners 120,80,900,80,960,860,60,860       # real footage, corners tapped
+    board-reader-edge feed --video otb.mp4 --forward-original \
+        --corners 120,80,900,80,960,860,60,860       # ... unwarped, corners on the wire
     board-reader-edge rectify board.jpg -o crop.png   # one-shot rectify (debug)
 """
 
@@ -18,8 +20,12 @@ from __future__ import annotations
 import argparse
 import asyncio
 import sys
+from typing import TYPE_CHECKING
 
 import cv2
+
+if TYPE_CHECKING:
+    import numpy as np
 
 from board_reader_core.boarddetect import detect_board_quad
 from board_reader_core.protocol import START_PLACEMENT
@@ -84,17 +90,41 @@ def _build_forwarder(args: argparse.Namespace) -> AdaptiveForwarder | None:
 
 
 def _build_rectifier(args: argparse.Namespace) -> Rectifier | None:
-    """Corners given -> manual mode; ``--rectify`` alone -> cadenced auto-detect."""
+    """Corners given -> manual mode; ``--rectify`` alone -> cadenced auto-detect.
+
+    ``--forward-original`` sends the corners the other way — onto the wire — so
+    nothing is warped at the edge and there is no rectifier at all.
+    """
+    if args.forward_original:
+        return None
     if args.corners:
         return Rectifier(manual_corners=_parse_corners(args.corners))
     return Rectifier() if args.rectify else None
 
 
+def _build_wire_corners(args: argparse.Namespace) -> "np.ndarray | None":
+    """The quad to stamp on every wire frame, or ``None`` (rectify-at-edge path)."""
+    if not args.forward_original:
+        return None
+    if args.rectify:
+        raise SystemExit(
+            "--forward-original and --rectify are exclusive: the first forwards the "
+            "original frame with corners attached, the second warps it away"
+        )
+    if not args.corners:
+        raise SystemExit(
+            "--forward-original needs --corners x0,y0,...,x3,y3 (a8,h8,h1,a1)"
+        )
+    return _parse_corners(args.corners)
+
+
 def cmd_feed(args: argparse.Namespace) -> int:
+    wire_corners = _build_wire_corners(args)  # validates the mode before any I/O
     adapter = FileEdgeAdapter(
         _build_source(args),
         forwarder=_build_forwarder(args),
         rectifier=_build_rectifier(args),
+        wire_corners=wire_corners,
         throttle=args.throttle,
     )
     sent = asyncio.run(stream_to_gateway(adapter, args.url))
@@ -177,6 +207,11 @@ def build_parser() -> argparse.ArgumentParser:
     f.add_argument(
         "--corners",
         help="manual corners 'x0,y0,...,x3,y3' (a8,h8,h1,a1); rectify, never detect",
+    )
+    f.add_argument(
+        "--forward-original", dest="forward_original", action="store_true",
+        help="forward the original frames and put --corners on every wire frame "
+             "(§4.5 photo path) instead of rectifying at the edge",
     )
     f.add_argument(
         "--adaptive", action="store_true",

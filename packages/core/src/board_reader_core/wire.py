@@ -5,6 +5,13 @@ The edge sends, per frame, a small JSON *header* plus a binary JPEG of the
 in-memory :class:`Frame` that both sides speak. Like :mod:`board_reader_core.protocol`
 it is shared, so it must not contain node-specific behaviour — only the wire shape
 and JPEG (de)serialisation.
+
+A frame may carry the board's playing-surface ``corners``, in which case the JPEG
+is the ORIGINAL camera image rather than a rectified crop. Corners ride on **every**
+frame by design: there is no ``set_corners`` control message and no per-connection
+corner state on the inference node, so a reconnecting edge, a restarted gateway and
+a mid-stream recalibration all need zero handshake to agree. :data:`CONTROL` stays
+reserved.
 """
 
 from __future__ import annotations
@@ -41,6 +48,9 @@ class Frame:
 
     Produced by the edge (camera/file), consumed by the inference estimator. Carries
     the edge capture timestamp and a per-board monotonic ``seq`` (DESIGN.md D5).
+
+    ``corners`` set means ``image`` is the original photo and the board is the quad;
+    unset means ``image`` is already the rectified board crop.
     """
 
     board_id: str
@@ -50,10 +60,20 @@ class Frame:
     stability: float = 1.0
     clock: str = "none"
     burst_id: str | None = None
+    corners: np.ndarray | None = None  # (4,2) float32 in ``image`` px: a8,h8,h1,a1
+
+    def __post_init__(self) -> None:
+        # Normalise here so every construction path — literal, from_header, replace —
+        # yields the same (4,2) float32 quad, and a malformed one never gets further.
+        if self.corners is not None:
+            quad = np.asarray(self.corners, dtype=np.float32)
+            if quad.size != 8:
+                raise ValueError("corners must be 4 (x, y) pairs, in a8,h8,h1,a1 order")
+            self.corners = quad.reshape(4, 2)
 
     def header(self) -> dict:
         """JSON-safe header (everything except the image bytes)."""
-        return {
+        header = {
             "type": FRAME,
             "board_id": self.board_id,
             "seq": self.seq,
@@ -62,6 +82,9 @@ class Frame:
             "clock": self.clock,
             "burst_id": self.burst_id,
         }
+        if self.corners is not None:
+            header["corners"] = self.corners.reshape(-1).tolist()
+        return header
 
     @classmethod
     def from_header(cls, header: dict, image: np.ndarray) -> "Frame":
@@ -73,6 +96,7 @@ class Frame:
             stability=float(header.get("stability", 1.0)),
             clock=header.get("clock", "none"),
             burst_id=header.get("burst_id"),
+            corners=header.get("corners"),
         )
 
     def encode(self, quality: int = 90) -> tuple[dict, bytes]:

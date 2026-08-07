@@ -25,6 +25,10 @@ including frames the pre-filter later drops. An ack means "received", not
 The workers belong to the ingest object, not to a connection: a reconnecting edge
 never interrupts an estimate in flight, and shutdown is the only thing that stops
 them (:meth:`FrameIngest.lifespan`).
+
+What a worker *does* with a frame is :func:`estimate_frame`, which honours the
+optional per-frame board corners the wire may carry — the same routing the
+snapshot ``POST /estimate`` path applies.
 """
 
 from __future__ import annotations
@@ -33,14 +37,58 @@ import asyncio
 import contextlib
 import logging
 from collections.abc import AsyncIterator, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
+import numpy as np
+from board_reader_core.protocol import PositionEvent
 from board_reader_core.wire import Frame
 
 from board_reader_inference.estimator import Estimator
 from board_reader_inference.hub import PositionHub
+from board_reader_inference.squares import rectify_photo
 
 log = logging.getLogger(__name__)
+
+PhotoEstimate = Callable[[Frame, np.ndarray], PositionEvent]
+
+
+def photo_estimator(est: Estimator) -> PhotoEstimate | None:
+    """``est``'s original-photo entry point, if it is calibrated/trained for one.
+
+    Photo-mode is declared either by the classifier (kNN/centroid banks) or by the
+    estimator itself (the trained crop classifier). Shared with the gateway's
+    ``POST /estimate`` so the streamed and the posted photo can never be routed
+    differently.
+    """
+    photo_mode = (
+        getattr(getattr(est, "classifier", None), "crop_mode", None) == "photo"
+        or getattr(est, "crop_mode", None) == "photo"
+    )
+    if not photo_mode:
+        return None
+    fn = getattr(est, "estimate_photo", None)
+    return fn if callable(fn) else None
+
+
+def estimate_frame(est: Estimator, frame: Frame) -> PositionEvent:
+    """Run ``est`` on ``frame``, honouring the frame's optional corners (§4.5).
+
+    Three cases, mirroring ``POST /estimate``:
+
+    * corners + a photo-mode estimator — hand it the original pixels, so it cuts
+      tall full-piece boxes instead of decapitating pieces in a warped square;
+    * corners + anything else — rectify server-side and estimate the top-down crop,
+      which is what a rectified-mode bank was calibrated on (and what the M0 stub's
+      centroids assume);
+    * no corners — the JPEG *is* the board, exactly as before.
+    """
+    if frame.corners is None:
+        return est.estimate(frame)
+    photo_fn = photo_estimator(est)
+    if photo_fn is not None:
+        return photo_fn(frame, frame.corners)
+    rectified = rectify_photo(frame.image, frame.corners)
+    return est.estimate(replace(frame, image=rectified, corners=None))
 
 
 @dataclass(frozen=True, slots=True)
@@ -57,17 +105,27 @@ class FrameIngest:
 
     The estimator is resolved *per frame* through a callable rather than captured,
     because ``POST /calibrate`` hot-swaps the gateway's estimator (§4.6) and a live
-    stream must pick the new one up mid-flight.
+    stream must pick the new one up mid-flight. The callable may return ``None`` —
+    "no estimator is ready for real positions yet" (the §4.6 uncalibrated state,
+    where ``POST /estimate`` answers occupancy-only and publishes nothing). A stream
+    has no HTTP response to answer with, so its frames are counted and *skipped*:
+    the hub carries positions someone actually estimated, never a placeholder.
+    Calibrating (the camera page's button, or a snapshot of the start position)
+    hot-swaps a real estimator in and the same stream comes alive mid-flight.
     """
 
-    def __init__(self, estimator: Callable[[], Estimator], hub: PositionHub) -> None:
+    def __init__(
+        self, estimator: Callable[[], Estimator | None], hub: PositionHub
+    ) -> None:
         self._estimator = estimator
         self._hub = hub
         self._boards: dict[str, _BoardWorker] = {}
+        self._warned_unready = False
         self.frames_received = 0
         self.frames_estimated = 0
         self.frames_dropped = 0
         self.frames_failed = 0
+        self.frames_skipped = 0  # arrived while no estimator was ready
 
     def submit(self, frame: Frame) -> None:
         """Hand ``frame`` to its board's worker and return immediately.
@@ -140,7 +198,17 @@ class FrameIngest:
             while True:
                 frame = await inbox.get()
                 try:
-                    event = await asyncio.to_thread(self._estimator().estimate, frame)
+                    estimator = self._estimator()
+                    if estimator is None:
+                        self.frames_skipped += 1
+                        if not self._warned_unready:
+                            self._warned_unready = True
+                            log.info(
+                                "frames arriving with no estimator ready (board %s):"
+                                " skipping until a calibration lands", board_id,
+                            )
+                        continue
+                    event = await asyncio.to_thread(estimate_frame, estimator, frame)
                 except asyncio.CancelledError:
                     raise
                 except Exception:

@@ -18,9 +18,15 @@ def _client() -> TestClient:
     return TestClient(create_app(StubEstimator(START_PLACEMENT), PositionHub()))
 
 
-def _send_frame(ws, board_id: str, seq: int) -> bytes:
+def _send_frame(ws, board_id: str, seq: int, corners=None) -> bytes:
     """Send one frame on an open ``/ingest`` socket; returns its raw JPEG bytes."""
-    frame = Frame(board_id=board_id, seq=seq, capture_ts=float(seq), image=render_board())
+    frame = Frame(
+        board_id=board_id,
+        seq=seq,
+        capture_ts=float(seq),
+        image=render_board(),
+        corners=corners,
+    )
     header, jpeg = frame.encode()
     ws.send_text(json.dumps(header))
     ws.send_bytes(jpeg)
@@ -68,3 +74,61 @@ def test_board_frame_is_independent_per_board():
     assert r_b2.content == b2_jpeg
 
     assert client.get("/boards/other-board/frame").status_code == 404
+
+
+QUAD = [[12.0, 30.0], [480.0, 28.0], [496.0, 500.0], [4.0, 496.0]]  # a8,h8,h1,a1
+
+
+def test_board_frame_reports_the_corners_the_stream_carried():
+    client = _client()
+    with client.websocket_connect("/ingest") as ingest:
+        _send_frame(ingest, "A1", seq=1, corners=QUAD)
+        ingest.receive_json()
+
+    r = client.get("/boards/A1/frame", headers={"Origin": "http://viewer.local"})
+    assert r.status_code == 200
+    # Same spelling ``POST /estimate?corners=`` takes, so the viewer can pass it on.
+    assert [float(v) for v in r.headers["x-corners"].split(",")] == [
+        v for xy in QUAD for v in xy
+    ]
+    # ...and the browser is allowed to read it cross-origin.
+    exposed = r.headers["access-control-expose-headers"].lower()
+    assert "x-corners" in exposed
+
+
+def test_board_frame_omits_corners_when_the_stream_had_none():
+    client = _client()
+    with client.websocket_connect("/ingest") as ingest:
+        _send_frame(ingest, "A1", seq=1)
+        ingest.receive_json()
+
+    r = client.get("/boards/A1/frame")
+    assert r.status_code == 200
+    assert "x-corners" not in r.headers
+
+
+def test_a_malformed_frame_is_refused_without_killing_the_socket():
+    """One bad frame (wrong-length corners, truncated JPEG) is refused in the ack
+    slot; the SAME socket then carries the next good frame. A buggy browser edge
+    must get its error back, not a dead connection to reconnect-loop against."""
+    client = _client()
+    with client.websocket_connect("/ingest") as ingest:
+        bad_header = {
+            "type": "frame", "board_id": "A1", "seq": 1, "capture_ts": 1.0,
+            "corners": [1.0, 2.0],  # 2 floats, not 8
+        }
+        ingest.send_text(json.dumps(bad_header))
+        ingest.send_bytes(Frame(
+            board_id="A1", seq=1, capture_ts=1.0, image=render_board()
+        ).encode()[1])
+        assert "error" in ingest.receive_json()
+
+        good_header = {
+            "type": "frame", "board_id": "A1", "seq": 2, "capture_ts": 2.0,
+        }
+        ingest.send_text(json.dumps(good_header))
+        ingest.send_bytes(b"not a jpeg")
+        assert "error" in ingest.receive_json()
+
+        _send_frame(ingest, "A1", seq=3, corners=QUAD)
+        assert ingest.receive_json() == {"ack": 3, "board_id": "A1"}
