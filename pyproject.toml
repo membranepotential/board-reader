@@ -32,7 +32,10 @@ dev = [
 ]
 
 [tool.pytest.ini_options]
-testpaths = ["tests", "packages"]
+# tools/video joins the workspace suite (it needs only numpy+cv2, which core
+# already pulls in); tools/train does not — it imports torch, and the workspace
+# stays torch-free by design (CLAUDE.md).
+testpaths = ["tests", "packages", "tools/video/tests"]
 filterwarnings = [
     # Starlette's TestClient warns about httpx vs httpx2; harmless for our suite.
     "ignore:Using `httpx` with `starlette.testclient`",

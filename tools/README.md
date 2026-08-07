@@ -68,3 +68,47 @@ Combining ChessReD with the user's photos *hurt* (272/320 vs. 291 user-only LOO)
 wrong-style ChessReD exemplars win the per-class-max match. So this bank is useful as an
 occupancy prior, not as a drop-in piece recognizer; piece-type still needs a few user
 calibration frames.
+
+## `tools/video/` — YouTube broadcast footage as test data
+
+Downloads a chess broadcast, lets an operator drag a board crop, and extracts cropped
+still frames for training/eval. Absorbed from a scratch repo
+(`../otb_video_recognition`) that predates the workspace. Four scripts plus a committed
+registry:
+
+- `crop_selector.py` — opens a still frame in an OpenCV window; the operator drags a
+  rectangle, records it to `crops.csv`. Never re-encodes the video — every other tool
+  crops on the fly from that row.
+- `check_angle.py` — runs `board_reader_core.boarddetect.detect_board_quad` +
+  `quad_aspect` over a video or a frame directory and reports the median projected
+  board aspect, the same camera-elevation gate the server warns on.
+- `extract_frames.py` — reads the crop from `crops.csv`, writes cropped PNGs at
+  explicit or random timestamps.
+- `watch_cropped.py` — plays the video with the crop applied live; saves a frame on
+  keypress. The interactive alternative to `extract_frames.py`.
+- `crops.csv` — the committed crop registry, keyed on the 11-character YouTube video
+  id (not the downloaded file's name, which changes with resolution or a re-download).
+  Also carries each stream's `check_angle.py` verdict (`median_aspect`, `status`). This
+  is what makes any extracted frame set reproducible from nothing but a video id — see
+  `tools/video/README.md` for the full CLI and the crop table format, and
+  [docs/youtube-streams.md](../docs/youtube-streams.md) for the angle audit and a
+  worked recovery of a lost crop row.
+
+**Two interpreters, deliberately.** `crop_selector.py` and `watch_cropped.py` open an
+OpenCV/mpv window and need the **system** `python3` — the uv workspace ships
+`opencv-python-headless`, and `cv2.imshow` is a no-op there. `check_angle.py` needs
+`uv run` instead, because it imports `board_reader_core`. Reaching for the wrong
+interpreter fails loudly (`ModuleNotFoundError` either way), not silently.
+
+**The angle gate rejects most broadcast footage.** Running `check_angle.py` over five
+absorbed broadcasts and gating on the same threshold the server warns at (`quad_aspect
+>= 0.62`, [docs/operating-envelope.md](../docs/operating-envelope.md)) rejected 4 of 5 —
+table-level chess broadcasts are shot too shallow for a per-square CV pipeline. See
+[docs/youtube-streams.md](../docs/youtube-streams.md) for the measured aspect per
+broadcast.
+
+These are third-party broadcast recordings. Downloaded videos and extracted frames
+live under `data/streams/` (git-ignored), kept for local/personal research use only —
+the same footing as `data/external/chessred`. The end-to-end operator workflow (when to
+ask the user for a crop, which frame-extraction mode to use) is documented in the
+`get-frames-from-yt` Claude Code skill (`.claude/skills/get-frames-from-yt/`).

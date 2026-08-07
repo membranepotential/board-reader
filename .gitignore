@@ -31,5 +31,9 @@ scratch/
 # Browser-automation captures (playwright-mcp session snapshots)
 .playwright-mcp/
 
+# Claude Code local state — project skills under .claude/skills/ ARE committed
+.claude/scheduled_tasks.lock
+.claude/settings.local.json
+
 # OS / editor
 .DS_Store
