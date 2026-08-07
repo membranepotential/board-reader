@@ -31,7 +31,7 @@ suppressing grid lines and neighbouring-square spill.
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 
 import cv2
 import numpy as np
@@ -175,8 +175,8 @@ def crop_squares(
             x0, x1 = c * sw, (c + 1) * sw
             dy, dx = (y1 - y0) * inset, (x1 - x0) * inset
             sq = board[
-                int(round(y0 + dy)) : int(round(y1 - dy)),
-                int(round(x0 + dx)) : int(round(x1 - dx)),
+                round(y0 + dy) : round(y1 - dy),
+                round(x0 + dx) : round(x1 - dx),
             ]
             if size is not None:
                 sq = cv2.resize(sq, (size, size), interpolation=cv2.INTER_AREA)

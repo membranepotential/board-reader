@@ -10,6 +10,7 @@ from board_reader_core.protocol import (
     dist_from_placement,
     iso_utc,
 )
+
 from board_reader_inference.hub import PositionHub
 
 

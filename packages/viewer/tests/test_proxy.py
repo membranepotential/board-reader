@@ -26,7 +26,7 @@ class _EchoHandler(BaseHTTPRequestHandler):
 
     protocol_version = "HTTP/1.1"
 
-    def do_POST(self) -> None:  # noqa: N802 (BaseHTTPRequestHandler's naming)
+    def do_POST(self) -> None:
         body = self.rfile.read(int(self.headers.get("content-length", 0)))
         payload = json.dumps(
             {

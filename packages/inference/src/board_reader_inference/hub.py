@@ -12,7 +12,7 @@ and testable with ``asyncio.run``.
 from __future__ import annotations
 
 import asyncio
-from typing import AsyncIterator
+from collections.abc import AsyncIterator
 
 from board_reader_core.protocol import PositionEvent
 

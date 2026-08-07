@@ -34,8 +34,11 @@ import numpy as np
 if os.environ.get("BR_CV_THREADS"):
     cv2.setNumThreads(int(os.environ["BR_CV_THREADS"]))
 
-import _bootstrap  # noqa: F401
-from board_reader_core.protocol import CLASS_INDEX, CLASSES, GRID, parse_placement
+import _bootstrap
+from styles import BOARD, Style, discover_styles
+
+from board_reader_core.protocol import CLASS_INDEX, CLASSES, parse_placement
+
 from board_reader_inference.squares import (
     BboxGeometry,
     CropGeometry,
@@ -43,8 +46,6 @@ from board_reader_inference.squares import (
     crop_squares_photo,
     geometry_from_dict,
 )
-
-from styles import BOARD, Style, discover_styles
 
 CACHE_ROOT = _bootstrap.ROOT / "data" / "external" / "_cropcache"
 

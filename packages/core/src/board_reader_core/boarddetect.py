@@ -45,7 +45,7 @@ is a8 cannot be known from geometry (decision #15); the caller/operator resolves
 
 from __future__ import annotations
 
-from typing import Iterator
+from collections.abc import Iterator
 
 import cv2
 import numpy as np
@@ -142,7 +142,7 @@ def _alternation(gray: np.ndarray, h_inv: np.ndarray, x0: float, y0: float) -> f
     b: list[float] = []
     for r in range(8):
         for c in range(8):
-            x, y = int(round(proj[r, c, 0])), int(round(proj[r, c, 1]))
+            x, y = round(proj[r, c, 0]), round(proj[r, c, 1])
             if not (2 <= x < w - 2 and 2 <= y < h - 2):
                 continue
             mean = float(gray[y - 2 : y + 3, x - 2 : x + 3].mean())
@@ -155,7 +155,7 @@ def _alternation(gray: np.ndarray, h_inv: np.ndarray, x0: float, y0: float) -> f
 def _xcorner_response(gray_f: np.ndarray, p: np.ndarray, r: int) -> float:
     """Quadrant-contrast x-corner-ness at point ``p`` (opposite quadrants alike,
     adjacent quadrants different)."""
-    x, y = int(round(float(p[0]))), int(round(float(p[1])))
+    x, y = round(float(p[0])), round(float(p[1]))
     h, w = gray_f.shape
     if x < r or y < r or x >= w - r or y >= h - r:
         return 0.0

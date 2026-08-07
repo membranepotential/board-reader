@@ -13,16 +13,15 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
+import _bootstrap  # noqa: F401
 import cv2
 import numpy as np
 import torch
-from torch.utils.data import Dataset
-
-import _bootstrap  # noqa: F401
-from board_reader_core.protocol import CLASSES, NUM_CLASSES
-
 from augment import to_rgb_tensor
 from cropcache import CACHE_ROOT, iter_shard, load_meta
+from torch.utils.data import Dataset
+
+from board_reader_core.protocol import CLASSES, NUM_CLASSES
 
 
 @dataclass

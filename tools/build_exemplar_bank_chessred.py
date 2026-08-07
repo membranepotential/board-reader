@@ -34,6 +34,7 @@ import cv2
 import numpy as np
 
 from board_reader_core.protocol import CLASS_INDEX, CLASSES, GRID
+
 from board_reader_inference.centroid import photometric_variants
 from board_reader_inference.embed import DinoV2Embedder, l2_normalize
 from board_reader_inference.squares import BboxGeometry, crop_squares_photo
@@ -115,7 +116,7 @@ def sample_boards(
     for iid in ids:
         by_game[ds.game_id(iid)].append(iid)
     picked: list[int] = []
-    for game, gids in sorted(by_game.items()):
+    for _game, gids in sorted(by_game.items()):
         gids = sorted(gids, key=lambda i: ds.images[i]["move_id"])
         if per_game >= len(gids):
             picked.extend(gids)

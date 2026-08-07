@@ -7,6 +7,7 @@ import pytest
 
 from board_reader_core.protocol import GRID, START_PLACEMENT
 from board_reader_core.sim import render_board, simulate_angled_view
+
 from board_reader_inference.squares import (
     BboxGeometry,
     PoseGeometry,

@@ -2,15 +2,16 @@
 
 from __future__ import annotations
 
-from pathlib import Path
-
 import sys
 import types
+from pathlib import Path
+from typing import ClassVar
 
 import numpy as np
 import pytest
 
 from board_reader_core.sim import render_board
+
 from board_reader_inference.embed import (
     DEFAULT_DINOV2_ONNX,
     DinoV2Embedder,
@@ -108,7 +109,7 @@ def test_embedder_resolves_a_symbolic_output_width_by_probing(monkeypatch, tmp_p
     from board_reader_inference import embed as embed_mod
 
     class _FakeOutput:
-        shape = ["batch", "ReduceMeanembedding_dim_1"]
+        shape: ClassVar[list[str]] = ["batch", "ReduceMeanembedding_dim_1"]
 
     class _FakeInput:
         name = "pixel_values"

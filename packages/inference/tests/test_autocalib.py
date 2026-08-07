@@ -10,6 +10,7 @@ from board_reader_core.protocol import (
     encode_placement,
     parse_placement,
 )
+
 from board_reader_inference.autocalib import (
     START_OCC,
     detect_start,
@@ -173,7 +174,7 @@ def test_resolve_rotation_recovers_all_rotations():
     for applied in range(4):
         seen = np.rot90(dist, -applied, axes=(0, 1))  # what mislabeled corners yield
         k, out = resolve_rotation(seen)
-        assert (k + (4 - applied)) % 4 == 0 or applied == 0 and k == 0
+        assert (k + (4 - applied)) % 4 == 0 or (applied == 0 and k == 0)
         np.testing.assert_array_equal(out, dist)
 
 
@@ -187,6 +188,6 @@ def test_resolve_rotation_flips_white_playing_down():
     k, out = resolve_rotation(dist_from_placement(flipped))
     assert k == 2
     assert encode_placement(
-        [[c for c in row] for row in np.array(parse_placement(flipped))[::-1, ::-1]]
+        [list(row) for row in np.array(parse_placement(flipped))[::-1, ::-1]]
     ) == START_PLACEMENT
     np.testing.assert_array_equal(out, np.asarray(dist_from_placement(START_PLACEMENT)))

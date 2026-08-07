@@ -6,17 +6,22 @@ import json
 
 import numpy as np
 
-from board_reader_core.protocol import CLASSES, NUM_CLASSES, START_PLACEMENT, parse_placement
+from board_reader_core.protocol import (
+    CLASSES,
+    NUM_CLASSES,
+    START_PLACEMENT,
+    parse_placement,
+)
 from board_reader_core.sim import render_board
 from board_reader_core.wire import Frame
 
-from board_reader_inference.trained import TrainedEstimator, preprocess
 from board_reader_inference.squares import (
     DEFAULT_GEOMETRY,
     BboxGeometry,
     PoseGeometry,
     full_frame_corners,
 )
+from board_reader_inference.trained import TrainedEstimator, preprocess
 
 
 def _oracle_logits_for(placement: str):
@@ -93,6 +98,7 @@ def test_server_routes_photo_path_and_default_env(tmp_path, monkeypatch):
     from starlette.testclient import TestClient
 
     from board_reader_core.wire import encode_jpeg
+
     from board_reader_inference.hub import PositionHub
     from board_reader_inference.server import create_app
 

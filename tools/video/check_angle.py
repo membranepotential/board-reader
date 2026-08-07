@@ -44,14 +44,14 @@ from statistics import median
 
 import cv2
 import numpy as np
+from extract_frames import even_times, format_timestamp, probe_duration
+from streams import CropBox, StreamsError, stream_for_video
 
 from board_reader_core.boarddetect import (
     LOW_ANGLE_ASPECT,
     detect_board_quad,
     quad_aspect,
 )
-from extract_frames import even_times, format_timestamp, probe_duration
-from streams import CropBox, StreamsError, stream_for_video
 
 # Above this the camera has enough elevation for per-square crops to contain
 # their own piece; see docs/operating-envelope.md and LOW_ANGLE_ASPECT.

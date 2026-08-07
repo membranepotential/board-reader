@@ -16,6 +16,7 @@ import cv2
 import numpy as np
 
 from board_reader_core.protocol import CLASSES, parse_placement
+
 from board_reader_inference.centroid import photometric_variants
 from board_reader_inference.embed import DinoV2Embedder, l2_normalize
 from board_reader_inference.squares import BboxGeometry, crop_squares_photo
@@ -26,7 +27,8 @@ OUT = ROOT / "models/exemplars_dinov2.npz"
 
 
 def main() -> None:
-    gt = json.load(open(ROOT / "data/eval/ground_truth.json"))
+    with (ROOT / "data/eval/ground_truth.json").open() as fh:
+        gt = json.load(fh)
     emb = DinoV2Embedder(ROOT / "models/dinov2_small.onnx")
     crops: list[np.ndarray] = []
     labels: list[str] = []
@@ -37,10 +39,10 @@ def main() -> None:
         corners = np.array(entry["corners_a8_h8_h1_a1"], dtype=np.float32)
         sq = crop_squares_photo(img, corners, geometry=BboxGeometry(HEADROOM, SIDE_PAD))
         lab = [c for row in parse_placement(entry["placement"]) for c in row]
-        for crop, l in zip(sq, lab):
+        for crop, label in zip(sq, lab):
             variants = photometric_variants(crop)
             crops.extend(variants)
-            labels.extend([l] * len(variants))
+            labels.extend([label] * len(variants))
         print(f"{key}: {len(sq)} squares -> {len(crops)} exemplars so far")
     exemplars = l2_normalize(emb.embed(crops), axis=1)
     np.savez(

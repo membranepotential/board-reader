@@ -39,13 +39,12 @@ from pathlib import Path
 
 import cv2
 import numpy as np
-
 from streams import (
     DEFAULT_TABLE,
     CropBox,
     Stream,
-    StreamStatus,
     StreamsError,
+    StreamStatus,
     append_stream,
     slug_from_title,
     title_from_path,
@@ -213,7 +212,10 @@ def main() -> None:
         preview_at_s=preview_at,
         median_aspect=None,
         status=StreamStatus.KEEP,
-        recorded_at=datetime.now().replace(microsecond=0),
+        # Local time on purpose: this is an operator-facing "when did I capture
+        # this" column in the crop registry, read beside the operator's own shell
+        # history, and every existing row is already local.
+        recorded_at=datetime.now().replace(microsecond=0),  # noqa: DTZ005
     )
 
     append_stream(stream, args.table)

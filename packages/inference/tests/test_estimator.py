@@ -5,6 +5,7 @@ from __future__ import annotations
 from board_reader_core.protocol import EMPTY_PLACEMENT, START_PLACEMENT, iso_utc
 from board_reader_core.sim import render_board
 from board_reader_core.wire import Frame
+
 from board_reader_inference.centroid import build_centroids
 from board_reader_inference.embed import LiteEmbedder
 from board_reader_inference.estimator import (

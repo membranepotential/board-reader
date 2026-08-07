@@ -131,7 +131,7 @@ def simulate_angled_view(
     coordinates (TL,TR,BR,BL) — handy for tests that exercise manual corners.
     """
     side = board.shape[0]
-    canvas = int(round(side * (1.0 + 2 * margin)))
+    canvas = round(side * (1.0 + 2 * margin))
     m = side * margin
     top = side * tilt / 2.0  # how much the far edge shrinks inward on each side
     sk = side * yaw  # horizontal skew
@@ -212,7 +212,7 @@ def _changed_centre(before: str, after: str, square_px: int) -> tuple[float, flo
 
 def _px(point: tuple[float, float]) -> tuple[int, int]:
     """Round a float (x, y) to the integer pixel coordinates OpenCV draws with."""
-    return int(round(point[0])), int(round(point[1]))
+    return round(point[0]), round(point[1])
 
 
 def _draw_hand(

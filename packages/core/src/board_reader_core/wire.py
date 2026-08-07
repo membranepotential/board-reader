@@ -87,7 +87,7 @@ class Frame:
         return header
 
     @classmethod
-    def from_header(cls, header: dict, image: np.ndarray) -> "Frame":
+    def from_header(cls, header: dict, image: np.ndarray) -> Frame:
         return cls(
             board_id=header["board_id"],
             seq=int(header["seq"]),
@@ -104,5 +104,5 @@ class Frame:
         return self.header(), encode_jpeg(self.image, quality)
 
     @classmethod
-    def decode(cls, header: dict, jpeg: bytes) -> "Frame":
+    def decode(cls, header: dict, jpeg: bytes) -> Frame:
         return cls.from_header(header, decode_jpeg(jpeg))

@@ -13,6 +13,7 @@ from board_reader_core.protocol import (
     placement_from_dist,
 )
 from board_reader_core.sim import render_board
+
 from board_reader_inference.centroid import (
     CentroidClassifier,
     ExemplarClassifier,
@@ -21,7 +22,12 @@ from board_reader_inference.centroid import (
     load_classifier,
 )
 from board_reader_inference.embed import LiteEmbedder
-from board_reader_inference.squares import BboxGeometry, crop_squares, crop_squares_photo, full_frame_corners
+from board_reader_inference.squares import (
+    BboxGeometry,
+    crop_squares,
+    crop_squares_photo,
+    full_frame_corners,
+)
 
 EMBEDDER = LiteEmbedder()
 
@@ -138,7 +144,7 @@ def test_exemplar_classifier_rejects_invalid_construction():
     labels = ["empty", "P", "p"]
 
     def _expect_value_error(**overrides):
-        kwargs = dict(exemplars=ex, labels=labels)
+        kwargs = {"exemplars": ex, "labels": labels}
         kwargs.update(overrides)
         try:
             ExemplarClassifier(kwargs.pop("exemplars"), kwargs.pop("labels"), **kwargs)

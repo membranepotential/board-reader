@@ -14,9 +14,9 @@ import pytest
 
 from board_reader_core.protocol import (
     CLASS_INDEX,
+    GRID,
     NUM_CLASSES,
     START_PLACEMENT,
-    GRID,
     PositionEvent,
     dist_from_placement,
     encode_placement,

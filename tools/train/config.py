@@ -5,9 +5,9 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
+import _bootstrap
 import yaml
 
-import _bootstrap
 from board_reader_inference.squares import (
     BboxGeometry,
     CropGeometry,
@@ -91,7 +91,7 @@ class Config:
         return BboxGeometry(headroom=self.headroom, side_pad=self.side_pad)
 
     @classmethod
-    def load(cls, path: str | Path) -> "Config":
+    def load(cls, path: str | Path) -> Config:
         with open(path) as f:
             data = yaml.safe_load(f) or {}
         known = {k: v for k, v in data.items() if k in cls.__dataclass_fields__}

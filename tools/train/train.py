@@ -17,15 +17,10 @@ import json
 import time
 from pathlib import Path
 
+import _bootstrap
 import numpy as np
 import torch
 import torch.nn as nn
-from torch.utils.data import DataLoader, WeightedRandomSampler
-
-import _bootstrap
-from board_reader_core.protocol import CLASSES, NUM_CLASSES
-from board_reader_inference.squares import BboxGeometry, geometry_tag
-
 from augment import eval_transform, train_transform
 from config import Config
 from cropcache import CACHE_ROOT, build_cache
@@ -40,9 +35,14 @@ from dataset import (
     subsample_val,
 )
 from metrics import SquareStats
-from models import build_model, param_summary, trainable_parameters
 from runlog import RunLog
 from styles import chessred_style, discover_styles
+from torch.utils.data import DataLoader, WeightedRandomSampler
+
+from board_reader_core.protocol import CLASSES, NUM_CLASSES
+from models import build_model, param_summary, trainable_parameters
+
+from board_reader_inference.squares import BboxGeometry, geometry_tag
 
 try:
     from plots import render_run_plots
@@ -168,12 +168,12 @@ def train(cfg: Config) -> Path:
     # x 9 GB OOM-killed the first run_f launch. Workers never touch CUDA, so
     # forking after CUDA init is safe here.
     mp_ctx = "fork" if "fork" in torch.multiprocessing.get_all_start_methods() else None
-    workers = dict(
-        num_workers=cfg.num_workers, pin_memory=pin, persistent_workers=cfg.num_workers > 0,
-        worker_init_fn=loader_worker_init,
-        prefetch_factor=cfg.prefetch_factor if cfg.num_workers > 0 else None,
-        multiprocessing_context=mp_ctx if cfg.num_workers > 0 else None,
-    )
+    workers = {
+        "num_workers": cfg.num_workers, "pin_memory": pin, "persistent_workers": cfg.num_workers > 0,
+        "worker_init_fn": loader_worker_init,
+        "prefetch_factor": cfg.prefetch_factor if cfg.num_workers > 0 else None,
+        "multiprocessing_context": mp_ctx if cfg.num_workers > 0 else None,
+    }
     train_loader = DataLoader(
         train_ds, batch_size=cfg.batch_size, sampler=sampler, drop_last=True, **workers,
     )
@@ -224,7 +224,8 @@ def train(cfg: Config) -> Path:
     n_steps = len(train_loader)
     # Two live views of the same run: val.log is the tailable human one
     # (`tail -f <out_dir>/val.log`), events.jsonl the machine-readable one.
-    val_log = open(out_dir / "val.log", "w", buffering=1)
+    val_log = open(out_dir / "val.log", "w", buffering=1)  # noqa: SIM115 — tailable
+    # for the whole run; a `with` would scope it to less than the training loop.
     val_log.write(f"# {cfg.model} holdout={cfg.holdout or '(group-split)'} styles={names}\n")
     run_log = RunLog(out_dir / "events.jsonl")
     run_log.log(
