@@ -4,6 +4,8 @@
     board-reader-inference serve --centroids centroids.npz      # use the M1 estimator
     board-reader-inference serve --record-dir runs/             # ingress recorded here
     board-reader-inference calibrate --image rect.png --placement <FEN1> -o centroids.npz
+    board-reader-inference positions --changes-only              # tail the position stream
+    board-reader-inference positions --out run.ndjson --quiet    # capture it to a file
     board-reader-inference eval                                  # score the deployed stack
 
 Imports only :mod:`board_reader_core` and this package; it never imports the edge.
@@ -16,7 +18,6 @@ from __future__ import annotations
 import argparse
 import os
 import sys
-
 
 DEFAULT_RECORD_DIR = "recordings"
 
@@ -109,6 +110,39 @@ def cmd_calibrate(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_positions(args: argparse.Namespace) -> int:
+    from board_reader_inference.positions import run
+
+    try:
+        stats = run(
+            args.url,
+            board_id=args.board,
+            limit=args.limit,
+            changes_only=args.changes_only,
+            out_path=args.out,
+            tail=None if args.quiet else sys.stdout,
+        )
+    except OSError as e:
+        # No gateway on the other end is the overwhelmingly common case; a
+        # connection refused deserves one line naming the URL, not a traceback.
+        print(f"cannot follow {args.url}: {e}", file=sys.stderr)
+        return 2
+    if args.out:
+        # Report what was WRITTEN, and name the gap when --changes-only made one:
+        # "wrote N" must be a fact about the file, or `wc -l` disagrees with it.
+        held = stats.consumed - stats.reported
+        suffix = f" ({held} unchanged, not written)" if held else ""
+        print(
+            f"wrote {stats.reported} position events to {args.out}{suffix}",
+            file=sys.stderr,
+        )
+    # 1 when the stream produced nothing: an empty stream is not a working one,
+    # and a scripted demo should fail rather than report success over silence
+    # (the same rule `eval` applies to an empty eval). Judged on events consumed,
+    # not written — a board that never moved was still a live stream.
+    return 0 if stats.consumed else 1
+
+
 def cmd_eval(args: argparse.Namespace) -> int:
     from board_reader_inference.evaluate import run
 
@@ -191,6 +225,37 @@ def build_parser() -> argparse.ArgumentParser:
         "calibration crops; widens lighting robustness",
     )
     c.set_defaults(func=cmd_calibrate)
+
+    from board_reader_inference.positions import DEFAULT_URL
+
+    o = sub.add_parser(
+        "positions",
+        help="follow the L3 position stream headlessly (tail it, or capture NDJSON)",
+    )
+    o.add_argument(
+        "--url", default=DEFAULT_URL,
+        help=f"the gateway's position-event socket (default {DEFAULT_URL})",
+    )
+    o.add_argument("--board", help="only this board_id (default: every board)")
+    o.add_argument(
+        "--out",
+        help="append each event as one line of §5 JSON here — the captured stream "
+             "itself, so two runs can be diffed",
+    )
+    o.add_argument(
+        "--changes-only", dest="changes_only", action="store_true",
+        help="report a board only when its placement differs from its previous "
+             "one; an at-rest board republishes at the keepalive rate",
+    )
+    o.add_argument(
+        "--limit", type=int, default=None,
+        help="stop after this many events (default: follow until interrupted)",
+    )
+    o.add_argument(
+        "--quiet", action="store_true",
+        help="suppress the readable tail on stdout (pair with --out)",
+    )
+    o.set_defaults(func=cmd_positions)
 
     e = sub.add_parser(
         "eval",
