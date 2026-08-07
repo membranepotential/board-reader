@@ -283,9 +283,10 @@ distributions and its own corrections — so two reads can be compared without
 re-shooting either. It lives in memory only and is gone on reload.
 
 Notes:
-- The page auto-targets inference on the same host it was loaded from, so no
-  extra config is needed on the LAN. Override with the `BR_INFERENCE_HTTP` env
-  var on the viewer if inference runs elsewhere.
+- The page reaches inference through the viewer's `/api` relay, on whatever origin
+  it was loaded from, so no extra config is needed on a LAN, over https, or behind
+  a tunnel. `BR_INFERENCE_HTTP` on the viewer is what points that relay at the node
+  when inference runs elsewhere.
 - `POST /estimate` on the inference node accepts a **rectified** top-down crop
   (JPEG body) and returns the position event JSON — handy for scripting:
   `curl -s --data-binary @crop.jpg -H 'Content-Type: image/jpeg' localhost:8000/estimate`
@@ -457,11 +458,14 @@ make dev
 #   live       http://<lan-ip>:8080
 ```
 
-The camera page gets its own https origin because it is the only page that needs
-one: `getUserMedia` is refused outside a secure context, and every endpoint
-`/camera` touches is relayed by the viewer itself, so https costs it nothing.
-`/` and `/snapshot` call the inference node directly, which has no TLS — over
-https their requests would be blocked as mixed content, so they stay on http.
+The camera page gets its own https origin because it is the only page that *needs*
+one: `getUserMedia` is refused outside a secure context. The https bind serves all
+three pages, though — every endpoint any of them touches is relayed by the viewer
+itself, so there is no mixed content to block. `/` and `/snapshot` are offered over
+http purely to spare the desktop a self-signed-certificate warning.
+
+To reach any of them from off the LAN, forward the http bind through a tunnel that
+terminates TLS for you — see `.claude/skills/tunnel`.
 
 By hand, if you want different ports or only the camera:
 
@@ -664,9 +668,11 @@ curl http://localhost:8000/boards/A1          # latest position event JSON for A
 
 ## Troubleshooting
 
-- **Viewer says “disconnected — retrying”**: `inference` isn't reachable at the URL
-  baked into the page. In Docker it's `ws://localhost:8000/viewer`; override with the
-  `BR_INFERENCE_WS` env var on the `viewer` service.
+- **Viewer says “disconnected — retrying”**: the page reached the viewer (it loaded),
+  so the broken hop is viewer→node. Check `BR_INFERENCE_WS` on the `viewer` service —
+  in Docker it is `ws://inference:8000/viewer`. `curl <viewer>/api/healthz` isolates
+  it: 200 means the relay is fine and the node has simply sent no events yet, 502
+  names the address the viewer failed to reach.
 - **No board appears**: check the edge is sending — `docker compose logs edge` — and
   that `curl localhost:8000/boards/A1` returns an event (not `404`).
 - **`docker compose` build is slow the first time**: it downloads the Python base

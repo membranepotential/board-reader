@@ -123,11 +123,18 @@ aspects:
     files: ["packages/viewer/src/**"]
     affects:
       - aspect: tests
-        role: New UI-serving behaviour or injected configuration ships with a test.
+        role: >-
+          New UI-serving behaviour ships with a test. In particular the
+          same-origin contract: no page may name the inference node's address,
+          and every endpoint a page calls must sit behind the viewer's `/api`
+          relay or `/ws` sockets. A page that reaches the node directly works on
+          a LAN and nowhere else — not over https, not behind a tunnel.
       - aspect: testing-guide
         role: >-
           A change to the phone flow (what the user taps, what banners appear)
           must be reflected in the manual test guide's snapshot walkthrough.
+          A change to how the pages address the node must be reflected in the
+          TLS/tunnel sections and in `.claude/skills/tunnel`.
 
   tests:
     description: >-

@@ -26,11 +26,12 @@ class _EchoHandler(BaseHTTPRequestHandler):
 
     protocol_version = "HTTP/1.1"
 
-    def do_POST(self) -> None:
+    def _reflect(self, method: str) -> None:
         body = self.rfile.read(int(self.headers.get("content-length", 0)))
         payload = json.dumps(
             {
                 "path": self.path,
+                "method": method,
                 "content_type": self.headers.get("content-type"),
                 "body": body.decode("latin-1"),
             }
@@ -40,8 +41,17 @@ class _EchoHandler(BaseHTTPRequestHandler):
         self.send_response(status)
         self.send_header("content-type", "application/json")
         self.send_header("content-length", str(len(payload)))
+        # The node states the board quad within a retained frame here; the live page
+        # calibrates from it, so the relay has to carry it through.
+        self.send_header("X-Corners", "1,2,3,4,5,6,7,8")
         self.end_headers()
         self.wfile.write(payload)
+
+    def do_POST(self) -> None:
+        self._reflect("POST")
+
+    def do_GET(self) -> None:
+        self._reflect("GET")
 
     def log_message(self, *args) -> None:
         pass
@@ -84,6 +94,47 @@ def test_http_proxy_returns_the_nodes_refusal_verbatim(inference_http):
     assert response.status_code == 422
     assert response.json()["path"] == "/detect"
     assert response.headers["content-type"].startswith("application/json")
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/api/estimate?corners=1,2&debug=1",
+        "/api/labels/upload-7",
+        "/api/boards/board-1/frame?seq=42",
+        "/api/uploads/abc/photo?max=160",
+    ],
+)
+def test_http_proxy_relays_any_node_path_under_the_prefix(inference_http, path):
+    """The relay is a catch-all, not a list of blessed endpoints.
+
+    The three pages between them reach /estimate, /labels/{id}, /boards/{id}/frame and
+    /uploads/{id}/photo; enumerating those here and in proxy.install() would mean a
+    page could call something the relay 404s on."""
+    response = TestClient(create_app()).get(path)
+    assert response.status_code == 200
+    assert response.json()["path"] == path.removeprefix("/api")
+
+
+def test_http_proxy_relays_get_as_get(inference_http):
+    """Image and listing endpoints are GETs; forwarding them as POST would 501."""
+    assert TestClient(create_app()).get("/api/uploads?limit=1").json()["method"] == "GET"
+
+
+def test_http_proxy_forwards_response_headers_the_pages_act_on(inference_http):
+    """X-Corners states the board quad inside a retained frame, and the live page
+    prefers it over guessing the image's own corners (index.html cornersOf). A relay
+    that forwarded only the body would silently degrade calibration on phone streams
+    to the wrong quad — a wrong answer, not an error."""
+    response = TestClient(create_app()).get("/api/boards/b/frame")
+    assert response.headers["x-corners"] == "1,2,3,4,5,6,7,8"
+
+
+def test_http_proxy_does_not_copy_the_upstream_framing_headers(inference_http):
+    """content-length describes the upstream hop's body; copying it onto ours would
+    contradict what Starlette actually sends."""
+    response = TestClient(create_app()).get("/api/uploads")
+    assert int(response.headers["content-length"]) == len(response.content)
 
 
 def test_http_proxy_reports_an_unreachable_node_as_a_bad_gateway(monkeypatch):

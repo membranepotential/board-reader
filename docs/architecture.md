@@ -181,12 +181,17 @@ operator can see *what the estimator was torn between* rather than just that it 
 
 ![[correction-panel-mobile.png|300]]
 
-The viewer is a static-file server with two injected values (`BR_INFERENCE_WS`,
-`BR_INFERENCE_HTTP`); the live and snapshot pages talk to the inference node directly
-for data — that is why the inference node runs CORS middleware. The camera page is the
-exception: it stays on the viewer's origin and the viewer relays for it (see the
-browser-edge section above), which is what lets one `--ssl` certificate cover
-everything a phone needs.
+The viewer is a static-file server plus a relay, and it injects nothing into the pages.
+All three stay on the viewer's origin: the sockets come through `/ws/ingest` and
+`/ws/viewer`, and the node's whole HTTP API through a catch-all `/api/<path>` (see the
+browser-edge section above). `BR_INFERENCE_WS` / `BR_INFERENCE_HTTP` address the
+*viewer's* hop to the node and never reach the browser.
+
+One origin is what lets a single `--ssl` certificate cover everything a phone needs, and
+it is also why the stack tunnels with one port forwarded (`.claude/skills/tunnel`).
+Until 2026-08-07 only the camera page worked this way; the live and snapshot pages were
+handed an absolute `http://<lan-ip>:8000` and talked to the node directly, which is why
+the node still runs CORS middleware — nothing in this repo now depends on it.
 
 ## Where board detection lives
 

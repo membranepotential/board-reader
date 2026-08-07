@@ -9,6 +9,19 @@ confidences**. No moves, no legality, no PGN — those are the downstream applic
 
 ## Now
 
+- **Single-origin viewer + tunnel access (this session, 2026-08-07) — done, uncommitted.**
+  All three pages are now same-origin: the viewer relays the node's whole HTTP API under
+  a catch-all `/api/<path>` (was: two hardcoded routes) and injects nothing into the HTML.
+  `/` and `/snapshot` previously carried an absolute `http://<lan-ip>:8000`, which made
+  them LAN-only — blocked mixed content over https, unreachable behind a tunnel. Deletes
+  snapshot.html's localhost-hostname-rewrite guess and the index.html origin derivation.
+  New project skill `.claude/skills/tunnel` (cloudflared quick tunnel, one port).
+  **Verified live through a real tunnel:** all three pages 200, `/api/uploads` returned
+  node data, `wss://…/ws/viewer` connected, no LAN address in any page. 783 tests green,
+  ruff clean. Touches viewer + Makefile/compose/docs only — disjoint from the camera-page
+  session. **`hcloud` is not involved:** `boardreader.peppert.de` cannot point at a quick
+  tunnel (measured: TLS handshake failure, and 403 on Host-header routing), and the paid
+  Cloudflare tiers that would fix it were declined — see the skill.
 - **ccbf-r5 live calibration (calibration session, 2026-08-07) — WORKS; landed in `63923c7`.**
   Root cause of "won't calibrate": the guard's probe reads the *angled* t=0 start frame at
   28/32 but the edge-rectified *warp* at 6/32 (aspect 0.635), and an angled-photo bank reads

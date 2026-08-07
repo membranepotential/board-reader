@@ -13,18 +13,29 @@ def test_healthz():
     assert TestClient(create_app()).get("/healthz").json() == {"status": "ok"}
 
 
-def test_index_served_and_ws_url_injected(monkeypatch):
+def test_index_page_is_same_origin_and_leaks_no_node_address(monkeypatch):
+    """The live page connects to the viewer's own relay, never to the node.
+
+    The node's address is the viewer's business: injecting it into the HTML made the
+    page work on a LAN and nowhere else — an absolute `http://<lan-ip>:8000` is
+    unreachable behind a tunnel and blocked mixed content over https. So a configured
+    address must NOT reach the browser.
+    """
     monkeypatch.setenv("BR_INFERENCE_WS", "ws://example.test:9000/viewer")
-    # Re-import not needed: the env is read per-request inside the route.
+    monkeypatch.setenv("BR_INFERENCE_HTTP", "http://example.test:9000")
     html = TestClient(create_app()).get("/").text
-    assert "ws://example.test:9000/viewer" in html
-    assert "__BR_INFERENCE_WS__" not in html  # placeholder fully substituted
+    assert "example.test" not in html
+    assert "__BR_INFERENCE_WS__" not in html
+    assert 'const WS_URL = wsUrl("/ws/viewer");' in html
 
 
-def test_index_default_ws_url(monkeypatch):
+def test_index_page_derives_its_socket_scheme_from_the_page(monkeypatch):
+    """https must yield wss, or the browser blocks the socket as mixed content —
+    which is exactly what happens behind the tunnel."""
     monkeypatch.delenv("BR_INFERENCE_WS", raising=False)
     html = TestClient(create_app()).get("/").text
-    assert "ws://localhost:8000/viewer" in html
+    assert 'u.protocol = u.protocol === "https:" ? "wss:" : "ws:";' in html
+    assert "ws://localhost:8000" not in html
 
 
 def test_index_page_shows_per_board_freshness(monkeypatch):
@@ -155,15 +166,16 @@ def test_index_page_keeps_no_game_state():
         assert forbidden not in html, forbidden
 
 
-def test_index_page_derives_the_inference_http_origin_from_the_ws_url():
-    """The node serves the socket and its HTTP API on one origin, so the frame and
-    calibrate endpoints are derived from the injected WS URL — no second placeholder
-    to get out of step with it."""
+def test_index_page_reaches_the_node_through_the_relay_prefix():
+    """Frames and calibration go through the viewer's /api relay, as a relative path.
+
+    Relative is the load-bearing part: whatever origin the page was loaded from is one
+    the browser can reach, which an injected address is not."""
     html = TestClient(create_app()).get("/").text
     assert "__BR_INFERENCE_HTTP__" not in html
-    assert "const INFERENCE_HTTP = httpOrigin(WS_URL);" in html
-    assert 'u.protocol = u.protocol === "wss:" ? "https:" : "http:";' in html
-    assert 'return wsUrl.replace(/^ws/, "http").replace(/\\/[^/]*$/, "");' in html
+    assert 'const INFERENCE_HTTP = "/api";' in html
+    assert "${INFERENCE_HTTP}/boards/" in html      # retained-frame preview
+    assert "${INFERENCE_HTTP}/calibrate?corners=" in html
 
 
 def test_index_page_has_a_collapsible_frame_preview_left_of_the_board():
@@ -233,17 +245,29 @@ def test_index_page_takes_the_boards_corners_from_the_frame_when_the_node_states
     assert "[0, 0, bmp.width, 0, bmp.width, bmp.height, 0, bmp.height].join(\",\")" in fn
 
 
-def test_snapshot_served_and_http_url_injected(monkeypatch):
+def test_snapshot_page_is_same_origin_and_leaks_no_node_address(monkeypatch):
+    """Same contract as the live page: the configured node address stays server-side.
+
+    This page also used to carry a rewrite that swapped a `localhost` hostname for the
+    viewer's own so a phone could use it — a guess that was wrong whenever the two
+    nodes were not co-located. A relative prefix needs no guess."""
     monkeypatch.setenv("BR_INFERENCE_HTTP", "http://example.test:9000")
     html = TestClient(create_app()).get("/snapshot").text
-    assert "http://example.test:9000" in html
+    assert "example.test" not in html
     assert "__BR_INFERENCE_HTTP__" not in html
+    assert 'const INFERENCE_HTTP = "/api";' in html
 
 
-def test_snapshot_default_http_url(monkeypatch):
+def test_snapshot_page_reaches_every_node_endpoint_through_the_relay(monkeypatch):
+    """The page's whole API surface must sit behind /api — one missed call is one
+    request to an origin the phone cannot reach."""
     monkeypatch.delenv("BR_INFERENCE_HTTP", raising=False)
     html = TestClient(create_app()).get("/snapshot").text
-    assert "http://localhost:8000" in html
+    assert "http://localhost:8000" not in html
+    for call in ('INFERENCE_HTTP + "/detect"', 'INFERENCE_HTTP + "/estimate?corners="',
+                 'INFERENCE_HTTP + "/calibrate?corners="', 'INFERENCE_HTTP + "/labels/"',
+                 'INFERENCE_HTTP + "/uploads?limit="', 'INFERENCE_HTTP + "/uploads/"'):
+        assert call in html, call
 
 
 def test_snapshot_page_has_v2_flow():

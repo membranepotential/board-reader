@@ -110,21 +110,20 @@
 <script type="module">
 import { Chessground } from "/static/vendor/chessground.min.js";
 
-const WS_URL = "__BR_INFERENCE_WS__";
+// Same-origin throughout: the viewer relays both the socket and the node's HTTP API
+// (packages/viewer/.../proxy.py), so this page works unchanged on a LAN, over https,
+// and behind a tunnel. It used to be handed an absolute `http://<lan-ip>:8000` origin
+// injected into this HTML, which named a host only a LAN browser could reach and
+// became blocked mixed content the moment the page was served over TLS.
+function wsUrl(path) {
+  const u = new URL(path, location.href);
+  u.protocol = u.protocol === "https:" ? "wss:" : "ws:";
+  return u.href;
+}
+const WS_URL = wsUrl("/ws/viewer");
 document.getElementById("wsurl").textContent = WS_URL;
 
-// The inference node serves both the viewer socket and its HTTP API, so the frame
-// and calibrate endpoints live at the same origin as WS_URL — no second placeholder.
-function httpOrigin(wsUrl) {
-  try {
-    const u = new URL(wsUrl, location.href);
-    u.protocol = u.protocol === "wss:" ? "https:" : "http:";
-    return u.origin;
-  } catch {
-    return wsUrl.replace(/^ws/, "http").replace(/\/[^/]*$/, "");
-  }
-}
-const INFERENCE_HTTP = httpOrigin(WS_URL);
+const INFERENCE_HTTP = "/api";
 
 const STALE_MS = 5000;         // no event for this long -> the card reads as stale
 const RATE_WINDOW_MS = 3000;   // rolling window behind the events/sec figure
@@ -272,7 +271,9 @@ async function calibrate(rec) {
     showBanner(rec, "ok", `Calibrated ${d.classes_calibrated}/13 classes${rotNote} — ` +
       `bank now holds ${d.exemplars} exemplars`);
   } catch (e) {
-    showBanner(rec, "err", `${e}\nIs the inference node reachable at ${INFERENCE_HTTP} ?`);
+    // The relay answers 502 with the node's address in the body when the node itself
+    // is down, so name the hop that failed rather than this page's own origin.
+    showBanner(rec, "err", `${e}\nIs the inference node reachable from the viewer?`);
   } finally {
     rec.calibBusy = false;
     updateCalibState(rec);

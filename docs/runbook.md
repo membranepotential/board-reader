@@ -105,8 +105,14 @@ smooths nothing, so a flickering square shows a transition on every frame. See
 
 | Variable | Effect |
 |---|---|
-| `BR_INFERENCE_WS` | Where the browser opens the position stream. |
-| `BR_INFERENCE_HTTP` | Where `/snapshot` posts photos. |
+| `BR_INFERENCE_WS` | Where the *viewer* opens the position stream it relays. |
+| `BR_INFERENCE_HTTP` | Where the *viewer* forwards `/api/<path>` requests. |
+
+> [!note] Neither reaches the browser
+> The pages are same-origin and relative throughout, so these address the viewer's own
+> hop to the node. Point them at the node wherever it actually is — `127.0.0.1` for
+> `make dev`, the service name under compose. To reach the stack from off the LAN,
+> forward the viewer's port rather than reconfiguring these (`.claude/skills/tunnel`).
 
 > [!warning] `models/` and `data/` are git-ignored
 > Not an oversight — the trained model derives from ChessReD (CC BY-NC-SA) and murky-license

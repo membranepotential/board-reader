@@ -1,16 +1,16 @@
 """board-reader-viewer — serves the live-position web UI (DESIGN.md §6 viewer).
 
-A deliberately thin server. It renders no board logic: it ships ``index.html`` to the
-browser, which then connects *directly* to the inference node's ``/viewer`` WebSocket
-for position events. The inference WS URL is injected at request time from
-``BR_INFERENCE_WS`` so the same image works in compose and on a LAN.
+A deliberately thin server. It renders no board logic: it ships three pages — the live
+page (``/``), ``/snapshot`` (one photo, read once) and ``/camera``, the DESIGN §4.1
+"virtual Pi" browser edge that streams live frames into the node.
 
-It also serves the two phone pages — ``/snapshot`` (one photo, read once) and
-``/camera``, the DESIGN §4.1 "virtual Pi": a browser edge that streams live frames
-into the node. The camera page needs one secure same-origin, so unlike the live page
-it never talks to the inference node itself — :mod:`board_reader_viewer.proxy` relays
-for it, and ``--ssl`` (:mod:`board_reader_viewer.tls`) makes the origin secure enough
-for ``getUserMedia``.
+None of them talks to the inference node directly. Every endpoint they use is
+same-origin and relative, and :mod:`board_reader_viewer.proxy` relays it, so the
+browser only ever knows one origin and one certificate. ``--ssl``
+(:mod:`board_reader_viewer.tls`) makes that origin secure enough for ``getUserMedia``
+on a LAN; behind a tunnel the edge's own certificate does it instead
+(``.claude/skills/tunnel``). ``BR_INFERENCE_WS`` / ``BR_INFERENCE_HTTP`` configure the
+viewer's own hop to the node and are never sent to the browser.
 
 This package depends on neither core, edge, nor inference — it serves assets and
 forwards bytes, reinforcing the layer split.
@@ -19,7 +19,6 @@ forwards bytes, reinforcing the layer split.
 from __future__ import annotations
 
 import argparse
-import os
 import sys
 from pathlib import Path
 
@@ -30,8 +29,6 @@ from fastapi.staticfiles import StaticFiles
 from board_reader_viewer import proxy, tls
 
 _STATIC = Path(__file__).resolve().parent / "static"
-_DEFAULT_WS = proxy.DEFAULT_WS
-_DEFAULT_HTTP = proxy.DEFAULT_HTTP
 
 
 def create_app() -> FastAPI:
@@ -42,29 +39,25 @@ def create_app() -> FastAPI:
     async def healthz() -> dict:
         return {"status": "ok"}
 
+    # All three pages are served with nothing injected: every endpoint they use is
+    # same-origin and relative, and :mod:`board_reader_viewer.proxy` relays it. That is
+    # the whole point — one origin, one certificate to accept, and an address the
+    # browser can always reach because it is the one it already loaded the page from.
+    # BR_INFERENCE_WS/HTTP still configure the *viewer's* hop to the node; the browser
+    # no longer sees them.
     @app.get("/", response_class=HTMLResponse)
     async def index() -> HTMLResponse:
-        html = (_STATIC / "index.html").read_text(encoding="utf-8")
-        ws_url = os.environ.get("BR_INFERENCE_WS", _DEFAULT_WS)
-        # Inject the inference WS URL the browser should connect to.
-        html = html.replace("__BR_INFERENCE_WS__", ws_url)
-        return HTMLResponse(html)
+        """Live page: position events from the relayed /ws/viewer socket."""
+        return HTMLResponse((_STATIC / "index.html").read_text(encoding="utf-8"))
 
     @app.get("/snapshot", response_class=HTMLResponse)
     async def snapshot() -> HTMLResponse:
         """Phone snapshot page: photo -> corner-tap -> rectify -> POST /estimate."""
-        html = (_STATIC / "snapshot.html").read_text(encoding="utf-8")
-        http_url = os.environ.get("BR_INFERENCE_HTTP", _DEFAULT_HTTP)
-        html = html.replace("__BR_INFERENCE_HTTP__", http_url)
-        return HTMLResponse(html)
+        return HTMLResponse((_STATIC / "snapshot.html").read_text(encoding="utf-8"))
 
     @app.get("/camera", response_class=HTMLResponse)
     async def camera() -> HTMLResponse:
-        """Phone camera page: the browser edge (DESIGN §4.1 "virtual Pi").
-
-        Served with nothing injected — every endpoint it uses is same-origin and
-        relative, which is the whole point: one origin, one certificate to accept.
-        """
+        """Phone camera page: the browser edge (DESIGN §4.1 "virtual Pi")."""
         return HTMLResponse((_STATIC / "camera.html").read_text(encoding="utf-8"))
 
     proxy.install(app)

@@ -5,9 +5,10 @@
 #   the stream bursts through each (synthetic) hand reaching over the board,
 #   and idles at a ~1 fps keepalive between moves.
 #
-# Data flow:  edge --(WS frames)--> inference --(WS position events)--> browser
-# The browser loads the UI from `viewer` but connects for DATA directly to
-# `inference` on the host-published port 8000 (see BR_INFERENCE_WS).
+# Data flow:  edge --(WS frames)--> inference --(WS position events)--> viewer --> browser
+# The browser only ever talks to `viewer`, which relays the node's sockets and HTTP
+# API (packages/viewer/.../proxy.py). One origin, so the demo works unchanged over
+# https and behind a tunnel.
 
 services:
   inference:
@@ -71,9 +72,12 @@ services:
         PACKAGE: board-reader-viewer
     command: ["board-reader-viewer", "--host", "0.0.0.0", "--port", "8080"]
     environment:
-      # The browser (on the host) reaches inference via its published port.
-      BR_INFERENCE_WS: "ws://localhost:8000/viewer"
-      BR_INFERENCE_HTTP: "http://localhost:8000"
+      # The viewer's own hop to the node, over the compose network — the browser never
+      # sees these. Every page is same-origin and reaches the node through the viewer's
+      # /api and /ws relays, so the published 8000 above is for debugging only; the
+      # demo works with it removed.
+      BR_INFERENCE_WS: "ws://inference:8000/viewer"
+      BR_INFERENCE_HTTP: "http://inference:8000"
     ports:
       - "8080:8080"
     depends_on:

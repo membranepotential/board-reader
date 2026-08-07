@@ -12,22 +12,20 @@
 # part of the product, so it belongs here rather than in a shell snippet you have
 # to remember.
 #
-# The viewer runs TWICE, on purpose — http and https are not interchangeable here:
+# The viewer runs TWICE, but only for convenience now — either bind serves all three
+# pages. Every page is same-origin: the viewer relays the whole inference API under
+# /api and the sockets under /ws (packages/viewer/.../proxy.py), so nothing the browser
+# fetches names a second host, and there is no mixed content to block. (This used to be
+# load-bearing: / and /snapshot were handed an absolute `http://<lan-ip>:8000` origin
+# injected into their HTML, which no https origin could use.)
 #
-#   * /camera needs a SECURE context (getUserMedia is refused over plain http on a
-#     phone) and it is same-origin throughout: every endpoint it touches is relayed
-#     by the viewer itself (packages/viewer/.../proxy.py). So it works over https,
-#     with the cached self-signed cert `--ssl` mints.
-#   * / and /snapshot are NOT same-origin: they talk to the inference node directly
-#     (index.html's `ws://…:8000/viewer`, snapshot.html's `http://…:8000/estimate`).
-#     Served over https those become blocked mixed content, and the inference node
-#     has no TLS of its own to upgrade them to.
-#
-# One viewer therefore cannot serve all three pages. Two binds of the same process
-# can, and they share the one certificate, so the phone still warns only once.
-# Collapsing this back to a single https origin means relaying the rest of the
-# inference API through the viewer and repointing both pages at it — a work package,
-# not a Makefile line.
+# What each bind is for:
+#   * https :8443 — /camera needs a SECURE context (getUserMedia is refused over plain
+#     http on a phone), so the phone uses this one, with the cached self-signed cert
+#     `--ssl` mints, and warns once.
+#   * http :8080 — the desktop live page, with no cert warning to click through. Also
+#     the port to tunnel: `.claude/skills/tunnel` puts a real certificate in front of
+#     it, which is why the tunnel needs no TLS from us.
 #
 # Teardown kills the three children by PID, never `kill 0`: the process group
 # includes this shell, so a group kill re-enters its own TERM trap, which kills
@@ -62,12 +60,12 @@ dev:
 	BR_SAVE_UPLOADS=$(BR_SAVE_UPLOADS) \
 	  uv run board-reader-inference serve --host 0.0.0.0 --port $(INFERENCE_PORT) & \
 	inference=$$!; \
-	BR_INFERENCE_HTTP=http://$(HOST):$(INFERENCE_PORT) \
-	BR_INFERENCE_WS=ws://$(HOST):$(INFERENCE_PORT)/viewer \
+	BR_INFERENCE_HTTP=http://127.0.0.1:$(INFERENCE_PORT) \
+	BR_INFERENCE_WS=ws://127.0.0.1:$(INFERENCE_PORT)/viewer \
 	  uv run board-reader-viewer --host 0.0.0.0 --port $(VIEWER_PORT) & \
 	viewer=$$!; \
-	BR_INFERENCE_HTTP=http://$(HOST):$(INFERENCE_PORT) \
-	BR_INFERENCE_WS=ws://$(HOST):$(INFERENCE_PORT)/viewer \
+	BR_INFERENCE_HTTP=http://127.0.0.1:$(INFERENCE_PORT) \
+	BR_INFERENCE_WS=ws://127.0.0.1:$(INFERENCE_PORT)/viewer \
 	  uv run board-reader-viewer --host 0.0.0.0 --port $(VIEWER_TLS_PORT) --ssl & \
 	secure=$$!; \
 	trap 'kill $$inference $$viewer $$secure 2>/dev/null; \

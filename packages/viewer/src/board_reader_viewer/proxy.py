@@ -6,12 +6,18 @@ direction: if the page fetched the inference node directly, the operator would
 have to accept a second self-signed certificate on a second origin, from a phone,
 before anything worked at all. So the viewer speaks for the inference node —
 
-    browser ──► viewer ``/ws/ingest``    ──► inference ``/ingest``
-    browser ◄── viewer ``/ws/viewer``    ◄── inference ``/viewer``
-    browser ──► viewer ``/api/calibrate`` ──► inference ``/calibrate``
-    browser ──► viewer ``/api/detect``    ──► inference ``/detect``
+    browser ──► viewer ``/ws/ingest``  ──► inference ``/ingest``
+    browser ◄── viewer ``/ws/viewer``  ◄── inference ``/viewer``
+    browser ──► viewer ``/api/<any>``  ──► inference ``/<any>``
 
 — and the phone only ever knows one origin, one certificate.
+
+**All three pages** relay, not just ``/camera``. The live page and ``/snapshot``
+used to be handed an absolute ``http://<lan-ip>:8000`` origin injected into their
+HTML, which made them work on a LAN and nowhere else: served over https they were
+blocked mixed content, and behind a tunnel the address named a host the browser
+could not reach. One origin for everything costs one prefix here and deletes that
+whole failure class — see ``.claude/skills/tunnel``.
 
 This is **pure network glue**: nothing here parses a frame header, decodes a JPEG
 or knows what a board is. The viewer still imports no ``board_reader_*`` package
@@ -137,12 +143,27 @@ async def relay_websocket(ws: WebSocket, path: str) -> None:
                 task.cancel()
 
 
-async def relay_request(request: Request, path: str) -> Response:
-    """Forward one POST to ``path`` on the inference node, verbatim both ways.
+# Headers that describe *this* hop's framing rather than the payload. Copying them
+# onto our own response would contradict the body we are about to send — Starlette
+# recomputes content-length, and a content-encoding we already decoded would tell the
+# browser to inflate plain bytes a second time.
+_HOP_BY_HOP = frozenset(
+    {"content-length", "content-encoding", "transfer-encoding", "connection", "keep-alive"}
+)
 
-    Query string, body and content type go up untouched (``corners=x0,y0,...`` must
-    reach the node character-for-character); status and body come back untouched, so
-    the node's own refusal wording is what the operator reads.
+
+async def relay_request(request: Request, path: str) -> Response:
+    """Forward one request to ``path`` on the inference node, verbatim both ways.
+
+    Method, query string, body and content type go up untouched (``corners=x0,y0,...``
+    must reach the node character-for-character); status, body and headers come back
+    untouched, so the node's own refusal wording is what the operator reads.
+
+    Response headers are forwarded rather than just the content type, because the node
+    states things there that the pages act on: ``/boards/{id}/frame`` returns the board
+    quad within the retained frame on ``X-Corners``, and the live page prefers it over
+    guessing the image's own corners (index.html ``cornersOf``). Relaying only the body
+    would silently degrade calibration on phone streams.
     """
     query = request.url.query
     target = http_origin() + path + (f"?{query}" if query else "")
@@ -154,7 +175,9 @@ async def relay_request(request: Request, path: str) -> Response:
 
     try:
         async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT) as client:
-            response = await client.post(target, content=body, headers=headers)
+            response = await client.request(
+                request.method, target, content=body, headers=headers
+            )
     except httpx.HTTPError as exc:
         return JSONResponse(
             {"error": f"inference node unreachable at {http_origin()}: {exc}"},
@@ -165,11 +188,14 @@ async def relay_request(request: Request, path: str) -> Response:
         content=response.content,
         status_code=response.status_code,
         media_type=response.headers.get("content-type"),
+        headers={
+            k: v for k, v in response.headers.items() if k.lower() not in _HOP_BY_HOP
+        },
     )
 
 
 def install(app: FastAPI) -> None:
-    """Mount the four relay routes on the viewer app."""
+    """Mount the relay routes on the viewer app."""
 
     @app.websocket("/ws/ingest")
     async def ws_ingest(ws: WebSocket) -> None:
@@ -178,15 +204,19 @@ def install(app: FastAPI) -> None:
 
     @app.websocket("/ws/viewer")
     async def ws_viewer(ws: WebSocket) -> None:
-        """Inference -> camera page position events."""
+        """Inference -> browser position events."""
         await relay_websocket(ws, "/viewer")
 
-    @app.post("/api/calibrate")
-    async def api_calibrate(request: Request) -> Response:
-        """Photo + ``corners`` -> the node's few-shot calibration."""
-        return await relay_request(request, "/calibrate")
+    @app.api_route("/api/{path:path}", methods=["GET", "POST"])
+    async def api(request: Request, path: str) -> Response:
+        """Everything the pages ask of the inference node, under one prefix.
 
-    @app.post("/api/detect")
-    async def api_detect(request: Request) -> Response:
-        """Photo -> proposed board quad."""
-        return await relay_request(request, "/detect")
+        Deliberately a catch-all rather than a route per endpoint. The three pages
+        between them reach ``/estimate``, ``/calibrate``, ``/detect``, ``/uploads``,
+        ``/uploads/{id}/photo``, ``/labels/{id}`` and ``/boards/{id}/frame``, and that
+        set grows with the node's API. Enumerating it here would add a second place to
+        edit for every new endpoint and a class of bug — a page calling something the
+        relay does not know about — where this has none. The viewer still parses
+        nothing; it is a pipe with a prefix.
+        """
+        return await relay_request(request, "/" + path)

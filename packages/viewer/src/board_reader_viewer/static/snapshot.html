@@ -633,20 +633,13 @@
 "use strict";
 import { Chessground } from "/static/vendor/chessground.min.js";
 
-// Injected by the viewer server; if it points at localhost but the page is opened
-// from another device (the phone), assume inference lives on the same host as the
-// viewer and rewrite — zero-config LAN use.
-const RAW_HTTP = "__BR_INFERENCE_HTTP__";
-const INFERENCE_HTTP = (() => {
-  try {
-    const u = new URL(RAW_HTTP);
-    if ((u.hostname === "localhost" || u.hostname === "127.0.0.1") &&
-        location.hostname && location.hostname !== "localhost") {
-      u.hostname = location.hostname;
-    }
-    return u.origin;
-  } catch { return RAW_HTTP; }
-})();
+// Same-origin: the viewer relays the node's HTTP API under /api
+// (packages/viewer/.../proxy.py), so this page works unchanged on a LAN, over https,
+// and behind a tunnel. This used to be an absolute origin injected into the HTML,
+// plus a rewrite that swapped a `localhost` hostname for the viewer's own so a phone
+// could use it — a guess that was wrong whenever the two nodes were not co-located,
+// and blocked mixed content whenever the page was served over TLS.
+const INFERENCE_HTTP = "/api";
 
 const CORNER_ORDER = ["a8", "h8", "h1", "a1"];  // = TL,TR,BR,BL of the canonical crop
 const MAX_SRC = 1600;   // downscale huge phone photos before detecting/warping/uploading
@@ -1229,7 +1222,7 @@ async function runRead() {
     setRunState("done");
     refreshUploads();   // this read may have added a photo to the node's retained set
   } catch (e) {
-    errEl.textContent = String(e) + "\nIs the inference node reachable at " + INFERENCE_HTTP + " ?";
+    errEl.textContent = String(e) + "\nIs the inference node reachable from the viewer?";
     ["sample", "classify", "orient", "output"].forEach((s) => setStep(s, "fail", "read failed"));
     setRunState("failed");
   } finally {
@@ -1272,7 +1265,7 @@ calibBtn.onclick = async () => {
     cornerHint.innerHTML = `Calibrated <b>${d.classes_calibrated}/13</b> piece classes ` +
       `from this photo${rotNote} — now photograph your game position and read as usual.`;
   } catch (e) {
-    errEl.textContent = String(e) + "\nIs the inference node reachable at " + INFERENCE_HTTP + " ?";
+    errEl.textContent = String(e) + "\nIs the inference node reachable from the viewer?";
   } finally {
     $("busy").style.display = "none";
   }
@@ -1480,7 +1473,7 @@ $("confirmPosition").onclick = async () => {
       : "Labelling saved — the model read this board exactly right.");
     refreshUploads();   // the node now reports this photo as labelled
   } catch (e) {
-    errEl.textContent = String(e) + "\nIs the inference node reachable at " + INFERENCE_HTTP + " ?";
+    errEl.textContent = String(e) + "\nIs the inference node reachable from the viewer?";
     btn.disabled = false;
   }
   updateConfirmButton();
@@ -2273,7 +2266,7 @@ async function loadUpload(u) {
     }
   } catch (e) {
     errEl.textContent = String(e) +
-      "\nIs the inference node reachable at " + INFERENCE_HTTP + " ?";
+      "\nIs the inference node reachable from the viewer?";
     setRunState("failed");
   } finally {
     if (objUrl) URL.revokeObjectURL(objUrl);
