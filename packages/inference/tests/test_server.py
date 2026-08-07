@@ -203,6 +203,13 @@ def test_detect_does_not_block_the_event_loop(monkeypatch):
     /viewer hub could not publish. Proxy that here with /healthz -- if
     /detect blocks the loop, a concurrent /healthz queues behind it instead
     of answering immediately.
+
+    Detection is held open by an Event rather than a sleep, so a passing run
+    costs microseconds and never races: `entered` proves /detect really is
+    inside the detector before /healthz is timed, which a fixed sleep could
+    only guess at. If the offload is reverted, the detector runs ON the loop,
+    /healthz cannot be answered until `release.wait` times out, and the
+    elapsed assertion fails loudly instead of the test hanging.
     """
     import sys
     import threading
@@ -214,9 +221,12 @@ def test_detect_does_not_block_the_event_loop(monkeypatch):
     from board_reader_core.wire import encode_jpeg
 
     quad = np.array([[10, 10], [90, 10], [90, 90], [10, 90]], dtype=np.float32)
+    entered = threading.Event()  # the detector is running
+    release = threading.Event()  # ...and the test decides when it returns
 
     def slow_detect(image):
-        time.sleep(0.4)
+        entered.set()
+        release.wait(timeout=2)
         return quad
 
     fake = types.ModuleType("board_reader_core.boarddetect")
@@ -240,21 +250,24 @@ def test_detect_does_not_block_the_event_loop(monkeypatch):
 
         t = threading.Thread(target=run_detect)
         t.start()
-        time.sleep(0.1)  # let /detect actually enter its slow call first
+        try:
+            assert entered.wait(timeout=5), "/detect never reached the detector"
 
-        healthz_start = time.perf_counter()
-        r = client.get("/healthz")
-        healthz_elapsed = time.perf_counter() - healthz_start
+            healthz_start = time.perf_counter()
+            r = client.get("/healthz")
+            healthz_elapsed = time.perf_counter() - healthz_start
 
-        assert r.status_code == 200
-        assert healthz_elapsed < 0.2, (
-            f"/healthz took {healthz_elapsed:.3f}s -- it queued behind /detect"
-        )
-        assert not detect_done.is_set(), (
-            "/detect already finished -- this run cannot tell blocking from fast"
-        )
+            assert r.status_code == 200
+            assert healthz_elapsed < 0.2, (
+                f"/healthz took {healthz_elapsed:.3f}s -- it queued behind /detect"
+            )
+            assert not detect_done.is_set(), (
+                "/detect already finished -- this run cannot tell blocking from fast"
+            )
+        finally:
+            release.set()  # never leave the worker thread parked on a timeout
+            t.join(timeout=5)
 
-        t.join(timeout=2)
         assert detect_done.is_set()
         assert detect_response["r"].status_code == 200
         assert detect_response["r"].json()["corners"] == quad.tolist()
