@@ -1,7 +1,9 @@
-# board-reader walking skeleton (M0), orchestrated end-to-end.
+# board-reader live-stream demo (M2), orchestrated end-to-end.
 #
 #   docker compose up --build
-#   then open http://localhost:8080  -> a live board, fed by the synthetic edge.
+#   then open http://localhost:8080  -> a live game replay: positions evolve,
+#   the stream bursts through each (synthetic) hand reaching over the board,
+#   and idles at a ~1 fps keepalive between moves.
 #
 # Data flow:  edge --(WS frames)--> inference --(WS position events)--> browser
 # The browser loads the UI from `viewer` but connects for DATA directly to
@@ -37,17 +39,19 @@ services:
       dockerfile: docker/Dockerfile
       args:
         PACKAGE: board-reader-edge
-    # Synthetic feed so the demo needs zero external data. Swap for
-    # `--video /data/clip.mp4` (with a volume) to replay real OTB footage.
+    # The M2 demo: a synthetic recorded game, looped forever, forwarded
+    # adaptively (keepalive at rest, burst through motion — DESIGN D4). Zero
+    # external data, O(1) memory. Swap `--game` for `--video /data/clip.mp4`
+    # (with a volume, plus `--corners x0,y0,...` for the operator corner-tap)
+    # to replay real OTB footage.
     command:
       - board-reader-edge
       - feed
       - --url
       - ws://inference:8000/ingest
-      - --synthetic
-      - "0"  # stream forever (lazy, O(1) memory)
-      - --fps
-      - "2"
+      - --game
+      - --adaptive
+      - --loop
       - --throttle
     depends_on:
       inference:

@@ -9,6 +9,17 @@ confidences**. No moves, no legality, no PGN — those are the downstream applic
 
 ## Now
 
+- **M2 — live position stream over a recorded game: DONE, uncommitted.** Built 2026-08-07 by
+  4 parallel opus implementers + main session finishing the two operator-stopped workstreams
+  inline. Shipped: edge `MotionMeter`+`AdaptiveForwarder` (WP-C2/C3, keepalive ~1 fps / burst
+  12 fps, hysteresis, `burst_id`) · cadenced `Rectifier` re-detection (~1 s capture-time; dropped
+  frames never pay the ~100 ms detection) · capture-time throttle · `GameSource`/`LoopSource` +
+  synthetic recorded game with occluding hand (`core.sim`) · gateway `/ingest` per-board
+  latest-wins async workers (ack ≠ estimate) · viewer liveness (age/stale, ev/s, moving chip,
+  change flash, dimmed occluded squares) · `feed --game --adaptive --loop --throttle` = the
+  compose demo. **477/477 tests green (serial + parallel)** incl. new e2e `tests/test_m2_stream.py`;
+  CLI smoke: 540-frame game → 208 adaptively forwarded through a real gateway. Docs updated
+  (TESTING.md Option A/C, architecture.md, index.md). **Awaiting operator: review + commit.**
 - **run_f — the pose-aware-crop bet** — **NOT RUNNING; stopped by the operator at e0 (03:24),
   ready to relaunch.** The harness is fixed and verified (below); nothing blocks it. Relaunch
   with `tools/train/run_f.sh` — no `PY=`, the script now resolves and preflights its own
@@ -65,8 +76,9 @@ confidences**. No moves, no legality, no PGN — those are the downstream applic
 2. **Attack the type confusions.** Trained-alone: 53 type / 5 hallucination / 4 colour, led by
    `p->b` (11). The ensemble's residual differs in kind — `empty->p`/`empty->P` is a third of it.
 3. **Decide whether calibrated confidences go on the wire** — a decision, not an experiment: argmax is invariant, and DESIGN §9 says the downstream smoother wants them.
-4. **M2 — live position stream over a recorded game.** The headline demo and the actual next
-   milestone: adaptive forwarding, stability, streaming through hands and transitions.
+4. **Run M2 over real footage.** The synthetic demo works; the milestone's spirit wants a real
+   recorded game (operator is curating clips → `docs/youtube-streams.md`): `feed --video <clip>
+   --adaptive --corners ...`, judge the stream, then decide if `stability` earns its keep (D3).
 5. **Central-column pooling A/B.** `dinov2_small_central.onnx` is exported and verified; build
    `exemplars_chessred_central.npz` and score it under the uncontaminated cross-style protocol the
    +9/320 came from — no deployed bank moves before it wins.

@@ -46,10 +46,24 @@ flowchart LR
   gw -.->|HTTP response| phone
 ```
 
-**Streaming path (`WS /ingest`)** — the design's main line. The edge sends an
-already-rectified board crop as two WebSocket messages, a JSON header then the binary
-JPEG. Every frame carries `board_id`, `capture_ts` (sensor time, not receive time),
-`seq`, and `stability`. This is what M2 will exercise over a full game.
+**Streaming path (`WS /ingest`)** — the design's main line, live since M2. The edge
+sends an already-rectified board crop as two WebSocket messages, a JSON header then the
+binary JPEG. Every frame carries `board_id`, `capture_ts` (sensor time, not receive
+time), `seq`, `stability`, and (inside a burst) a `burst_id`.
+
+On the **edge**, frames pass three stages, in cost order: a `MotionMeter` (32×32
+grayscale differencing → stability), the `AdaptiveForwarder` (DESIGN D4: ~1 fps
+keepalive at rest, ~12 fps burst through motion, with hysteresis), and only then the
+`Rectifier` — detection costs ~90–100 ms, so dropped frames never pay for it, and in
+auto mode it re-detects on a ~1 s capture-time cadence, cropping intervening frames
+against the cached homography.
+
+On the **gateway**, the `/ingest` handler acks each frame on receipt and hands it to a
+per-board **latest-wins inbox** (one un-estimated frame; a newer one displaces it) whose
+worker runs the estimator off the event loop. A burst is therefore estimated at whatever
+rate the model sustains — skipping the stale end of the burst, never the freshest frame —
+and a slow model can't stall viewers, HTTP, or the socket. An ack means *received*, not
+*estimated*.
 
 **Snapshot path (`POST /estimate`)** — a convenience ingress that turned into the way the
 system is actually used today. The body is the **original photo**, not a rectified crop,

@@ -43,24 +43,41 @@ What's covered today (M0 + M1 rectification):
 
 ## 2. The live demo (what a user runs)
 
-### Option A — Docker (canonical, one command)
+### Option A — Docker (canonical, one command): the M2 live game replay
 
 ```bash
 docker compose up --build
 ```
 
-Then open **http://localhost:8080**. You should see:
+Then open **http://localhost:8080**. The edge replays a **synthetic recorded
+game** (looped forever) and forwards it adaptively (DESIGN D4), so you should see:
 
-- the connection chip turn **“live”** (green),
-- a board card for **A1** rendering the **start position**,
-- **confidence ≈ 0.95** and a **stability** bar,
-- `seq` ticking up about **twice a second** (the synthetic edge feeds at 2 fps).
+- the connection chip turn **“live”** (green), a board card for **A1**,
+- the position **evolving move by move** — changed squares flash briefly,
+- the rhythm of an adaptive stream: **~1 ev/s at rest** (keepalive), jumping to
+  **~10–12 ev/s** with a pulsing **“moving”** chip whenever the synthetic hand
+  reaches over the board — the **stability** bar dips at the same moments,
+- squares under the hand rendering **dimmed** pieces (low per-square confidence —
+  honest occlusion, not a guess),
+- the **age** readout ticking and the card fading to **stale** if you stop the
+  edge container (`docker compose stop edge`) — and recovering when it returns.
 
-This runs three containers: `edge` (synthetic feed) → `inference` (estimator +
+This runs three containers: `edge` (game feed) → `inference` (estimator +
 gateway) → `viewer` (UI). The browser loads the UI from `viewer` but connects for
 *data* straight to `inference` on `localhost:8000`.
 
 Stop it with `docker compose down`.
+
+The same demo without Docker (gateway + viewer from Option B, then):
+
+```bash
+uv run board-reader-edge feed --game --adaptive --loop --throttle
+```
+
+`--game` is the synthetic recorded game; `--adaptive` enables the
+keepalive/burst forwarder (`--keepalive-fps`/`--burst-fps` to tune); `--loop`
+replays forever with `seq`/`capture_ts` continuing monotonically; `--throttle`
+paces output to the stream's own capture time.
 
 ### Option B — Local processes (no Docker)
 
@@ -81,9 +98,14 @@ Point the edge at a recorded OTB clip (see `docs/youtube-streams.md` for sources
 grab one with `yt-dlp`) or a directory of stills:
 
 ```bash
-uv run board-reader-edge feed --video path/to/clip.mp4 --throttle --fps 5
+uv run board-reader-edge feed --video path/to/clip.mp4 --throttle --adaptive
 uv run board-reader-edge feed --images path/to/frames/
 ```
+
+For an angled clip, add rectification — `--corners x0,y0,x1,y1,x2,y2,x3,y3`
+(the operator corner-tap: a8,h8,h1,a1 in pixels, declares geometry *and*
+orientation) or `--rectify` for auto-detection (re-detects on a ~1 s cadence,
+crops intervening frames against the cached homography).
 
 > Note: with no `--centroids`, the estimator is still the M0 **stub** (fixed start
 > position, ignores pixels). The M1 recognition path is opt-in via calibration — see

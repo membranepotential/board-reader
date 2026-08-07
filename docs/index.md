@@ -41,7 +41,8 @@ reconstruction and PGN belong to whatever consumes the stream.
 ## The one-paragraph version
 
 The **edge** node (a Pi; a browser in the sim) finds the board, rectifies it, and forwards
-frames. The **inference** node runs a stateless per-frame estimator over 64 square crops and
+frames — adaptively since M2: a ~1 fps keepalive at rest, a burst through motion, with a
+measured `stability` on every frame. The **inference** node runs a stateless per-frame estimator over 64 square crops and
 publishes a position event. The **viewer** renders it. Edge and inference never import each
 other — they meet only on the wire. Recognition is a multi-style-trained crop classifier
 blended with a per-set nearest-exemplar bank; the trained half is robust where it has never
