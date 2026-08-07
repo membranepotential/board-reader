@@ -129,8 +129,9 @@ aspects:
   training:
     description: >-
       tools/train — the offline multi-style piece-classifier harness (styles,
-      crop cache, leave-style-out splits, augmentation, export) and its run
-      configs. Runs in a separate torch venv; not part of any deployable package.
+      crop cache, leave-style-out splits, augmentation, run observability,
+      export) and its run configs. Runs on its own torch interpreter (system
+      python, not the workspace venv); not part of any deployable package.
     files: ["tools/train/**", "tools/build_exemplar_bank*.py", "tools/rebuild_session_bank.py", "tools/README.md"]
     affects:
       - aspect: inference

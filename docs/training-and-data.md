@@ -7,8 +7,9 @@ tags: [board-reader/training, board-reader/data]
 
 The offline half of recognition: how the trained classifier is produced, what data feeds it,
 and what may legally be done with the result. The harness lives in `tools/train/` and is not
-part of any deployable package — it runs in its own torch venv so the inference runtime stays
-torch-free.
+part of any deployable package — it runs on its own torch interpreter (currently system
+`/usr/bin/python`, torch 2.13 / Python 3.14; formerly a scratch venv) so the inference
+runtime stays torch-free.
 
 ## The thesis
 
@@ -30,8 +31,9 @@ with zero calibration.
 | `dataset.py` | torch dataset; **leave-style-out** and leave-groups-out splits; inverse-frequency sampler |
 | `augment.py` | shape-bias augmentation — channel shuffle, grayscale, posterize/solarize, noise, AdaIN-style colour-stat randomization, dim gamma |
 | `models.py` | two recipes → 13 logits: `resnet18` (ImageNet / scratch / SIN init) and `dinov2` (last-N-block fine-tune) |
-| `metrics.py` | per-square accuracy split into empty→piece / piece→empty / piece→piece, plus occupancy |
-| `train.py` / `evaluate.py` / `export.py` | config-driven loop, held-out eval, ONNX export with round-trip parity |
+| `metrics.py` | per-square accuracy split into empty→piece / piece→empty / piece→piece, plus occupancy and the full 13×13 confusion |
+| `train.py` / `evaluate.py` / `export.py` | config-driven loop (fail-fast, instrumented — next section), held-out eval, ONNX export with round-trip parity |
+| `runlog.py` / `plots.py` | the run observability pair: JSONL event stream + per-epoch PNG rendering |
 | `configs/` | one YAML per run — every result below is reproducible from one |
 
 > [!important] Training and serving must cut the same crops
@@ -40,6 +42,38 @@ with zero calibration.
 > *geometry* travels with the exported model in a `<model>.onnx.meta.json` sidecar. A silent
 > train/serve geometry mismatch decapitates crops and costs ~15 points of piece-type accuracy
 > — it has happened.
+
+## Watching and diagnosing a run
+
+Every run directory carries four synchronized views of the same training (since 2026-08-07):
+
+| View | Audience | What it holds |
+|---|---|---|
+| `val.log` | humans, `tail -f` | one line per epoch: loss, val summary, timing |
+| `events.jsonl` | agents/scripts | `meta` / `step` (loss, lr, img/s, GPU MiB, every `log_every` steps) / `epoch` (full val stats incl. confusion) / `abort` / `end` |
+| `history.json` | agents/scripts | per-epoch records, rewritten each epoch — crash-safe |
+| `curves.png` · `diagnostics.png` · `confusion.png` | humans | learning curves with best-epoch marker; error-category rates, LR, throughput; row-recall confusion heatmap — refreshed each epoch (`plots.py <run_dir>` re-renders any run, including pre-instrumentation ones) |
+
+A run **fails fast** rather than degrading: a non-finite loss aborts immediately (the
+`abort` event says where), a too-full GPU aborts instead of silently training on CPU
+(`device: cpu` to force), and `patience: N` early-stops a plateau. The `imgs_per_s` in
+step events is the liveness signal — GPU util can read 100% while true throughput has
+collapsed (the SIGSTOP zombie-spinner failure), and only throughput catches it.
+
+> [!note] The perf ceiling is the card, not the pipeline (measured 2026-08-07)
+> fp32 ResNet18@224 on the GTX 1650 is compute-bound at ~165 img/s: batch 48/64/96 and
+> 6/8/12 workers are all flat, `channels_last` *loses* (136 img/s, no fp32-NHWC kernels
+> on Turing), bf16 is emulated (~2.7× slower) and fp16 NaNs in the forward — `amp: false`
+> is the default. VRAM peaks ~250 MiB; memory is never the constraint. The remaining
+> wall-time levers are early stopping, the 2× val batch (val was ~40% of epoch time),
+> and not sharing the GPU with the inference server during a run.
+
+> [!warning] DataLoader workers must fork
+> Python 3.14 made `forkserver` the multiprocessing default, which pickles a **full copy**
+> of the ~9 GB RAM-resident crop dataset into every worker — 8 workers OOM-killed the
+> first `run_f` launch ("pickle data was truncated" is the tell). `train.py` pins
+> `multiprocessing_context="fork"` so workers share the dataset copy-on-write (verified:
+> worker Rss 1.0 GB, Pss 160 MB). Workers never touch CUDA, so fork-after-CUDA-init is safe.
 
 ## Data contract
 
