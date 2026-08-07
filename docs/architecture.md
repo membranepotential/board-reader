@@ -183,6 +183,62 @@ inference needs. At fp16 the grid is ~1.6 KB — negligible next to the JPEG.
 
 Full field-by-field spec: [[DESIGN#5. Position stream protocol (L3 output)]].
 
+## Who reads the stream
+
+The L3 egress has two consumers today, and both are deliberately memoryless.
+
+| Consumer | What it is |
+|---|---|
+| the **viewer** (`GET /`) | draws the latest event per board — a screen, not a record |
+| `board-reader-inference positions` | a headless tail of `WS /viewer`: each event on stdout in readable form, and with `--out` each event as one line of the exact §5 JSON the socket carried |
+
+Until the tail landed, the only consumer of that socket was a browser page, so a run's
+output could be watched but never captured, diffed, or asserted — the result lived on a
+screen. A capture *is* the stream rather than a rendering of it, which makes two runs
+comparable and makes "a stream of positions came out" a claim a test can check.
+
+```bash
+board-reader-inference positions                       # tail every board
+board-reader-inference positions --changes-only        # ... only when a board moves
+board-reader-inference positions --out run.ndjson --quiet
+```
+
+`--changes-only` suppresses an event whose placement matches that board's previous one:
+an at-rest board republishes the same position at the keepalive rate (DESIGN D4), and a
+log of that is noise. A board's first event is always reported — "never seen before" and
+"held still" are different facts and the tail keeps them apart. Walkthrough in
+[[TESTING#Option L — Watch or capture the position stream]]; operator recipes in
+[[runbook#Capturing a run's positions]].
+
+## Temporal consistency — the layer nobody has built
+
+> [!warning] `stability` is computed on the edge, rides every event, and is consumed by nobody
+> That is not a bug in the CV layer and not a violation of DESIGN. The layer that would
+> use it does not exist — in this repo or outside it.
+
+The estimator is stateless per frame **by decision** (DESIGN D1): pixels in, what it sees
+out, with no memory, no move tracking, no legality. Everything that turns a *sequence* of
+noisy per-frame reads into a stable position history — smoothing across frames, segmenting
+moves on the advisory `stability` hint, rejecting a one-frame flicker as a hand crossing
+the board rather than a capture — belongs to the **consumer**, and DESIGN says so twice
+(D3, and the closing line of §5). That part is the design working as intended.
+
+What is missing is the consumer itself. Nothing anywhere demonstrates a noisy per-frame
+stream becoming a stable position history. The gap is not a missing feature; it is a
+missing layer.
+
+The headless tail does not close it, deliberately. It diffs consecutive placements so a
+human can read the stream, and that is all: a `SquareTransition` is a difference between
+two strings, and a hand crossing the board, a misread and a real capture all produce them
+identically. It smooths nothing — a piece flickering between two classes on alternate
+frames yields a transition on *every single frame*. That is the honest picture of what a
+stateless estimator emits, and precisely the argument for the layer above it.
+
+The seam is `WS /viewer`, or an `.ndjson` capture of it — the same bytes either way.
+Anything cleverer than a diff lives on the far side of that seam and wants its own design.
+DESIGN §9 still carries "does `stability` earn its keep?" as an open question; it cannot
+be answered until something consumes it.
+
 ## Related
 
 - [[recognition-pipeline]] — what happens between "frame arrives" and "event published"

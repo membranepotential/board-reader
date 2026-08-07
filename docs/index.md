@@ -44,8 +44,9 @@ The **edge** node (a Pi; a phone browser in the sim — `/camera`) finds the boa
 forwards frames — rectified, or original with the corner quad on each frame header —
 adaptively since M2: a ~1 fps keepalive at rest, a burst through motion, with a
 measured `stability` on every frame. The **inference** node runs a stateless per-frame estimator over 64 square crops and
-publishes a position event. The **viewer** renders it. Edge and inference never import each
-other — they meet only on the wire. Recognition is a multi-style-trained crop classifier
+publishes a position event. The **viewer** renders it; the headless
+`board-reader-inference positions` tails or captures it. Edge and inference never import
+each other — they meet only on the wire. Recognition is a multi-style-trained crop classifier
 blended with a per-set nearest-exemplar bank; the trained half is robust where it has never
 been, the bank half is near-perfect where it has, and the blend tracks the better of the two
 square by square.
@@ -54,3 +55,11 @@ square by square.
 > Occupancy — *is this square empty?* — transfers across chess sets almost for free.
 > Piece **type** does not. Nearly every accuracy problem in this project is a piece-type
 > problem wearing a different hat. See [[recognition-pipeline#Why piece type is the hard part]].
+
+> [!important] The layer above us has not been built
+> The CV layer is a stateless per-frame estimator by decision, and `stability` is advisory:
+> the *consumer* is supposed to smooth across frames and segment moves
+> ([[DESIGN#D3 — Stability is an advisory signal; the consumer segments moves|D3]], §5).
+> No such consumer exists — here or anywhere else — so nothing yet turns this noisy
+> per-frame stream into a stable position history. See
+> [[architecture#Temporal consistency — the layer nobody has built]].

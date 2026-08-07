@@ -47,6 +47,7 @@ What's covered today (M0 + M1 rectification):
 | **Recording format** | `packages/core/tests/test_recording.py` | **byte-exact round trip, corners survive, truncated session still replays, size cap** |
 | **Ingress recording** | `packages/inference/tests/test_recording_ingest.py` | **every `/ingest` frame lands on disk (incl. pre-filter drops); off unless asked; a write failure never breaks the stream** |
 | **Replay** | `packages/edge/tests/test_recording_replay.py` | **replays the recorded bytes without re-encoding, paces by capture time, refuses to reprocess** |
+| **Position stream consumer** | `packages/inference/tests/test_positions.py` | **transitions of a real move, first-sighting ≠ unchanged, per-board diffing, NDJSON capture rebuilds the identical event, `--changes-only` drops keepalives** |
 | Hub | `packages/inference/tests/test_hub.py` | retained-latest, fan-out, overflow |
 | Gateway | `packages/inference/tests/test_server.py` | ingest → viewer over WS (in-process) |
 | Viewer | `packages/viewer/tests/test_viewer.py` | UI served, WS URL injected |
@@ -540,6 +541,52 @@ re-fed is a run you can bisect a recognition regression against.
 Turn it off with `serve --no-record` (runs are then not reproducible); cap it
 with `BR_RECORD_MAX_MB` on a small disk — the session truncates rather than
 rotating, so a capped recording keeps its beginning.
+
+### Option L — Watch or capture the position stream
+
+Every option above ends at a screen. This one ends at a file. `positions` is the
+headless consumer of `WS /viewer`: it tails the stream in readable form, and with
+`--out` writes each event as one line of the exact §5 JSON the socket carried, so
+a captured run *is* the stream and two runs can be diffed.
+
+Start any streaming run (Option A, B, J or K), then, in another terminal:
+
+```bash
+uv run board-reader-inference positions                        # tail every board
+uv run board-reader-inference positions --changes-only         # only when a board moves
+uv run board-reader-inference positions --out run.ndjson --quiet
+uv run board-reader-inference positions --board A1 --limit 20  # scriptable: stop after 20
+```
+
+The tail is one line per event — identity, the derived numbers, and what changed:
+
+```
+A1 #41 2026-08-07T14:31:02.118Z  conf 0.94  stab 0.98  2Δ  e4 ·→P, e2 P→·
+A1 #42 2026-08-07T14:31:03.121Z  conf 0.94  stab 0.99  (unchanged)
+```
+
+What to check:
+
+- against the Docker demo (Option A), the tail's transitions match the squares the
+  viewer rings green, at the same moments;
+- `--changes-only` collapses the ~1 ev/s keepalive to nothing while the board is at
+  rest, and prints a burst of lines through a move;
+- `jq -r .placement run.ndjson | uniq` reads the game's positions back out in order, and
+  `wc -l run.ndjson` matches the "wrote N position events" line on stderr. Under
+  `--changes-only` that line also names what it held back ("… (7 unchanged, not written)"),
+  so the two numbers still account for the whole stream;
+- replaying a recording (Option K) into a fresh gateway and capturing again gives a
+  second file to diff against the first — that diff is the reproduction claim.
+
+Exit codes are meant for scripts: `0` when events arrived, `1` when the stream produced
+nothing (an empty stream is not a working one), `2` when there is no gateway at `--url`.
+
+> [!note] It smooths nothing, and that is the point
+> A square flickering between two classes on alternate frames produces a transition on
+> *every* frame — the tail diffs consecutive placements and has no memory beyond the last
+> one. That is the honest output of a stateless per-frame estimator (DESIGN D1), not a bug
+> to fix here: temporal smoothing belongs to a consumer layer that does not exist yet. See
+> [[architecture#Temporal consistency — the layer nobody has built]].
 
 ---
 

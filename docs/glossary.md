@@ -33,6 +33,11 @@ never seen in training.
 **Stability** — an advisory per-frame score in [0,1] (1 = at rest), computed on the edge from
 inter-frame motion. A hint, never a gate: the consumer segments moves, not us.
 
+**Transition** — a square whose occupant differs between two consecutive placements. A
+difference between two strings, *not* a claim that a move happened: a hand crossing the board,
+a misread and a real capture all produce transitions identically. What the headless tail
+prints; telling them apart is the consumer's job.
+
 **Status** — `ok | recalibrating | needs_setup | stale`. Notably there is no `illegal`;
 legality is not ours to judge, and an illegal-looking placement is reported as `ok`.
 
@@ -111,6 +116,16 @@ inference share.
 
 **Hub** — the pub/sub that fans position events out to viewers and retains the latest per
 board for late subscribers. Stateless beyond "last value".
+
+**Position stream** — the L3 egress: the sequence of position events a board produces, served
+on `WS /viewer`. Captured verbatim as NDJSON by `board-reader-inference positions --out`, where
+a captured run *is* the stream rather than a rendering of it.
+
+**Consumer / application layer** — anything downstream of the position stream. DESIGN's
+out-of-scope layer: move reconstruction, legality, game state, PGN — plus the temporal
+smoothing that makes them possible. Today's consumers are the viewer UI and the headless
+`positions` tail, and neither smooths anything; see
+[[architecture#Temporal consistency — the layer nobody has built]].
 
 **Seasoning** — the 7-day supply-chain hold: `[tool.uv] exclude-newer` refuses to resolve any
 release published in the last week, so a freshly-compromised package is never pulled.

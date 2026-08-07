@@ -653,6 +653,12 @@ Field notes:
 The application layer (a consumer) is responsible for turning this stream into
 moves, full FENs, legality decisions, and PGN.
 
+> This socket is the seam, and nothing has been built on the far side of it yet —
+> the consumers that exist (the viewer UI, the headless `board-reader-inference
+> positions` tail) render or capture the stream and smooth nothing, so no
+> temporal consistency exists anywhere. Not a change to D1/D3; a statement of
+> what is unbuilt. See `docs/architecture.md`, "Temporal consistency".
+
 ---
 
 ## 6. Local simulation plan (no hardware)

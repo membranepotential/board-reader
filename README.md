@@ -37,6 +37,7 @@ uv sync
 uv run board-reader-inference serve            # gateway  :8000
 uv run board-reader-viewer --port 8080         # UI       :8080
 uv run board-reader-edge feed                  # synthetic feed
+uv run board-reader-inference positions        # tail the position stream (headless)
 uv run pytest                                  # the test suite
 ```
 
