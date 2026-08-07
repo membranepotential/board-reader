@@ -28,11 +28,16 @@ Algorithm (classic CV, no ML, piece-occlusion tolerant):
    them precisely. Points that drifted (occluded by a piece) or lack an x-corner
    contrast signature are rejected; a RANSAC homography over the survivors gives
    the refined board frame. Falls back to the coarse quad if too few survive.
-4. **Validation.** The final quad must show a *consistent* light/dark alternation
-   in **every** row and column of its 8x8 surface (ring-median square luminance,
-   so pieces standing on squares don't spoil it). A quad that is off by one
-   square, or latched onto a false lattice, fails this and the next ladder rung /
-   offset hypothesis is tried; if none passes, ``None`` is returned.
+4. **Validation + selection.** A candidate quad is scored on its 8x8 surface's
+   light/dark alternation (ring-median square luminance, so pieces standing on
+   squares don't spoil it): the signs must be consistent in every row and
+   column, the surrounding ring — warped alongside — must NOT alternate like a
+   board (a one-square-shifted quad always leaves a true board line just
+   outside itself), and the weakest line must clear a floor. Clearing the
+   strong floor ends the search; a crowded steep-angle board whose back ranks
+   are nearly all pieces may only clear the lower crowded floor, in which case
+   the scan continues and the best such candidate wins. Nothing acceptable at
+   all -> ``None``.
 
 Orientation is **geometric only** (TL,TR,BR,BL by the sum/diff rule) — which corner
 is a8 cannot be known from geometry (decision #15); the caller/operator resolves it.
@@ -59,13 +64,43 @@ _MIN_ALTERNATION = 4.0
 # levels). Correct quads measure ~25-40 on real photos; one-square-shifted or
 # false-lattice quads measure < 3.
 _MIN_ROWCOL_ALTERNATION = 8.0
-# Retry ladder: (downscale max dimension, apply CLAHE).
+# Fallback acceptance for crowded boards at steep angles (measured on the
+# ccbf-r5 start position, 32 pieces at aspect 0.635): the back-rank rows are so
+# piece-covered that the *true* quad's weakest row reads ~11 and a
+# few-pixels-off refined quad reads ~3.7 — while its median row stays ~63. An
+# off-by-one quad puts a whole border row on the surround (weakest row ~2) and,
+# decisively, flips the sign pattern. So a quad whose alternation is strong in
+# the median and sign-consistent everywhere is accepted down to this floor.
+_MIN_ROWCOL_ALTERNATION_CROWDED = 3.0
+_MIN_MEDIAN_ALTERNATION_CROWDED = 30.0
+# A quad shifted one square off the surface hides poorly INSIDE — over a
+# labelled board border its off-surface line can still alternate ~14, enough to
+# read "strong" — but it cannot hide OUTSIDE: the shift necessarily leaves one
+# true board line just beyond the quad, alternating hard (measured 30-51 on
+# shifted ccbf-r5 quads). A correct quad's outside ring is board border and
+# table (measured <= 19.1 across the corpus, labels included — hexamind's
+# contrasty border is the high-water mark). So acceptance also warps one square
+# of surround and rejects any quad with a board-like line outside it; 25 sits
+# between the corpus's highest correct reading and the lowest shifted one.
+_MAX_OUTSIDE_ALTERNATION = 25.0
+# The scale-space corner finder is internally nondeterministic (measured: the
+# same frame + args flips between a full 7x7 and nothing, single-threaded too),
+# so one extra attempt per rung roughly squares the miss probability.
+_SB_ATTEMPTS = 2
+# Retry ladder: (downscale max dimension, apply CLAHE). The corner finder is
+# scale-brittle on real footage — piece-dense steep-angle frames measured on
+# ccbf-r5 each yield a grid at exactly one or two of these scales (900 found a
+# full 7x7 where 1000/1200/1600 all found nothing) — so the ladder is wide and
+# ordered by how often each rung wins first.
 _LADDER: tuple[tuple[int, bool], ...] = (
     (1200, False),
     (1000, False),
+    (900, False),
     (1600, False),
+    (800, False),
     (1200, True),
     (1000, True),
+    (800, True),
 )
 # Phase hypotheses tried per ladder rung (best-scored first).
 _MAX_PHASES = 2
@@ -82,25 +117,39 @@ def _order_quad(pts: np.ndarray) -> np.ndarray:
     )
 
 
+# A phase hypothesis is scored on the squares whose centers land in-frame; it
+# needs at least this many of each colour class (of 32) to be scoreable at all.
+# Partial coverage is the normal case, not an error: the coarse homography is
+# fitted on a *sub*-grid, and at a steep camera angle extrapolating it across
+# the remaining rows overshoots — projecting a few near-edge centers out of a
+# tight crop even for the CORRECT phase (measured on ccbf-r5: every hypothesis
+# of a well-fitted 5x7 grid died this way). A floor of 24/32 still rejects
+# hypotheses that genuinely hang off the board's image.
+_MIN_ALT_SQUARES = 24
+
+
 def _alternation(gray: np.ndarray, h_inv: np.ndarray, x0: float, y0: float) -> float:
     """|mean(light) - mean(dark)| over the 8x8 squares whose inner-corner lattice
-    starts at ``(x0, y0)``; -1 if any square center falls outside the image."""
+    starts at ``(x0, y0)``. Centers projecting outside the image are skipped;
+    -1 if fewer than ``_MIN_ALT_SQUARES`` of either colour class remain."""
     cs, rs = np.meshgrid(np.arange(8), np.arange(8))
     centers = np.stack([x0 - 1 + cs + 0.5, y0 - 1 + rs + 0.5], axis=-1)
     proj = cv2.perspectiveTransform(
         centers.reshape(-1, 1, 2).astype(np.float32), h_inv
     ).reshape(8, 8, 2)
     h, w = gray.shape
-    means = np.zeros((8, 8))
+    a: list[float] = []  # (r + c) even
+    b: list[float] = []
     for r in range(8):
         for c in range(8):
             x, y = int(round(proj[r, c, 0])), int(round(proj[r, c, 1]))
             if not (2 <= x < w - 2 and 2 <= y < h - 2):
-                return -1.0
-            means[r, c] = gray[y - 2 : y + 3, x - 2 : x + 3].mean()
-    a = np.concatenate([means[::2, ::2].ravel(), means[1::2, 1::2].ravel()])
-    b = np.concatenate([means[::2, 1::2].ravel(), means[1::2, ::2].ravel()])
-    return float(abs(a.mean() - b.mean()))
+                continue
+            mean = float(gray[y - 2 : y + 3, x - 2 : x + 3].mean())
+            (a if (r + c) % 2 == 0 else b).append(mean)
+    if len(a) < _MIN_ALT_SQUARES or len(b) < _MIN_ALT_SQUARES:
+        return -1.0
+    return float(abs(np.mean(a) - np.mean(b)))
 
 
 def _xcorner_response(gray_f: np.ndarray, p: np.ndarray, r: int) -> float:
@@ -177,9 +226,13 @@ def _coarse_candidates(image: np.ndarray) -> Iterator[np.ndarray]:
         gray = cv2.cvtColor(small, cv2.COLOR_BGR2GRAY) if small.ndim == 3 else small
         if use_clahe:
             gray = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8)).apply(gray)
-        ret, corners, meta = cv2.findChessboardCornersSBWithMeta(
-            gray, _SEED_PATTERN, flags
-        )
+        ret, corners, meta = False, None, None
+        for _attempt in range(_SB_ATTEMPTS):
+            ret, corners, meta = cv2.findChessboardCornersSBWithMeta(
+                gray, _SEED_PATTERN, flags
+            )
+            if ret and corners is not None and len(corners) >= 15:
+                break
         if not ret or corners is None or len(corners) < 15:
             continue
         gh, gw = meta.shape[:2]
@@ -257,25 +310,35 @@ def _refine_quad(image: np.ndarray, quad: np.ndarray) -> np.ndarray:
     ).reshape(-1, 2)
 
 
-def _validate(image: np.ndarray, quad: np.ndarray) -> bool:
-    """Accept only quads whose 8x8 surface alternates consistently in *every* row
-    and column (ring-median luminance per square, robust to pieces)."""
+def _acceptance(image: np.ndarray, quad: np.ndarray) -> float | None:
+    """The quad's weakest row/column alternation, or ``None`` when it is no
+    board (non-convex, implausibly sized, sign-inconsistent, a board-like line
+    just outside it, or too weak even for the crowded floor).
+
+    A value ``>= _MIN_ROWCOL_ALTERNATION`` is a *strong* accept — the caller can
+    stop searching. Below that it is a *provisional* accept (crowded steep-angle
+    board), to be used only if nothing strong turns up."""
     if not cv2.isContourConvex(quad.astype(np.int32)):
-        return False
+        return None
     h, w = image.shape[:2]
     area = cv2.contourArea(quad)
     if not (0.03 * w * h < area < 1.2 * w * h):
-        return False
+        return None
+    # Warp the surface plus one square of surround: 10x10 squares, of which the
+    # inner 8x8 must alternate and the outer ring must NOT (see
+    # _MAX_OUTSIDE_ALTERNATION).
     sq = 64
-    dst = np.array([[0, 0], [8 * sq, 0], [8 * sq, 8 * sq], [0, 8 * sq]], np.float32)
+    dst = np.array(
+        [[sq, sq], [9 * sq, sq], [9 * sq, 9 * sq], [sq, 9 * sq]], np.float32
+    )
     Hr = cv2.getPerspectiveTransform(_order_quad(quad), dst)
-    rect = cv2.warpPerspective(image, Hr, (8 * sq, 8 * sq))
+    rect = cv2.warpPerspective(image, Hr, (10 * sq, 10 * sq))
     gray = (
         cv2.cvtColor(rect, cv2.COLOR_BGR2GRAY) if rect.ndim == 3 else rect
     ).astype(np.float32)
-    med = np.zeros((8, 8))
-    for r in range(8):
-        for c in range(8):
+    med = np.zeros((10, 10))
+    for r in range(10):
+        for c in range(10):
             s = gray[r * sq : (r + 1) * sq, c * sq : (c + 1) * sq]
             ring = np.concatenate(
                 [
@@ -287,13 +350,37 @@ def _validate(image: np.ndarray, quad: np.ndarray) -> bool:
             )
             med[r, c] = np.median(ring)
     sgn = np.array(
-        [[1 if (r + c) % 2 == 0 else -1 for c in range(8)] for r in range(8)]
+        [[1 if (r + c) % 2 == 0 else -1 for c in range(10)] for r in range(10)]
     )
     signed = med * sgn
-    d = np.concatenate([signed.mean(axis=1), signed.mean(axis=0)])
-    if np.abs(d).min() < _MIN_ROWCOL_ALTERNATION:
-        return False
-    return bool((np.sign(d) == np.sign(np.median(d))).all())
+    inner = signed[1:9, 1:9]
+    d = np.concatenate([inner.mean(axis=1), inner.mean(axis=0)])
+    if not bool((np.sign(d) == np.sign(np.median(d))).all()):
+        return None
+    outside = max(
+        abs(float(signed[0, 1:9].mean())),
+        abs(float(signed[9, 1:9].mean())),
+        abs(float(signed[1:9, 0].mean())),
+        abs(float(signed[1:9, 9].mean())),
+    )
+    if outside > _MAX_OUTSIDE_ALTERNATION:
+        return None
+    lowest = float(np.abs(d).min())
+    if lowest >= _MIN_ROWCOL_ALTERNATION:
+        return lowest
+    # Crowded steep-angle boards: see _MIN_ROWCOL_ALTERNATION_CROWDED.
+    if (
+        lowest >= _MIN_ROWCOL_ALTERNATION_CROWDED
+        and float(np.median(np.abs(d))) >= _MIN_MEDIAN_ALTERNATION_CROWDED
+    ):
+        return lowest
+    return None
+
+
+def _validate(image: np.ndarray, quad: np.ndarray) -> bool:
+    """Whether ``quad`` is acceptable at all (strong or crowded floor) — the
+    boolean view of :func:`_acceptance` for tests and callers that don't rank."""
+    return _acceptance(image, quad) is not None
 
 
 # Below this projected board aspect the camera is so close to board level that
@@ -328,9 +415,20 @@ def detect_board_quad(image: np.ndarray) -> np.ndarray | None:
     Returns 4x2 float32 corners in TL,TR,BR,BL *geometric* order (orientation
     unknown — which corner is a8 is the caller's/operator's concern), or ``None``
     if no board is found.
+
+    A strong accept returns immediately. Provisional (crowded-board) accepts
+    are only collected — candidate order is not candidate quality, so the scan
+    finishes and the best weakest-line score wins.
     """
+    best: np.ndarray | None = None
+    best_score = 0.0
     for coarse in _coarse_candidates(image):
         quad = _order_quad(_refine_quad(image, coarse))
-        if _validate(image, quad):
+        score = _acceptance(image, quad)
+        if score is None:
+            continue
+        if score >= _MIN_ROWCOL_ALTERNATION:
             return quad
-    return None
+        if score > best_score:
+            best, best_score = quad, score
+    return best
