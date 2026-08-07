@@ -10,6 +10,19 @@ confidences**. No moves, no legality, no PGN — those are the downstream applic
 
 ## Now
 
+- **Training harness acceleration + observability** (main session, 2026-08-07) — **done,
+  committed `f5a0356`; run_f is unblocked but NOT launched (operator will launch it).**
+  Measured verdict: the GTX 1650 is compute-bound at ~165 img/s fp32 (batch 48–96 and
+  workers 6–12 all flat; channels_last hurts; no triton → no torch.compile), so the wins
+  are fail-fast (non-finite-loss abort), 2× val batch (val was ~40% of epoch wall time),
+  and per-worker thread pinning. Every run dir now self-documents: `events.jsonl`
+  (agents) + `history.json` w/ confusion + per-epoch `curves/diagnostics/confusion.png`
+  (humans). 406 tests green, smoke run verified.
+  **Incident:** the first run_f launch (from this session) was OOM-killed — Python
+  3.14's forkserver default pickled the ~9 GB dataset into all 8 workers, *and* the
+  GPU was full so it silently fell to CPU. Both fixed in `f5a0356` (fork workers,
+  CoW verified via Pss; busy-GPU now aborts instead of CPU fallback).
+  Launch: `PY=/usr/bin/python tools/train/run_f.sh` (GPU was free as of 02:45).
 - **Snapshot quality push** — make the snapshot app read a board reliably before M2.
   Landed: ground-truth capture + the eval harness (below). Next: act on what it measured.
 - **snapshot.html rewrite** — the page is a stage-by-stage pipeline inspector; `test_viewer.py`
@@ -79,13 +92,26 @@ confidences**. No moves, no legality, no PGN — those are the downstream applic
   4. **Central-column patch pooling** (was Next 5) — exported to
      `models/dinov2_small_central.onnx` and verified (384-d, dynamic batch, cosine
      0.58–0.80 vs CLS, i.e. genuinely different features). **Not wired into any deployed
-     bank**: the A/B is running now — a ChessReD bank at central pooling
-     (`models/exemplars_chessred_central.npz`) vs the CLS one, the same uncontaminated
-     cross-style protocol the +9/320 was measured on. Deployed bank untouched until it wins.
-  - **State:** pose crop cache building (`data/external/_cropcache/pose_h1.9_r0.5_f1`,
-    ~9 GB, 11 styles). Then `train.py --config configs/run_f.yaml` on the GPU — fp32, no
-    AMP (the Turing NaN/slowdown learning). Targets to beat, both `run_e`: holdout
-    `chessr_vlab_wooden` **0.898**, and the repaired real-photo set **0.819**.
+     bank.** The A/B bank build was started and then **killed deliberately**: it ran DINOv2
+     on CPU at ~5.5 cores, which would have corrupted the harness benchmarks the other
+     session is running. Re-run it on a quiet machine with
+     `BR_DINOV2_ONNX=models/dinov2_small_central.onnx uv run python
+     tools/build_exemplar_bank_chessred.py --out models/exemplars_chessred_central.npz`
+     (~40 min on CPU; force the GPU EP and it is minutes), then score it against
+     `models/exemplars_chessred.npz` — the same uncontaminated cross-style protocol the
+     +9/320 came from. Deployed bank untouched until it wins.
+  - **State: staged, deliberately NOT started.** The pose crop cache is **built and
+    complete** — `data/external/_cropcache/pose_h1.9_r0.5_f1`, 8.8 GB, all 11 styles
+    (same size as the `hr1.6` cache it parallels). `configs/run_f.yaml` and
+    `tools/train/run_f.sh` are written, and the harness import-checks clean against the
+    pose geometry. **The run is held because another session is editing
+    `tools/train/{config,dataset,metrics,train}.py` right now** (operator instruction,
+    2026-08-07). Launch with `PY=/usr/bin/python tools/train/run_f.sh` once that
+    settles — the training venv is system python, not the workspace `uv` venv.
+  - **Targets to beat, both `run_e`:** holdout `chessr_vlab_wooden` **0.898**, and the
+    repaired real-photo `chesscog_transfer` **0.819**. Only the geometry differs from
+    `run_e` — same 11 styles, same holdout, same optimiser, same seed — so the
+    comparison is clean.
 
 ## Done
 
@@ -137,6 +163,50 @@ confidences**. No moves, no legality, no PGN — those are the downstream applic
   55→64 jump is the one gain here that cannot be trusted. Reproduce with
   `BR_MODEL=models/run_e/model.onnx [BR_SESSION_BANK=models/exemplars_session.npz] uv run
   board-reader-inference eval [--prior] data/uploads`.
+- **The `chesscog_transfer` holdout is repaired, not replaced (2026-08-07).** It sat unused
+  for weeks as "geometrically broken" on a 0.597 self-kNN score. That was a real number
+  pointing at the wrong *layer*: all 22 warps grid-align and the crops were always fine.
+  What was broken is that `build_transfer_labels.py` resolved each photo's orientation **by
+  eye** (`WHITE_NEAR`) and got it wrong on **14 of 22 boards**, rotating every label 180°;
+  two more (`test/22,24`) were *silent* `detect_board_quad` failures returning a quad of the
+  table. `data/external/chesscog_transfer/repair_orientation.py` now resolves it from pixels
+  — checkerboard parity of *empty* cells for the 90° ambiguity, light-vs-dark piece wood for
+  the 180°, each cell read against the empty-cell median of its own square colour so the
+  checkerboard cancels — and drops the non-boards. Margins are decisive on every kept board
+  (parity ≥ +92, piece ≥ +37 grey levels) and ≈0 on the two failures. **`run_e`, which never
+  trained on it: 0.500 → 0.819** over the 20 survivors, confirmed independently by the
+  photometric method and the model agreeing board-for-board. `tools/train/evaluate.py` scores
+  it by default. This is now the only real-photo set no bank and no run has ever seen.
+  Two durable lessons: *"the data is broken" localises a problem but not its layer*, and *a
+  per-image choice made by eye needs an exhaustive check* — the original validation
+  spot-checked four boards, missed three broken ones, and declared "no mislabels observed".
+- **Pose-aware crop geometry (2026-08-07, `f362f78`).** Crop geometry is now a `CropGeometry`
+  ADT — `BboxGeometry(headroom, side_pad)` or `PoseGeometry(piece_height, piece_radius,
+  focal_ratio)` — that travels in the `.onnx.meta.json` sidecar and keys the crop cache, so a
+  train/serve mismatch is unrepresentable rather than merely discouraged. `PoseGeometry`
+  recovers the camera pose from the board homography and projects a piece-sized prism
+  standing on each square; the focal length is **solved** from the homography (Zhang's two
+  plane constraints) rather than assumed, falling back to `focal_ratio` only for a
+  near-top-down view that genuinely carries no focal information. `r1, r2, t` come straight
+  from the homography so the `Z=0` face reproduces the existing base quads exactly — only the
+  height is new. Measured on a real angled photo, near/far box height **1.57 → 1.15**.
+  Bonus property, pinned by a test: pose boxes are `rot90`-invariant under corner relabelling
+  (a prism stands along the board normal), which bbox boxes provably are not.
+- **Temperature scaling (2026-08-07, `f362f78`).** `calibration.py` + `eval --temperature`.
+  Fitted **leave-one-board-out** so no board is graded by its own labels. On the deployed
+  ensemble over 23 boards: **ECE 0.255 → 0.004**, T=0.251 and stable across folds
+  (0.235–0.257), **answers changed 0** — the transform is monotone per square, so a placement
+  cannot move. The trap worth remembering: the perfect/imperfect confidence *gap* collapses
+  +0.136 → +0.017 and reads as a loss, but that is a monotone squeeze toward 1.0; the
+  rank-based **AUC improves 0.862 → 0.877**. Report AUC beside any confidence-gap claim.
+  Measured, not served — see Next 3.
+- **Central-column DINOv2 export (2026-08-07, `f362f78`).** `export_dinov2_onnx.py --pooling
+  central` → `models/dinov2_small_central.onnx`, the +9/320 cross-style pooling from the
+  frozen-backbone bakeoff. Two export traps found: torch 2.12's default dynamo exporter
+  **silently bakes the batch size in** despite `dynamic_axes` (the graph validates at batch 1
+  and dies on the first 64-crop board) — pass `dynamo=False`; and the legacy exporter leaves
+  the output width *symbolic*, which crashed `DinoV2Embedder` on load, now resolved by
+  probing. A/B pending; no deployed bank touched.
 - **Next 1 done — the label set nearly doubled (2026-08-07).** 13 → 23 confirmed labels; all
   ten new ones land after the last bank write and five of them needed corrections. This is
   what made the flat broadcast row visible.
@@ -156,38 +226,35 @@ confidences**. No moves, no legality, no PGN — those are the downstream applic
    ensemble cuts it to 14 type / 7 hallucination / 1 colour, and what it leaves is different
    in kind: `empty->p` (3) and `empty->P` (2) are now a third of its remaining errors, i.e.
    hallucinated pieces on empty squares — the failure mode Next 6's crop attribution predicts.
-3. **Calibrate confidence.** Trained-alone ECE is fine (0.016) and still useless at board
-   level (perfect 0.975 vs imperfect 0.948, on 5 perfect boards). The ensemble is badly
-   under-confident (**ECE 0.255** — every bin from 0.4 to 0.9 is *100%* correct while claiming
-   45–85%) yet its board confidence separates: perfect 0.789 vs imperfect 0.654. Both patterns
-   held from 13 boards to 23, so this is structure, not noise. Temperature-scale the ensemble
-   and re-check the separation.
+3. ~~**Calibrate confidence.**~~ **Answered 2026-08-07 — see Done.** Temperature scaling
+   takes the ensemble's ECE **0.255 → 0.004** (leave-one-board-out, T=0.251) and the
+   separation survives: the *gap* collapses but board ranking **AUC goes 0.862 → 0.877**.
+   Remaining call, and it is a decision not an experiment: **does it serve?** Argmax is
+   invariant so no placement can change; the only question is whether the wire should carry
+   calibrated confidences (DESIGN §9 says the downstream smoother wants them). Reported by
+   `eval --temperature`; nothing is scaled on the wire today.
 4. **M2 — live position stream over a full recorded game** (the headline demo). The whole
    recognition stack so far is single-frame; M2 is adaptive forwarding + stability + streaming
    through hands and transitions. This is the actual next milestone.
-5. **Central-column patch pooling** for the DINOv2/kNN path (+9 squares cross-style, measured,
-   never shipped).
-6. **Pose-aware crop boxes — never tried, don't confuse it with the headroom sweep** (idea
-   logged 2026-08-07). What *was* tried is a **scalar** sweep of `photo_square_boxes`'
-   `headroom`/`side_pad` (hr 0.15 → **1.6** → 1.8, sp 0.15/0.25; `d16` won, `d18` lost on real
-   photos). Every variant is still an *axis-aligned bbox extended along fixed image axes* by a
-   multiple of the square's projected width. Searched code, docs, learnings and all 23 commits
-   on 2026-08-07: no 3D/camera-pose crop work exists. The untried idea: decompose the board
-   homography (`cv2.decomposeHomographyMat`, approximate `K` from image size) into R,t and
-   project a **piece bounding cylinder** standing on each square centre. Three defects it
-   addresses, worth separating: (a) *coverage* — piece pixel-height depends on camera
-   elevation, so a fixed multiple of a foreshortened square width decapitates at steep angles
-   (the known steep+dim weakness `hr1.6` only patched); (b) *attribution* — a tall box also
-   contains the piece on the square behind it, the likely `empty->p` source; a cylinder makes
-   occlusion explicit so contaminated crops can be flagged rather than guessed; (c) *effective
-   resolution* — a ~2.75:1 box padded square and resized to 224 leaves the piece in a thin
-   strip. Cost: crop geometry is baked into the `.onnx.meta.json` sidecar and the exemplar
-   bank, so this is a retrain + rebank + re-eval campaign, not a quick fix. Cheaper fallback
-   for M2 only: a video stream gives an empty-board background model, which classical
-   segmentation cannot get from a single frame. A piece *detector* (base-keypoint → square via
-   inverse homography) is the bigger alternative; new model family, same ChessReD licensing.
-7. **Repair or replace the `chesscog_transfer` holdout** — it is geometrically broken
-   (0.597 self-kNN) and made a good run look like a failure once already.
+5. **Central-column patch pooling** — **exported, A/B in flight.**
+   `models/dinov2_small_central.onnx` (`--pooling central --keep-columns 8`) is built and
+   verified (384-d, dynamic batch, cosine 0.58–0.80 vs CLS). Building
+   `models/exemplars_chessred_central.npz` to re-run the uncontaminated cross-style protocol
+   the +9/320 came from. **No deployed bank has been touched** and none will be before the
+   A/B lands — a bank swap is a deployed-stack change, and the ensemble A/B gate applies.
+6. **Pose-aware crop boxes — built; the retrain is what remains.** `PoseGeometry` ships
+   (see Done). Of the three defects the idea targeted, **(a) coverage** is addressed — box
+   height now follows the piece's real height through the recovered pose, near/far ratio
+   1.57 → 1.15 — and **(c) effective resolution** improves visibly, since the prism box is
+   tighter than a 2.75:1 padded bbox. **(b) attribution is NOT addressed:** the box is still
+   the prism's axis-aligned *bounding box*, so a piece on the square behind can still fall
+   inside it, and nothing yet flags an occluded crop. That is the remaining idea, and it is
+   the one Next 2's `empty->p` residual points at — a true cylinder/occlusion test would let
+   contaminated crops be flagged rather than guessed. Deliberately kept out of this run so
+   the retrain has exactly one variable.
+7. ~~**Repair or replace the `chesscog_transfer` holdout**~~ — **repaired 2026-08-07, see
+   Done.** 20 usable boards, `run_e` at 0.819, scored by `tools/train/evaluate.py` by
+   default. It was never geometrically broken; the labels were rotated.
 8. **Optional: rebuild the session bank against `run_e`.** Not required — the crop geometry is
    identical (hr1.6/sp0.15), so the existing bank stays valid, and it is validated at 638/640
    with `run_e`. `tools/rebuild_session_bank.py` now points at `run_e` for whenever it is next

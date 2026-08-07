@@ -61,6 +61,17 @@ def load_styles(names: list[str], cache_root: Path = CACHE_ROOT) -> StyleData:
     )
 
 
+def loader_worker_init(_worker_id: int) -> None:
+    """DataLoader worker init: one decode thread per worker.
+
+    OpenCV spawns its own thread pool per process; with N workers that is N pools
+    fighting over the same cores, and torch does the same for intra-op threads.
+    The parallelism belongs to the workers, not inside them.
+    """
+    cv2.setNumThreads(0)
+    torch.set_num_threads(1)
+
+
 class CropDataset(Dataset):
     """Indexed view over :class:`StyleData`; decodes + transforms one crop."""
 

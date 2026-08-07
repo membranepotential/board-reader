@@ -34,19 +34,28 @@ from dataset import (
     class_counts_str,
     class_sample_weights,
     load_styles,
+    loader_worker_init,
     split_by_group,
     split_by_style,
 )
 from metrics import SquareStats
 from models import build_model, param_summary, trainable_parameters
+from runlog import RunLog
 from styles import chessred_style, discover_styles
+
+try:
+    from plots import render_run_plots
+except ImportError:  # matplotlib not installed — train without pictures
+    render_run_plots = None
 
 ROOT = _bootstrap.ROOT
 
 
 def pick_device(pref: str, *, min_free_mib: int = 1500) -> torch.device:
-    """Resolve ``auto|cuda|cpu``. ``auto`` uses CUDA only if enough VRAM is free
-    (an inference server may be holding most of a 4 GB card)."""
+    """Resolve ``auto|cuda|cpu``. ``auto`` refuses to run when the GPU exists but
+    is too full (an inference server may be holding most of the 4 GB card): a
+    silent CPU fallback once turned a ~45-minute run into a days-long one, so
+    that degradation is now an abort — force ``device: cpu`` to accept it."""
     if pref == "cpu" or not torch.cuda.is_available():
         return torch.device("cpu")
     if pref == "cuda":
@@ -54,8 +63,10 @@ def pick_device(pref: str, *, min_free_mib: int = 1500) -> torch.device:
     free, _ = torch.cuda.mem_get_info()
     if free / 2**20 >= min_free_mib:
         return torch.device("cuda")
-    print(f"[device] only {free/2**20:.0f} MiB free on GPU; using CPU")
-    return torch.device("cpu")
+    raise SystemExit(
+        f"[device] only {free/2**20:.0f} MiB free on the GPU (< {min_free_mib}); "
+        "refusing the silent CPU fallback — free the GPU or set device: cpu"
+    )
 
 
 def resolve_styles(cfg: Config) -> list[str]:
@@ -90,12 +101,16 @@ def ensure_caches(names: list[str], cfg: Config) -> None:
         build_cache(style, out_root=root, size=cfg.size, geometry=cfg.geometry)
 
 
-@torch.no_grad()
-def evaluate_loader(model: nn.Module, loader: DataLoader, device: torch.device) -> SquareStats:
+@torch.inference_mode()
+def evaluate_loader(
+    model: nn.Module, loader: DataLoader, device: torch.device, *, channels_last: bool = False
+) -> SquareStats:
     model.eval()
     stats = SquareStats()
     for x, y in loader:
         x = x.to(device, non_blocking=True)
+        if channels_last:
+            x = x.to(memory_format=torch.channels_last)
         logits = model(x)
         pred = logits.argmax(1).cpu().numpy()
         stats.update(y.numpy(), pred)
@@ -130,6 +145,9 @@ def train(cfg: Config) -> Path:
 
     device = pick_device(cfg.device)
     print(f"device: {device}")
+    if device.type == "cuda":
+        # Input shape is fixed (B,3,size,size); let cuDNN autotune its kernels once.
+        torch.backends.cudnn.benchmark = True
 
     train_ds = CropDataset(data, train_idx, train_transform(cfg.size, shape_bias=cfg.shape_bias))
     val_ds = CropDataset(data, val_idx, eval_transform(cfg.size))
@@ -138,20 +156,37 @@ def train(cfg: Config) -> Path:
     n_draw = len(train_idx) if cfg.steps_per_epoch is None else cfg.steps_per_epoch * cfg.batch_size
     sampler = WeightedRandomSampler(weights, num_samples=int(n_draw), replacement=True)
     pin = device.type == "cuda"
-    train_loader = DataLoader(
-        train_ds, batch_size=cfg.batch_size, sampler=sampler,
-        num_workers=cfg.num_workers, pin_memory=pin, drop_last=True, persistent_workers=cfg.num_workers > 0,
-    )
-    val_loader = DataLoader(
-        val_ds, batch_size=cfg.batch_size, shuffle=False,
+    # Workers MUST fork: the dataset is ~9 GB of RAM-resident JPEG bytes, and fork
+    # shares it copy-on-write. Python 3.14 changed the default start method to
+    # forkserver, which instead PICKLES a full copy into every worker — 8 workers
+    # x 9 GB OOM-killed the first run_f launch. Workers never touch CUDA, so
+    # forking after CUDA init is safe here.
+    mp_ctx = "fork" if "fork" in torch.multiprocessing.get_all_start_methods() else None
+    workers = dict(
         num_workers=cfg.num_workers, pin_memory=pin, persistent_workers=cfg.num_workers > 0,
+        worker_init_fn=loader_worker_init,
+        prefetch_factor=cfg.prefetch_factor if cfg.num_workers > 0 else None,
+        multiprocessing_context=mp_ctx if cfg.num_workers > 0 else None,
     )
+    train_loader = DataLoader(
+        train_ds, batch_size=cfg.batch_size, sampler=sampler, drop_last=True, **workers,
+    )
+    # No backward pass in eval -> activations only; 2x the train batch is safely
+    # inside even the 4 GB card's budget and halves the per-epoch val wall time.
+    val_loader = DataLoader(val_ds, batch_size=cfg.batch_size * 2, shuffle=False, **workers)
 
     model = build_model(
         cfg.model, pretrained=cfg.pretrained, init=cfg.init, sin_weights=cfg.sin_weights,
         unfreeze_blocks=cfg.unfreeze_blocks, freeze_backbone=cfg.freeze_backbone,
         num_classes=NUM_CLASSES,
     ).to(device)
+    if cfg.channels_last:
+        model = model.to(memory_format=torch.channels_last)
+    # Checkpoints save eager_model's state_dict — torch.compile wraps the module and
+    # would otherwise prefix every key with `_orig_mod.`; the parameters are shared.
+    eager_model = model
+    if cfg.compile:
+        model = torch.compile(model)
     print(f"model {cfg.model}: {param_summary(model)}")
 
     opt = torch.optim.AdamW(trainable_parameters(model), lr=cfg.lr, weight_decay=cfg.weight_decay)
@@ -175,19 +210,41 @@ def train(cfg: Config) -> Path:
     loss_fn = nn.CrossEntropyLoss()
 
     best_acc = -1.0
+    best_epoch = -1
     epochs_since_best = 0
+    stopped_early = False
     ckpt_path = out_dir / "best.pt"
     history: list[dict] = []
-    # Tailable per-epoch val log (line-buffered, flushed each epoch) so the run can
-    # be followed live with `tail -f <out_dir>/val.log`.
+    n_steps = len(train_loader)
+    # Two live views of the same run: val.log is the tailable human one
+    # (`tail -f <out_dir>/val.log`), events.jsonl the machine-readable one.
     val_log = open(out_dir / "val.log", "w", buffering=1)
     val_log.write(f"# {cfg.model} holdout={cfg.holdout or '(group-split)'} styles={names}\n")
+    run_log = RunLog(out_dir / "events.jsonl")
+    run_log.log(
+        "meta", config=cfg.__dict__, device=str(device), styles=names,
+        n_train=len(train_idx), n_val=len(val_idx), steps_per_epoch=n_steps,
+        model=cfg.model, params=param_summary(model),
+    )
+
+    def flush_history() -> None:
+        with open(out_dir / "history.json", "w") as f:
+            json.dump(history, f, indent=2)
+
+    def gpu_mem_mib() -> int:
+        return int(torch.cuda.memory_allocated() / 2**20) if device.type == "cuda" else 0
+
     for epoch in range(cfg.epochs):
         model.train()
+        if device.type == "cuda":
+            torch.cuda.reset_peak_memory_stats()
         t0 = time.time()
-        running = 0.0
+        t_log, s_log = t0, -1  # last step-record time / step index
+        running = torch.zeros((), device=device)  # GPU-side sum: no per-step sync
         for step, (x, y) in enumerate(train_loader):
             x = x.to(device, non_blocking=True)
+            if cfg.channels_last:
+                x = x.to(memory_format=torch.channels_last)
             y = y.to(device, non_blocking=True)
             opt.zero_grad(set_to_none=True)
             with torch.amp.autocast("cuda", dtype=amp_dtype, enabled=use_amp):
@@ -197,21 +254,66 @@ def train(cfg: Config) -> Path:
             scaler.step(opt)
             scaler.update()
             sched.step()
-            running += loss.item()
-            if step % 20 == 0:
-                print(f"  e{epoch} s{step}/{len(train_loader)} loss {loss.item():.4f}", flush=True)
-        val = evaluate_loader(model, val_loader, device)
-        dt = time.time() - t0
-        train_loss = running / max(1, len(train_loader))
-        line = f"epoch {epoch}: train_loss {train_loss:.4f} | val {val.summary()} | {dt:.1f}s"
+            running += loss.detach()
+            if step % cfg.log_every == 0 or step == n_steps - 1:
+                cur = loss.item()  # the one deliberate GPU sync per interval
+                if not np.isfinite(cur):
+                    msg = f"non-finite loss {cur} at epoch {epoch} step {step} — aborting"
+                    run_log.log("abort", epoch=epoch, step=step, loss=cur, reason="non-finite loss")
+                    val_log.write(f"# {msg}\n")
+                    flush_history()
+                    raise SystemExit(msg)
+                now = time.time()
+                imgs_s = (step - s_log) * cfg.batch_size / max(1e-6, now - t_log)
+                lr_now = opt.param_groups[0]["lr"]
+                print(
+                    f"  e{epoch} s{step}/{n_steps} loss {cur:.4f} lr {lr_now:.2e} "
+                    f"{imgs_s:.0f} img/s", flush=True,
+                )
+                run_log.log(
+                    "step", epoch=epoch, step=step, gstep=epoch * n_steps + step,
+                    loss=round(cur, 5), lr=lr_now, imgs_per_s=round(imgs_s, 1),
+                    gpu_mem_mib=gpu_mem_mib(),
+                )
+                t_log, s_log = now, step
+        t_train = time.time()
+        val = evaluate_loader(model, val_loader, device, channels_last=cfg.channels_last)
+        t_val = time.time()
+        train_loss = (running / max(1, n_steps)).item()
+        train_secs = t_train - t0
+        imgs_s = n_steps * cfg.batch_size / max(1e-6, train_secs)
+        peak_mib = (
+            int(torch.cuda.max_memory_allocated() / 2**20) if device.type == "cuda" else 0
+        )
+        line = (
+            f"epoch {epoch}: train_loss {train_loss:.4f} | val {val.summary()} | "
+            f"{train_secs:.1f}s train + {t_val - t_train:.1f}s val | {imgs_s:.0f} img/s"
+        )
         print(line, flush=True)
         val_log.write(line + "\n")
-        history.append({"epoch": epoch, "train_loss": train_loss, "val": val.to_dict()})
+        history.append({
+            "epoch": epoch, "train_loss": train_loss,
+            "lr_end": opt.param_groups[0]["lr"], "train_secs": round(train_secs, 2),
+            "val_secs": round(t_val - t_train, 2), "imgs_per_s": round(imgs_s, 1),
+            "gpu_mem_peak_mib": peak_mib, "val": val.to_dict(),
+        })
+        flush_history()  # crash-safe: every finished epoch is on disk
+        run_log.log(
+            "epoch", epoch=epoch, train_loss=round(train_loss, 5),
+            train_secs=round(train_secs, 2), val_secs=round(t_val - t_train, 2),
+            imgs_per_s=round(imgs_s, 1), gpu_mem_peak_mib=peak_mib, val=val.to_dict(),
+        )
+        if render_run_plots is not None:
+            try:
+                render_run_plots(out_dir)
+            except Exception as e:  # plots must never kill a training run
+                print(f"[plots] render failed: {e}", flush=True)
         if val.accuracy > best_acc:
             best_acc = val.accuracy
+            best_epoch = epoch
             epochs_since_best = 0
             torch.save(
-                {"state_dict": model.state_dict(), "config": cfg.__dict__,
+                {"state_dict": eager_model.state_dict(), "config": cfg.__dict__,
                  "classes": list(CLASSES), "val_accuracy": val.accuracy},
                 ckpt_path,
             )
@@ -221,12 +323,14 @@ def train(cfg: Config) -> Path:
                 stop = f"early stop: no val gain in {cfg.patience} epochs (best {best_acc:.4f})"
                 print(stop, flush=True)
                 val_log.write(f"# {stop}\n")
+                stopped_early = True
                 break
-    val_log.write(f"# best val accuracy {best_acc:.4f}\n")
+    val_log.write(f"# best val accuracy {best_acc:.4f} (epoch {best_epoch})\n")
     val_log.close()
-    with open(out_dir / "history.json", "w") as f:
-        json.dump(history, f, indent=2)
-    print(f"best val accuracy {best_acc:.4f} -> {ckpt_path}")
+    run_log.log("end", best_acc=round(best_acc, 4), best_epoch=best_epoch,
+                epochs_run=len(history), stopped_early=stopped_early)
+    run_log.close()
+    print(f"best val accuracy {best_acc:.4f} (epoch {best_epoch}) -> {ckpt_path}")
     return ckpt_path
 
 

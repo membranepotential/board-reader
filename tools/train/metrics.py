@@ -12,12 +12,12 @@ Raw per-square accuracy hides *what kind* of error the model makes, and the desi
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import numpy as np
 
 import _bootstrap  # noqa: F401
-from board_reader_core.protocol import EMPTY
+from board_reader_core.protocol import EMPTY, NUM_CLASSES
 
 
 @dataclass
@@ -31,10 +31,14 @@ class SquareStats:
     piece_to_empty: int = 0  # missed
     piece_correct: int = 0  # right type+colour
     piece_to_piece: int = 0  # wrong type/colour but occupied
+    confusion: np.ndarray = field(  # (true, pred) counts over CLASSES order
+        default_factory=lambda: np.zeros((NUM_CLASSES, NUM_CLASSES), dtype=np.int64)
+    )
 
     def update(self, true: np.ndarray, pred: np.ndarray) -> None:
         true = np.asarray(true)
         pred = np.asarray(pred)
+        np.add.at(self.confusion, (true, pred), 1)
         self.total += true.size
         self.correct += int((true == pred).sum())
         t_empty = true == EMPTY
@@ -79,4 +83,5 @@ class SquareStats:
             "piece_correct": self.piece_correct,
             "piece_to_empty": self.piece_to_empty,
             "piece_to_piece": self.piece_to_piece,
+            "confusion": self.confusion.tolist(),
         }

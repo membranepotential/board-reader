@@ -65,10 +65,14 @@ class Config:
 
     # runtime
     device: str = "auto"  # auto | cuda | cpu (auto -> cuda only if enough free VRAM)
-    amp: bool = True
-    amp_dtype: str = "bfloat16"  # bfloat16 | float16 — fp16 autocast OVERFLOWS to NaN on
-    # GTX 1650 (Turing); bf16 has fp32 exponent range, no NaN, no loss-scaler, half the memory.
+    amp: bool = False  # measured on the GTX 1650 (Turing): fp32 2.63 steps/s > bf16 0.99
+    # (emulated) > fp16 0.78 (and NaN in the forward pass) — plain fp32 is the fast path.
+    amp_dtype: str = "bfloat16"  # bfloat16 | float16 — only if amp on a non-Turing card
+    channels_last: bool = False  # NHWC memory format (benchmark-gated; no tensor cores here)
+    compile: bool = False  # torch.compile the model (warmup cost; benchmark-gated)
     num_workers: int = 6
+    prefetch_factor: int = 4  # batches each worker keeps decoded ahead
+    log_every: int = 20  # steps between step-level log records (each one costs a GPU sync)
     seed: int = 0
     size: int = 224
     steps_per_epoch: int | None = None  # cap for smoke runs

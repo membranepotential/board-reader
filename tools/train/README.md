@@ -30,8 +30,10 @@ hard-code it on either side; let the sidecar carry it.
 | `dataset.py` | Torch dataset over the cache; **leave-style-out** and **leave-groups-out** splits; inverse-frequency class sampler. |
 | `augment.py` | Heavy train augmentation (colour/gamma to very dim, blur, rotation+perspective, erasing); deterministic eval transform. |
 | `models.py` | Two recipes → 13 logits: `resnet18` (ImageNet-init or scratch) and `dinov2` (official Meta ViT-S/14 + last-N-block fine-tune, LoRA-free). |
-| `metrics.py` | Per-square accuracy split into empty→piece / piece→empty / piece→piece + occupancy accuracy. |
-| `train.py` | Config-driven LOSO training loop, AMP, cosine schedule, best-checkpoint. |
+| `metrics.py` | Per-square accuracy split into empty→piece / piece→empty / piece→piece + occupancy accuracy + full 13×13 confusion. |
+| `train.py` | Config-driven LOSO training loop, cosine schedule, best-checkpoint, fail-fast (non-finite-loss abort, early-stop patience), throughput-instrumented. |
+| `runlog.py` | `events.jsonl` writer/reader — the machine-readable record of a run (meta/step/epoch/abort/end events). |
+| `plots.py` | Learning curves + diagnostics + confusion heatmap PNGs, re-rendered each epoch; also a CLI for any (old) run dir. |
 | `evaluate.py` | Final held-out eval on the user's own set (`data/eval` + dim-light `data/uploads` calibrate shots). Torch or ONNX. |
 | `export.py` | Checkpoint → ONNX (`crop`→`logits`, dynamic batch) + onnxruntime round-trip parity check. |
 | `configs/` | `smoke.yaml` (10-min sanity), `loso_resnet.yaml`, `loso_dinov2.yaml`. |
@@ -57,6 +59,29 @@ $PY train.py --config configs/loso_resnet.yaml --holdout <style>   # one LOSO fo
 $PY export.py   --ckpt <run>/best.pt  # -> <run>/model.onnx + round-trip check
 $PY evaluate.py --onnx  <run>/model.onnx     # final numbers on the user's set
 ```
+
+## Watching a run
+
+Every run directory carries four synchronized views of the same training:
+
+| File | Audience | Contents |
+|---|---|---|
+| `val.log` | humans, `tail -f` | one line per epoch: loss, val summary, timing |
+| `events.jsonl` | agents/scripts | JSONL: `meta` (config, split sizes), `step` every `log_every` steps (loss, lr, img/s, GPU mem), `epoch` (full val stats incl. confusion), `abort`/`end` |
+| `history.json` | agents/scripts | per-epoch records, rewritten each epoch (crash-safe) |
+| `curves.png` · `diagnostics.png` · `confusion.png` | humans | learning curves, error-category rates / lr / throughput, val confusion heatmap — refreshed each epoch by `plots.py` |
+
+A run **aborts immediately** on a non-finite loss (`abort` event carries where),
+and `patience: N` early-stops after N epochs without val gain. Throughput
+(`imgs_per_s` in step events) is the liveness signal: a healthy fp32 run holds
+~160+ img/s — if it collapses while GPU util looks fine, the run is wedged (see
+learnings about SIGSTOP zombie-spinners).
+
+Perf notes (GTX 1650, measured): plain fp32 beats bf16 (emulated, ~2.7× slower)
+and fp16 (NaN in forward + slow) — `amp: false` is the default. cuDNN benchmark
+autotune is always on; DataLoader workers each pin `cv2`/torch to one thread so
+worker parallelism is real. `channels_last`/`compile` are config flags, off by
+default (no tensor cores / no triton on this box — re-benchmark elsewhere).
 
 ## Deployment integration (shipped)
 
