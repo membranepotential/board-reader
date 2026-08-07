@@ -1,6 +1,6 @@
 # STATUS — board-reader
 
-_reconciled: 2026-08-07 @ `0442177`_ · decisions live in [docs/DESIGN.md](docs/DESIGN.md); this is state.
+_reconciled: 2026-08-07 @ `5f2a0a4`_ · decisions live in [docs/DESIGN.md](docs/DESIGN.md); this is state.
 
 ## Goal
 
@@ -46,6 +46,29 @@ Also staged and waiting on a decision to start:
 > the registry with them or the reproducibility claim is false.
 
 ## Done (recent)
+
+- 08-07: **The position stream has a consumer, and the gateway has one routing decision**
+  (`chore/mvp-cleanup`, merged `5f2a0a4`; 776 green, lint clean). The project's output was
+  observable only in a browser, so a run could never be captured, diffed or asserted —
+  **`board-reader-inference positions`** now tails `WS /viewer` headlessly, or captures it
+  verbatim as NDJSON (`--out`), and `tests/test_position_stream_e2e.py` drives rendered
+  frames through the real edge → ingest → gateway → hub into a file and asserts the captured
+  positions follow the game. **`EstimatorSession`** lifts the calibration session out of
+  `create_app`'s 1060-line closure and its four `nonlocal est` mutations (server.py 1307 →
+  979); **`routing.py`** gives `POST /estimate` and the stream one four-way decision, with
+  `Uncalibrated` unable to produce a `PositionEvent` by construction — and unifying them
+  settled a live divergence (a photo-mode estimator read a corner-less frame through the
+  photo path over HTTP but the plain path on the stream). Edge **`--corners` is now
+  validated before any frame moves** (bowtie/sliver/degenerate refused, low angle warns),
+  plus `--jpeg-quality`. **Ruff adopted** (`make lint`), closing that open question.
+  **Temporal consistency written down** as the missing **L4 consumer**, not a CV-layer gap:
+  D1/D3 put smoothing in the consumer *by design*, and what is absent is that consumer —
+  `stability` is computed, shipped on every event, and read by nobody.
+  **Suite 19.5s → 15.0s while gaining ~90 tests**, and an intermittent whole-suite *hang*
+  fixed: uvicorn teardown burning `join(timeout=5)` after the assertions passed
+  (`timeout_graceful_shutdown=1`), a dozen xdist workers against one 4GB card (deselecting
+  `gpu` tests ≠ denying the process a GPU), and a real ack≠estimated race. `tools/wtest.sh`
+  runs a worktree against the main venv with no second build.
 
 - 08-07: **`/camera` becomes a viewfinder, and finds the board by itself.** Landscape-first
   full-screen preview (iOS Safari has no `screen.orientation.lock()`, so landscape is the base
@@ -197,4 +220,8 @@ Also staged and waiting on a decision to start:
 - **The 638/640 baseline is unreproducible** — 5 of 10 curated boards point at deleted photos,
   making `run_e`'s bright-board regression unjudgeable. Recover them or prune.
 - Licensing: ChessReD (CC BY-NC-SA) + murky geometry → personal use only.
-- No lint gate: `ruff` has no project config, ~109 findings unaddressed. Adopt it or drop it.
+- **Nothing consumes the position stream.** Not a CV-layer gap — D1/D3 put temporal
+  smoothing in the consumer deliberately — but that consumer does not exist, here or
+  anywhere, so `stability` is measured and read by nobody and D3's "does it earn its keep?"
+  cannot be answered until something uses it. See
+  [architecture.md](docs/architecture.md) "Temporal consistency".
