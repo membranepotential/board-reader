@@ -2,6 +2,7 @@
 #
 #   make dev     start inference + viewer; Ctrl-C stops both
 #   make stop    stop anything left running
+#   make test    the whole suite, in parallel
 #
 # The env below is the *deployed* config, not a convenience default: BR_MODEL
 # alone serves the trained model (599/640 on the labeled eval), and only with
@@ -14,7 +15,7 @@
 # the group again — bash recurses until it overflows its stack and segfaults.
 # The trap disarms itself first for the same reason.
 
-.PHONY: dev stop
+.PHONY: dev stop test
 
 # `wait -n` below is a bashism, and the teardown relies on bash trap semantics.
 SHELL := /bin/bash
@@ -50,6 +51,12 @@ dev:
 	wait -n; status=$$?; \
 	echo "!! a server exited on its own (status $$status) — stopping the other"; \
 	exit $$status
+
+# `-n auto` (pytest-xdist) fans the suite across every core: ~23s -> ~10s here.
+# Deliberately *not* in pyproject's addopts — worker startup makes a single
+# focused `uv run pytest path::test` slower, and interleaves its output.
+test:
+	uv run pytest -n auto
 
 # The bracket keeps the pattern from matching this recipe's own command line.
 stop:

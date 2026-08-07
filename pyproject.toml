@@ -25,6 +25,9 @@ dev = [
     "board-reader-inference",
     "board-reader-viewer",
     "pytest>=8",
+    # Parallel test execution (`make test` / `pytest -n auto`). The suite is
+    # CPU-bound and independent per test, so this roughly halves wall clock.
+    "pytest-xdist>=3",
     "httpx>=0.27",
 ]
 

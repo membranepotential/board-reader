@@ -54,7 +54,8 @@ glue that wires both, and only across the network.
 
 ```bash
 uv sync                       # install the whole workspace + dev tools
-uv run pytest                 # the whole test suite (must be green)
+make test                     # the whole suite in parallel (-n auto), ~10s
+uv run pytest                 # the same suite, serially (~23s)
 uv run pytest packages/core   # one package's tests
 
 # Run locally without Docker (two terminals):

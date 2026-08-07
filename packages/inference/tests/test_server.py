@@ -1050,10 +1050,15 @@ def test_estimate_warns_on_very_low_camera_angle():
     from board_reader_core.wire import encode_jpeg
     from board_reader_inference.trained import TrainedEstimator
 
-    photo = render_board(START_PLACEMENT)
+    # Deliberately a mid-game position, not the start: a start-position reading
+    # fires _maybe_bootstrap_bank, which loads DINOv2 and embeds all 64 crops on
+    # every POST (~4.5s each). The warning under test comes from the quad's
+    # aspect alone, before any recognition runs, so the extra work bought nothing.
+    midgame = "r1bqkb1r/pppp1ppp/2n2n2/4p3/2B1P3/5N2/PPPP1PPP/RNBQ1RK1"
+    photo = render_board(midgame)
     h, w = photo.shape[:2]
     est = TrainedEstimator(
-        _cycling_oracle(START_PLACEMENT), geometry=BboxGeometry(0.0, 0.0), square_size=64
+        _cycling_oracle(midgame), geometry=BboxGeometry(0.0, 0.0), square_size=64
     )
     client = TestClient(create_app(est, PositionHub()))
     flat = f"0,0,{w},0,{w},{int(h * 0.4)},0,{int(h * 0.4)}"  # aspect 0.4

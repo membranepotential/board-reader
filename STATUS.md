@@ -10,8 +10,17 @@ confidences**. No moves, no legality, no PGN — those are the downstream applic
 
 ## Now
 
+- **run_f — the pose-aware-crop bet** (launched 2026-08-07 by operator request, main
+  session) — **in flight.** `PY=/usr/bin/python tools/train/run_f.sh`, detached, logging
+  to `scratch/runs/run_f/run.log`; a persistent monitor watches for epoch lines and
+  failure signatures. 11 styles, holdout `chessr_vlab_wooden`, crop geometry
+  `pose h1.9/r0.5`; everything else identical to run_e. Baselines to beat: **0.898**
+  synthetic holdout, **0.819** chesscog_transfer (unseen real photos). Cache at this
+  geometry was already warm; device resolved to CUDA (GPU was free). The prior
+  OOM-killed dir was archived to `scratch/runs/run_f.oom-killed-0207`.
+  Next: read `eval.txt` + `history.json` when `===F_DONE===` lands, compare to run_e.
 - **Training harness acceleration + observability** (main session, 2026-08-07) — **done,
-  committed `f5a0356`; run_f is unblocked but NOT launched (operator will launch it).**
+  committed `f5a0356`.**
   Measured verdict: the GTX 1650 is compute-bound at ~165 img/s fp32 (batch 48–96 and
   workers 6–12 all flat; channels_last hurts; no triton → no torch.compile), so the wins
   are fail-fast (non-finite-loss abort), 2× val batch (val was ~40% of epoch wall time),
@@ -132,6 +141,11 @@ confidences**. No moves, no legality, no PGN — those are the downstream applic
   on the strength of the dim regime (**653 vs 600 / 768 squares**) and the deployed-ensemble
   comparison; it loses 6 squares model-alone on the bright set. Verified live.
   Detail: [docs/training-and-data.md](docs/training-and-data.md#how-run_e-was-decided-2026-08-06).
+- **Test suite: 35s → ~10s (2026-08-07).** `make test` fans the 406 tests across all cores
+  (`pytest-xdist -n auto`, kept out of `addopts` so focused runs stay fast). The single
+  biggest test, `test_estimate_warns_on_very_low_camera_angle` (9.4s), was paying for a
+  DINOv2 bank bootstrap it never asserted on — its oracle read the start position, which
+  fires `_maybe_bootstrap_bank`; reading a mid-game position instead took it to 0.05s.
 - **Guardrails from four bank-corruption incidents.** Opt-in persistence, orientation probe
   on `/calibrate`, piece-square agreement gate (422), `very_low_angle` / `low_light` warnings.
 - **The labelling loop.** `Confirm as ground truth` → `POST /labels/{upload}`, stored beside

@@ -12,7 +12,8 @@ Two layers, both required by the project's "user-testable from the start" princi
 
 ```bash
 uv sync                # once, to set up the workspace venv
-uv run pytest          # the whole suite (should be green)
+make test              # the whole suite across all cores (should be green), ~10s
+uv run pytest          # the same suite, serially (~23s)
 uv run pytest -q       # quiet
 uv run pytest packages/inference          # just one package
 uv run pytest tests/test_end_to_end.py    # the real-network walking-skeleton test
