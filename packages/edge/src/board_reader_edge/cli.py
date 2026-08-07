@@ -7,6 +7,9 @@ inference node. The edge and inference processes meet only on the wire.
     board-reader-edge feed --video clip.mp4       # a recorded OTB clip
     board-reader-edge feed --images frames/       # a directory of stills
     board-reader-edge feed --angled --rectify     # angled synthetic board, un-warped
+    board-reader-edge feed --game --adaptive --loop --throttle   # the M2 demo
+    board-reader-edge feed --video otb.mp4 --adaptive --loop \
+        --corners 120,80,900,80,960,860,60,860       # real footage, corners tapped
     board-reader-edge rectify board.jpg -o crop.png   # one-shot rectify (debug)
 """
 
@@ -24,34 +27,75 @@ from board_reader_core.sim import render_board, simulate_angled_view
 
 from board_reader_edge.adapter import FileEdgeAdapter
 from board_reader_edge.client import stream_to_gateway
+from board_reader_edge.forwarder import AdaptiveForwarder, ForwarderConfig
 from board_reader_edge.rectify import Rectifier, rectify
 from board_reader_edge.source import (
+    FrameSource,
+    GameSource,
     ImageDirSource,
+    LoopSource,
     RepeatSource,
     VideoFileSource,
 )
 
+# A recorded game is a *capture* stream and wants a camera-like rate; the
+# one-still feeds only need to tick over.
+_GAME_FPS = 12.0
+_STILL_FPS = 2.0
 
-def _build_source(args: argparse.Namespace):
+
+def _fps(args: argparse.Namespace) -> float:
+    return args.fps if args.fps is not None else (_GAME_FPS if args.game else _STILL_FPS)
+
+
+def _build_source(args: argparse.Namespace) -> FrameSource:
+    source: FrameSource
     if args.video:
-        return VideoFileSource(args.video, board_id=args.board)
-    if args.images:
-        return ImageDirSource(args.images, board_id=args.board, fps=args.fps)
-    # Default: a self-contained synthetic feed (one rendered board, streamed
-    # lazily) so `feed` works with zero external data and O(1) memory.
-    count = None if args.synthetic <= 0 else args.synthetic
-    image = render_board(args.placement)
-    if args.angled:
-        # Simulate the angled broadcast view so `--rectify` has something to un-warp.
-        image, _ = simulate_angled_view(image)
-    return RepeatSource(image, board_id=args.board, count=count, fps=args.fps)
+        source = VideoFileSource(args.video, board_id=args.board)
+    elif args.images:
+        source = ImageDirSource(args.images, board_id=args.board, fps=_fps(args))
+    elif args.game:
+        # A synthetic recorded game: settled positions, hands, transitions — the
+        # M2 demo with zero external data (WP-C3, DESIGN §7 M2).
+        source = GameSource(
+            board_id=args.board, fps=_fps(args), angled=args.angled
+        )
+    else:
+        # A self-contained synthetic feed (one rendered board, streamed lazily) so
+        # `feed` works with zero external data and O(1) memory.
+        count = None if args.synthetic <= 0 else args.synthetic
+        image = render_board(args.placement)
+        if args.angled:
+            # Simulate the angled view so `--rectify` has something to un-warp.
+            image, _ = simulate_angled_view(image)
+        source = RepeatSource(
+            image, board_id=args.board, count=count, fps=_fps(args)
+        )
+    return LoopSource(source) if args.loop else source
+
+
+def _build_forwarder(args: argparse.Namespace) -> AdaptiveForwarder | None:
+    """The D4 keepalive/burst gate, or ``None`` to forward every frame."""
+    if not args.adaptive:
+        return None
+    return AdaptiveForwarder(
+        ForwarderConfig(keepalive_fps=args.keepalive_fps, burst_fps=args.burst_fps)
+    )
+
+
+def _build_rectifier(args: argparse.Namespace) -> Rectifier | None:
+    """Corners given -> manual mode; ``--rectify`` alone -> cadenced auto-detect."""
+    if args.corners:
+        return Rectifier(manual_corners=_parse_corners(args.corners))
+    return Rectifier() if args.rectify else None
 
 
 def cmd_feed(args: argparse.Namespace) -> int:
-    source = _build_source(args)
-    rectifier = Rectifier() if args.rectify else None
     adapter = FileEdgeAdapter(
-        source, rectifier=rectifier, throttle=args.throttle, fps=args.fps
+        _build_source(args),
+        forwarder=_build_forwarder(args),
+        rectifier=_build_rectifier(args),
+        throttle=args.throttle,
     )
     sent = asyncio.run(stream_to_gateway(adapter, args.url))
     print(f"sent {sent} frames to {args.url}")
@@ -101,13 +145,27 @@ def build_parser() -> argparse.ArgumentParser:
     f.add_argument("--board", default="A1")
     f.add_argument("--video", help="path to a video file")
     f.add_argument("--images", help="path to a directory of images")
+    f.add_argument(
+        "--game", action="store_true",
+        help="synthetic recorded game: positions, hands, transitions (the M2 demo)",
+    )
     f.add_argument("--placement", default=START_PLACEMENT, help="synthetic placement")
     f.add_argument(
         "--synthetic", type=int, default=30,
         help="# synthetic frames (0 = stream forever)",
     )
-    f.add_argument("--fps", type=float, default=2.0)
-    f.add_argument("--throttle", action="store_true", help="pace to --fps in real time")
+    f.add_argument(
+        "--fps", type=float, default=None,
+        help=f"capture rate (default {_GAME_FPS:g} with --game, else {_STILL_FPS:g})",
+    )
+    f.add_argument(
+        "--loop", action="store_true",
+        help="replay the source forever, re-stamping seq/capture_ts (lazily)",
+    )
+    f.add_argument(
+        "--throttle", action="store_true",
+        help="pace output to the stream's own capture time (i.e. real time)",
+    )
     f.add_argument(
         "--angled", action="store_true",
         help="warp the synthetic board to a simulated angled view (demo for --rectify)",
@@ -115,6 +173,22 @@ def build_parser() -> argparse.ArgumentParser:
     f.add_argument(
         "--rectify", action="store_true",
         help="detect + rectify each frame to a canonical crop before forwarding (WP-A)",
+    )
+    f.add_argument(
+        "--corners",
+        help="manual corners 'x0,y0,...,x3,y3' (a8,h8,h1,a1); rectify, never detect",
+    )
+    f.add_argument(
+        "--adaptive", action="store_true",
+        help="forward at a keepalive rate at rest and burst through motion (D4)",
+    )
+    f.add_argument(
+        "--keepalive-fps", dest="keepalive_fps", type=float,
+        default=ForwarderConfig.keepalive_fps, help="--adaptive at-rest forward rate",
+    )
+    f.add_argument(
+        "--burst-fps", dest="burst_fps", type=float,
+        default=ForwarderConfig.burst_fps, help="--adaptive during-motion forward rate",
     )
     f.set_defaults(func=cmd_feed)
 

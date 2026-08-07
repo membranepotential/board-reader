@@ -111,3 +111,75 @@ def test_auto_rectifier_needs_setup_when_no_board_present():
     result = rect.process(blank)
     assert result.status == STATUS_NEEDS_SETUP
     assert result.crop is None and not rect.locked
+
+
+def test_cadence_skips_detection_between_ticks(monkeypatch):
+    """Auto mode re-detects at most every redetect_interval_s of capture time."""
+    import board_reader_edge.rectify as rmod
+
+    board = render_board(START_PLACEMENT, square_px=48)
+    img, _ = simulate_angled_view(board)
+    calls = []
+    real = rmod.detect_board_quad
+    monkeypatch.setattr(rmod, "detect_board_quad", lambda im: calls.append(1) or real(im))
+
+    rect = Rectifier(out_size=board.shape[0], redetect_interval_s=1.0)
+    assert rect.process(img, 0.0).status == STATUS_OK  # first lock: detects
+    assert rect.process(img, 0.5).status == STATUS_OK  # within cadence: cached
+    assert rect.process(img, 0.9).status == STATUS_OK  # still cached
+    assert rect.process(img, 1.1).status == STATUS_OK  # tick: detects again
+    assert len(calls) == 2
+
+
+def test_cadence_zero_interval_or_no_ts_detects_every_frame(monkeypatch):
+    import board_reader_edge.rectify as rmod
+
+    board = render_board(START_PLACEMENT, square_px=48)
+    img, _ = simulate_angled_view(board)
+    calls = []
+    real = rmod.detect_board_quad
+    monkeypatch.setattr(rmod, "detect_board_quad", lambda im: calls.append(1) or real(im))
+
+    for _ in range(3):  # no ts -> the old per-frame behaviour
+        Rectifier(out_size=board.shape[0]).process(img)
+    assert len(calls) == 3
+
+    calls.clear()
+    rect = Rectifier(out_size=board.shape[0], redetect_interval_s=0)
+    rect.process(img, 0.0)
+    rect.process(img, 0.01)
+    assert len(calls) == 2
+
+
+def test_cadence_reanchors_on_backwards_ts(monkeypatch):
+    """A clock step backwards re-anchors the cadence instead of stalling it."""
+    import board_reader_edge.rectify as rmod
+
+    board = render_board(START_PLACEMENT, square_px=48)
+    img, _ = simulate_angled_view(board)
+    calls = []
+    real = rmod.detect_board_quad
+    monkeypatch.setattr(rmod, "detect_board_quad", lambda im: calls.append(1) or real(im))
+
+    rect = Rectifier(out_size=board.shape[0], redetect_interval_s=1.0)
+    rect.process(img, 10.0)
+    rect.process(img, 2.0)  # went backwards -> due again, cadence re-anchored at 2.0
+    assert len(calls) == 2
+    rect.process(img, 2.5)  # within the re-anchored window -> cached
+    assert len(calls) == 2
+
+
+def test_lost_board_redetects_every_frame_until_it_returns():
+    """A failed detection must not advance the cadence: the gap stays honest."""
+    board = render_board(START_PLACEMENT, square_px=48)
+    img, _ = simulate_angled_view(board)
+    blank = np.zeros_like(img)
+
+    rect = Rectifier(out_size=board.shape[0], redetect_interval_s=1.0)
+    assert rect.process(img, 0.0).status == STATUS_OK
+    # Board vanishes at the next tick: needs_setup, and the cadence does NOT advance,
+    # so every following frame is examined rather than riding stale geometry.
+    assert rect.process(blank, 1.5).status == STATUS_NEEDS_SETUP
+    assert rect.process(blank, 1.6).status == STATUS_NEEDS_SETUP
+    # The board comes back within what would have been a skip window -> seen at once.
+    assert rect.process(img, 1.7).status == STATUS_OK

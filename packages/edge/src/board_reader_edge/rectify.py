@@ -117,11 +117,15 @@ class Rectifier:
     crop yields confidently-wrong squares, which is worse for downstream smoothing
     than an honest gap.
 
-    Cost note: detection runs per frame and costs ~90-100 ms on a 1200x1600 photo
-    (vs. ~7 ms for the naive detector it replaced). That is affordable at the
-    at-rest keepalive rate but not during a 10-15 fps burst, so M2 should re-detect
-    on a cadence and rectify intervening frames against the cached homography —
-    which is what DESIGN D4 ("re-runs only on ROI drift") asks for anyway.
+    **Detection cadence.** Detection costs ~90-100 ms on a 1200x1600 photo — payable
+    at the at-rest keepalive rate, unpayable at every frame of a 10-15 fps burst
+    (D4). So auto mode re-detects at most every ``redetect_interval_s`` of *capture
+    time*; frames in between are rectified against the cached homography, which is
+    what D4's "re-runs only on ROI drift" asks for. The cadence is driven by the
+    ``ts`` passed to :meth:`process` (the frame's ``capture_ts``, DESIGN D5) — a
+    caller that passes no ``ts`` gets the old per-frame detection, and
+    ``redetect_interval_s=0`` forces it too. A board that has never been located
+    is always detected, cadence or not: there is no cache to fall back on.
     """
 
     def __init__(
@@ -130,11 +134,16 @@ class Rectifier:
         *,
         manual_corners: np.ndarray | None = None,
         drift_tol: float = 0.04,
+        redetect_interval_s: float = 1.0,
     ) -> None:
+        if redetect_interval_s < 0:
+            raise ValueError("redetect_interval_s must be non-negative")
         self.out_size = out_size
         self.drift_tol = drift_tol
+        self.redetect_interval_s = redetect_interval_s
         self._corners: np.ndarray | None = None
         self._manual = False
+        self._last_detect_ts: float | None = None
         if manual_corners is not None:
             self.set_corners(manual_corners)
 
@@ -156,7 +165,22 @@ class Rectifier:
         """Mean per-corner shift between two quads, normalised by frame width."""
         return float(np.linalg.norm(a - b, axis=1).mean())
 
-    def process(self, image: np.ndarray) -> RectifyResult:
+    def _detect_due(self, ts: float | None) -> bool:
+        """Should this frame pay for a detection, or ride the cached homography?
+
+        Only a locked board may skip: without a cache there is nothing to rectify
+        against. A ``ts`` that moved backwards (clock step, D5) re-anchors the
+        cadence rather than stalling it.
+        """
+        if self._corners is None or self.redetect_interval_s <= 0:
+            return True
+        if ts is None or self._last_detect_ts is None:
+            return True
+        elapsed = ts - self._last_detect_ts
+        return not 0.0 <= elapsed < self.redetect_interval_s
+
+    def process(self, image: np.ndarray, ts: float | None = None) -> RectifyResult:
+        """Rectify one frame; ``ts`` is its ``capture_ts`` and drives the cadence."""
         width = float(image.shape[1])
         if self._manual:
             # Operator-declared frame: trust it, rectify directly every frame.
@@ -165,11 +189,22 @@ class Rectifier:
                 rectify(image, self._corners, self.out_size), STATUS_OK, self._corners
             )
 
+        if not self._detect_due(ts):
+            # Between cadence ticks: the cached geometry stands (D4).
+            assert self._corners is not None
+            return RectifyResult(
+                rectify(image, self._corners, self.out_size), STATUS_OK, self._corners
+            )
+
         detected = detect_board_quad(image)
         if detected is None:
             # Lost the board (or never had it). Needs operator setup either way.
+            # The cadence is deliberately *not* advanced: a board we cannot see is
+            # re-detected every frame until it comes back, so a lost board reads as
+            # a continuous gap rather than a second of crops off stale geometry.
             return RectifyResult(None, STATUS_NEEDS_SETUP, None)
 
+        self._last_detect_ts = ts
         if self._corners is None:
             self._corners = detected  # first lock
             return RectifyResult(

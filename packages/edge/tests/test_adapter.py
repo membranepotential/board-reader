@@ -58,16 +58,19 @@ def test_rectifier_rectifies_forwarded_frames_to_canonical_crops():
 
 def test_rectifier_suppresses_frames_it_cannot_localise():
     # A blank frame between two good ones: auto rectifier drops the blank (needs_setup).
+    # redetect_interval_s=0 forces per-frame detection — at the default cadence the
+    # blank would ride the cached homography unexamined (see test_rectify.py).
     board = render_board(square_px=48)
     angled, _ = simulate_angled_view(board)
     blank = np.zeros_like(angled)
     src = SyntheticSource([angled, blank, angled], board_id="A1")
-    frames = list(FileEdgeAdapter(src, rectifier=Rectifier(out_size=board.shape[0])).frames())
+    rect = Rectifier(out_size=board.shape[0], redetect_interval_s=0)
+    frames = list(FileEdgeAdapter(src, rectifier=rect).frames())
     # The blank is suppressed; only the two locatable frames are forwarded.
     assert len(frames) == 2
 
 
-def test_throttle_sleeps_between_frames_using_injected_clock():
+def test_throttle_paces_to_capture_time_using_injected_clock():
     # Fake monotonic clock + recorder so the throttle is deterministic (no real sleep).
     t = [0.0]
     slept: list[float] = []
@@ -79,8 +82,70 @@ def test_throttle_sleeps_between_frames_using_injected_clock():
         slept.append(d)
         t[0] += d  # advancing the clock as a real sleep would
 
-    adapter = _adapter(3, throttle=True, fps=10.0, sleep=sleep, monotonic=monotonic)
+    # SyntheticSource at 10 fps -> capture_ts gaps of 0.1 s drive the pacing.
+    src = SyntheticSource([render_board() for _ in range(3)], board_id="A1", fps=10.0)
+    adapter = FileEdgeAdapter(src, throttle=True, sleep=sleep, monotonic=monotonic)
     list(adapter.envelopes())
-    # 3 frames at 10 fps -> two inter-frame gaps of ~0.1s were waited out.
-    assert len(slept) >= 2
-    assert all(s > 0 for s in slept)
+    # 3 frames spanning 0.2 s of capture time -> two ~0.1 s gaps were waited out.
+    assert len(slept) == 2
+    assert all(abs(s - 0.1) < 1e-6 for s in slept)
+
+
+def test_throttle_replays_uneven_capture_gaps():
+    # Adaptive streams have no fixed period: a keepalive gap then a burst gap.
+    t = [0.0]
+    slept: list[float] = []
+
+    def monotonic():
+        return t[0]
+
+    def sleep(d):
+        slept.append(d)
+        t[0] += d
+
+    board = render_board()
+    src = SyntheticSource([board] * 3, board_id="A1")
+    ts = iter([5.0, 6.0, 6.1])  # 1 s at rest, then a 12 fps-ish burst gap
+    src.clock = lambda: next(ts)
+    adapter = FileEdgeAdapter(src, throttle=True, sleep=sleep, monotonic=monotonic)
+    list(adapter.envelopes())
+    assert [round(s, 6) for s in slept] == [1.0, 0.1]
+
+
+def test_forwarder_gates_frames_and_stamps_stability():
+    # A static 30 fps second: the meter reads at-rest, so only the keepalive
+    # cadence (1 fps) survives the forwarder.
+    from board_reader_edge.forwarder import AdaptiveForwarder, ForwarderConfig
+
+    board = render_board(square_px=48)
+    src = SyntheticSource([board] * 30, board_id="A1", fps=30.0)
+    fwd = AdaptiveForwarder(ForwarderConfig(keepalive_fps=1.0))
+    frames = list(FileEdgeAdapter(src, forwarder=fwd).frames())
+    assert 1 <= len(frames) <= 3  # ~1 s of capture at 1 fps keepalive
+    assert frames[0].seq == 0  # the first frame is always forwarded
+    for f in frames:
+        assert 0.0 <= f.stability <= 1.0
+        assert f.burst_id is None  # nothing moved
+
+
+def test_dropped_frames_never_pay_for_rectification():
+    # Stage order is cost-driven: rectification runs only on forwarded frames.
+    from board_reader_edge.forwarder import AdaptiveForwarder, ForwarderConfig
+
+    board = render_board(square_px=48)
+    angled, gt = simulate_angled_view(board)
+
+    class CountingRectifier(Rectifier):
+        calls = 0
+
+        def process(self, image, ts=None):
+            CountingRectifier.calls += 1
+            return super().process(image, ts)
+
+    src = SyntheticSource([angled] * 30, board_id="A1", fps=30.0)
+    fwd = AdaptiveForwarder(ForwarderConfig(keepalive_fps=1.0))
+    rect = CountingRectifier(out_size=board.shape[0], manual_corners=gt)
+    frames = list(FileEdgeAdapter(src, forwarder=fwd, rectifier=rect).frames())
+    assert CountingRectifier.calls == len(frames)  # dropped frames cost nothing
+    assert CountingRectifier.calls < 30
+    assert frames[0].image.shape == board.shape  # and forwarded ones are crops

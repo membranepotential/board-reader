@@ -11,12 +11,14 @@ later substitute the sensor capture timestamp (DESIGN.md D5).
 
 from __future__ import annotations
 
+import dataclasses
 from pathlib import Path
-from typing import Callable, Iterable, Iterator, Protocol, runtime_checkable
+from typing import Callable, Iterable, Iterator, Protocol, Sequence, runtime_checkable
 
 import cv2
 import numpy as np
 
+from board_reader_core.sim import SAMPLE_GAME_PLACEMENTS, render_game_frames
 from board_reader_core.wire import Frame
 
 _IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".bmp", ".webp"}
@@ -150,6 +152,107 @@ class RepeatSource:
                 stability=self.stability,
             )
             seq += 1
+
+
+class GameSource:
+    """Replay a synthetic *recorded game* as a frame stream — the M2 demo feed.
+
+    Wraps :func:`board_reader_core.sim.render_game_frames`: settled positions
+    interleaved with transitions in which a hand sweeps over the changed squares.
+    That is the whole point of M2 — the edge sees real motion and real occlusion,
+    so :class:`~board_reader_edge.motion.MotionMeter` has something to measure and
+    :class:`~board_reader_edge.forwarder.AdaptiveForwarder` something to burst on —
+    with zero external files.
+
+    ``fps`` is the *capture* rate: it only spaces ``capture_ts``, which is the time
+    base every downstream rate decision uses (DESIGN D5). Frames are rendered as
+    they are pulled, never accumulated, so a long game costs O(1) memory.
+
+    Deliberately no ``stability`` knob, unlike the other sources: on a stream that
+    actually moves, a constant would be a lie. The forwarder stamps the measured
+    value.
+    """
+
+    def __init__(
+        self,
+        placements: Sequence[str] = SAMPLE_GAME_PLACEMENTS,
+        board_id: str = "A1",
+        *,
+        fps: float = 12.0,
+        base_ts: float = 0.0,
+        frames_per_position: int = 30,
+        transition_frames: int = 4,
+        hand: bool = True,
+        angled: bool = False,
+        seed: int = 0,
+        square_px: int = 48,
+    ) -> None:
+        self.placements = tuple(placements)
+        self.board_id = board_id
+        self.fps = fps
+        self.base_ts = base_ts
+        self.frames_per_position = frames_per_position
+        self.transition_frames = transition_frames
+        self.hand = hand
+        self.angled = angled
+        self.seed = seed
+        self.square_px = square_px
+
+    def frames(self) -> Iterator[Frame]:
+        images = render_game_frames(
+            self.placements,
+            frames_per_position=self.frames_per_position,
+            transition_frames=self.transition_frames,
+            hand=self.hand,
+            angled=self.angled,
+            seed=self.seed,
+            square_px=self.square_px,
+        )
+        for seq, image in enumerate(images):
+            yield Frame(
+                board_id=self.board_id,
+                seq=seq,
+                capture_ts=self.base_ts + seq / self.fps,
+                image=image,
+            )
+
+
+class LoopSource:
+    """Repeat another source forever, re-stamping ``seq`` and ``capture_ts``.
+
+    A finite source (a clip, a directory, a game) becomes an endless feed — what
+    the ``docker compose up`` demo and any long soak run want. The restamping is
+    the point: each pass restarts its own numbering at zero, and a ``seq`` that
+    jumps backwards would make the gateway's per-board monotone ordering (D5) a
+    lie. Capture time continues across the seam at the stream's own last observed
+    inter-frame gap.
+
+    Lazy, like everything else in this module: one pass is never buffered.
+    """
+
+    def __init__(self, source: FrameSource) -> None:
+        self.source = source
+
+    def frames(self) -> Iterator[Frame]:
+        seq = 0
+        resume_at = 0.0
+        while True:
+            offset = 0.0
+            prev_ts: float | None = None
+            step = 0.0
+            for frame in self.source.frames():
+                if prev_ts is None:
+                    offset = resume_at - frame.capture_ts
+                ts = frame.capture_ts + offset
+                if prev_ts is not None:
+                    step = ts - prev_ts
+                yield dataclasses.replace(frame, seq=seq, capture_ts=ts)
+                seq += 1
+                prev_ts = ts
+            if prev_ts is None:
+                # An empty source would spin this loop at full speed forever.
+                raise RuntimeError(f"cannot loop an empty source: {self.source!r}")
+            resume_at = prev_ts + step
 
 
 class SyntheticSource:

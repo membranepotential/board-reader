@@ -90,3 +90,47 @@ def test_video_file_source_replays_frames(tmp_path):
 def test_video_file_source_missing_file():
     with pytest.raises(FileNotFoundError):
         VideoFileSource("/no/such/clip.mp4")
+
+
+def test_game_source_streams_the_synthetic_game_lazily():
+    from board_reader_core.sim import SAMPLE_GAME_PLACEMENTS
+    from board_reader_edge.source import GameSource
+
+    placements = SAMPLE_GAME_PLACEMENTS[:3]
+    src = GameSource(
+        placements, board_id="G1", fps=12.0,
+        frames_per_position=4, transition_frames=2, square_px=12,
+    )
+    it = src.frames()
+    assert iter(it) is it  # a generator: frames render as pulled, O(1) memory
+    frames = list(it)
+    # len(placements)*frames_per_position + (len-1)*transition_frames
+    assert len(frames) == 3 * 4 + 2 * 2
+    assert [f.seq for f in frames] == list(range(len(frames)))
+    assert all(f.board_id == "G1" for f in frames)
+    # capture_ts spaced by exactly 1/fps.
+    gaps = [round(b.capture_ts - a.capture_ts, 9) for a, b in zip(frames, frames[1:])]
+    assert all(abs(g - 1 / 12.0) < 1e-6 for g in gaps)
+
+
+def test_loop_source_restamps_seq_and_capture_ts_monotonically():
+    from itertools import islice
+
+    from board_reader_edge.source import LoopSource
+
+    inner = SyntheticSource([render_board(square_px=12)] * 2, board_id="L1", fps=2.0)
+    frames = list(islice(LoopSource(inner).frames(), 5))
+    assert [f.seq for f in frames] == [0, 1, 2, 3, 4]  # never resets at the seam
+    ts = [f.capture_ts for f in frames]
+    assert ts == sorted(ts) and len(set(ts)) == 5  # strictly increasing
+    # The seam continues at the stream's own inter-frame gap (0.5 s at 2 fps).
+    gaps = {round(b - a, 6) for a, b in zip(ts, ts[1:])}
+    assert gaps == {0.5}
+
+
+def test_loop_source_refuses_an_empty_source():
+    from board_reader_edge.source import LoopSource
+
+    empty = SyntheticSource([], board_id="E1")
+    with pytest.raises(RuntimeError):
+        next(LoopSource(empty).frames())
