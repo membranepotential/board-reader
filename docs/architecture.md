@@ -68,7 +68,41 @@ which corner is a8 — orientation is the operator's, decision #15), and the pag
 JPEG crops (the quad's bounding box plus headroom, long side ≤960 px) with rebased
 per-frame `corners`, throttled by a JS mirror of the edge's `MotionMeter` +
 `AdaptiveForwarder` (~1 fps at rest, ~10 fps through motion). Its **calibrate** button
-grabs a full-resolution frame and posts it through the guarded `/calibrate`. Because
+grabs a full-resolution frame and posts it through the guarded `/calibrate`.
+
+Three things make it an instrument rather than a wizard, and all three hang off the
+tracker:
+
+- **The quad follows the board** (`static/tracker.js`, DESIGN §4.4.1(a)). Pyramidal
+  Lucas-Kanade over the board's own 9×9 lattice of square corners, a RANSAC homography
+  over the points that agree, and the four corners pushed through it — ~3 ms a frame at
+  a 400 px working resolution. It **tracks** rather than re-detects on purpose: a fresh
+  detection returns an *unlabelled* quad (decision #15), so re-detecting downgrades a
+  bump into a §4.4.1(b) reposition, while a tracked quad carries `a8` along with it.
+  Losing the board (a hand over it, the lens covered) **freezes** the quad where it last
+  fitted and says so, rather than streaming a confidently wrong crop; it re-locks by
+  itself when the view comes back. Any deliberate corner change — a handle drag, a
+  detection, a reset — re-anchors it, so the operator always wins.
+- **The calibration walk.** `POST /calibrate` is *additive* — each photo's exemplars
+  extend the bank rather than replacing it — so the page collects one full-resolution
+  frame per genuinely new vantage while the operator carries the phone around a board in
+  its starting position, then posts them one at a time. "Genuinely new" is measured on
+  the quad's *shape* with translation and scale divided out, which is the viewing angle
+  and nothing else. Forwarding pauses for the duration (§4.4.1: suppress, don't stream a
+  mis-localised camera), a viewpoint the node refuses is reported and skipped rather than
+  being fatal, and a non-zero `label_rotation` in the reply is surfaced — the node can
+  fix the labelling for its own use but cannot reach back and fix the corners the page
+  keeps streaming.
+- **The lens is the operator's.** iOS ≥16.3 exposes every rear lens through
+  `enumerateDevices` (only once permission has populated the labels), but nothing
+  identifies which is the ultra wide: deviceIds are per-session, labels are localised,
+  order is not guaranteed, and iOS Safari implements no `zoom` capability to fake it
+  with. So the page lists them and remembers the choice **by label**, the only property
+  that survives a reload. The ultra wide fits a board the main lens cannot from close
+  up, at the cost of barrel distortion near the frame edges — where the four-corner
+  quad, being a projective model, fits the board progressively less well.
+
+Because
 `getUserMedia` demands a secure context and phones balk at a second self-signed origin,
 the page talks *only* to the viewer's own origin: the viewer relays `/ws/ingest`,
 `/ws/viewer`, `/api/calibrate` and `/api/detect` to the inference node (pure network

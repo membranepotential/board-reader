@@ -9,14 +9,6 @@ confidences**. No moves, no legality, no PGN — those are the downstream applic
 
 ## Now
 
-- **detect_board_quad FN hunt (calibration session, 2026-08-07) — in a worktree.**
-  Objective: diagnose + fix the ~30% false negatives on clean ccbf-r5 frames
-  (suspected barrel distortion). Working in an isolated git worktree; only
-  `packages/core/boarddetect.py` + its tests in scope. **Commit-pass handoff executed**
-  (operator decision: this session commits everything): `63923c7` corners on the wire ·
-  `f35638f` recording/replay · `0442177` camera page + TLS/proxy · docs/STATUS/learnings
-  in the reconcile commit after this line. Suite green at 684 throughout.
-
 - **ccbf-r5 live calibration (calibration session, 2026-08-07) — WORKS; landed in `63923c7`.**
   Root cause of "won't calibrate": the guard's probe reads the *angled* t=0 start frame at
   28/32 but the edge-rectified *warp* at 6/32 (aspect 0.635), and an angled-photo bank reads
@@ -55,6 +47,34 @@ Also staged and waiting on a decision to start:
 
 ## Done (recent)
 
+- 08-07: **Board-detection FN hunt closed** (`3f93e57`, calibration session, worktree).
+  The ~30% misses on clean ccbf-r5 frames root-caused and fixed — NOT barrel distortion
+  (refuted: k1 unidentifiable from the interior grid). Causes: `findChessboardCornersSB`
+  is scale-brittle **and nondeterministic** (same frame flips 7x7↔nothing, single-threaded
+  too) → wider ladder (900/800) + per-rung retry; phase scoring killed correct hypotheses
+  whose extrapolated centers left the frame → partial-coverage scoring; crowded start
+  positions sit below the validation floor even for the TRUE quad → crowded floor
+  (min≥3 ∧ median≥30) guarded by a new **outside-ring check** (a shifted quad always
+  leaves a true board line just outside: 30–51 vs ≤19 for correct) + best-of selection.
+  **ccbf 6/7 → 21/21 (3 passes, 0 shifted-quad outliers; t=0 start frame 0/6 → 6/6 at
+  ≤25 px); every other stream ≥ old code.** Opus-reviewed, fix-first items in,
+  mutation-verified pin. Suite 697 green. Follow-ups → Next.
+- 08-07: **Camera page becomes an instrument: tracking · calibration walk · lens picker.**
+  New `static/tracker.js` — pyramidal Lucas-Kanade over the board's **own 9×9 lattice of
+  square corners** + RANSAC homography, ~3 ms/frame at 400 px. The quad now follows the
+  board with its `a8` labelling intact (DESIGN §4.4.1(a) realised as *tracking, not
+  re-detection* — a fresh detect returns an unlabelled quad, decision #15), freezes on
+  loss and re-locks by itself. That unlocks the **calibration walk**: carry the phone
+  round a start position, the page collects one full-res frame per genuinely new vantage
+  (novelty = quad *shape*, translation/scale divided out) and posts them one at a time to
+  the additive `/calibrate`; forwarding pauses throughout; a refused vantage is reported,
+  not fatal. Plus a **lens picker** for the iPhone ultra wide (iOS ≥16.3 exposes every
+  rear lens but nothing identifies them — remembered by label; no `zoom` capability
+  exists on iOS Safari to fake it). Tracker maths is *executed* under node
+  (90 checks, `tracker_checks.mjs`), not string-asserted. **697 tests green.**
+  Browser-verified end to end, which caught the one real bug: the pyramid aliased the
+  page's reusable capture buffer, so each frame was compared against *itself* — a
+  confident lock with a quad that never moved.
 - 08-07: **Phone camera page — the browser edge ships** (DESIGN §6 "virtual Pi"). Viewer-served
   `/camera`: getUserMedia → draggable 4-corner crop (`/detect` assist, rotatable labels) →
   adaptive JPEG streaming into WS `/ingest` with per-frame `corners` (JS mirror of
@@ -130,14 +150,24 @@ Also staged and waiting on a decision to start:
    `exemplars_chessred_central.npz` and score it under the uncontaminated cross-style protocol.
 6. **Crop attribution / occlusion** — pose fixed coverage and resolution, not attribution: the
    box is still the prism's *bounding* box, so a piece behind can fall inside it unflagged.
+7. **Detection review follow-ups** (`3f93e57`, non-blocking): `/detect` calls
+   `detect_board_quad` synchronously on the event loop — a boardless frame now blocks it
+   ~2-3 s (offload to a thread; the edge's lost-board per-frame re-detect pays the same);
+   `_alternation`'s partial scoring can read a pure brightness gradient as alternation
+   (mean-subtract per row/col, or require full 2x2 neighbourhoods); hexamind carries one
+   pre-existing 142 px outlier detection worth a look.
 
 ## Open questions
 
 - **We have no real footage inside the good angle band,** and a deliberate ~40-candidate search
   found none: no long real OTB game on YouTube reaches 0.73, because broadcast cameras frame
   players, not boards. Own footage is now a **sourcing requirement**, not a nice-to-have.
-- **Is `detect_board_quad` good enough for auto re-detection?** ~30% false negatives on
-  ccbf-r5, cause unverified. Until it is understood, real-footage runs need operator corners.
+- **Is `detect_board_quad` good enough for auto re-detection?** Largely answered (`3f93e57`):
+  ccbf-r5 now detects 21/21 (was ~70%), causes measured, barrel distortion refuted. Residual:
+  the corner finder stays nondeterministic (a cadence retries for free), one piece-dense
+  frame class stays undetectable, and a boardless frame costs ~2 s. Operator corners remain
+  the recommendation for *reproducible* runs; the `/detect` assist and re-detection are now
+  trustworthy enough to lean on.
 - **Bank writes are not monotone.** A board that read 64/64 lost a square after two `/calibrate`
   writes, and trained-alone still gets it right. Nothing measures that before a write lands.
 - **Confidence is not usable today.** Trained-alone has no board-level signal (0.978 vs 0.939)

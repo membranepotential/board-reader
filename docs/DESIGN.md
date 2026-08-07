@@ -401,6 +401,25 @@ then attempts auto-orientation (b.1) before falling back to manual re-setup (b.2
 The orientation-consistency check (not just "did we find a board?") is what
 separates the two.
 
+**How the browser edge implements (a): track, do not re-detect.** *(added 2026-08-07,
+shipped in `/camera`.)* The recovery above is written as "re-run detection and check the
+new corners against the cached orientation reference". The browser edge does something
+strictly stronger and cheaper: it **tracks the board plane continuously**, frame to
+frame — Lucas-Kanade over the board's own lattice of square corners, a RANSAC homography
+over the points that agree, the four corners pushed through it.
+
+The reason is decision #15. A fresh detection returns an *unlabelled* quad, so the
+orientation reference has to be re-checked and can be lost; a tracked quad carries its
+labelling with it by construction, because the corners are never re-derived, only moved.
+That collapses the (a)/(b) distinction for any movement that keeps the board in view —
+including a full walk around the table, which is a §4.4.1(b) *reposition* by the
+threshold above, yet needs no orientation recovery at all when tracked. This is what
+makes the multi-viewpoint calibration walk (§4.6) possible.
+
+The suppression rule below is unchanged and is what the tracker does on failure: losing
+the board **freezes** the last quad that fitted and says so, rather than reporting a
+half-fitted one.
+
 **During the transient (both cases).** We **suppress placements** (or floor
 `confidence` to ~0) rather than stream through, and surface the status
 (`recalibrating` / `needs_setup`) instead. Rationale: a mis-localized camera
@@ -499,6 +518,34 @@ Note there is **no move-resolver / game-state module** — by design.
   for centroids, and empty→piece hallucinations cut 28→6. Centroid files remain
   fully loadable (the classifier is picked by file kind); calibrating from a new
   photo now *adds* its exemplars to the running bank instead of replacing it.
+
+**Multi-viewpoint calibration — the walk (2026-08-07, shipped in `/camera`).** Because
+calibration *adds* exemplars rather than replacing them, the number of calibration
+photos is a free parameter, and the evidence says more is better along the axes that
+actually break: a single-frame bank transfers poorly across lighting (~70–75%) where a
+two-lighting bank reaches ~90–95%, and dim-room accuracy recovered ~50%→98.8% purely
+from same-conditions appends. **Viewing angle is the same kind of axis**, and it was the
+one still calibrated from exactly one sample.
+
+So the browser edge offers a **calibration walk**: the operator sets the board to the
+starting position and carries the phone around it while the page collects one
+full-resolution frame per *genuinely new vantage* and posts them one at a time.
+Consequences worth stating as decisions:
+
+- **Novelty is measured on the quad's shape**, translation and scale divided out — that
+  is the viewing angle and nothing else, so standing closer does not count as a new
+  viewpoint and a step around the table does.
+- **It depends on tracking, not on re-declaration** (§4.4.1): the corners follow the
+  board, so every vantage arrives already labelled and the operator never restates which
+  corner is `a8`. Without tracking this feature is not buildable.
+- **Forwarding is suppressed for the duration** — a camera in transit is precisely the
+  mis-localised camera §4.4.1 says never to stream through.
+- **A refused viewpoint is not fatal.** The `/calibrate` anti-poisoning guard is per
+  photo and stays exactly as it is; a vantage it cannot read as the start position is
+  reported and skipped, and the others still calibrate.
+
+This does not weaken the "no calibration required" default (decision #3) or the
+zero-setup path below — it is the optional path made worth taking.
 
 **Zero-setup via start-position auto-calibration (2026-07-18).** Given the
 occupancy/type split above, "works out of the box" is engineered rather than
