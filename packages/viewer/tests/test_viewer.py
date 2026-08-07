@@ -188,14 +188,13 @@ def test_index_page_has_a_collapsible_frame_preview_left_of_the_board():
 
 
 def test_index_page_calibrates_from_the_live_frame():
-    """One-tap calibration from the stream: the ingested frame IS the rectified board,
-    so its four corners are the board's. The server's verdict is surfaced verbatim —
+    """One-tap calibration from the stream. The server's verdict is surfaced verbatim —
     it refuses calibrations that would poison the bank."""
     html = TestClient(create_app()).get("/").text
     assert 'class="calib"' in html
     assert "The board must CURRENTLY show the STARTING position" in html
     assert "const bmp = await createImageBitmap(blob);" in html
-    assert "const qs = [0, 0, bmp.width, 0, bmp.width, bmp.height, 0, bmp.height].join(\",\");" in html
+    assert "const qs = cornersOf(got.headers, bmp);" in html
     assert '`${INFERENCE_HTTP}/calibrate?corners=${qs}`' in html
     assert 'method: "POST", body: blob, headers: { "Content-Type": "image/jpeg" },' in html
     # Refusals keep the server's own words; success states what the bank now holds.
@@ -220,6 +219,18 @@ def test_index_page_refuses_to_calibrate_from_a_reading_that_is_not_worth_it():
     assert "rec.calib.title = reason ??" in html
     # Re-evaluated when the reading changes AND when the card goes stale on the ticker.
     assert html.count("updateCalibState(rec);") >= 4
+
+
+def test_index_page_takes_the_boards_corners_from_the_frame_when_the_node_states_them():
+    """A phone stream retains an UN-rectified crop, so "the frame is the board" no longer
+    holds for every stream. The node states the quad inside the frame on X-Corners; the
+    page prefers it and falls back to the whole image when it is absent (or malformed),
+    so a node that never sends the header calibrates exactly as it did before."""
+    html = TestClient(create_app()).get("/").text
+    fn = html.split("function cornersOf(headers, bmp) {")[1].split("\n}")[0]
+    assert 'headers.get("X-Corners")' in fn
+    assert "stated.length === 8 && stated.every(Number.isFinite)" in fn
+    assert "[0, 0, bmp.width, 0, bmp.width, bmp.height, 0, bmp.height].join(\",\")" in fn
 
 
 def test_snapshot_served_and_http_url_injected(monkeypatch):

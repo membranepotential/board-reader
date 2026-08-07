@@ -204,6 +204,17 @@ function refreshPreview(rec) {
   rec.img.src = frameUrl(rec, rec.lastSeq ?? Date.now());
 }
 
+// Where the board sits inside the retained frame, as the a8,h8,h1,a1 query string
+// /calibrate wants. A rectified edge stream retains the board itself, so the image's own
+// four corners are the board's; a phone stream retains an UN-rectified crop and the node
+// states the quad within it on X-Corners. Preferring the header keeps one calibrate path
+// for both, and a node that does not send it behaves exactly as before.
+function cornersOf(headers, bmp) {
+  const stated = String(headers.get("X-Corners") ?? "").split(",").map(Number);
+  if (stated.length === 8 && stated.every(Number.isFinite)) return stated.join(",");
+  return [0, 0, bmp.width, 0, bmp.width, bmp.height, 0, bmp.height].join(",");
+}
+
 function showBanner(rec, kind, text) {
   rec.banner.textContent = text;
   rec.banner.className = "banner " + kind;
@@ -241,10 +252,8 @@ async function calibrate(rec) {
     const got = await fetch(frameUrl(rec, rec.lastSeq ?? Date.now()), { cache: "no-store" });
     if (!got.ok) throw new Error(`no frame available from the inference node (${got.status})`);
     const blob = await got.blob();
-    // The ingested frame IS the rectified board, so the whole image is the board:
-    // its corners in a8,h8,h1,a1 order are TL,TR,BR,BL of the crop.
     const bmp = await createImageBitmap(blob);
-    const qs = [0, 0, bmp.width, 0, bmp.width, bmp.height, 0, bmp.height].join(",");
+    const qs = cornersOf(got.headers, bmp);
     bmp.close?.();
     const r = await fetch(`${INFERENCE_HTTP}/calibrate?corners=${qs}`, {
       method: "POST", body: blob, headers: { "Content-Type": "image/jpeg" },

@@ -6,6 +6,12 @@ requires-python = ">=3.12"
 dependencies = [
     "fastapi>=0.115",
     "uvicorn[standard]>=0.30",
+    # Same-origin proxying to the inference node (see proxy.py): the phone camera
+    # page must reach one origin only, so the viewer relays its HTTP and WS calls.
+    "httpx>=0.27",
+    "websockets>=12",
+    # Self-signed TLS for `--ssl` (see tls.py): getUserMedia needs a secure context.
+    "cryptography>=42",
 ]
 
 [project.scripts]
