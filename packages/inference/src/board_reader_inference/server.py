@@ -8,7 +8,8 @@ Runs on the inference node. Three surfaces:
   the event loop and publishes the position event to the hub.
 * ``WS /viewer`` — viewers connect and receive the position-event JSON stream
   (retained latest per board first, then live updates).
-* ``GET /boards/{id}`` + ``GET /healthz`` — latest snapshot + liveness.
+* ``GET /boards/{id}`` + ``GET /boards/{id}/frame`` + ``GET /healthz`` — latest
+  position snapshot, latest raw ingested JPEG, and liveness.
 
 The gateway holds the shared estimator and the position hub. It never imports the
 edge package; it only speaks the wire (:mod:`board_reader_core.wire`).
@@ -231,6 +232,11 @@ def create_app(
     # Streaming ingress (WP-G1/G2): frames are estimated off the event loop by
     # per-board workers. ``lambda: est`` so /calibrate's hot-swap reaches the stream.
     ingest_ = FrameIngest(lambda: est, hub_)
+    # Latest-wins raw-frame retention, one entry per board, in-memory only (no
+    # disk write, unbounded board count — mirrors the hub's own retention). This
+    # is what ``GET /boards/{id}/frame`` serves for the live video-like preview;
+    # it is independent of the hub's estimated PositionEvent.
+    latest_frames: dict[str, tuple[dict, bytes]] = {}
 
     app = FastAPI(title="board-reader inference node", lifespan=ingest_.lifespan)
     # The viewer is served from a different origin (its own container), and the
@@ -240,6 +246,7 @@ def create_app(
         allow_origins=os.environ.get("BR_ALLOW_ORIGINS", "*").split(","),
         allow_methods=["*"],
         allow_headers=["*"],
+        expose_headers=["X-Seq", "X-Capture-Ts"],
     )
     app.state.estimator = est
     app.state.hub = hub_
@@ -255,6 +262,27 @@ def create_app(
         if event is None:
             return JSONResponse({"error": "no such board"}, status_code=404)
         return JSONResponse(event.to_dict())
+
+    @app.get("/boards/{board_id}/frame")
+    async def board_frame(board_id: str) -> Response:
+        """Most recent raw JPEG ingested for ``board_id`` — a video-like preview.
+
+        Served as-received (no re-encode) so the viewer can show what the camera
+        actually sent, independent of whatever the estimator made of it.
+        """
+        entry = latest_frames.get(board_id)
+        if entry is None:
+            return JSONResponse({"error": "no frame for board"}, status_code=404)
+        header, jpeg = entry
+        return Response(
+            content=jpeg,
+            media_type="image/jpeg",
+            headers={
+                "X-Seq": str(header["seq"]),
+                "X-Capture-Ts": str(header["capture_ts"]),
+                "Cache-Control": "no-store",
+            },
+        )
 
     # One-shot HTTP ingress for the phone snapshot page (viewer /snapshot).
     #
@@ -1164,6 +1192,7 @@ def create_app(
                 jpeg = await ws.receive_bytes()
                 frame = Frame.from_header(header, decode_jpeg(jpeg))
                 boards.add(frame.board_id)
+                latest_frames[frame.board_id] = (header, jpeg)
                 ingest_.submit(frame)
                 await ws.send_json({"ack": frame.seq, "board_id": frame.board_id})
         except WebSocketDisconnect:

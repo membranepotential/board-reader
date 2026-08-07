@@ -89,6 +89,7 @@ tall pieces and the tile truncates them. See [[recognition-pipeline]].
 | `POST /calibrate` | one labeled photo → per-set exemplar bank ([[calibration-and-the-bank]]) |
 | `POST /detect` | photo → proposed corner quad, geometry only |
 | `GET /boards/{id}` | latest retained event for a board |
+| `GET /boards/{id}/frame` | latest raw JPEG ingested for a board (video-like preview) |
 | `GET /healthz` | liveness — see the warning in [[runbook#Verifying a restart]] |
 
 **Viewer node** (`:8080`)
