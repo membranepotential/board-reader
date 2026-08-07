@@ -12,8 +12,9 @@ later substitute the sensor capture timestamp (DESIGN.md D5).
 from __future__ import annotations
 
 import dataclasses
+from collections.abc import Callable, Iterable, Iterator, Sequence
 from pathlib import Path
-from typing import Callable, Iterable, Iterator, Protocol, Sequence, runtime_checkable
+from typing import Protocol, runtime_checkable
 
 import cv2
 import numpy as np

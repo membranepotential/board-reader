@@ -16,10 +16,10 @@ from board_reader_edge.source import (
 )
 
 __all__ = [
+    "FileEdgeAdapter",
     "FrameSource",
-    "VideoFileSource",
     "ImageDirSource",
     "RepeatSource",
     "SyntheticSource",
-    "FileEdgeAdapter",
+    "VideoFileSource",
 ]

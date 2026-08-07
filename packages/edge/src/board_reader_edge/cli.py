@@ -21,20 +21,26 @@ from __future__ import annotations
 import argparse
 import asyncio
 import sys
-from typing import TYPE_CHECKING
 
 import cv2
-
-if TYPE_CHECKING:
-    import numpy as np
+import numpy as np
 
 from board_reader_core.boarddetect import detect_board_quad
 from board_reader_core.protocol import START_PLACEMENT
 from board_reader_core.sim import render_board, simulate_angled_view
 
-from board_reader_edge.adapter import FileEdgeAdapter, RecordingReplay
+from board_reader_edge.adapter import (
+    DEFAULT_JPEG_QUALITY,
+    FileEdgeAdapter,
+    RecordingReplay,
+)
 from board_reader_edge.client import stream_to_gateway
 from board_reader_edge.forwarder import AdaptiveForwarder, ForwarderConfig
+from board_reader_edge.quadcheck import (
+    OperatorQuadError,
+    check_quad_shape,
+    low_angle_warning,
+)
 from board_reader_edge.rectify import Rectifier, rectify
 from board_reader_edge.source import (
     FrameSource,
@@ -103,7 +109,7 @@ def _build_rectifier(args: argparse.Namespace) -> Rectifier | None:
     return Rectifier() if args.rectify else None
 
 
-def _build_wire_corners(args: argparse.Namespace) -> "np.ndarray | None":
+def _build_wire_corners(args: argparse.Namespace) -> np.ndarray | None:
     """The quad to stamp on every wire frame, or ``None`` (rectify-at-edge path)."""
     if not args.forward_original:
         return None
@@ -122,12 +128,15 @@ def _build_wire_corners(args: argparse.Namespace) -> "np.ndarray | None":
 # Flags that reprocess frames on their way out. A recording already holds the
 # edge's *output*, so replaying it through any of these would send something other
 # than what was recorded — which is the one thing replay exists not to do.
+# (``--jpeg-quality`` defaults to ``None`` rather than 90 precisely so that
+# "the operator asked for a re-encode" is visible here as falsy-vs-set.)
 _REPROCESSING_FLAGS = {
     "adaptive": "--adaptive",
     "rectify": "--rectify",
     "corners": "--corners",
     "forward_original": "--forward-original",
     "loop": "--loop",
+    "jpeg_quality": "--jpeg-quality",
 }
 
 
@@ -151,26 +160,63 @@ def cmd_feed(args: argparse.Namespace) -> int:
         sent = asyncio.run(stream_to_gateway(replay, args.url))
         print(f"replayed {sent} frames from {replay.recording.path} to {args.url}")
         return 0
-    wire_corners = _build_wire_corners(args)  # validates the mode before any I/O
+    # Both meanings of --corners are parsed and sanity-checked here, before the
+    # source is built: a bad quad must cost the operator nothing but an error line,
+    # not an opened clip and a dialled socket.
+    wire_corners = _build_wire_corners(args)
+    rectifier = _build_rectifier(args)
     adapter = FileEdgeAdapter(
         _build_source(args),
         forwarder=_build_forwarder(args),
-        rectifier=_build_rectifier(args),
+        rectifier=rectifier,
         wire_corners=wire_corners,
+        jpeg_quality=(
+            DEFAULT_JPEG_QUALITY if args.jpeg_quality is None else args.jpeg_quality
+        ),
         throttle=args.throttle,
     )
-    sent = asyncio.run(stream_to_gateway(adapter, args.url))
+    try:
+        sent = asyncio.run(stream_to_gateway(adapter, args.url))
+    except OperatorQuadError as e:
+        # The corners did not fit the first frame. An operator mistake, not a bug:
+        # report it the way the startup checks do rather than as a traceback.
+        raise SystemExit(str(e)) from e
     print(f"sent {sent} frames to {args.url}")
     return 0
 
 
-def _parse_corners(spec: str):
-    nums = [float(x) for x in spec.replace(";", ",").split(",") if x.strip()]
+def _parse_corners(spec: str) -> np.ndarray:
+    """Parse ``x0,y0,...,x3,y3`` and refuse a quad that cannot be a board.
+
+    The single boundary every ``--corners`` consumer goes through, so the check
+    lands before any file is opened and any socket is dialled: a typo'd quad must
+    never become an hour of confidently-wrong geometry (see
+    :mod:`board_reader_edge.quadcheck`). What needs a frame to judge — whether the
+    corners actually land on the picture — is checked on the first frame instead.
+    """
+    try:
+        nums = [float(x) for x in spec.replace(";", ",").split(",") if x.strip()]
+    except ValueError as e:
+        raise SystemExit(f"--corners takes numbers: {e}") from e
     if len(nums) != 8:
         raise SystemExit("--corners needs 8 numbers: x0,y0,x1,y1,x2,y2,x3,y3")
-    import numpy as np
+    quad = np.array(nums, dtype="float32").reshape(4, 2)
+    defect = check_quad_shape(quad)
+    if defect is not None:
+        raise SystemExit(f"--corners {defect.message}")
+    warning = low_angle_warning(quad)
+    if warning is not None:
+        # Warn, never block (the gateway's convention for the same measurement):
+        # better said now than discovered after the run.
+        print(f"warning: {warning}", file=sys.stderr)
+    return quad
 
-    return np.array(nums, dtype="float32").reshape(4, 2)
+
+def _jpeg_quality(spec: str) -> int:
+    q = int(spec)
+    if not 1 <= q <= 100:
+        raise argparse.ArgumentTypeError("--jpeg-quality must be between 1 and 100")
+    return q
 
 
 def cmd_rectify(args: argparse.Namespace) -> int:
@@ -239,16 +285,30 @@ def build_parser() -> argparse.ArgumentParser:
     )
     f.add_argument(
         "--rectify", action="store_true",
-        help="detect + rectify each frame to a canonical crop before forwarding (WP-A)",
+        help="detect + rectify each frame to a canonical crop before forwarding "
+             "(WP-A); --corners replaces the detection. Exclusive with "
+             "--forward-original",
     )
     f.add_argument(
         "--corners",
-        help="manual corners 'x0,y0,...,x3,y3' (a8,h8,h1,a1); rectify, never detect",
+        help="the board's four corners 'x0,y0,...,x3,y3' in a8,h8,h1,a1 order. What "
+             "they mean depends on --forward-original: WITH it they ride on every "
+             "wire frame and declare the board's orientation (nothing is warped at "
+             "the edge); WITHOUT it they are the quad the edge rectifies with, "
+             "skipping detection. Sanity-checked before any frame is sent",
     )
     f.add_argument(
         "--forward-original", dest="forward_original", action="store_true",
         help="forward the original frames and put --corners on every wire frame "
-             "(§4.5 photo path) instead of rectifying at the edge",
+             "(§4.5 photo path) instead of rectifying at the edge; this is what "
+             "switches --corners from edge-side geometry to wire geometry",
+    )
+    f.add_argument(
+        "--jpeg-quality", dest="jpeg_quality", type=_jpeg_quality, default=None,
+        help="JPEG quality of the forwarded frames, 1-100 (default "
+             f"{DEFAULT_JPEG_QUALITY}). Worth turning down on a metered uplink: an "
+             "original frame under --forward-original is several times the bytes of "
+             "a 384px rectified crop",
     )
     f.add_argument(
         "--adaptive", action="store_true",

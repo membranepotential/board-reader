@@ -11,6 +11,7 @@ import numpy as np
 import pytest
 
 from board_reader_core.sim import render_board
+
 from board_reader_edge.motion import MotionMeter
 
 BOARD = render_board(square_px=30)  # 240x240 BGR
@@ -88,7 +89,7 @@ def test_scoring_is_independent_of_capture_resolution():
     # camera hands us 240px or 720px frames.
     def run(scale: int) -> float:
         meter = MotionMeter()
-        for i, image in enumerate([still(), swept(0), swept(1)]):
+        for _i, image in enumerate([still(), swept(0), swept(1)]):
             frame = cv2.resize(image, None, fx=scale, fy=scale)
             meter.update(frame)
         return meter.stability

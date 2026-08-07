@@ -21,8 +21,8 @@ frames the live edge would have. There is deliberately no ``time`` import here.
 from __future__ import annotations
 
 import dataclasses
+from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
-from typing import Iterable, Iterator
 
 from board_reader_core.wire import Frame
 
@@ -64,7 +64,10 @@ class AdaptiveForwarder:
 
     def __init__(
         self,
-        config: ForwarderConfig = ForwarderConfig(),
+        # Safe here, unlike the general case: ForwarderConfig is frozen, so this
+        # shared default cannot be mutated by one forwarder and seen by the next —
+        # which is the entire hazard B008 exists to catch.
+        config: ForwarderConfig = ForwarderConfig(),  # noqa: B008
         *,
         meter: MotionMeter | None = None,
     ) -> None:

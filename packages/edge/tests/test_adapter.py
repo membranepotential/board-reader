@@ -9,7 +9,9 @@ import pytest
 
 from board_reader_core.sim import render_board, simulate_angled_view
 from board_reader_core.wire import Frame, decode_jpeg
+
 from board_reader_edge.adapter import FileEdgeAdapter
+from board_reader_edge.quadcheck import OperatorQuadError
 from board_reader_edge.rectify import Rectifier
 from board_reader_edge.source import SyntheticSource
 
@@ -220,3 +222,41 @@ def test_wire_corners_must_be_four_points():
     src = SyntheticSource([render_board()], board_id="A1")
     with pytest.raises(ValueError, match="4"):
         FileEdgeAdapter(src, wire_corners=np.array([[1.0, 2.0], [3.0, 4.0]]))
+
+
+# The frame size is the one thing the corner checks cannot know at startup — a
+# clip, an image directory and a camera all only reveal it once a frame has been
+# read — so it is checked on the first frame, before anything is yielded.
+OFF_FRAME_CORNERS = ROTATED_CORNERS * 4.0  # corners measured on a bigger picture
+
+
+def test_wire_corners_that_miss_the_frame_are_refused_on_the_first_frame():
+    src = SyntheticSource([render_board(square_px=48)] * 3, board_id="A1")
+    adapter = FileEdgeAdapter(src, wire_corners=OFF_FRAME_CORNERS)
+    with pytest.raises(OperatorQuadError, match="384x384"):
+        next(adapter.frames())
+
+
+def test_off_frame_corners_yield_no_envelope_at_all():
+    """Nothing may reach the wire before the quad has been judged."""
+    src = SyntheticSource([render_board(square_px=48)] * 3, board_id="A1")
+    adapter = FileEdgeAdapter(src, wire_corners=OFF_FRAME_CORNERS)
+    with pytest.raises(OperatorQuadError):
+        list(adapter.envelopes())
+
+
+def test_manual_rectifier_corners_are_checked_against_the_frame_too():
+    # The other meaning of --corners: warping with a quad that is not on the
+    # picture yields a crop of nothing, which is just as silently wrong.
+    src = SyntheticSource([render_board(square_px=48)] * 2, board_id="A1")
+    adapter = FileEdgeAdapter(src, rectifier=Rectifier(manual_corners=OFF_FRAME_CORNERS))
+    with pytest.raises(OperatorQuadError, match="outside"):
+        next(adapter.frames())
+
+
+def test_an_auto_rectifier_has_no_operator_quad_to_check():
+    # Detected corners come *from* the frame, so there is nothing to validate: the
+    # auto path must not trip the operator-quad check.
+    angled, _ = simulate_angled_view(render_board(square_px=48))
+    src = SyntheticSource([angled], board_id="A1")
+    list(FileEdgeAdapter(src, rectifier=Rectifier(out_size=64)).frames())  # no raise

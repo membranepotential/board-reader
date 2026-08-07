@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+import itertools
+
 import cv2
 import numpy as np
 import pytest
 
-import itertools
-
 from board_reader_core.sim import render_board
+
 from board_reader_edge.source import (
     FrameSource,
     ImageDirSource,
@@ -84,7 +85,7 @@ def test_video_file_source_replays_frames(tmp_path):
     assert [f.seq for f in frames] == list(range(len(frames)))
     assert all(f.board_id == "V1" for f in frames)
     # capture_ts strictly increases.
-    assert all(b.capture_ts > a.capture_ts for a, b in zip(frames, frames[1:]))
+    assert all(b.capture_ts > a.capture_ts for a, b in itertools.pairwise(frames))
 
 
 def test_video_file_source_missing_file():
@@ -94,6 +95,7 @@ def test_video_file_source_missing_file():
 
 def test_game_source_streams_the_synthetic_game_lazily():
     from board_reader_core.sim import SAMPLE_GAME_PLACEMENTS
+
     from board_reader_edge.source import GameSource
 
     placements = SAMPLE_GAME_PLACEMENTS[:3]
@@ -109,7 +111,7 @@ def test_game_source_streams_the_synthetic_game_lazily():
     assert [f.seq for f in frames] == list(range(len(frames)))
     assert all(f.board_id == "G1" for f in frames)
     # capture_ts spaced by exactly 1/fps.
-    gaps = [round(b.capture_ts - a.capture_ts, 9) for a, b in zip(frames, frames[1:])]
+    gaps = [round(b.capture_ts - a.capture_ts, 9) for a, b in itertools.pairwise(frames)]
     assert all(abs(g - 1 / 12.0) < 1e-6 for g in gaps)
 
 
@@ -124,7 +126,7 @@ def test_loop_source_restamps_seq_and_capture_ts_monotonically():
     ts = [f.capture_ts for f in frames]
     assert ts == sorted(ts) and len(set(ts)) == 5  # strictly increasing
     # The seam continues at the stream's own inter-frame gap (0.5 s at 2 fps).
-    gaps = {round(b - a, 6) for a, b in zip(ts, ts[1:])}
+    gaps = {round(b - a, 6) for a, b in itertools.pairwise(ts)}
     assert gaps == {0.5}
 
 
