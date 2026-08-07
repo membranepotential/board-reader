@@ -2,7 +2,9 @@
 #
 #   make dev     start inference + viewer; Ctrl-C stops both
 #   make stop    stop anything left running
-#   make test    the whole suite, in parallel
+#   make test     the suite in parallel, minus the GPU tests
+#   make test-gpu the GPU tests alone (needs an idle GPU)
+#   make test-all everything, GPU included
 #
 # The env below is the *deployed* config, not a convenience default: BR_MODEL
 # alone serves the trained model (599/640 on the labeled eval), and only with
@@ -15,7 +17,7 @@
 # the group again — bash recurses until it overflows its stack and segfaults.
 # The trap disarms itself first for the same reason.
 
-.PHONY: dev stop test
+.PHONY: dev stop test test-gpu test-all
 
 # `wait -n` below is a bashism, and the teardown relies on bash trap semantics.
 SHELL := /bin/bash
@@ -55,7 +57,24 @@ dev:
 # `-n auto` (pytest-xdist) fans the suite across every core: ~23s -> ~10s here.
 # Deliberately *not* in pyproject's addopts — worker startup makes a single
 # focused `uv run pytest path::test` slower, and interleaves its output.
+#
+# `-m "not gpu"` deselects the two tests that build a real ONNX InferenceSession.
+# They pass on an idle machine and fail on a busy one — a training run or a
+# second agent session exhausts the GPU arena, session creation dies, and the
+# memory pressure has been seen taking unrelated OpenCV allocations down with
+# it. Keeping them in the default loop means a red suite that says nothing about
+# the code. The count of what was skipped is printed rather than swallowed:
+# silently narrowing a suite is how a pipeline ends up reporting success over
+# nothing, which this repo has been bitten by three times.
 test:
+	uv run pytest -n auto -m "not gpu"
+	@echo "   (GPU tests deselected — run 'make test-gpu' on an idle machine)"
+
+# The deselected remainder, serially: they contend with each other too.
+test-gpu:
+	uv run pytest -m gpu -v
+
+test-all:
 	uv run pytest -n auto
 
 # The bracket keeps the pattern from matching this recipe's own command line.

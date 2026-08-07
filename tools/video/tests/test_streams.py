@@ -58,21 +58,35 @@ def make_stream(**overrides: object) -> Stream:
 # --- the committed table ---------------------------------------------------
 
 
+# These assert *invariants* of the committed table, never its exact contents.
+# Recording a new crop is the toolset's whole purpose and happens between test
+# runs, so pinning the row set (or "exactly one stream survives the cull") makes
+# ordinary use turn the suite red — it did, the first time someone added a
+# broadcast. Facts about which streams exist today belong in
+# docs/youtube-streams.md, which is prose and expects to be edited.
 def test_committed_table_loads_and_is_keyed_by_id() -> None:
     streams = load_streams(DEFAULT_TABLE)
-    assert set(streams) == {
-        "JTmovXvZnPM",
-        "ZoYhhoG6dIY",
-        "1O2ahFZh6G8",
-        "Fed1aBzUMcs",
-        "62h7O9Ns_eA",
+    assert streams, "the committed registry should never be empty"
+    # The mapping key is the id, and it agrees with the row it points at.
+    assert all(vid == s.video_id for vid, s in streams.items())
+    assert all(len(vid) == 11 for vid in streams)
+
+
+def test_committed_table_retains_the_originally_audited_streams() -> None:
+    """The five absorbed broadcasts stay recoverable — their videos are deleted,
+    so this table plus a video id is the *only* way back to any of them."""
+    streams = load_streams(DEFAULT_TABLE)
+    audited = {
+        "JTmovXvZnPM": ("hexamind", StreamStatus.KEEP),
+        "ZoYhhoG6dIY": ("divya-r14", StreamStatus.REJECTED_LOW_ANGLE),
+        "1O2ahFZh6G8": ("coffeechess", StreamStatus.REJECTED_LOW_ANGLE),
+        "Fed1aBzUMcs": ("wtr-day2", StreamStatus.REJECTED_LOW_ANGLE),
+        "62h7O9Ns_eA": ("grandswiss", StreamStatus.REJECTED_LOW_ANGLE),
     }
-    assert streams["JTmovXvZnPM"].slug == "hexamind"
-    assert streams["JTmovXvZnPM"].status is StreamStatus.KEEP
-    # The angle cull left exactly one usable stream.
-    assert [s.video_id for s in streams.values() if not s.is_rejected] == [
-        "JTmovXvZnPM"
-    ]
+    for video_id, (slug, status) in audited.items():
+        assert video_id in streams, f"{video_id} dropped from the registry"
+        assert streams[video_id].slug == slug
+        assert streams[video_id].status is status
 
 
 def test_committed_crops_fit_their_recorded_frame() -> None:

@@ -12,12 +12,23 @@ Two layers, both required by the project's "user-testable from the start" princi
 
 ```bash
 uv sync                # once, to set up the workspace venv
-make test              # the whole suite across all cores (should be green), ~10s
-uv run pytest          # the same suite, serially (~23s)
+make test              # the suite across all cores, minus GPU tests (green), ~10s
+make test-gpu          # the 2 GPU tests alone — an idle GPU, or they flake
+make test-all          # everything, GPU included
+uv run pytest          # the whole suite, serially (~23s)
 uv run pytest -q       # quiet
 uv run pytest packages/inference          # just one package
 uv run pytest tests/test_end_to_end.py    # the real-network walking-skeleton test
 ```
+
+> [!note] Why `make test` is not the whole suite
+> Two tests build a real ONNX `InferenceSession` and take the CUDA execution
+> provider. On an idle machine they pass; on a busy one — a training run, or a
+> second agent session running its own suite — session creation dies with
+> `BFCArena Failed to allocate memory`, and the pressure has been observed
+> taking unrelated OpenCV allocations down with it. They are marked `gpu` and
+> deselected by default, so a red suite means the *code* is red. Run them
+> deliberately with `make test-gpu` before trusting a recognition change.
 
 What's covered today (M0 + M1 rectification):
 

@@ -54,7 +54,9 @@ glue that wires both, and only across the network.
 
 ```bash
 uv sync                       # install the whole workspace + dev tools
-make test                     # the whole suite in parallel (-n auto), ~10s
+make test                     # the suite in parallel (-n auto), minus GPU tests, ~10s
+make test-gpu                 # the 2 real-ONNX-session tests; needs an idle GPU
+make test-all                 # everything, GPU included
 uv run pytest                 # the same suite, serially (~23s)
 uv run pytest packages/core   # one package's tests
 

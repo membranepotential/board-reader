@@ -36,6 +36,12 @@ dev = [
 # already pulls in); tools/train does not — it imports torch, and the workspace
 # stays torch-free by design (CLAUDE.md).
 testpaths = ["tests", "packages", "tools/video/tests"]
+# `gpu` marks the tests that build a real ONNX InferenceSession and so take the
+# CUDA execution provider. They are correctness tests, not perf tests — but they
+# are the only ones that fail for reasons outside the code (GPU memory
+# contention from a training run or a second agent session). `make test`
+# deselects them and says so; `make test-gpu` runs exactly them.
+markers = ["gpu: needs the GPU (real ONNX InferenceSession); deselected by `make test`"]
 filterwarnings = [
     # Starlette's TestClient warns about httpx vs httpx2; harmless for our suite.
     "ignore:Using `httpx` with `starlette.testclient`",

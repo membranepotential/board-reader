@@ -22,10 +22,20 @@ from board_reader_inference.embed import (
 from board_reader_inference.squares import crop_squares
 
 _HAS_DINOV2 = Path(DEFAULT_DINOV2_ONNX).exists()
+
+# These two build a *real* ONNX InferenceSession, which grabs the CUDA execution
+# provider and its BFCArena allocation. That makes them the suite's only GPU
+# consumers, and the only ones that fail for reasons having nothing to do with
+# the code: under GPU/memory contention — a training run, or a second agent
+# session running its own suite — session creation dies with "BFCArena Failed to
+# allocate memory", and the pressure has been observed spilling over into
+# unrelated OpenCV allocations elsewhere in the suite. Hence `gpu`: deselected by
+# default (`make test`), run deliberately with `make test-gpu`.
 requires_dinov2 = pytest.mark.skipif(
     not _HAS_DINOV2,
     reason=f"DINOv2 ONNX not present at {DEFAULT_DINOV2_ONNX} (run tools/export_dinov2_onnx.py)",
 )
+gpu_session = pytest.mark.gpu
 
 
 def test_downsample_embedder_satisfies_protocol():
@@ -71,6 +81,7 @@ def test_make_embedder_rejects_unknown():
         make_embedder("nope")
 
 
+@gpu_session
 @requires_dinov2
 def test_dinov2_embedder_emits_384d_normalised_embeddings():
     emb = DinoV2Embedder()
@@ -81,6 +92,7 @@ def test_dinov2_embedder_emits_384d_normalised_embeddings():
     np.testing.assert_allclose(np.linalg.norm(out, axis=1), 1.0, atol=1e-4)
 
 
+@gpu_session
 @requires_dinov2
 def test_make_embedder_dinov2():
     assert isinstance(make_embedder("dinov2"), DinoV2Embedder)
