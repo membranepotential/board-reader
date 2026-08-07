@@ -257,15 +257,159 @@ def test_camera_page_calibrates_from_a_full_resolution_frame():
 
 def test_camera_page_refuses_to_calibrate_from_a_view_that_is_not_worth_it():
     """Calibrating mid-motion, or with no live camera at all, poisons the bank. The
-    button disables itself and says why in its title rather than failing silently."""
+    button disables itself and says why in its title rather than failing silently.
+
+    The gate is the CAMERA, not the socket: calibration reads the live video element and
+    posts it to /api/calibrate, so requiring the ingest stream to be up would be a
+    requirement it does not actually have."""
     html = camera_html()
     reason = html.split("function calibBlockReason() {")[1].split("\n}")[0]
-    assert 'if (!streaming) return "start streaming first' in reason
+    assert 'if (!video.videoWidth) return "the camera is not running";' in reason
+    assert "if (!streaming)" not in reason
     assert 'if (pts.length !== 4) return "set the four board corners first";' in reason
     assert "meter.stability < MOVING_BELOW" in reason
+    # A walk owns the camera while it runs; a second calibration on top of it would
+    # interleave bank writes with the walk's own.
+    assert 'if (walk.active) return "a calibration walk is under way";' in reason
     assert "const MOVING_BELOW = 0.7;" in html
     assert "calibBtn.disabled = reason !== null;" in html
     assert "calibBtn.title = reason ??" in html
+
+
+def test_camera_page_tracks_the_board_plane():
+    """DESIGN §4.4.1(a): a bump is recoverable ON THE EDGE. The page tracks the board
+    plane frame to frame, so the quad follows the camera instead of waiting for the
+    operator — which is also the only reason a walk around the board is possible."""
+    html = camera_html()
+    assert 'import { PlaneTracker, toGray } from "/static/tracker.js";' in html
+    assert "const TRACK_LONG_SIDE = 400;" in html
+    assert "const TRACK_SUBDIVISIONS = 1;" in html
+    track = html.split("function trackFrame() {")[1].split("\n}\n")[0]
+    # The operator's own drag always wins: the tracker never fights for the same corners.
+    assert "if (pts.length !== 4 || dragIdx !== null) return;" in track
+    assert "const result = t.update(toGray(data, trackGray));" in track
+    # Lost -> the quad FREEZES where it last fitted. DESIGN §4.4.1: a mis-localised
+    # camera yields confidently wrong crops, which is worse than an honest gap.
+    assert 'if (result.state !== "locked") return;' in track
+    assert "pts = result.corners.map(([x, y]) => [x * video.videoWidth," in track
+    # 20 writes a second to localStorage is not a persistence strategy.
+    assert "const TRACK_SAVE_MS = 2000;" in html
+    assert "if (now - lastCornerSave > TRACK_SAVE_MS)" in track
+    # The state is visible, never silent — a frozen quad looks different from a live one.
+    assert 'id="trackChip"' in html
+    assert '.quad-line.lost {' in html
+    assert 'lost: ["tracking — lost, quad frozen", "bad"],' in html
+
+
+def test_camera_page_re_anchors_tracking_on_every_deliberate_corner_change():
+    """Tracking drifts; the operator is the correction. Every way of stating the quad by
+    hand re-seeds the tracker from it, so a drifted crop is one touch from right."""
+    html = camera_html()
+    assert html.count("anchorTracker();") >= 5      # drag, detect, reset, board switch, toggle
+    handle = html.split("function attachHandleEvents(el, idx) {")[1].split("\n}\n")[0]
+    assert "anchorTracker();" in handle
+    detect = html.split("async function detectCorners() {")[1].split("\n}\n")[0]
+    assert "anchorTracker();" in detect
+    anchor = html.split("function anchorTracker() {")[1].split("\n}")[0]
+    assert "tracker.reset(pts.map(([x, y]) => [x / video.videoWidth, y / video.videoHeight]));" in anchor
+    # Tracking can be switched off outright — a tracker that misbehaves must never be
+    # something the operator has to fight.
+    assert 'id="trackToggle"' in html
+    assert "trackBtn.addEventListener(\"click\", () => setTracking(!trackingOn()));" in html
+
+
+def test_camera_page_capture_loop_belongs_to_the_camera_not_the_stream():
+    """Tracking, the stability reading and the walk are live instruments in their own
+    right, so the loop starts when the camera does — the stream is one consumer of it."""
+    html = camera_html()
+    assert "frameTimer = setInterval(frameTick, Math.round(1000 / CAPTURE_FPS));" in html
+    loop = html.split("function frameTick() {")[1].split("\n}\n")[0]
+    assert "trackFrame();" in loop
+    # Not streaming still has to feed the meter: `calibBlockReason` reads stability, and
+    # a meter that is only fed while streaming would report a stale 1.0.
+    assert "(meter.update(video), null)" in loop
+    assert "const forwarding = streaming && !walk.active;" in loop
+    started = html.split('video.addEventListener("loadedmetadata", () => {')[1].split("\n}")[0]
+    assert "startFrameLoop();" in started
+    assert "ensureTracker();" in started
+    # Stopping the stream must not stop tracking.
+    stop = html.split("function stopStreaming() {")[1].split("\n}\n")[0]
+    assert "frameTimer" not in stop
+
+
+def test_camera_page_calibration_walk_collects_distinct_viewpoints():
+    """A bank built from one angle reads that angle. POST /calibrate is additive, so the
+    walk collects several vantages of the SAME start position and sends them all."""
+    html = camera_html()
+    assert "const WALK_TARGET = 6;" in html
+    assert "const WALK_MIN_SEP = 0.14;" in html
+    assert "const WALK_MIN_STABILITY = 0.92;" in html
+    # Distinctness is judged on the quad's SHAPE — translation and scale divided out —
+    # so it is a threshold on the viewing ANGLE, not on where the operator is standing.
+    shape = html.split("function quadShape(quad) {")[1].split("\n}")[0]
+    assert "const radii = quad.map(([x, y]) => [x - cx, y - cy]);" in shape
+    assert "return radii.map(([x, y]) => [x / scale, y / scale]);" in shape
+    hold = html.split("function walkHold() {")[1].split("\n}\n")[0]
+    assert "if (shapeDistance(shape, shot.shape) < WALK_MIN_SEP)" in hold
+    assert 'if (trackState === "lost")' in hold
+    assert "meter.stability < WALK_MIN_STABILITY" in hold
+    # Calibration exemplars are cut from full resolution, exactly as the single-frame
+    # path does: every pixel of a piece is evidence.
+    capture = html.split("async function walkCapture() {")[1].split("\n}\n")[0]
+    assert "full.width = video.videoWidth;" in capture
+    assert "const corners = orderedCorners().map(([x, y]) => [x, y]);" in capture
+    assert "await toBlob(full, 0.95)" in capture
+
+
+def test_camera_page_calibration_walk_sends_one_viewpoint_at_a_time():
+    """Each POST rebuilds the node's running estimator around the extended bank, so
+    concurrent writes would race that swap. One refusal is not fatal to the rest."""
+    html = camera_html()
+    send = html.split("async function walkSend() {")[1].split("\n}\n")[0]
+    assert "for (const [i, shot] of walk.shots.entries()) {" in send
+    assert "`/api/calibrate?corners=${qs}`" in send
+    assert "if (!r.ok) { results.push({ ok: false, why: d.error ?? `HTTP ${r.status}` }); continue; }" in send
+    report = html.split("function reportWalk(results, rotated) {")[1].split("\n}\n")[0]
+    assert "No viewpoint was accepted, so the bank is unchanged." in report
+    # The node corrects the labelling for its own use but cannot reach back and fix the
+    # corners the page keeps streaming — so the page has to say so.
+    assert "Press rotate labels until they match" in report
+
+
+def test_camera_page_calibration_walk_pauses_forwarding():
+    """A camera being carried around the table IS the mis-localised camera DESIGN §4.4.1
+    says to suppress: the crops would be geometrically wrong, and a confident lie
+    corrupts a downstream consumer's state in a way an honest gap does not."""
+    html = camera_html()
+    assert "const forwarding = streaming && !walk.active;" in html
+    end = html.split("function endWalk() {")[1].split("\n}\n")[0]
+    assert "if (streaming) forwarder.reset();" in end
+    start = html.split("function startWalk() {")[1].split("\n}\n")[0]
+    # An orbit with tracking off would send every vantage the first vantage's corners.
+    assert "if (!trackingOn()) setTracking(true);" in start
+    assert "The board must CURRENTLY show the STARTING position" in start
+
+
+def test_camera_page_lets_the_operator_choose_the_lens():
+    """iOS >= 16.3 exposes every rear lens, but nothing identifies which is the ultra
+    wide: deviceIds are per-session, labels are localised, order is not guaranteed. So
+    the operator picks — and the pick is remembered by LABEL, the only stable property."""
+    html = camera_html()
+    assert 'id="lens"' in html and 'id="lensBox"' in html
+    assert "ultra wide" in html                      # the hint names what to look for
+    assert "barrel distortion" in html               # ...and what it costs
+    open_camera = html.split("async function openCamera(deviceId) {")[1].split("\n}\n")[0]
+    # iOS hands out one camera at a time: the outgoing tracks must be stopped first.
+    assert "for (const track of cameraTracks) track.stop();" in open_camera
+    assert "deviceId: { exact: deviceId }" in open_camera
+    assert "tracker = null;" in open_camera          # new lens, new frame size, new view
+    assert 'localStorage.setItem(LENS_KEY, label)' in html
+    start = html.split("async function startCamera() {")[1].split("\n}\n")[0]
+    # Labels only exist after permission, so the remembered lens is a second pass.
+    assert "const lenses = await refreshLenses();" in start
+    assert "lenses.find((lens) => lens.label === saved)" in start
+    # A single-camera device gets no picker at all: a select with one option is furniture.
+    assert '$("lensBox").hidden = lenses.length < 2;' in html
 
 
 def test_camera_page_shows_what_the_reader_sees():

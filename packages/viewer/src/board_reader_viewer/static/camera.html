@@ -47,6 +47,7 @@
           padding: 12px; }
   .card h2 { font-size: 13px; color: var(--muted); font-weight: 600; margin-bottom: 8px;
              letter-spacing: .03em; text-transform: uppercase; }
+  .card h2 .chip { text-transform: none; letter-spacing: 0; margin-left: 8px; }
   .hint { color: var(--muted); font-size: 13px; margin: 8px 0 0; }
   .hint b { color: var(--warn); }
   .muted { color: var(--muted); }
@@ -89,6 +90,8 @@
                       pointer-events: none; }
   .quad-line { fill: rgba(42,110,240,.08); stroke: var(--accent-soft); stroke-width: 2;
                vector-effect: non-scaling-stroke; }
+  /* Tracking lost: the quad is frozen where it last fitted, and says so. */
+  .quad-line.lost { fill: rgba(255,143,143,.06); stroke: var(--bad); stroke-dasharray: 8 6; }
   .crop-line { fill: none; stroke: var(--warn); stroke-width: 1.5; stroke-dasharray: 7 6;
                opacity: .75; vector-effect: non-scaling-stroke; }
   .corner-handle { position: absolute; width: 34px; height: 34px; margin: -17px 0 0 -17px;
@@ -132,6 +135,27 @@
   .legend i { width: 9px; height: 9px; border-radius: 50%; display: inline-block;
               vertical-align: -1px; margin-right: 4px; background: var(--warn); }
 
+  /* ---- lens picker ------------------------------------------------------------
+     Hidden outright on a device with one camera: a select with a single option is
+     furniture, not a control. */
+  #lensBox[hidden] { display: none; }
+  .lens { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--muted);
+          margin-top: 10px; }
+  .lens select { flex: 1; min-width: 0; background: var(--panel-2); border: 1px solid var(--line);
+                 border-radius: 8px; color: var(--fg); font: inherit; font-size: 14px;
+                 padding: 10px; min-height: 44px; }
+
+  /* ---- the calibration walk ---------------------------------------------------
+     One slot per viewpoint the walk still wants, filled in with the shot as it is
+     taken: the operator can see how far round the board there is left to go. */
+  #walkPanel[hidden] { display: none; }
+  .shots { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 10px; }
+  .shot { width: 72px; height: 54px; border-radius: 6px; border: 1px solid var(--line);
+          object-fit: cover; }
+  .shot.slot { background: var(--panel-2); border-style: dashed; }
+  .walk-state { margin-top: 10px; font-size: 13px; color: var(--muted); }
+  .walk-state b { color: var(--fg); font-variant-numeric: tabular-nums; }
+
   /* ---- the explainer, shown when the camera is unreachable -------------------- */
   #blocked { display: none; }
   #blocked.on { display: block; border-color: #4a3a22; background: #201d16; }
@@ -157,7 +181,7 @@
   </section>
 
   <section id="stage" class="card">
-    <h2>Frame the board</h2>
+    <h2>Frame the board <span id="trackChip" class="chip">tracking off</span></h2>
     <div class="camera-stage" id="cameraStage">
       <video id="video" playsinline muted autoplay></video>
       <svg id="overlay" preserveAspectRatio="none" aria-hidden="true">
@@ -169,12 +193,26 @@
       Drag the four handles onto the playing surface's corners.
       <b>a8</b> is wherever <i>you</i> call a8 — use <b>rotate labels</b> if they sit wrong.
       The dashed box is what gets sent: it keeps headroom above the board so tall pieces
-      are not decapitated.
+      are not decapitated. Once set, the corners <b>follow the board</b> — move the phone
+      and they move with it, labels and all.
     </p>
     <div class="row" style="margin-top:10px">
       <button id="detect" class="secondary" type="button">detect board</button>
       <button id="rotate" class="secondary" type="button">rotate labels</button>
       <button id="resetCrop" class="text-btn" type="button">reset crop</button>
+      <button id="trackToggle" class="text-btn" type="button">tracking on</button>
+    </div>
+    <div id="lensBox" hidden>
+      <div class="lens">
+        <label for="lens">lens</label>
+        <select id="lens"></select>
+      </div>
+      <p class="hint">
+        An iPhone lists each rear lens separately. The <b>ultra wide</b> one fits a board
+        the main lens cannot from close up — at the cost of visible barrel distortion near
+        the frame edges, where the quad will fit the board less exactly. Keep the board
+        near the middle of the picture.
+      </p>
     </div>
   </section>
 
@@ -182,11 +220,9 @@
     <h2>Stream</h2>
     <div class="row">
       <button id="stream" type="button">start streaming</button>
-      <button id="calib" class="secondary" type="button">calibrate</button>
       <span class="board-id">board <input id="boardId" value="phone" autocapitalize="off"
         autocorrect="off" spellcheck="false" /></span>
     </div>
-    <div id="banner" class="banner"></div>
     <div class="status">
       <div class="stat"><div class="k">frames</div><div class="v" id="statSent">0 sent</div>
         <div class="k mono" id="statAck">acked —</div></div>
@@ -195,6 +231,30 @@
       <div class="stat"><div class="k">stability</div><div class="v" id="statStab">—</div>
         <div class="bar" id="stabBar"><i style="width:100%"></i></div></div>
     </div>
+  </section>
+
+  <section class="card" id="calibCard">
+    <h2>Calibrate</h2>
+    <p class="hint">
+      Set the board to the <b>starting position</b>, then walk slowly around it. The page
+      collects one frame per genuinely new vantage and adds every one of them to the piece
+      bank — a bank built from several angles keeps reading the board when the camera moves
+      or the light changes, which a single frame's does not. Streaming pauses while you walk.
+    </p>
+    <div class="row">
+      <button id="walk" type="button">start calibration walk</button>
+      <button id="calib" class="secondary" type="button">calibrate from this view</button>
+    </div>
+    <div id="walkPanel" hidden>
+      <div class="shots" id="shots"></div>
+      <div class="walk-state" id="walkState"></div>
+      <div class="row" style="margin-top:10px">
+        <button id="walkShot" class="secondary" type="button">capture now</button>
+        <button id="walkFinish" class="secondary" type="button">calibrate now</button>
+        <button id="walkCancel" class="text-btn" type="button">cancel</button>
+      </div>
+    </div>
+    <div id="banner" class="banner"></div>
   </section>
 
   <section class="card">
@@ -210,6 +270,7 @@
 
 <script type="module">
 import { Chessground } from "/static/vendor/chessground.min.js";
+import { PlaneTracker, toGray } from "/static/tracker.js";
 
 // ---- constants ---------------------------------------------------------------
 const CORNER_ORDER = ["a8", "h8", "h1", "a1"];   // = TL,TR,BR,BL of the canonical crop
@@ -239,6 +300,21 @@ const HEADROOM = 0.30;         // extra above the top edge, on top of MARGIN
 // reading staler; dropping is always better than queueing (DESIGN D3/D4).
 const MAX_BUFFERED = 192 * 1024;
 
+// Board tracking (DESIGN §4.4.1(a)). The working resolution is a compromise measured
+// rather than guessed: ~2 ms a frame here, so a phone stays inside the 50 ms the
+// capture loop has, while still giving Lucas-Kanade a square's worth of texture to
+// lock onto.
+const TRACK_LONG_SIDE = 400;
+const TRACK_SUBDIVISIONS = 1;  // seed points per square: 1 -> the 9x9 lattice of corners
+const TRACK_ITERATIONS = 10;
+const TRACK_SAVE_MS = 2000;    // a tracked quad is persisted at most this often
+
+// The calibration walk. WALK_MIN_SEP is measured on the quad's SHAPE (see quadShape),
+// so it is a threshold on the viewing angle, not on where the operator stands.
+const WALK_TARGET = 6;         // viewpoints; the start position holds all 13 classes each time
+const WALK_MIN_SEP = 0.14;
+const WALK_MIN_STABILITY = 0.92;   // stricter than MOVING_BELOW: an exemplar must be sharp
+
 const MOVING_BELOW = 0.7;      // ev.stability under this reads as "moving" (DESIGN D3)
 const LOW_CONF = 0.5;          // per-square max prob under this -> the square is ringed
 const RATE_WINDOW_MS = 3000;
@@ -256,6 +332,9 @@ const streamBtn = $("stream");
 const calibBtn = $("calib");
 const detectBtn = $("detect");
 const rotateBtn = $("rotate");
+const trackBtn = $("trackToggle");
+const walkBtn = $("walk");
+const lensSel = $("lens");
 const boardIdEl = $("boardId");
 const bannerEl = $("banner");
 const connEl = $("conn");
@@ -394,6 +473,7 @@ function attachHandleEvents(el, idx) {
     if (dragIdx !== idx) return;
     dragIdx = null;
     saveCorners();
+    anchorTracker();   // the operator has spoken: tracking continues from here
     draw();
   });
   el.addEventListener("pointercancel", () => { if (dragIdx === idx) dragIdx = null; });
@@ -402,6 +482,97 @@ function attachHandleEvents(el, idx) {
 new ResizeObserver(() => draw()).observe(cameraStage);
 video.addEventListener("contextmenu", (ev) => ev.preventDefault());
 document.addEventListener("dragstart", (ev) => ev.preventDefault());
+
+// ---- board tracking (DESIGN §4.4.1(a), "bump / drift") -----------------------
+// The quad is not a fixed crop. A phone gets nudged, and during a calibration walk it
+// is carried right around the table — so the corners follow the board plane frame to
+// frame instead of waiting for the operator to drag them back.
+//
+// Tracking rather than re-detecting, specifically: geometry cannot say which corner is
+// a8 (DESIGN decision #15), so a fresh detection returns an *unlabelled* quad and turns
+// a bump into a §4.4.1(b) reposition. A tracked quad carries its labels with it, which
+// is the only reason an orbit around the board is possible at all.
+const trackCanvas = document.createElement("canvas");
+const trackCtx = trackCanvas.getContext("2d", { willReadFrequently: true });
+let tracker = null;
+let trackState = "off";
+let trackGray = null;
+let lastCornerSave = 0;
+
+function trackingOn() { return trackBtn.dataset.on === "1"; }
+
+// Sized from the live frame, so a lens switch (a different resolution) rebuilds it.
+function ensureTracker() {
+  if (!video.videoWidth) return null;
+  const k = Math.min(1, TRACK_LONG_SIDE / Math.max(video.videoWidth, video.videoHeight));
+  const w = Math.max(1, Math.round(video.videoWidth * k));
+  const h = Math.max(1, Math.round(video.videoHeight * k));
+  if (tracker === null || tracker.width !== w || tracker.height !== h) {
+    trackCanvas.width = w;
+    trackCanvas.height = h;
+    trackGray = new Float32Array(w * h);
+    tracker = new PlaneTracker({ width: w, height: h, subdivisions: TRACK_SUBDIVISIONS,
+                                 lk: { iterations: TRACK_ITERATIONS } });
+    anchorTracker();
+  }
+  return tracker;
+}
+
+// Re-anchor on the operator's quad. Every deliberate corner change routes through here
+// — a handle drag, a detection, a reset, a board switch — so the operator always wins
+// against the tracker, and a drifted quad is one touch from correct.
+function anchorTracker() {
+  if (tracker === null || pts.length !== 4 || !video.videoWidth) return;
+  tracker.reset(pts.map(([x, y]) => [x / video.videoWidth, y / video.videoHeight]));
+  trackState = "seeded";
+}
+
+function trackFrame() {
+  if (!trackingOn()) { trackState = "off"; return; }
+  // A drag in progress is the operator moving the corners; the tracker must not fight
+  // for the same four numbers.
+  if (pts.length !== 4 || dragIdx !== null) return;
+  const t = ensureTracker();
+  if (t === null) return;
+  trackCtx.drawImage(video, 0, 0, trackCanvas.width, trackCanvas.height);
+  const { data } = trackCtx.getImageData(0, 0, trackCanvas.width, trackCanvas.height);
+  const result = t.update(toGray(data, trackGray));
+  trackState = result.state;
+  // Lost: the quad stays exactly where it last fitted. DESIGN §4.4.1 — a mis-localised
+  // camera produces confidently wrong crops, which is worse than an honest gap.
+  if (result.state !== "locked") return;
+  pts = result.corners.map(([x, y]) => [x * video.videoWidth, y * video.videoHeight]);
+  draw();
+  // Persisted on a timer, not per frame: this runs 20 times a second.
+  const now = performance.now();
+  if (now - lastCornerSave > TRACK_SAVE_MS) { lastCornerSave = now; saveCorners(); }
+}
+
+const TRACK_LABEL = {
+  off: ["tracking off", ""],
+  idle: ["tracking idle", ""],
+  seeded: ["tracking — locking on", "warn"],
+  locked: ["tracking — locked", "up"],
+  lost: ["tracking — lost, quad frozen", "bad"],
+};
+
+function paintTracking() {
+  const [text, kind] = TRACK_LABEL[trackState] ?? TRACK_LABEL.idle;
+  const chip = $("trackChip");
+  chip.textContent = text;
+  chip.className = "chip" + (kind ? " " + kind : "");
+  quadPoly.classList.toggle("lost", trackState === "lost");
+}
+
+function setTracking(on) {
+  trackBtn.dataset.on = on ? "1" : "0";
+  trackBtn.textContent = on ? "tracking on" : "tracking off";
+  try { localStorage.setItem("board-reader.camera.tracking", on ? "1" : "0"); } catch {}
+  if (on) anchorTracker(); else trackState = "off";
+  paintTracking();
+}
+
+trackBtn.addEventListener("click", () => setTracking(!trackingOn()));
 
 // ---- motion meter (JS mirror of board_reader_edge.motion.MotionMeter) ----------
 // Same two steps as the edge: a saturating gain curve turns the mean absolute
@@ -522,7 +693,7 @@ let reconnectMs = RECONNECT_MIN_MS;
 let seq = 0, sent = 0, acked = null, dropped = 0;
 let encoding = false;
 let stamps = [];           // send times still inside the rate window
-let captureTimer = null;
+let frameTimer = null;
 let wakeLock = null;
 
 function setConn(text, kind) {
@@ -577,11 +748,23 @@ async function sendFrame(decision, captureTs) {
   stamps.push(performance.now());
 }
 
-function captureTick() {
-  if (!streaming || !video.videoWidth || pts.length !== 4) return;
+// The one loop. It runs from the moment the camera is live rather than from the moment
+// streaming starts, because tracking, the stability reading and the calibration walk are
+// all live instruments in their own right — the stream is only one of its consumers.
+function frameTick() {
+  if (!video.videoWidth || pts.length !== 4) return;
   const captureTs = Date.now() / 1000;
-  const decision = forwarder.decide(video, { boardId: boardId(), captureTs });
+  trackFrame();
+  // Forwarding pauses for the length of a calibration walk: a camera being carried
+  // around the table is exactly the mis-localised camera DESIGN §4.4.1 says to
+  // suppress rather than stream through.
+  const forwarding = streaming && !walk.active;
+  const decision = forwarding
+    ? forwarder.decide(video, { boardId: boardId(), captureTs })
+    : (meter.update(video), null);
   paintStability();
+  paintTracking();
+  walkTick();
   if (decision === null) return;
   if (ws === null || ws.readyState !== WebSocket.OPEN) return;
   // A frame still in the encoder, or a link already behind, means another frame would
@@ -589,6 +772,11 @@ function captureTick() {
   if (encoding || ws.bufferedAmount > MAX_BUFFERED) { dropped++; return; }
   encoding = true;
   sendFrame(decision, captureTs).finally(() => { encoding = false; });
+}
+
+function startFrameLoop() {
+  if (frameTimer !== null) return;
+  frameTimer = setInterval(frameTick, Math.round(1000 / CAPTURE_FPS));
 }
 
 function connectIngest() {
@@ -645,14 +833,11 @@ function startStreaming() {
   setConn("connecting…", "warn");
   connectIngest();
   acquireWakeLock();
-  captureTimer = setInterval(captureTick, Math.round(1000 / CAPTURE_FPS));
   updateControls();
 }
 
 function stopStreaming() {
   streaming = false;
-  clearInterval(captureTimer);
-  captureTimer = null;
   if (ws !== null) { const s = ws; ws = null; s.close(); }
   wakeLock?.release?.().catch(() => {});
   wakeLock = null;
@@ -699,8 +884,11 @@ let calibBusy = false;
 // settled view of a real starting position — anything else poisons the bank with motion
 // blur or a half-set-up board. The reason is the button's title, never a silent disable.
 function calibBlockReason() {
-  if (calibBusy) return "calibrating…";
-  if (!streaming) return "start streaming first — calibration reads the live camera";
+  if (calibBusy || walk.sending) return "calibrating…";
+  if (walk.active) return "a calibration walk is under way";
+  // Calibration reads the live camera directly, not the stream — it needs the camera
+  // running, which is a weaker and more honest requirement than needing the socket up.
+  if (!video.videoWidth) return "the camera is not running";
   if (pts.length !== 4) return "set the four board corners first";
   if (meter.stability < MOVING_BELOW)
     return "the board is moving — calibrate with the pieces at rest";
@@ -714,6 +902,7 @@ function updateControls() {
     "rebuild the piece bank from the live camera (the board must show the starting position)";
   detectBtn.disabled = !video.videoWidth;
   rotateBtn.disabled = pts.length !== 4;
+  walkBtn.disabled = walk.active || !video.videoWidth || pts.length !== 4;
 }
 
 async function calibrate() {
@@ -756,6 +945,220 @@ async function calibrate() {
 }
 calibBtn.addEventListener("click", calibrate);
 
+// ---- the calibration walk ----------------------------------------------------
+// One photo teaches the bank the whole 13-class vocabulary (that is what the start
+// position is for), but only from one angle, in one light. POST /calibrate is
+// ADDITIVE — each photo's exemplars are appended rather than replacing what is there —
+// so several photos from genuinely different vantages are what make recognition hold up
+// when the camera later moves. The walk is that, made into one gesture: set the board
+// up, press start, carry the phone round the table.
+//
+// It leans entirely on tracking: the corners follow the board as the operator moves, so
+// every shot arrives already labelled and no vantage needs the quad re-declared.
+const walk = { active: false, busy: false, sending: false, shots: [] };
+
+// A quad with translation and scale divided out — what is left is its SHAPE, which is
+// the viewing angle and nothing else. Two shots a step apart at the same angle describe
+// the same view of the board and would only teach the bank the same thing twice.
+function quadShape(quad) {
+  const cx = quad.reduce((s, p) => s + p[0], 0) / 4;
+  const cy = quad.reduce((s, p) => s + p[1], 0) / 4;
+  const radii = quad.map(([x, y]) => [x - cx, y - cy]);
+  const scale = Math.sqrt(radii.reduce((s, [x, y]) => s + x * x + y * y, 0) / 4) || 1;
+  return radii.map(([x, y]) => [x / scale, y / scale]);
+}
+
+function shapeDistance(a, b) {
+  let sum = 0;
+  for (let i = 0; i < 4; i++) sum += Math.hypot(a[i][0] - b[i][0], a[i][1] - b[i][1]);
+  return sum / 4;
+}
+
+// Why this frame is not being collected, in the operator's terms. Shown live, so a walk
+// that has stalled says what it is waiting for instead of just not progressing.
+function walkHold() {
+  if (walk.shots.length >= WALK_TARGET) return "enough viewpoints";
+  if (trackState === "lost") return "the board is lost — hold still until tracking re-locks";
+  if (trackState !== "locked") return "finding the board…";
+  if (meter.stability < WALK_MIN_STABILITY)
+    return "hold still — a moving frame makes a blurred exemplar";
+  const shape = quadShape(orderedCorners());
+  for (const shot of walk.shots) {
+    if (shapeDistance(shape, shot.shape) < WALK_MIN_SEP) {
+      return "keep going round — this is a view already taken";
+    }
+  }
+  return null;
+}
+
+function walkTick() {
+  if (!walk.active || walk.sending || walk.busy) return;
+  const hold = walkHold();
+  $("walkState").innerHTML = `captured <b>${walk.shots.length}</b> of `
+    + `<b>${WALK_TARGET}</b> — ${hold ?? "capturing this view…"}`;
+  if (hold === null) { walkCapture(); return; }
+  if (walk.shots.length >= WALK_TARGET) walkSend();
+}
+
+function walkThumb(source) {
+  const box = cropBox();
+  const canvas = document.createElement("canvas");
+  canvas.width = 72;
+  canvas.height = 54;
+  canvas.getContext("2d").drawImage(source, box.x, box.y, box.w, box.h, 0, 0, 72, 54);
+  return canvas.toDataURL("image/jpeg", 0.6);
+}
+
+async function walkCapture() {
+  if (walk.busy || walk.shots.length >= WALK_TARGET) return;
+  walk.busy = true;
+  try {
+    // Full resolution, as the single-frame path is: calibration reads one exemplar per
+    // square and every pixel of a piece is evidence.
+    const full = document.createElement("canvas");
+    full.width = video.videoWidth;
+    full.height = video.videoHeight;
+    full.getContext("2d").drawImage(video, 0, 0);
+    // Read beside the drawImage that fixed the pixels, and copied: the tracker moves the
+    // corners 20 times a second, and a shot must never pair one view's quad with
+    // another view's pixels.
+    const corners = orderedCorners().map(([x, y]) => [x, y]);
+    const thumb = walkThumb(full);
+    const blob = await toBlob(full, 0.95);
+    if (blob === null) return;
+    walk.shots.push({ blob, corners, shape: quadShape(corners), thumb });
+    renderWalk();
+  } finally {
+    walk.busy = false;
+  }
+}
+
+// Sent one at a time, deliberately: each POST rebuilds the node's running estimator
+// around the extended bank, and concurrent writes would race that swap.
+async function walkSend() {
+  if (walk.sending || walk.shots.length === 0) return;
+  walk.sending = true;
+  renderWalk();
+  updateControls();
+  const results = [];
+  let rotated = 0;
+  try {
+    for (const [i, shot] of walk.shots.entries()) {
+      $("walkState").innerHTML = `sending viewpoint <b>${i + 1}</b> of `
+        + `<b>${walk.shots.length}</b>…`;
+      const qs = shot.corners.flat().map(Math.round).join(",");
+      try {
+        const r = await fetch(`/api/calibrate?corners=${qs}`, {
+          method: "POST", body: shot.blob, headers: { "Content-Type": "image/jpeg" },
+        });
+        const d = await r.json().catch(() => ({}));
+        // A refusal is per viewpoint, never fatal: the node rejects a frame it cannot
+        // read as the start position (too flat an angle, a hand in the way), and the
+        // other vantages are still perfectly good calibration.
+        if (!r.ok) { results.push({ ok: false, why: d.error ?? `HTTP ${r.status}` }); continue; }
+        results.push({ ok: true, exemplars: d.exemplars, classes: d.classes_calibrated });
+        if (d.label_rotation) rotated = d.label_rotation;
+      } catch (e) {
+        results.push({ ok: false, why: `${e} — is the inference node reachable?` });
+      }
+    }
+  } finally {
+    walk.sending = false;
+  }
+  reportWalk(results, rotated);
+  endWalk();
+}
+
+function reportWalk(results, rotated) {
+  const accepted = results.filter((r) => r.ok);
+  const refused = results.filter((r) => !r.ok);
+  const detail = refused.length
+    ? "\nRefused:\n" + refused.map((r) => "- " + r.why).join("\n") : "";
+  if (accepted.length === 0) {
+    showBanner("err", "No viewpoint was accepted, so the bank is unchanged." + detail);
+    return;
+  }
+  const last = accepted[accepted.length - 1];
+  let text = `Calibrated from ${accepted.length} of ${results.length} viewpoints — `
+    + `${last.classes}/13 classes on the last, bank now holds ${last.exemplars} exemplars.`
+    + detail;
+  // The node corrects the labelling for its own use, but it cannot reach back and fix
+  // the corners this page keeps streaming — so say so rather than let the live position
+  // come out rotated.
+  if (rotated) {
+    text += `\nThe node had to turn the corner labels by ${rotated * 90} degrees to read `
+      + "the board. Press rotate labels until they match, or the live stream reads rotated.";
+  }
+  showBanner(refused.length || rotated ? "warn" : "ok", text);
+}
+
+function renderWalk() {
+  const shots = $("shots");
+  shots.innerHTML = "";
+  for (let i = 0; i < WALK_TARGET; i++) {
+    const shot = walk.shots[i];
+    if (shot === undefined) {
+      const slot = document.createElement("div");
+      slot.className = "shot slot";
+      shots.appendChild(slot);
+      continue;
+    }
+    const img = document.createElement("img");
+    img.className = "shot";
+    img.src = shot.thumb;
+    img.alt = `viewpoint ${i + 1}`;
+    shots.appendChild(img);
+  }
+  $("walkShot").disabled = walk.sending || walk.shots.length >= WALK_TARGET;
+  $("walkFinish").disabled = walk.sending || walk.shots.length === 0;
+  $("walkCancel").disabled = walk.sending;
+}
+
+function startWalk() {
+  if (!confirm(
+    "Start a calibration walk?\n\n" +
+    "The board must CURRENTLY show the STARTING position. Walk slowly around it — the " +
+    "page collects a frame from each new vantage and adds all of them to the node's " +
+    "piece bank. Streaming pauses until the walk finishes.")) return;
+  walk.active = true;
+  walk.shots = [];
+  // An orbit with tracking off would send every vantage the first vantage's corners.
+  if (!trackingOn()) setTracking(true);
+  anchorTracker();
+  $("walkPanel").hidden = false;
+  walkBtn.textContent = "walking…";
+  renderWalk();
+  updateControls();
+}
+
+function endWalk() {
+  walk.active = false;
+  walk.shots = [];
+  $("walkPanel").hidden = true;
+  walkBtn.textContent = "start calibration walk";
+  // Re-anchor rather than resume: the forwarder's rate state was decided about a scene
+  // from before the walk, and the meter has been watching a moving camera throughout.
+  if (streaming) forwarder.reset();
+  renderWalk();
+  updateControls();
+}
+
+walkBtn.addEventListener("click", startWalk);
+
+// A forced shot skips the "same view again" rule — the operator can see something the
+// shape metric cannot — but never the at-rest and tracking rules, which exist to keep
+// unusable exemplars out of the bank.
+$("walkShot").addEventListener("click", () => {
+  if (!walk.active || walk.sending || walk.busy) return;
+  if (trackState !== "locked" || meter.stability < WALK_MIN_STABILITY) {
+    showBanner("warn", "not yet — hold the phone still until tracking is locked");
+    return;
+  }
+  walkCapture();
+});
+$("walkFinish").addEventListener("click", () => { if (walk.active) walkSend(); });
+$("walkCancel").addEventListener("click", () => { if (!walk.sending) endWalk(); });
+
 // ---- detect ------------------------------------------------------------------
 // Geometry cannot know which corner is a8 (DESIGN decision #15), so a detection replaces
 // the quad but never the labelling — that stays the operator's, via rotate labels.
@@ -785,6 +1188,7 @@ async function detectCorners() {
     }
     pts = corners.map(([x, y]) => [Math.round(x / k), Math.round(y / k)]);
     saveCorners();
+    anchorTracker();
     draw();
     showBanner("ok", "Board found. Check the labels — geometry cannot tell which corner "
       + "is a8; use rotate labels if they sit wrong.");
@@ -802,7 +1206,12 @@ rotateBtn.addEventListener("click", () => {
   draw();
 });
 
-$("resetCrop").addEventListener("click", () => { defaultCorners(); saveCorners(); draw(); });
+$("resetCrop").addEventListener("click", () => {
+  defaultCorners();
+  saveCorners();
+  anchorTracker();
+  draw();
+});
 
 // The crop belongs to the board, not to the page: switching board id swaps in that
 // board's saved quad (and remembers the id itself for the next visit).
@@ -811,6 +1220,7 @@ boardIdEl.addEventListener("change", () => {
   try { localStorage.setItem("board-reader.camera.board", boardId()); } catch {}
   if (!loadCorners()) defaultCorners();
   saveCorners();
+  anchorTracker();
   draw();
 });
 
@@ -891,6 +1301,7 @@ function block(title, bodyHtml) {
   $("blockedBody").innerHTML = bodyHtml;
   $("blocked").classList.add("on");
   $("stage").style.display = "none";
+  $("calibCard").style.display = "none";
   streamBtn.disabled = true;
   detectBtn.disabled = true;
 }
@@ -925,6 +1336,76 @@ function captureFailureHtml(err) {
     <p class="muted mono">${name}: ${String(err?.message ?? err ?? "")}</p>`;
 }
 
+// ---- lens selection ----------------------------------------------------------
+// An iPhone from iOS 16.3 on exposes every rear lens through enumerateDevices — but
+// only once a getUserMedia call has populated the labels, and with no way at all to
+// tell programmatically which one is the ultra wide: the deviceIds are regenerated per
+// session, the labels are localised, and the list order is not guaranteed across models.
+// So the operator chooses, and the choice is remembered by LABEL — the only property of
+// a camera that survives a reload. (Digital zoom is not an alternative: iOS Safari does
+// not implement the `zoom` track capability.)
+const LENS_KEY = "board-reader.camera.lens";
+let cameraTracks = [];
+
+function currentDeviceId() { return cameraTracks[0]?.getSettings?.().deviceId ?? null; }
+
+async function listLenses() {
+  if (!navigator.mediaDevices?.enumerateDevices) return [];
+  try {
+    return (await navigator.mediaDevices.enumerateDevices())
+      .filter((d) => d.kind === "videoinput");
+  } catch { return []; }
+}
+
+async function refreshLenses() {
+  const lenses = await listLenses();
+  const active = currentDeviceId();
+  lensSel.innerHTML = "";
+  lenses.forEach((lens, i) => {
+    const option = document.createElement("option");
+    option.value = lens.deviceId;
+    option.textContent = lens.label || `camera ${i + 1}`;
+    lensSel.appendChild(option);
+  });
+  if (active !== null) lensSel.value = active;
+  $("lensBox").hidden = lenses.length < 2;
+  return lenses;
+}
+
+async function openCamera(deviceId) {
+  // iOS hands out one camera at a time: the outgoing tracks must be stopped before the
+  // next request, or it fails with the device busy.
+  for (const track of cameraTracks) track.stop();
+  cameraTracks = [];
+  const stream = await navigator.mediaDevices.getUserMedia({
+    video: deviceId !== null
+      ? { deviceId: { exact: deviceId }, width: { ideal: 1920 }, height: { ideal: 1080 } }
+      // `ideal`, not `exact`: a laptop with only a front camera should still get a
+      // preview rather than an OverconstrainedError.
+      : { facingMode: { ideal: "environment" },
+          width: { ideal: 1920 }, height: { ideal: 1080 } },
+    audio: false,
+  });
+  cameraTracks = stream.getTracks();
+  video.srcObject = stream;
+  await video.play().catch(() => {});   // autoplay policy: muted+playsinline is enough
+  tracker = null;   // a new lens is a new frame size and a new view: nothing carries over
+}
+
+lensSel.addEventListener("change", async () => {
+  const label = lensSel.selectedOptions[0]?.textContent ?? "";
+  saveCorners();   // the crop belongs to the board, and is restored at the new resolution
+  try {
+    await openCamera(lensSel.value);
+    try { localStorage.setItem(LENS_KEY, label); } catch {}
+    showBanner("ok", `Switched to ${label}. Check the corners still sit on the board.`);
+  } catch (e) {
+    showBanner("err", `That lens refused to open (${e?.name ?? e}); staying on the last one.`);
+    await openCamera(null).catch(() => {});
+  }
+  await refreshLenses();
+});
+
 async function startCamera() {
   if (!window.isSecureContext) { block("Camera blocked: insecure context", INSECURE_HTML); return; }
   if (!navigator.mediaDevices?.getUserMedia) {
@@ -932,28 +1413,38 @@ async function startCamera() {
     return;
   }
   try {
-    // `ideal`, not `exact`: a laptop with only a front camera should still get a preview
-    // rather than an OverconstrainedError.
-    const stream = await navigator.mediaDevices.getUserMedia({
-      video: { facingMode: { ideal: "environment" },
-               width: { ideal: 1920 }, height: { ideal: 1080 } },
-      audio: false,
-    });
-    video.srcObject = stream;
-    await video.play().catch(() => {});   // autoplay policy: muted+playsinline is enough
+    await openCamera(null);
   } catch (e) {
     block("Camera unavailable", captureFailureHtml(e));
+    return;
   }
+  // Labels only exist once permission has been granted, so the remembered lens can only
+  // be honoured on a second pass — after a camera, any camera, is already open.
+  const lenses = await refreshLenses();
+  let saved = null;
+  try { saved = localStorage.getItem(LENS_KEY); } catch {}
+  const wanted = saved ? lenses.find((lens) => lens.label === saved) : undefined;
+  if (wanted !== undefined && wanted.deviceId !== currentDeviceId()) {
+    try { await openCamera(wanted.deviceId); } catch { /* gone: stay where we are */ }
+    await refreshLenses();
+  }
+  navigator.mediaDevices.addEventListener?.("devicechange", refreshLenses);
 }
 
-// Corner state needs the real frame size, which only exists once metadata has loaded.
+// Corner state needs the real frame size, which only exists once metadata has loaded —
+// and so does the tracker, which is sized from it.
 video.addEventListener("loadedmetadata", () => {
   if (!loadCorners()) defaultCorners();
   draw();
+  ensureTracker();
+  startFrameLoop();
   updateControls();
 });
 
 try { boardIdEl.value = localStorage.getItem("board-reader.camera.board") || "phone"; } catch {}
+let trackingPreference = "1";
+try { trackingPreference = localStorage.getItem("board-reader.camera.tracking") ?? "1"; } catch {}
+setTracking(trackingPreference !== "0");
 
 updateControls();
 startCamera();

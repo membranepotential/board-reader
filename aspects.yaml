@@ -117,8 +117,9 @@ aspects:
 
   viewer:
     description: >-
-      board_reader_viewer — the live-position UI and the /snapshot phone page,
-      plus vendored chessground.
+      board_reader_viewer — the live-position UI, the /snapshot phone page and
+      the /camera browser edge (board-plane tracker, calibration walk, lens
+      picker), plus vendored chessground.
     files: ["packages/viewer/src/**"]
     affects:
       - aspect: tests
