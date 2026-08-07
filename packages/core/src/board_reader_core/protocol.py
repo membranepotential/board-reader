@@ -34,6 +34,28 @@ GRID = 8  # board is 8x8
 START_PLACEMENT = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR"
 EMPTY_PLACEMENT = "8/8/8/8/8/8/8/8"
 
+FILES = "abcdefgh"
+
+
+def square_name(row: int, col: int) -> str:
+    """Algebraic name of grid cell ``(row, col)`` — row 0 is rank 8, col 0 is file a.
+
+    The grid frame is the one every ``square_dist`` is expressed in, so this is
+    contract material: it lives here rather than being re-derived in each consumer
+    that wants to name a square (it was independently spelled out in four modules
+    before it moved).
+    """
+    if not (0 <= row < GRID and 0 <= col < GRID):
+        raise ValueError(f"({row}, {col}) is off an {GRID}x{GRID} board")
+    return f"{FILES[col]}{GRID - row}"
+
+
+def square_name_at(index: int) -> str:
+    """Algebraic name of the ``index``-th square in row-major (rank 8 first) order."""
+    if not 0 <= index < GRID * GRID:
+        raise ValueError(f"square index {index} is off the board")
+    return square_name(index // GRID, index % GRID)
+
 # ``status`` deliberately has no ``illegal`` value — legality is not ours to judge
 # (DESIGN.md §5). An illegal-looking placement is reported as ``ok``.
 VALID_STATUS: tuple[str, ...] = ("ok", "recalibrating", "needs_setup", "stale")
@@ -153,7 +175,7 @@ class ClockState:
         return {"running": self.running}
 
     @classmethod
-    def from_dict(cls, d: dict | None) -> "ClockState":
+    def from_dict(cls, d: dict | None) -> ClockState:
         if not d:
             return cls()
         return cls(running=d.get("running", "none"))
@@ -191,7 +213,7 @@ class PositionEvent:
         status: str = "ok",
         orientation: str = DEFAULT_ORIENTATION,
         confidence_reduce: str = "mean",
-    ) -> "PositionEvent":
+    ) -> PositionEvent:
         arr = np.asarray(square_dist, dtype=np.float32)
         if arr.shape != (GRID, GRID, NUM_CLASSES):
             raise ValueError(
@@ -210,7 +232,7 @@ class PositionEvent:
             orientation=orientation,
         )
 
-    def validate(self) -> "PositionEvent":
+    def validate(self) -> PositionEvent:
         """Structural self-check; raises ``ValueError`` on any violation. Returns self."""
         arr = np.asarray(self.square_dist)
         if arr.shape != (GRID, GRID, NUM_CLASSES):
@@ -256,7 +278,7 @@ class PositionEvent:
         return json.dumps(self.to_dict())
 
     @classmethod
-    def from_dict(cls, d: dict) -> "PositionEvent":
+    def from_dict(cls, d: dict) -> PositionEvent:
         classes = d.get("classes")
         if classes is not None and tuple(classes) != CLASSES:
             raise ValueError("event 'classes' does not match this protocol's CLASSES")
@@ -275,5 +297,5 @@ class PositionEvent:
         )
 
     @classmethod
-    def from_json(cls, s: str) -> "PositionEvent":
+    def from_json(cls, s: str) -> PositionEvent:
         return cls.from_dict(json.loads(s))

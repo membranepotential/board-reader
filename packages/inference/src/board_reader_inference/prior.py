@@ -52,6 +52,7 @@ from board_reader_core.protocol import (
     GRID,
     NUM_CLASSES,
     encode_placement,
+    square_name_at,
 )
 
 #: Floor under a probability before taking its log — an estimator may emit an
@@ -190,9 +191,11 @@ class PriorDecode:
         }
 
 
-def square_name(index: int) -> str:
-    """Flat square index (row 0 = rank 8, col 0 = file a) -> algebraic name."""
-    return f"{'abcdefgh'[index % GRID]}{GRID - index // GRID}"
+#: Flat square index (row 0 = rank 8, col 0 = file a) -> algebraic name. The
+#: derivation is the protocol's (it names squares in the grid frame every
+#: ``square_dist`` uses); re-exported here because the flip records read best
+#: beside the constraints that produce them.
+square_name = square_name_at
 
 
 def tally(labels: np.ndarray, *, oriented: bool = True) -> Tally:

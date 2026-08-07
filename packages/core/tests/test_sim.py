@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import inspect
+import itertools
 
 import cv2
 import numpy as np
@@ -95,7 +96,7 @@ def test_sample_game_starts_from_the_start_position():
 
 def test_sample_game_advances_by_one_move_effect_per_entry():
     """Every consecutive pair differs by exactly one piece leaving and arriving."""
-    for before, after in zip(SAMPLE_GAME_PLACEMENTS, SAMPLE_GAME_PLACEMENTS[1:]):
+    for before, after in itertools.pairwise(SAMPLE_GAME_PLACEMENTS):
         assert len(_changed_squares(before, after)) == 2, (before, after)
 
 
@@ -107,7 +108,7 @@ def test_sample_game_contains_a_capture_and_a_pawn_move():
     assert min(counts) < counts[0], "no capture: the piece count never drops"
 
     pawn_moved = False
-    for before, after in zip(SAMPLE_GAME_PLACEMENTS, SAMPLE_GAME_PLACEMENTS[1:]):
+    for before, after in itertools.pairwise(SAMPLE_GAME_PLACEMENTS):
         grid = parse_placement(before)
         vacated = [
             grid[r][c]
@@ -166,7 +167,7 @@ def test_transition_frames_carry_far_more_motion_than_settled_frames():
             square_px=SQ,
         )
     )
-    steps = [_mean_abs_diff(a, b) for a, b in zip(frames, frames[1:])]
+    steps = [_mean_abs_diff(a, b) for a, b in itertools.pairwise(frames)]
     settled = steps[: fpp - 1] + steps[fpp + tf :]
     transition = steps[fpp - 1 : fpp + tf]
     assert max(settled) > 0.0, "settled frames should still carry sensor noise"
