@@ -1,6 +1,6 @@
 # board-reader — one command to run it locally.
 #
-#   make dev     start inference + viewer; Ctrl-C stops both
+#   make dev     start inference + both viewers; Ctrl-C stops all three
 #   make stop    stop anything left running
 #   make test     the suite in parallel, minus the GPU tests
 #   make test-gpu the GPU tests alone (needs an idle GPU)
@@ -12,7 +12,24 @@
 # part of the product, so it belongs here rather than in a shell snippet you have
 # to remember.
 #
-# Teardown kills the two children by PID, never `kill 0`: the process group
+# The viewer runs TWICE, on purpose — http and https are not interchangeable here:
+#
+#   * /camera needs a SECURE context (getUserMedia is refused over plain http on a
+#     phone) and it is same-origin throughout: every endpoint it touches is relayed
+#     by the viewer itself (packages/viewer/.../proxy.py). So it works over https,
+#     with the cached self-signed cert `--ssl` mints.
+#   * / and /snapshot are NOT same-origin: they talk to the inference node directly
+#     (index.html's `ws://…:8000/viewer`, snapshot.html's `http://…:8000/estimate`).
+#     Served over https those become blocked mixed content, and the inference node
+#     has no TLS of its own to upgrade them to.
+#
+# One viewer therefore cannot serve all three pages. Two binds of the same process
+# can, and they share the one certificate, so the phone still warns only once.
+# Collapsing this back to a single https origin means relaying the rest of the
+# inference API through the viewer and repointing both pages at it — a work package,
+# not a Makefile line.
+#
+# Teardown kills the three children by PID, never `kill 0`: the process group
 # includes this shell, so a group kill re-enters its own TERM trap, which kills
 # the group again — bash recurses until it overflows its stack and segfaults.
 # The trap disarms itself first for the same reason.
@@ -29,29 +46,38 @@ BR_MODEL        ?= models/run_e/model.onnx
 BR_SESSION_BANK ?= models/exemplars_session.npz
 BR_SAVE_UPLOADS ?= data/uploads
 
+INFERENCE_PORT  ?= 8000
+VIEWER_PORT     ?= 8080
+VIEWER_TLS_PORT ?= 8443
+
 dev:
 	@test -f "$(BR_MODEL)" || echo "!! $(BR_MODEL) missing — server will degrade to the stub"
 	@test -f "$(BR_SESSION_BANK)" || echo "!! $(BR_SESSION_BANK) missing — trained model only, no ensemble"
-	@echo "  snapshot   http://$(HOST):8080/snapshot"
-	@echo "  live       http://$(HOST):8080"
-	@echo "  inference  http://$(HOST):8000"
+	@echo "  camera     https://$(HOST):$(VIEWER_TLS_PORT)/camera   (accept the warning once)"
+	@echo "  snapshot   http://$(HOST):$(VIEWER_PORT)/snapshot"
+	@echo "  live       http://$(HOST):$(VIEWER_PORT)"
+	@echo "  inference  http://$(HOST):$(INFERENCE_PORT)"
 	@BR_MODEL=$(BR_MODEL) \
 	BR_SESSION_BANK=$(BR_SESSION_BANK) \
 	BR_SAVE_UPLOADS=$(BR_SAVE_UPLOADS) \
-	  uv run board-reader-inference serve --host 0.0.0.0 --port 8000 & \
+	  uv run board-reader-inference serve --host 0.0.0.0 --port $(INFERENCE_PORT) & \
 	inference=$$!; \
-	BR_INFERENCE_HTTP=http://$(HOST):8000 \
-	BR_INFERENCE_WS=ws://$(HOST):8000/viewer \
-	  uv run board-reader-viewer --host 0.0.0.0 --port 8080 & \
+	BR_INFERENCE_HTTP=http://$(HOST):$(INFERENCE_PORT) \
+	BR_INFERENCE_WS=ws://$(HOST):$(INFERENCE_PORT)/viewer \
+	  uv run board-reader-viewer --host 0.0.0.0 --port $(VIEWER_PORT) & \
 	viewer=$$!; \
-	trap 'kill $$inference $$viewer 2>/dev/null; \
-	      wait $$inference $$viewer 2>/dev/null' EXIT; \
+	BR_INFERENCE_HTTP=http://$(HOST):$(INFERENCE_PORT) \
+	BR_INFERENCE_WS=ws://$(HOST):$(INFERENCE_PORT)/viewer \
+	  uv run board-reader-viewer --host 0.0.0.0 --port $(VIEWER_TLS_PORT) --ssl & \
+	secure=$$!; \
+	trap 'kill $$inference $$viewer $$secure 2>/dev/null; \
+	      wait $$inference $$viewer $$secure 2>/dev/null' EXIT; \
 	trap 'trap - EXIT INT TERM; \
-	      kill $$inference $$viewer 2>/dev/null; \
-	      wait $$inference $$viewer 2>/dev/null; \
+	      kill $$inference $$viewer $$secure 2>/dev/null; \
+	      wait $$inference $$viewer $$secure 2>/dev/null; \
 	      exit 0' INT TERM; \
 	wait -n; status=$$?; \
-	echo "!! a server exited on its own (status $$status) — stopping the other"; \
+	echo "!! a server exited on its own (status $$status) — stopping the others"; \
 	exit $$status
 
 # `-n auto` (pytest-xdist) fans the suite across every core: ~23s -> ~10s here.

@@ -18,8 +18,10 @@ must stay in sync with which.
    both automated tests **and** a path in [docs/TESTING.md](docs/TESTING.md). The
    walking skeleton (M0) exists precisely to make this true from day one.
 2. **Everything is tested.** No feature merges without tests. `uv run pytest` is
-   green before any commit. Logic-heavy code gets unit tests; the pipe gets an
-   end-to-end test.
+   green before any commit **that changes something the suite covers**. Don't run
+   it when nothing testable changed — a docs, comment, `Makefile` or `STATUS.md`
+   edit is not a reason to spend a suite run. Logic-heavy code gets unit tests;
+   the pipe gets an end-to-end test.
 3. **Milestones are the build order; work packages are not.** Implement in
    **M0→M7** order (DESIGN §7). The **WP-A…WP-I** packages (DESIGN §8) are a
    decomposition by component, *not* a sequence — pull from them per milestone.
@@ -60,7 +62,11 @@ make test-all                 # everything, GPU included
 uv run pytest                 # the same suite, serially (~23s)
 uv run pytest packages/core   # one package's tests
 
-# Run locally without Docker (two terminals):
+# Run locally (one terminal): inference + viewer on http :8080 (live, /snapshot)
+# and a second viewer bind on https :8443, whose secure origin /camera needs.
+make dev
+
+# Or by hand, without Docker (two terminals):
 uv run board-reader-inference serve            # gateway on :8000
 uv run board-reader-edge feed                  # synthetic feed -> :8000
 uv run board-reader-viewer --port 8080         # UI on :8080  -> open it

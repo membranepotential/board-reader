@@ -446,18 +446,36 @@ Point a phone at a real board and stream it live — capture, crop and adaptive
 forwarding all happen in the phone's browser; the desktop shows the position
 evolving on the live viewer.
 
+`make dev` sets all of this up — it starts inference plus **two** binds of the
+viewer and prints the URL for each page:
+
+```bash
+make dev
+#   camera     https://<lan-ip>:8443/camera   (accept the warning once)
+#   snapshot   http://<lan-ip>:8080/snapshot
+#   live       http://<lan-ip>:8080
+```
+
+The camera page gets its own https origin because it is the only page that needs
+one: `getUserMedia` is refused outside a secure context, and every endpoint
+`/camera` touches is relayed by the viewer itself, so https costs it nothing.
+`/` and `/snapshot` call the inference node directly, which has no TLS — over
+https their requests would be blocked as mixed content, so they stay on http.
+
+By hand, if you want different ports or only the camera:
+
 ```bash
 # 1. Inference with real recognition (same env as Option H):
 BR_MODEL=models/run_e/model.onnx uv run board-reader-inference serve --host 0.0.0.0
 
 # 2. Viewer with TLS — getUserMedia requires a secure context on a phone:
 BR_INFERENCE_WS=ws://localhost:8000/viewer BR_INFERENCE_HTTP=http://localhost:8000 \
-uv run board-reader-viewer --host 0.0.0.0 --port 8080 --ssl
-# it prints the https://<lan-ip>:8080/camera URLs to type on the phone
+uv run board-reader-viewer --host 0.0.0.0 --port 8443 --ssl
+# it prints the https://<lan-ip>:8443/camera URLs to type on the phone
 
 # 3. On the phone: open the printed URL, accept the self-signed certificate once.
-#    (Android over USB instead: `adb reverse tcp:8080 tcp:8080`, then plain
-#    http://localhost:8080/camera — localhost is a secure context, no cert.)
+#    (Android over USB instead: `adb reverse tcp:8443 tcp:8443`, then plain
+#    http://localhost:8443/camera — localhost is a secure context, no cert.)
 ```
 
 Flow: allow the camera → drag the four corner handles onto the playing surface
