@@ -27,6 +27,113 @@ def test_index_default_ws_url(monkeypatch):
     assert "ws://localhost:8000/viewer" in html
 
 
+def test_index_page_shows_per_board_freshness(monkeypatch):
+    """A live stream has to *look* live: every card carries the age of its last event,
+    ticking, and marks itself stale once nothing has arrived for 5s."""
+    html = TestClient(create_app()).get("/").text
+    assert "const STALE_MS = 5000;" in html
+    assert 'class="age"' in html
+    assert "function fmtAge" in html
+    assert "const stale = age > STALE_MS;" in html
+    assert 'rec.card.classList.toggle("stale", stale);' in html
+    assert ".board-card.stale .stale-chip { display: inline-block; }" in html
+    assert ".board-card.stale .board, .board-card.stale .meta > :not(.live) { filter:" in html
+    # How old it is stays legible on a stale card, and a stream that dies mid-move
+    # must not pulse "moving" for ever.
+    assert ".board-card.stale .motion-chip { opacity: 0.45; animation: none; }" in html
+    # Freshness is arrival time at the viewer, not the event's capture stamp — a skewed
+    # edge clock must not make a live stream look stale.
+    assert "lastAt: performance.now()," in html
+    # Recovery is immediate: an event re-runs the same update rather than waiting a tick.
+    assert "  freshen(rec, now);\n}" in html
+
+
+def test_index_page_shows_per_board_event_rate():
+    """~1 ev/s at rest vs a 10-15 ev/s burst is the whole point of the adaptive
+    forwarder (DESIGN D4) — the card states it as a rolling figure."""
+    html = TestClient(create_app()).get("/").text
+    assert "const RATE_WINDOW_MS = 3000;" in html
+    assert 'class="eps"' in html
+    assert "while (rec.stamps.length && now - rec.stamps[0] > RATE_WINDOW_MS) rec.stamps.shift();" in html
+    # (n-1)/span, not n/window: with a 1 fps keepalive the window holds 4 stamps
+    # spanning 3s — that is 1.0/s, and n/window would claim 1.3/s.
+    assert "const eps = span > 0 ? (n - 1) / span : n / (RATE_WINDOW_MS / 1000);" in html
+    assert 'eps.toFixed(1) + " ev/s"' in html
+
+
+def test_index_page_shows_motion_state_from_stability():
+    """DESIGN D3: stability is 1.0 at rest. Below 0.7 the board reads as in motion —
+    a chip, plus the existing bar, and never a crash when the field is absent."""
+    html = TestClient(create_app()).get("/").text
+    assert "const MOVING_BELOW = 0.7;" in html
+    assert 'class="motion-chip' in html
+    assert 'const stability = typeof ev.stability === "number" ? ev.stability : null;' in html
+    assert 'stability === null ? "motion unknown"' in html
+    assert 'stability < MOVING_BELOW ? "moving" : "at rest"' in html
+    assert ".motion-chip.moving {" in html and "animation: pulse" in html
+    assert 'card.querySelector(".stab > i").style.width' in html   # the bar stays
+
+
+def test_index_page_flashes_squares_that_changed():
+    """A replay is followable by eye only if the squares that changed announce
+    themselves. The diff is against the previous event's grid — the only history the
+    viewer keeps (DESIGN D1: no moves, no legality, no game state)."""
+    html = TestClient(create_app()).get("/").text
+    assert "prevGrid: null," in html
+    assert "if (rec.prevGrid !== null && rec.prevGrid[r][c] !== cell) {" in html
+    assert "rec.prevGrid = grid;" in html
+    assert ".sq.changed { animation: flash 600ms ease-out; }" in html
+    # Re-triggering the animation needs the class dropped + a forced reflow.
+    assert 'el.classList.remove("changed");\n      void el.offsetWidth;' in html
+    # The flash clears itself off an animationend listener bound once per square —
+    # never a setTimeout per event, which would leak a timer per changed square.
+    assert 'el.addEventListener("animationend", () => el.classList.remove("changed"));' in html
+
+
+def test_index_page_dims_occluded_squares():
+    """A hand over the board should visibly gray out, not assert pieces confidently:
+    under 0.5 max per-square probability the piece is dimmed as well as dotted."""
+    html = TestClient(create_app()).get("/").text
+    assert "const LOW_CONF = 0.5;" in html
+    assert "const lowConf = squareConfidence(ev.square_dist, r, c) < LOW_CONF;" in html
+    assert ".sq .pc.dim { opacity: 0.45; }" in html
+    assert '(lowConf ? " dim" : "")' in html
+    assert 'lc.className = lowConf ? "lc on" : "lc";' in html      # the red dot stays
+    # An event without square_dist must still render: unknown reads as confident.
+    assert "if (!dist || !dist[r] || !dist[r][c]) return 1;" in html
+
+
+def test_index_page_updates_squares_in_place_with_one_ticker():
+    """Per-event DOM work stays surgical — the grid is built once and every event
+    writes into the same nodes (innerHTML in render would kill the CSS transitions).
+    Ageing is one interval for all boards, not one per board or per event."""
+    html = TestClient(create_app()).get("/").text
+    render_fn = html.split("function render(ev) {")[1].split("\nsetInterval(")[0]
+    assert "innerHTML" not in render_fn
+    assert "setInterval" not in render_fn and "setTimeout" not in render_fn
+    assert "sqs.push({ el, pc: el.querySelector(\".pc\"), lc: el.querySelector(\".lc\") });" in html
+    assert html.count("setInterval(") == 1
+    assert "const TICK_MS = 200;" in html
+
+
+def test_index_page_tolerates_malformed_placements():
+    """The grid is indexed positionally by the change diff and the square nodes, so
+    fenToGrid always yields 8x8 of strings whatever arrives on the wire."""
+    html = TestClient(create_app()).get("/").text
+    fn = html.split("function fenToGrid(placement) {")[1].split("\n}\n")[0]
+    assert 'String(placement ?? "").split("/")' in fn
+    assert 'for (const ch of ranks[r] ?? "") {' in fn
+    assert 'while (cells.length < 8) cells.push("");' in fn
+
+
+def test_index_page_keeps_no_game_state():
+    """DESIGN D1 guard: the viewer renders an evolving placement and nothing more —
+    no move reconstruction, no legality, no PGN."""
+    html = TestClient(create_app()).get("/").text.lower()
+    for forbidden in ("legal", "pgn", "castl", "en passant", "san("):
+        assert forbidden not in html, forbidden
+
+
 def test_snapshot_served_and_http_url_injected(monkeypatch):
     monkeypatch.setenv("BR_INFERENCE_HTTP", "http://example.test:9000")
     html = TestClient(create_app()).get("/snapshot").text
