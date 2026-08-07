@@ -87,6 +87,15 @@ user asks; at 480p the same crop drops to ~500px, which is marginal. Prefer
 H.264 (`avc1`) over AV1/VP9 — seeking is faster and OpenCV handles it without
 surprises.
 
+**Check the crop before accepting the default.** 720p is right only while the
+board really is ~half the frame. Estimate the board's width *inside the crop*
+at the resolution you're about to download, and keep it above ~500px (~60
+px/square) — below that you are extracting training data the classifier can't
+use. `ccbf-r5` is the worked exception: at 1080p its board is ~1150px in-crop
+(~144 px/square), and 720p would have delivered ~430px — under the line. It was
+downloaded at 1080p60 for 3.9 GB. Trading disk for pixels is the right call
+whenever the board is a small fraction of the frame.
+
 These files are multi-GB. Run the download with `run_in_background: true`, and
 **do not pipe it through `tail`/`head`** — that buffers all output until the
 process exits, so you lose progress visibility. Redirect to a log instead, and
@@ -197,14 +206,30 @@ mildly nondeterministic across runs — don't quote an exact rate as a
 guarantee, go by the verdict.
 
 This gate is not hypothetical: applied across the collection so far it
-**rejected 4 of 5 broadcasts** — `wtr-day2` too_shallow 0.573 (10/14, exit 1),
+**rejected 4 of 6 broadcasts** — `wtr-day2` too_shallow 0.573 (10/14, exit 1),
 `coffeechess` too_shallow 0.508 (3/6), `grandswiss` too_shallow 0.450 (2/5),
 `divya-r14` **unknown** 0/8 (exit 2, no detection at all) — leaving only
-`hexamind` (`JTmovXvZnPM`) at 0.650, itself merely "degraded", never the good
-band. Most low-angle, table-level chess broadcasts fail this; when picking a
-new broadcast, prefer a steeper overhead camera and treat table-level streams
-as a likely reject. A rejected video's file can be deleted — only its id, crop
-row, and any frames already pulled need to stay.
+`hexamind` (`JTmovXvZnPM`) at 0.650 and `ccbf-r5` (`2sRJ4JuL_m8`) at 0.635,
+both merely "degraded", neither ever in the good band. Most low-angle,
+table-level chess broadcasts fail this; when picking a new broadcast, prefer a
+steeper overhead camera and treat table-level streams as a likely reject. A
+rejected video's file can be deleted — only its id, crop row, and any frames
+already pulled need to stay.
+
+> Searching for a better one has already been done once, thoroughly: ~40
+> candidates screened via `yt-dlp ytsearch` + one sampled frame each. The
+> conclusion was that **no long real OTB game on YouTube reaches 0.73** —
+> broadcast cameras frame players, not boards, and the `>= 0.73` footage that
+> exists is short CV-demo/overhead-rig clips. Don't promise the user a good-band
+> stream; the realistic target is the *steadiest* degraded one. See
+> `docs/youtube-streams.md`.
+
+**A "no board detected" line is usually the detector failing, not a bad
+frame.** On `ccbf-r5` every one of the six undetected frames was inspected and
+found to be a clean, fully-framed board — a ~30% false-negative rate on footage
+that is ~100% usable. So a detection rate of 60–70% is not by itself a reason
+to reject a stream: judge on the **median aspect and the verdict**, and pull a
+couple of the failing frames to look at before concluding the source is bad.
 
 `extract_frames.py` does **not** enforce this gate — it prints a loud `!!`
 warning to stderr and extracts anyway if the crop row is marked

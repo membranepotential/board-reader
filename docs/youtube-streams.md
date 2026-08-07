@@ -9,7 +9,8 @@ Real OTB broadcast footage used as test data — the harder, uncontrolled counte
 studio photos. Five broadcasts were absorbed from a scratch repo
 (`../otb_video_recognition`, now deleted; the tooling lives on as `tools/video/`, see
 `tools/README.md`) and run through the camera-elevation gate in [[operating-envelope]].
-Four failed it. This note is the registry of what was tried, what survived, and why.
+Four failed it; a sixth was then sourced deliberately to beat them. This note is the
+registry of what was tried, what survived, and why.
 
 ## Broadcasts and the angle audit
 
@@ -20,23 +21,56 @@ angle]] thresholds: usable at `>= 0.73`, `very_low_angle` fires below `0.62`.
 
 | slug | video id | detections | median aspect | verdict |
 |---|---|---|---|---|
-| hexamind | `JTmovXvZnPM` | 9/13 | 0.650 | degraded — kept, the only survivor |
+| ccbf-r5 | `2sRJ4JuL_m8` | 11/16 | 0.635 | degraded — **kept, the M2 target** |
+| hexamind | `JTmovXvZnPM` | 9/13 | 0.650 | degraded — kept |
 | wtr-day2 | `Fed1aBzUMcs` | 9/14 | 0.573 | too shallow — video deleted |
 | coffeechess | `1O2ahFZh6G8` | 3/6 | 0.508 | too shallow — video deleted |
 | grandswiss | `62h7O9Ns_eA` | 2/5 | 0.450 | too shallow — video deleted |
 | divya-r14 | `ZoYhhoG6dIY` | 1/8 | 0.445 | too shallow — video deleted |
 
-**4 of 5 broadcasts failed the gate**, and the one survivor is only *degraded*
-(0.62–0.73 band) — none landed in the `>= 0.73` band every good recognition result in
-[[operating-envelope]] was measured in. Table-level chess broadcast cameras are, by and
-large, outside the reader's operating envelope: producers shoot from a low, wide angle
-for the room, not from overhead for a per-square CV pipeline. A steeper/overhead camera
-is therefore a **sourcing requirement** for future broadcast test data, not a nice-to-have.
+**4 of 6 broadcasts failed the gate**, and neither survivor reaches the `>= 0.73` band
+every good recognition result in [[operating-envelope]] was measured in — both sit in the
+*degraded* 0.62–0.73 band. Table-level chess broadcast cameras are, by and large, outside
+the reader's operating envelope: producers shoot from a low, wide angle for the room, not
+from overhead for a per-square CV pipeline. A steeper/overhead camera remains a **sourcing
+requirement** for future broadcast test data, not a nice-to-have.
 
 > [!warning] Standing M2 risk
-> hexamind is currently the only broadcast in the good-enough band, and it is
-> borderline. M2's recorded-game demo rests on this single video until a steeper-angle
-> source is found.
+> Neither survivor is in the good band. M2's recorded-game demo rests on *degraded*
+> footage until a steeper-angle source (or own footage) is found — so treat its
+> recognition quality as a floor, not a measurement of the pipeline.
+
+### ccbf-r5 — the sourced-on-purpose stream
+
+The first five were whatever the scratch repo happened to hold. `2sRJ4JuL_m8` was found
+by searching explicitly for a *higher* camera: ~40 candidates screened with
+`yt-dlp ytsearch`, one sampled frame each, run through
+`detect_board_quad`/`quad_aspect`. **Chess League | CCBF | Round 5 Board 1** (Chess Club
+Bobby Fischer, 3:04:36) won — one board, big in frame, and a camera that never moves
+across the full three hours: aspect **0.633–0.639 over 5 probe frames spanning the whole
+video**. It does not beat hexamind on angle (0.635 vs 0.650); it beats it on everything
+else — length, steadiness, resolution, and being a single continuous real game.
+
+Seven operator-picked frames spread over the 3 h live in
+`data/streams/frames/ccbf-r5_2sRJ4JuL_m8/` and re-audit at **0.637 (6/7 detected)**,
+matching the whole-video gate.
+
+> [!important] This one was downloaded at 1080p, not the skill's default 720p
+> The board occupies ~1150 px inside the crop at 1080p — roughly **144 px/square**. The
+> same crop at 720p yields ~430 px of board, *below* the ~500 px marginal line the
+> `get-frames-from-yt` skill itself sets. When a crop is a small fraction of the frame,
+> the 720p default is the wrong call; check the crop's projected pixel width before
+> choosing a resolution. Cost of the exception: 3.9 GB on disk.
+>
+> The crop also keeps headroom above the far rank, so tall pieces are not decapitated by
+> the crop itself — a separate failure mode from the pose-crop decapitation in
+> [[training-and-data]].
+
+> [!quote] The honest finding from the search
+> **Nothing on YouTube is both a long real OTB game and `>= 0.73`.** Broadcast cameras
+> frame players, not boards. The footage that *does* clear 0.73 is short CV-demo or
+> overhead-rig clips — `kg_whG0Ijh4` at 0.790, `B_3v5sqqU0Y` at 0.743 — not games. The
+> good band will have to come from our own camera.
 
 ## What survives a culled stream
 
@@ -58,7 +92,7 @@ reproducible from nothing but a video id.
 downloaded file's name — a file gets renamed, re-downloaded at another resolution, or
 deleted, while the id is stable. Crop coordinates are pixel coordinates measured against
 a download *of one specific resolution* — the table also records `frame_width` /
-`frame_height` because two of the five broadcasts were downloaded at 1080p and three at
+`frame_height` because three of the six broadcasts were downloaded at 1080p and three at
 720p, and a 720p crop is meaningless against a 1080p re-download of the same video. Each
 row also carries the verdict from the angle audit above directly (`median_aspect`,
 `status` of `keep` or `rejected_low_angle`) — the table above is this registry's own
@@ -73,7 +107,7 @@ record, not a separate measurement kept in sync by hand.
 
 ## Detection on broadcast frames
 
-Two findings, both measured today, that shaped the crop-first workflow:
+Three findings that shaped the crop-first workflow:
 
 - `detect_board_quad` on **full** 720p/1080p broadcast frames is unreliable: outright
   failure on 3 of 6 tested frames, and on a 4th it locked onto the broadcast's **2D
@@ -85,6 +119,22 @@ Two findings, both measured today, that shaped the crop-first workflow:
 - Detections **within** one broadcast are near-identical, because the camera is fixed
   for the whole stream. That is why a median over a handful of frames is a trustworthy
   per-stream measurement rather than noise.
+- **A no-detection frame is usually the detector's fault, not the footage's.** On
+  ccbf-r5 all six frames the gate failed to detect (5 from the 16-frame video pass,
+  1 from the 7-frame audit) were pulled and inspected by eye: every one is a clean,
+  fully-framed board — including a textbook opening position — with no camera cut and
+  nothing occluding. So `detect_board_quad` runs a **~30% false-negative rate on a crop
+  whose frames are ~100% usable**. Read the detection rate as a measurement *of the
+  detector*, not of stream quality: the earlier per-stream rates in the table above
+  understate the footage and overstate the detector.
+
+> [!caution] Consequence for M2
+> A ~30% miss rate means the edge `Rectifier`'s cadenced re-detection will fail roughly
+> one attempt in three on real footage. Run recorded-game demos with `feed --corners`
+> (operator-supplied corners) rather than relying on auto-detection.
+>
+> Suspected cause, **unverified**: this board shows visible barrel distortion, which
+> breaks the straight-edge quad model the detector assumes.
 
 ## Earlier streams (pre-audit, 2026-06)
 

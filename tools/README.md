@@ -100,12 +100,15 @@ OpenCV/mpv window and need the **system** `python3` — the uv workspace ships
 `uv run` instead, because it imports `board_reader_core`. Reaching for the wrong
 interpreter fails loudly (`ModuleNotFoundError` either way), not silently.
 
-**The angle gate rejects most broadcast footage.** Running `check_angle.py` over five
-absorbed broadcasts and gating on the same threshold the server warns at (`quad_aspect
->= 0.62`, [docs/operating-envelope.md](../docs/operating-envelope.md)) rejected 4 of 5 —
-table-level chess broadcasts are shot too shallow for a per-square CV pipeline. See
+**The angle gate rejects most broadcast footage.** Running `check_angle.py` over the six
+broadcasts collected so far, gating on the same threshold the server warns at
+(`quad_aspect >= 0.62`, [docs/operating-envelope.md](../docs/operating-envelope.md)),
+rejected 4 of 6 — table-level chess broadcasts are shot too shallow for a per-square CV
+pipeline, and the two survivors (`hexamind` 0.650, `ccbf-r5` 0.635) are both merely
+*degraded*, never the `>= 0.73` good band. Searching YouTube specifically for a steeper
+camera did not find one: long real OTB games are never shot from overhead. See
 [docs/youtube-streams.md](../docs/youtube-streams.md) for the measured aspect per
-broadcast.
+broadcast and the false-negative caveat on the detection rates.
 
 These are third-party broadcast recordings. Downloaded videos and extracted frames
 live under `data/streams/` (git-ignored), kept for local/personal research use only —
