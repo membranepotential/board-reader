@@ -44,6 +44,9 @@ What's covered today (M0 + M1 rectification):
 | **Embedder** | `packages/inference/tests/test_embed.py` | **lightweight embedder shape, L2-norm, distinct glyphs** |
 | **Centroids** | `packages/inference/tests/test_centroid.py` | **few-shot calibration, self-consistency, generalisation, absent classes, save/load** |
 | Estimator | `packages/inference/tests/test_estimator.py` | stub emits valid events; **CentroidEstimator reads pixels** |
+| **Recording format** | `packages/core/tests/test_recording.py` | **byte-exact round trip, corners survive, truncated session still replays, size cap** |
+| **Ingress recording** | `packages/inference/tests/test_recording_ingest.py` | **every `/ingest` frame lands on disk (incl. pre-filter drops); off unless asked; a write failure never breaks the stream** |
+| **Replay** | `packages/edge/tests/test_recording_replay.py` | **replays the recorded bytes without re-encoding, paces by capture time, refuses to reprocess** |
 | Hub | `packages/inference/tests/test_hub.py` | retained-latest, fan-out, overflow |
 | Gateway | `packages/inference/tests/test_server.py` | ingest → viewer over WS (in-process) |
 | Viewer | `packages/viewer/tests/test_viewer.py` | UI served, WS URL injected |
@@ -437,12 +440,95 @@ means anything.
 If a calibration bank is active the report warns that boards the bank was built
 from are not held out. Take a number carrying that warning as an upper bound.
 
+### Option J — Phone live camera (the browser edge, DESIGN §6 "virtual Pi")
+
+Point a phone at a real board and stream it live — capture, crop and adaptive
+forwarding all happen in the phone's browser; the desktop shows the position
+evolving on the live viewer.
+
+```bash
+# 1. Inference with real recognition (same env as Option H):
+BR_MODEL=models/run_e/model.onnx uv run board-reader-inference serve --host 0.0.0.0
+
+# 2. Viewer with TLS — getUserMedia requires a secure context on a phone:
+BR_INFERENCE_WS=ws://localhost:8000/viewer BR_INFERENCE_HTTP=http://localhost:8000 \
+uv run board-reader-viewer --host 0.0.0.0 --port 8080 --ssl
+# it prints the https://<lan-ip>:8080/camera URLs to type on the phone
+
+# 3. On the phone: open the printed URL, accept the self-signed certificate once.
+#    (Android over USB instead: `adb reverse tcp:8080 tcp:8080`, then plain
+#    http://localhost:8080/camera — localhost is a secure context, no cert.)
+```
+
+Flow: allow the camera → drag the four corner handles onto the playing surface
+(**detect board** proposes them; **rotate labels** decides which corner is a8 —
+geometry cannot know) → **start streaming**. The dashed box shows exactly what
+is sent: the quad's bounding box with headroom above, downscaled, with the quad
+riding on every frame header as `corners` — the gateway then cuts full-piece
+boxes from the original view, exactly as a snapshot read would. The rate is
+adaptive (~1 fps at rest, bursts through motion — watch the stability bar dip
+when a hand enters). **Calibrate** grabs a full-resolution frame and posts it
+through the guarded `/calibrate` (board must show the starting position, pieces
+at rest). "What the reader sees" at the bottom is the live position event
+stream for this board id; the desktop live viewer (`/`) shows the same card,
+where the preview pane displays the very frames the phone is sending and its
+calibrate button now honours the streamed corners (`X-Corners`).
+
+What to check: stability ~1.0 and ~1 fps with the board at rest; a burst and a
+dipping stability bar while a piece moves; the moved piece appearing on both
+boards within a second or two of the hand leaving; after **calibrate**, a
+banner reporting 13/13 classes and the bank size.
+
+### Option K — Reproduce a run from its recording (WP-H2)
+
+Every frame that reaches `WS /ingest` is written to disk, so **any** of the runs
+above can be replayed afterwards — including Option J, since the phone's frames
+cross the same socket through the viewer's proxy. `serve` records to
+`recordings/` by default; `docker compose` records to the bind-mounted
+`./recordings`.
+
+```bash
+# 1. Do a run — anything that streams. Then check what landed:
+curl -s http://localhost:8000/healthz | jq .recording
+#    {"path": "recordings/20260807-143012", "frames": 412, "active": true, ...}
+
+ls recordings/20260807-143012        # manifest.json  frames.ndjson  jpeg/
+head -1 recordings/*/frames.ndjson | jq   # the wire header + where its bytes went
+
+# 2. Replay it into a (restarted) gateway, at the speed it happened:
+uv run board-reader-edge feed --recording recordings/ --throttle
+#    -> "replayed 412 frames from recordings/20260807-143012 to ws://..."
+```
+
+`--recording` with no session id takes the newest session in the directory —
+"the run that just happened". The replay re-sends the **stored bytes**, not a
+re-encode, so the estimator sees the same pixels it saw the first time.
+
+What to check: the viewer replays the original run move for move; the replaying
+server's own `recordings/` now holds a second session with the same frame count.
+That second recording is the reproduction claim — a run whose input can be
+re-fed is a run you can bisect a recognition regression against.
+
+> [!note] Why `--throttle` matters here
+> The gateway's latest-wins pre-filter drops frames as a function of *arrival
+> rate*. A flat-out replay arrives far faster than the camera did, so it drops
+> more and reproduces an easier run than the recorded one. Recording happens
+> **before** the pre-filter, so the recording itself is complete either way.
+>
+> `--adaptive`, `--rectify`, `--corners`, `--forward-original` and `--loop` are
+> refused with `--recording`: a recording already holds the edge's *output*, and
+> re-running those stages over it would put something else on the wire.
+
+Turn it off with `serve --no-record` (runs are then not reproducible); cap it
+with `BR_RECORD_MAX_MB` on a small disk — the session truncates rather than
+rotating, so a capped recording keeps its beginning.
+
 ---
 
 ## Quick health checks
 
 ```bash
-curl http://localhost:8000/healthz            # {"status":"ok",...}
+curl http://localhost:8000/healthz            # {"status":"ok",...} + .recording
 curl http://localhost:8000/boards/A1          # latest position event JSON for A1
 ```
 

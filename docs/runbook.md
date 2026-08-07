@@ -55,8 +55,29 @@ photograph a start position.
 | `BR_CENTROIDS` | An explicit curated calibration file. Outranks `BR_MODEL`. |
 | `BR_OCCUPANCY_BANK` | A style-agnostic occupancy bank; enables the occupancy-only answer and start-position auto-calibration before any piece-type calibration exists. |
 | `BR_SAVE_UPLOADS` | Directory for retained phone photos + sidecars (placement, `autorotated`). This is what turns field shots into eval data. |
+| `BR_RECORD_DIR` | Directory for recorded ingress sessions. `serve` sets it to `recordings/` by default, so **every served run is replayable**; `serve --no-record` turns it off. |
+| `BR_RECORD_MAX_MB` | Disk-fill stop for the recorder (default: no cap). The session truncates rather than rotating. |
 | `BR_DINOV2_ONNX` | Backbone path (default `models/dinov2_small.onnx`). |
 | `BR_ALLOW_ORIGINS` | CORS origins, comma-separated (default `*`). |
+
+### Reproducing a run
+
+Every frame that reaches `WS /ingest` is recorded — the CLI feed, the Pi, and the
+phone `/camera` page alike, since all three cross that one socket. A session is a
+directory of `manifest.json` + append-only `frames.ndjson` + the JPEGs exactly as
+they arrived.
+
+```bash
+curl -s localhost:8000/healthz | jq .recording    # is it recording, and where?
+uv run board-reader-edge feed --recording recordings/ --throttle   # re-run it
+```
+
+`--recording` re-sends the stored bytes verbatim, so the replayed run sees the same
+pixels the original did. Prefer `--throttle`: the gateway's latest-wins pre-filter
+drops frames as a function of *arrival rate*, so a flat-out replay makes it drop
+more than the recorded run did. Anything that would reprocess the stream
+(`--adaptive`, `--rectify`, `--corners`, `--forward-original`, `--loop`) is refused
+with `--recording` rather than silently changing what goes on the wire.
 
 **Viewer node**
 

@@ -423,9 +423,19 @@ A clean gap is recoverable; a confident lie corrupts the consumer's state.
 ```
 
 - **Ingress (WebSocket).** Two message kinds from the edge: `frame` (binary JPEG
-  of the rectified crop + JSON header: `board_id`, `capture_ts`, `seq`,
-  `stability`, optional `burst_id`) and `control` (`hello`/register, `set_corners`,
-  `calibrate`, `clock_config`). Server replies with acks/config.
+  + JSON header: `board_id`, `capture_ts`, `seq`, `stability`, optional
+  `burst_id`, optional `corners`) and `control` (`hello`/register, `calibrate`,
+  `clock_config` — still reserved, none implemented). Server replies with acks.
+  A frame without `corners` is a rectified board crop (the original contract); a
+  frame **with** `corners` (a8,h8,h1,a1 in its own pixels) is an original camera
+  image, routed like the snapshot path below — photo-mode estimators cut
+  full-piece boxes from it, others get a server-side rectification. Corners ride
+  on **every** such frame rather than in a `set_corners` control message
+  (superseding the earlier sketch): the gateway stays stateless per frame, so a
+  reconnect, a restart or a mid-stream re-crop needs no handshake. This is also
+  how the §6 browser edge (`/camera`) streams — a browser cannot cheaply
+  rectify, and tall-piece headroom means the un-warped photo is the *better*
+  input anyway (§4.6).
 - **Snapshot ingress (HTTP, convenience).** `POST /estimate` accepts a single
   frame and returns the position event synchronously (also published to the hub):
   either an already-rectified crop (JPEG body), or — preferred for real photos —

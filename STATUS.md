@@ -1,6 +1,6 @@
 # STATUS — board-reader
 
-_reconciled: 2026-08-07 @ `b7932da`_ · decisions live in [docs/DESIGN.md](docs/DESIGN.md); this is state.
+_reconciled: 2026-08-07 @ `0442177`_ · decisions live in [docs/DESIGN.md](docs/DESIGN.md); this is state.
 
 ## Goal
 
@@ -9,15 +9,28 @@ confidences**. No moves, no legality, no PGN — those are the downstream applic
 
 ## Now
 
-- **Phone camera page — the browser edge (main session, 2026-08-07).** New viewer-served
-  `/camera` page (DESIGN §6 "virtual Pi"): getUserMedia preview → operator crop (4 draggable
-  corners, `/detect` assist, rotatable labels) → adaptive JPEG streaming into WS `/ingest`
-  (JS mirror of `MotionMeter`+`AdaptiveForwarder`) + **calibrate** button through the guarded
-  `/calibrate`. Wire grows optional per-frame `corners`; ingest gains the photo-path policy;
-  viewer becomes single-origin TLS terminator (`--ssl`, self-signed) + WS/HTTP proxy so phone
-  browsers get a secure context. **2 opus implementers in flight, disjoint files:**
-  wire-ingest `packages/core/**`+`packages/inference/**` · camera-page `packages/viewer/**`
-  (+uv.lock). Docs + STATUS reconcile + commit after both land.
+- **detect_board_quad FN hunt (calibration session, 2026-08-07) — in a worktree.**
+  Objective: diagnose + fix the ~30% false negatives on clean ccbf-r5 frames
+  (suspected barrel distortion). Working in an isolated git worktree; only
+  `packages/core/boarddetect.py` + its tests in scope. **Commit-pass handoff executed**
+  (operator decision: this session commits everything): `63923c7` corners on the wire ·
+  `f35638f` recording/replay · `0442177` camera page + TLS/proxy · docs/STATUS/learnings
+  in the reconcile commit after this line. Suite green at 684 throughout.
+
+- **ccbf-r5 live calibration (calibration session, 2026-08-07) — WORKS; landed in `63923c7`.**
+  Root cause of "won't calibrate": the guard's probe reads the *angled* t=0 start frame at
+  28/32 but the edge-rectified *warp* at 6/32 (aspect 0.635), and an angled-photo bank reads
+  warps at 11/32 — warp streams are unusable at this angle, full stop. Fix rides the
+  wire-corners work above: new `feed --forward-original` (edge implementer, landed in
+  `packages/edge/**`, 589 tests green, in review) forwards ORIGINAL frames + semantic
+  `--corners`; ingest photo-paths them. **Live e2e verified on the mp4:** frames ingest,
+  `X-Corners` served, `/calibrate` from the retained frame accepts (13/13, `label_rotation 0`
+  — a8-first corners `536,918,631,336,1458,320,1638,896` yield white's-view placements),
+  start reads 63-64/64 and tracks 1. e4; persistent d8 q→b far-side error (decapitation
+  weakness, degraded band). The camera-page landing delivered the live calibrate button
+  preferring `X-Corners` (index.html `cornersOf`); remaining: optional per-board display
+  rotation (user-approved). Docs (TESTING/index: the new flag + ccbf runbook) in the
+  joint reconcile.
 
 Also staged and waiting on a decision to start:
 
@@ -42,6 +55,26 @@ Also staged and waiting on a decision to start:
 
 ## Done (recent)
 
+- 08-07: **Phone camera page — the browser edge ships** (DESIGN §6 "virtual Pi"). Viewer-served
+  `/camera`: getUserMedia → draggable 4-corner crop (`/detect` assist, rotatable labels) →
+  adaptive JPEG streaming into WS `/ingest` with per-frame `corners` (JS mirror of
+  `MotionMeter`+`AdaptiveForwarder`) + guarded **calibrate** from a full-res grab + live
+  mini-board. Viewer = single-origin WS/HTTP relay + `--ssl` cached self-signed TLS
+  (serverAuth EKU for iOS) — one cert accept on the phone, or `adb reverse` for zero.
+  Opus-reviewed: 6 findings (2 critical) all fixed + regression-tested; e2e-verified
+  through real servers. The wire/ingest half landed with the calibration session's
+  `63923c7`; the page itself with `0442177`. Docs: architecture browser-edge section,
+  DESIGN §4.5, TESTING Option J.
+- 08-07: **Ingress recording + replay — runs are reproducible now (WP-H2, `f35638f`).**
+  New `board_reader_core.recording` (manifest + append-only `frames.ndjson` + the JPEGs
+  as received). The gateway records at `WS /ingest` — the one socket *every* edge crosses,
+  so the CLI feed, a Pi and the phone `/camera` page (via the viewer proxy) are all
+  captured, and **before** the latest-wins pre-filter, so a recording is the run's *input*.
+  `board-reader-edge feed --recording <dir> --throttle` re-sends the stored bytes
+  **verbatim** (no JPEG round trip) and refuses `--adaptive/--rectify/--corners/
+  --forward-original/--loop`. On by default for `serve` (`--no-record` opts out) and for
+  compose (`./recordings` bind mount); off for `create_app()` in tests. 43 new tests;
+  full suite re-run green at 684 before the commit.
 - 08-07: **Live viewer is genuinely live** (`cb7877d`, `b7932da`). Gateway retains the latest
   JPEG per board → `GET /boards/{id}/frame`; the page renders via **chessground** (low-confidence
   squares ringed yellow, just-changed green), an expandable preview shows the live ingested
@@ -83,7 +116,12 @@ Also staged and waiting on a decision to start:
 
 1. **Score run_f against run_e** on both holdouts; deploy only if it wins both. If pose crops
    lose, the geometry bet is answered and item 5 is what survives it.
-2. **Run M2 over `ccbf-r5`** with `--corners`, then settle D3 (`stability`).
+2. **Run M2 over `ccbf-r5`** with `--forward-original --corners` (verified path; the warp
+   path is unusable at this angle — see Now), then settle D3 (`stability`).
+   Review follow-ups on the new flag (non-blocking): geometry sanity-check (convex/in-frame)
+   on `--corners` at startup; `--jpeg-quality` knob (full frames are ~6x a 384px crop —
+   matters for a real Pi); throttle+loop interaction tests; `--corners` help text is
+   mode-dependent now; `docs/TESTING.md` needs the manual path for the flag.
 3. **Attack the type confusions.** Trained-alone: 53 type / 5 hallucination / 4 colour, led by
    `p->b` (11). The ensemble's residual differs in kind — `empty->p`/`empty->P` is a third of it.
 4. **Decide whether calibrated confidences go on the wire** — a decision, not an experiment:
