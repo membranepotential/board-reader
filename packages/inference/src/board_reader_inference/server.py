@@ -3,8 +3,9 @@
 Runs on the inference node. Three surfaces:
 
 * ``WS /ingest`` — the edge connects and streams frames. Each frame is two WS
-  messages: a JSON header then the binary JPEG. The gateway decodes, runs the
-  estimator, and publishes the resulting position event to the hub.
+  messages: a JSON header then the binary JPEG. The gateway decodes and acks, and
+  the per-board ingest worker (:mod:`board_reader_inference.ingest`) estimates off
+  the event loop and publishes the position event to the hub.
 * ``WS /viewer`` — viewers connect and receive the position-event JSON stream
   (retained latest per board first, then live updates).
 * ``GET /boards/{id}`` + ``GET /healthz`` — latest snapshot + liveness.
@@ -32,6 +33,7 @@ from board_reader_core.wire import Frame, decode_jpeg
 
 from board_reader_inference.estimator import Estimator, StubEstimator
 from board_reader_inference.hub import PositionHub
+from board_reader_inference.ingest import FrameIngest
 from board_reader_inference.squares import (
     BboxGeometry,
     crop_squares_photo,
@@ -233,8 +235,11 @@ def create_app(
         occ_est = _estimator_from_bank(os.environ["BR_OCCUPANCY_BANK"])
     est: Estimator = estimator if estimator is not None else _default_estimator(occ_est)
     hub_: PositionHub = hub if hub is not None else PositionHub()
+    # Streaming ingress (WP-G1/G2): frames are estimated off the event loop by
+    # per-board workers. ``lambda: est`` so /calibrate's hot-swap reaches the stream.
+    ingest_ = FrameIngest(lambda: est, hub_)
 
-    app = FastAPI(title="board-reader inference node")
+    app = FastAPI(title="board-reader inference node", lifespan=ingest_.lifespan)
     # The viewer is served from a different origin (its own container), and the
     # browser connects here over WS; allow it.
     app.add_middleware(
@@ -245,6 +250,7 @@ def create_app(
     )
     app.state.estimator = est
     app.state.hub = hub_
+    app.state.ingest = ingest_
 
     @app.get("/healthz")
     async def healthz() -> dict:
@@ -1150,18 +1156,27 @@ def create_app(
 
     @app.websocket("/ingest")
     async def ingest(ws: WebSocket) -> None:
-        """Edge -> inference frame ingress. Header (text) then JPEG (binary) per frame."""
+        """Edge -> inference frame ingress. Header (text) then JPEG (binary) per frame.
+
+        Estimation is handed to the per-board ingest worker (WP-G1/G2) so a burst
+        never blocks the event loop: we ack the moment a frame is decoded. The ack
+        means "received" — the pre-filter may drop this frame for a fresher one
+        before it is ever estimated.
+        """
         await ws.accept()
+        boards: set[str] = set()
         try:
             while True:
                 header = json.loads(await ws.receive_text())
                 jpeg = await ws.receive_bytes()
                 frame = Frame.from_header(header, decode_jpeg(jpeg))
-                event = est.estimate(frame)
-                await hub_.publish(event)
+                boards.add(frame.board_id)
+                ingest_.submit(frame)
                 await ws.send_json({"ack": frame.seq, "board_id": frame.board_id})
         except WebSocketDisconnect:
-            return
+            # Let the stream's last frame land before the connection is forgotten.
+            # The workers outlive the socket, so this only waits — it never cancels.
+            await ingest_.drain(*boards)
 
     @app.websocket("/viewer")
     async def viewer(ws: WebSocket) -> None:
