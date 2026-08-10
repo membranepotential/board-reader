@@ -129,9 +129,72 @@ What's covered today (M0 + M1 rectification):
 | **Layer split** | `tests/test_layer_separation.py` | edge/inference never import each other |
 | **End-to-end** | `tests/test_end_to_end.py` | real uvicorn + edge client + viewer WS |
 
+### Frontend (`packages/viewer/ui`)
+
+A second, independent test layer for the SvelteKit UI — a frontend-only change is
+not a reason to run `make test`, and a Python-only change is not a reason to run
+these:
+
+```bash
+make test-front                    # both layers, from the repo root — Vitest then Playwright
+
+cd packages/viewer/ui              # or, one at a time, from the package
+pnpm install --frozen-lockfile     # once; mirrors `uv sync --frozen`'s discipline
+pnpm test                          # Vitest — src/lib/**, node env, ~1s, 333 cases today
+pnpm check                         # svelte-kit sync + svelte-check, strict TS
+pnpm test:e2e                      # Playwright — 16 specs in a real Chromium, ~15s
+```
+
+`make test-ui` and `make test-e2e` are the two halves of `make test-front`; each runs
+`pnpm install --frozen-lockfile` first, and `test-e2e` also runs `playwright install
+chromium` (a one-off on a fresh checkout — Playwright pins its own browser build).
+
+`pnpm test` is the tested half of what the three hand-written pages used to
+triplicate: FEN⇄grid conversion (`lib/board/fen.ts`), the wire protocol parser
+(`lib/protocol.ts`), the board-plane tracker (`lib/geometry/tracker.ts`, pinned by
+the same checks that used to live in the deleted `tracker_checks.mjs`), the motion
+meter and the `/ws/ingest` framing (`lib/edge/`) — all plain TypeScript, run in
+`node`, no DOM.
+
+`pnpm test:e2e` drives the three pages in a real Chromium (`tests/*.spec.ts`), against
+the **built** app — `vite build` then `vite preview`, because the bundle is what the
+Python viewer serves. There is no inference node behind it: every `/api/…` call and the
+`/ws/viewer` socket is stubbed per test (`tests/helpers/node.ts`), so these need neither
+a GPU nor a model. They cover what neither other layer can reach — a chessground board
+that laid out with no pieces on it, a rail button 31 px tall on a phone, an
+`@media (orientation: portrait)` rule that never applies, a preview that fetches while
+collapsed. Each of those has shipped here at least once.
+
+> [!note] Chromium only, and touch is emulated
+> Playwright drives Chromium with mouse events synthesised for taps. iOS Safari — the
+> actual target device for `/camera` and `/snapshot` — is still only testable by hand;
+> see §2's phone walkthrough.
+
+`pnpm dev` runs the Vite dev server with `/api` and `/ws` proxied to a *running*
+Python viewer (`BR_VIEWER_ORIGIN`, default `http://127.0.0.1:8080` — see
+`vite.config.ts`), so the dev loop exercises the same relay production uses rather
+than mocking it:
+
+```bash
+uv run board-reader-inference serve --port 8000 &   # terminal 1: gateway
+uv run board-reader-viewer --port 8080 &             # terminal 1: viewer, relays to it
+cd packages/viewer/ui && pnpm dev                    # terminal 2: frontend -> http://localhost:5173
+```
+
+`make ui` (`pnpm build` under the hood) is the production build instead of the dev
+server: it prerenders all three routes straight into
+`packages/viewer/src/board_reader_viewer/web/` — see the note at the top of §2.
+
 ---
 
 ## 2. The live demo (what a user runs)
+
+> [!note] Build the UI once
+> `board-reader-viewer` serves a prerendered SvelteKit build and refuses to start
+> without one (`packages/viewer/src/board_reader_viewer/web/` is generated and
+> gitignored, so a fresh checkout has none). Docker's own `ui-build` stage handles
+> Option A; every local-process option below needs `make ui` run once first (and
+> again after any change under `packages/viewer/ui/`).
 
 ### Option A — Docker (canonical, one command): the M2 live game replay
 

@@ -50,10 +50,12 @@ aspects:
       - aspect: viewer
         role: >-
           A change to the position-event JSON shape must be matched in the
-          viewer and snapshot pages that render it. The viewer also asserts the
-          literal `0.62` of `LOW_ANGLE_ASPECT` in its HTML
-          (packages/viewer/tests/test_viewer.py) — it cannot import core, so
-          this copy has to be updated by hand if the threshold moves.
+          viewer and snapshot pages that render it. The viewer also carries its
+          own literal copy of `0.62` (`LOW_ANGLE_ASPECT`,
+          packages/viewer/ui/src/lib/protocol.ts) — it cannot import core, so
+          this copy has to be updated by hand if the threshold moves;
+          `lib/geometry/corners.test.ts` and the snapshot pipeline tests are
+          what would catch a stale one.
       - aspect: design
         role: >-
           A protocol change that is not merely additive needs DESIGN §5 updated
@@ -119,22 +121,39 @@ aspects:
     description: >-
       board_reader_viewer — the live-position UI, the /snapshot phone page and
       the /camera browser edge (board-plane tracker, automatic board
-      detection, lens picker), plus vendored chessground.
-    files: ["packages/viewer/src/**"]
+      detection, lens picker). The pages are a SvelteKit 2 / Svelte 5 /
+      TypeScript-strict app (packages/viewer/ui, `@lichess-org/chessground`),
+      prerendered by `make ui` into packages/viewer/src/board_reader_viewer/web/
+      — generated and gitignored, deliberately not a source below.
+      server.py, proxy.py and tls.py are the only hand-written Python left in
+      the package.
+    files:
+      - "packages/viewer/src/board_reader_viewer/*.py"
+      - "packages/viewer/ui/src/**"
+      - "packages/viewer/ui/package.json"
+      - "packages/viewer/ui/svelte.config.js"
+      - "packages/viewer/ui/vite.config.ts"
     affects:
       - aspect: tests
         role: >-
-          New UI-serving behaviour ships with a test. In particular the
-          same-origin contract: no page may name the inference node's address,
-          and every endpoint a page calls must sit behind the viewer's `/api`
-          relay or `/ws` sockets. A page that reaches the node directly works on
-          a LAN and nowhere else — not over https, not behind a tunnel.
+          New UI-serving behaviour ships with a test — Vitest under
+          packages/viewer/ui/src/lib/**/*.test.ts for shared logic, Playwright
+          (packages/viewer/ui/tests/*.spec.ts, `make test-front`) for the pages
+          themselves, and
+          packages/viewer/tests/ for what server.py/proxy.py actually serve. In
+          particular the same-origin contract: no page may name the inference
+          node's address, and every endpoint a page calls must sit behind the
+          viewer's `/api` relay or `/ws` sockets. A page that reaches the node
+          directly works on a LAN and nowhere else — not over https, not
+          behind a tunnel.
       - aspect: testing-guide
         role: >-
           A change to the phone flow (what the user taps, what banners appear)
           must be reflected in the manual test guide's snapshot walkthrough.
           A change to how the pages address the node must be reflected in the
-          TLS/tunnel sections and in `.claude/skills/tunnel`.
+          TLS/tunnel sections and in `.claude/skills/tunnel`. A change to the
+          UI build or test commands (`make ui`, `pnpm test`, `pnpm test:e2e`,
+          `pnpm dev`) must be reflected in TESTING.md's frontend section.
 
   tests:
     description: >-

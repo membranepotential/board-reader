@@ -74,7 +74,7 @@ and posts it through the guarded `/calibrate`.
 Three things make it an instrument rather than a wizard, and all three hang off the
 tracker:
 
-- **The quad follows the board** (`static/tracker.js`, DESIGN §4.4.1(a)). Pyramidal
+- **The quad follows the board** (`lib/geometry/tracker.ts`, DESIGN §4.4.1(a)). Pyramidal
   Lucas-Kanade over the board's own 9×9 lattice of square corners, a RANSAC homography
   over the points that agree, and the four corners pushed through it — ~3 ms a frame at
   a 400 px working resolution. It **tracks** rather than re-detects on purpose: a fresh
@@ -192,6 +192,41 @@ it is also why the stack tunnels with one port forwarded (`.claude/skills/tunnel
 Until 2026-08-07 only the camera page worked this way; the live and snapshot pages were
 handed an absolute `http://<lan-ip>:8000` and talked to the node directly, which is why
 the node still runs CORS middleware — nothing in this repo now depends on it.
+
+## The frontend: one typed library, three routes
+
+The three pages are a SvelteKit 2 / Svelte 5 (runes) / TypeScript-strict app
+(`packages/viewer/ui`), prerendered by `adapter-static` (`make ui`, or `pnpm build`)
+straight into `packages/viewer/src/board_reader_viewer/web/` — generated and
+gitignored, not a source. `server.py` still serves exactly `index.html`,
+`snapshot.html` and `camera.html` out of that directory; those names now name build
+*output*, not hand-written files, and the server refuses to start if the directory
+is missing (see `docs/TESTING.md`).
+
+Before the rewrite, three hand-written HTML pages each carried their own
+near-identical copy of the same logic — FEN parsing, the board-plane tracker, the
+L1→L2 wire framing — and the differences between the copies were the bugs.
+`src/lib/**` is now the single, Vitest-tested version of each:
+
+| Module | Owns |
+|---|---|
+| `lib/protocol.ts` | parses the wire — L3 position events off `/ws/viewer`, L1→L2 headers on `/ws/ingest`, the node's HTTP replies — the one place untrusted wire data becomes a typed value |
+| `lib/api.ts` | same-origin, always-relative URL construction (`/api/…`, `/ws/…`) — nothing here ever names an origin, which is what keeps the pages working unchanged on a LAN, over https, and behind a tunnel |
+| `lib/board/fen.ts` | FEN field 1 ⇄ 8×8 grid, clamped and re-emitted so a malformed placement can't shift the grid the diff and chessground both index into |
+| `lib/geometry/{tracker,corners,homography}.ts` | the board-plane tracker itself — a line-for-line port of the deleted `static/tracker.js`, numerics pinned by `tracker.test.ts`, the port of the deleted `packages/viewer/tests/tracker_checks.mjs` |
+| `lib/edge/{motion,ingest}.ts` | the `/camera` page's browser edge: a JS mirror of `board_reader_edge`'s `MotionMeter`/`AdaptiveForwarder`, and the two-message (JSON header + JPEG) `/ws/ingest` sender |
+| `lib/stores/{positions.svelte,liveness}.ts` | the live position stream as Svelte 5 state — deliberately not a state machine over positions (DESIGN D1): the only history kept is the previous grid, and only to diff a changed square |
+
+`src/routes/` holds the three pages (`+page.svelte` for `/`, `camera/+page.svelte`,
+`snapshot/+page.svelte`) and the page-specific components each composes from
+`lib/components/{live,camera,snapshot}/` — UI, not shared logic. 333 Vitest cases
+cover `src/lib/**` today, and 16 Playwright specs drive the three built pages in a
+real Chromium; see [[TESTING#1. Automated tests]].
+
+The vendored chessground 9 (`static/vendor/chessground*`) is gone with the rest of
+`static/`: the app now depends on the published `@lichess-org/chessground` 10
+instead — the unscoped `chessground` package on npm is deprecated, lichess moved it
+to the scoped name.
 
 ## Where board detection lives
 

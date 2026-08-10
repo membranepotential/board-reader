@@ -72,6 +72,9 @@ uv run pytest                 # the whole suite SERIALLY (~23s) — prefer `make
 
 # Run locally (one terminal): inference + viewer on http :8080 (live, /snapshot)
 # and a second viewer bind on https :8443, whose secure origin /camera needs.
+# `make dev` depends on `ui`, so this alone is only needed after touching
+# packages/viewer/ui/ without wanting the rest of the stack.
+make ui                       # build the SvelteKit frontend -> board_reader_viewer/web/
 make dev
 
 # Or by hand, without Docker (two terminals):
@@ -92,6 +95,12 @@ Dependencies are **7-day seasoned**: `pyproject.toml` sets
 compromised) releases are never resolved. To take newer deps, bump that date
 deliberately and re-run `uv sync`, then `uv run pytest`. Python deps go through
 `uv` only.
+
+The UI (`packages/viewer/ui`) mirrors this on the npm side: `pnpm-workspace.yaml`
+sets `minimumReleaseAge: 10080` (minutes = 7 days; pnpm 11's own default is 1440,
+one day), so a freshly-published package is never resolved there either. Bump one
+package deliberately via `minimumReleaseAgeExclude`, then re-run `pnpm install`
+and `pnpm test`.
 
 ## Compound engineering (learnings)
 
