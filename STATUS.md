@@ -1,6 +1,6 @@
 # STATUS — board-reader
 
-_reconciled: 2026-08-07 @ `5f2a0a4`_ · decisions live in [docs/DESIGN.md](docs/DESIGN.md); this is state.
+_reconciled: 2026-08-10 @ `90ed183`_ · decisions live in [docs/DESIGN.md](docs/DESIGN.md); this is state.
 
 ## Goal
 
@@ -9,49 +9,20 @@ confidences**. No moves, no legality, no PGN — those are the downstream applic
 
 ## Now
 
-- **Svelte/SvelteKit frontend rewrite (this session, 2026-08-07) — in flight.**
-  Port all three pages (`index.html` 465 · `camera.html` 1682 · `snapshot.html` 2407 +
-  `tracker.js` 536) to a SvelteKit app at `packages/viewer/ui/`, prerendered by
-  `adapter-static` into `packages/viewer/src/board_reader_viewer/web/` (generated,
-  gitignored, built by `make ui`). **`proxy.py`/`tls.py` are untouched** — the viewer stays
-  a Python byte-forwarder importing no `board_reader_*` package, so today's single-origin
-  and tunnel work survives intact. Logic duplicated across the three pages (`fenToGrid`,
-  corner labelling, `squareKey`) collapses into one typed `src/lib`. Toolchain verified:
-  build emits exactly the three files `server.py` serves. Deps 7-day seasoned via pnpm
-  `minimumReleaseAge: 10080`; vendored chessground 9 replaced by npm
-  `@lichess-org/chessground` 10.1.1 (the unscoped package is deprecated).
-  **Test shape changes:** ~85 Python tests string-grep the served HTML and cannot survive a
-  bundler — invariants move to Vitest (lib maths) + Playwright (page behaviour); Python
-  keeps the ~15 genuine `server`/`proxy`/`tls` tests. Agents: lib+types (blocking) → three
-  page ports + server/build integration (parallel, disjoint files) → test port → docs/aspects
-  → review + live verify. **Next:** land lib, then fan out the pages.
-- **Single-origin viewer + tunnel access (this session, 2026-08-07) — done, uncommitted.**
-  All three pages are now same-origin: the viewer relays the node's whole HTTP API under
-  a catch-all `/api/<path>` (was: two hardcoded routes) and injects nothing into the HTML.
-  `/` and `/snapshot` previously carried an absolute `http://<lan-ip>:8000`, which made
-  them LAN-only — blocked mixed content over https, unreachable behind a tunnel. Deletes
-  snapshot.html's localhost-hostname-rewrite guess and the index.html origin derivation.
-  New project skill `.claude/skills/tunnel` (cloudflared quick tunnel, one port).
-  **Verified live through a real tunnel:** all three pages 200, `/api/uploads` returned
-  node data, `wss://…/ws/viewer` connected, no LAN address in any page. 783 tests green,
-  ruff clean. Touches viewer + Makefile/compose/docs only — disjoint from the camera-page
-  session. **`hcloud` is not involved:** `boardreader.peppert.de` cannot point at a quick
-  tunnel (measured: TLS handshake failure, and 403 on Host-header routing), and the paid
-  Cloudflare tiers that would fix it were declined — see the skill.
 - **ccbf-r5 live calibration (calibration session, 2026-08-07) — WORKS; landed in `63923c7`.**
   Root cause of "won't calibrate": the guard's probe reads the *angled* t=0 start frame at
   28/32 but the edge-rectified *warp* at 6/32 (aspect 0.635), and an angled-photo bank reads
   warps at 11/32 — warp streams are unusable at this angle, full stop. Fix rides the
-  wire-corners work above: new `feed --forward-original` (edge implementer, landed in
+  wire-corners work: new `feed --forward-original` (edge implementer, landed in
   `packages/edge/**`, 589 tests green, in review) forwards ORIGINAL frames + semantic
   `--corners`; ingest photo-paths them. **Live e2e verified on the mp4:** frames ingest,
   `X-Corners` served, `/calibrate` from the retained frame accepts (13/13, `label_rotation 0`
   — a8-first corners `536,918,631,336,1458,320,1638,896` yield white's-view placements),
   start reads 63-64/64 and tracks 1. e4; persistent d8 q→b far-side error (decapitation
   weakness, degraded band). The camera-page landing delivered the live calibrate button
-  preferring `X-Corners` (index.html `cornersOf`); remaining: optional per-board display
-  rotation (user-approved). Docs (TESTING/index: the new flag + ccbf runbook) in the
-  joint reconcile.
+  preferring `X-Corners` (now `lib/components/live/calibration.ts`); remaining: optional
+  per-board display rotation (user-approved). Docs (TESTING/index: the new flag + ccbf
+  runbook) in the joint reconcile.
 
 Also staged and waiting on a decision to start:
 
@@ -71,11 +42,45 @@ Also staged and waiting on a decision to start:
   (user_photos 0.894 vs 0.938), possibly just undertraining. Compare against **0.898**
   holdout / **0.819** transfer on `===F_DONE===`; deploy only if it wins both.
 
-> `tools/video/crops.csv` has an uncommitted row (`ccbf-r5`). The docs describe it; commit
-> the registry with them or the reproducibility claim is false.
-
 ## Done (recent)
 
+- 08-10: **The three pages become one typed SvelteKit app** (`fc2cae2`, docs `90ed183`).
+  `index.html` 465 · `camera.html` 1682 · `snapshot.html` 2407 + `tracker.js` 536 —
+  ~4,550 hand-written lines, carrying three near-identical copies of `fenToGrid`, corner
+  labelling and `squareKey` — are now `packages/viewer/ui` (SvelteKit 2, Svelte 5 runes,
+  TS strict + `noUncheckedIndexedAccess`), prerendered by `adapter-static` into
+  `src/board_reader_viewer/web/`: generated, gitignored, built by the new **`make ui`**
+  (which `make dev` depends on) and by a Docker `ui-build` stage only the viewer image
+  pulls from. **`proxy.py`/`tls.py` untouched** — the viewer is still a Python
+  byte-forwarder importing no `board_reader_*` package, so the single-origin/tunnel
+  property survives, and is now *asserted* by a test that greps the built bundle for any
+  absolute origin, IP literal or explicit port. **The prize is `src/lib/**`:** one tested
+  version of the protocol parser, the always-relative URL builder, FEN⇄grid, the
+  board-plane tracker + homography, `MotionMeter`/`AdaptiveForwarder` and the ingest
+  framing. **`create_app()` deliberately does not require the bundle** (missing pages 503;
+  `main()` is what refuses to start), so `proxy`/`tls` stay testable on a fresh clone with
+  no Node toolchain. Two more fixes on top of the port: the ingest client regained its
+  *pre-encode* backpressure check, and a chessground-creating `$effect` now depends on the
+  element alone — reading a prop there rebuilt the board per placement and leaked a
+  ResizeObserver each time. **720 Python · 333 Vitest · 16 Playwright green**, ruff +
+  `svelte-check` clean; verified live in Chromium against the real stack (both
+  orientations) and as a rebuilt Docker image. **Dependency note:** vendored chessground 9
+  → `@lichess-org/chessground` 10.1.1 — the unscoped `chessground` package is
+  **deprecated**, so don't "fix" it back; npm deps are 7-day seasoned
+  (`minimumReleaseAge: 10080`). **Known gap:** Playwright is Chromium-only and drives
+  touch as mouse events, so iOS Safari — the actual target device — stays manual-only.
+- 08-07: **Single-origin viewer + tunnel access** (`9468cc2`). All three pages are
+  same-origin: the viewer relays the node's whole HTTP API under a catch-all `/api/<path>`
+  (was: two hardcoded routes) and injects nothing into the HTML. `/` and `/snapshot`
+  previously carried an absolute `http://<lan-ip>:8000`, which made them LAN-only —
+  blocked mixed content over https, unreachable behind a tunnel. Deletes snapshot's
+  localhost-hostname-rewrite guess and the index origin derivation. New project skill
+  `.claude/skills/tunnel` (cloudflared quick tunnel, one port). **Verified live through a
+  real tunnel:** all three pages 200, `/api/uploads` returned node data,
+  `wss://…/ws/viewer` connected, no LAN address in any page. **`hcloud` is not involved:**
+  `boardreader.peppert.de` cannot point at a quick tunnel (measured: TLS handshake
+  failure, 403 on Host-header routing), and the paid Cloudflare tiers that would fix it
+  were declined — see the skill.
 - 08-07: **The flaky/hanging suite, root-caused — and a testing guide agents can act on.**
   The `ack≠estimated` race closed earlier was a symptom, not the cause. `WS /ingest` acks on
   *receipt* and estimates on a per-board worker task; a `TestClient` **not entered as a
