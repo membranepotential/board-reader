@@ -1,0 +1,360 @@
+<script lang="ts">
+  /**
+   * One board's card on the live page — ported from index.html's `ensureCard` /
+   * `render` / `calibrate`, minus the DOM bookkeeping: `PositionStream` already
+   * derives the sanitized grid, low-confidence squares, change rings, staleness
+   * and events/sec (see `$lib/stores/positions.svelte`), so this component only
+   * lays them out and owns the UI-only state index.html kept per card (whether
+   * the preview is open, an in-flight calibration, the banner and its one timer).
+   *
+   * Stale = the reading is old, so it stops asserting itself — except the `.live`
+   * row, which is exempt: how stale it is, is exactly what you want to read on a
+   * stale card. A stream that dies mid-move must also not pulse "moving" forever,
+   * so the motion chip's animation is switched off once the card is stale.
+   */
+  import Board from '$lib/board/Board.svelte';
+  import { gridToFen } from '$lib/board/fen';
+  import { calibrate as postCalibrate, cornersOf, fetchBoardFrame } from '$lib/api';
+  import { MOVING_BELOW } from '$lib/protocol';
+  import { RATE_WINDOW_MS, STALE_MS, formatAge } from '$lib/stores/liveness';
+  import type { BoardLiveness, BoardState } from '$lib/stores/positions.svelte';
+  import { calibBlockReason, calibSuccessMessage, calibTitle } from './calibration';
+  import FramePreview from './FramePreview.svelte';
+  import { boardShapes } from './shapes';
+
+  interface Props {
+    board: BoardState;
+    liveness: BoardLiveness;
+  }
+
+  const { board, liveness }: Props = $props();
+
+  /** Calibration success/failure fades from the card after this, via one timer. */
+  const BANNER_MS = 9000;
+
+  let previewOpen = $state(false);
+  let calibBusy = $state(false);
+  let banner = $state<{ readonly kind: 'ok' | 'err'; readonly text: string } | null>(null);
+  // Not `$state`: a timer handle is never rendered, only ever replaced or cleared.
+  let bannerTimer: ReturnType<typeof setTimeout> | null = null;
+
+  const event = $derived(board.event);
+  const placement = $derived(gridToFen(board.grid));
+  const shapes = $derived(boardShapes(board.low, liveness.rings));
+
+  const moving = $derived(event.stability !== null && event.stability < MOVING_BELOW);
+  const motionLabel = $derived(
+    event.stability === null ? 'motion unknown' : moving ? 'moving' : 'at rest'
+  );
+  const motionClass = $derived(event.stability === null ? 'unknown' : moving ? 'moving' : 'rest');
+
+  const calibReason = $derived(
+    calibBlockReason({ stale: liveness.stale, status: event.status, stability: event.stability })
+  );
+  const calibDisabled = $derived(calibBusy || calibReason !== null);
+  const calibTitleText = $derived(calibTitle(calibReason, calibBusy));
+
+  function showBanner(kind: 'ok' | 'err', text: string): void {
+    banner = { kind, text };
+    // One timer per card, replaced not stacked.
+    if (bannerTimer !== null) clearTimeout(bannerTimer);
+    bannerTimer = setTimeout(() => {
+      banner = null;
+    }, BANNER_MS);
+  }
+
+  // Calibration rebuilds the piece bank from one frame, so it is only meaningful
+  // on a live, settled, ok reading — the confirm dialog restates that, and
+  // `calibDisabled`/`calibTitleText` already keep the button honest about why.
+  async function calibrateBoard(): Promise<void> {
+    const confirmed = confirm(
+      'Calibrate from the live frame?\n\n' +
+        'The board must CURRENTLY show the STARTING position, with the pieces at rest. ' +
+        'The node rebuilds its piece bank from that one frame.'
+    );
+    if (!confirmed) return;
+
+    calibBusy = true;
+    try {
+      const frame = await fetchBoardFrame(board.id, event.seq);
+      if (!frame.ok) {
+        // A thrown fetch names the hop that failed; a refusal names the node's own
+        // reason. Either way it is this page's viewer relay, not the node itself.
+        showBanner('err', `${frame.error.message}\nIs the inference node reachable from the viewer?`);
+        return;
+      }
+
+      // Where the board sits inside the retained frame: `X-Corners` states it for
+      // an un-rectified crop, and its absence means the frame already IS the
+      // board, so the fallback is the image's own four corners.
+      const bitmap = await createImageBitmap(frame.value.jpeg);
+      const corners = frame.value.corners ?? cornersOf(null, bitmap);
+      bitmap.close();
+
+      const result = await postCalibrate(frame.value.jpeg, { corners });
+      if (!result.ok) {
+        // The node refuses calibrations that would poison the bank; surface its
+        // reason verbatim.
+        showBanner('err', result.error.message);
+        return;
+      }
+      showBanner('ok', calibSuccessMessage(result.value));
+    } finally {
+      calibBusy = false;
+    }
+  }
+</script>
+
+<div class="board-card" class:stale={liveness.stale}>
+  <h2>
+    <span>board {board.id}</span>
+    <span class="chips">
+      <span class="motion-chip {motionClass}">{motionLabel}</span>
+      {#if liveness.stale}
+        <span class="stale-chip" title="no event for over {STALE_MS / 1000}s">stale</span>
+      {/if}
+      <span class="status {event.status}">{event.status}</span>
+    </span>
+  </h2>
+
+  <div class="card-body">
+    <FramePreview
+      boardId={board.id}
+      seq={event.seq}
+      open={previewOpen}
+      onToggle={() => (previewOpen = !previewOpen)}
+    />
+
+    <div class="board-col">
+      {#if banner}
+        <div class="banner {banner.kind}">{banner.text}</div>
+      {/if}
+
+      <div class="board-wrap">
+        <Board {placement} {shapes} />
+      </div>
+
+      <div class="board-actions">
+        <button class="calib" disabled={calibDisabled} title={calibTitleText} onclick={calibrateBoard}>
+          calibrate
+        </button>
+        <span class="legend">
+          <span><i class="lo"></i>low confidence</span>
+          <span><i class="ch"></i>just changed</span>
+        </span>
+      </div>
+
+      <div class="meta">
+        <div class="live">
+          <span title="age of the last event">{formatAge(liveness.ageMs)}</span> ·
+          <span title="events/sec over the last {RATE_WINDOW_MS / 1000}s">
+            {liveness.eventsPerSecond.toFixed(1)} ev/s
+          </span>
+          · seq <code>{event.seq}</code>
+        </div>
+        <div>placement: <code class="pl">{event.placement}</code></div>
+        <div>
+          confidence
+          <div class="bar conf"><i style="width: {Math.round((event.confidence ?? 0) * 100)}%"></i></div>
+        </div>
+        <div>
+          stability
+          <div class="bar stab"><i style="width: {Math.round((event.stability ?? 0) * 100)}%"></i></div>
+        </div>
+        <div>utc <code>{event.utc}</code> · clock <code>{event.clock}</code></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<style>
+  .board-card {
+    background: #1b1f26;
+    border: 1px solid #272b33;
+    border-radius: 10px;
+    padding: 14px;
+  }
+  .board-card.stale {
+    border-color: #4a3a22;
+  }
+  h2 {
+    font-size: 14px;
+    margin: 0 0 10px;
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+    align-items: center;
+  }
+  .chips {
+    display: flex;
+    gap: 6px;
+    align-items: center;
+  }
+  .status,
+  .motion-chip,
+  .stale-chip {
+    font-size: 12px;
+    padding: 1px 7px;
+    border-radius: 9px;
+    white-space: nowrap;
+  }
+  .status {
+    background: #243;
+    color: #9e9;
+  }
+  .status.recalibrating,
+  .status.needs_setup,
+  .status.stale {
+    background: #432;
+    color: #fc8;
+  }
+  .motion-chip {
+    background: #23303f;
+    color: #8fb6e8;
+  }
+  .motion-chip.moving {
+    background: #3a2f18;
+    color: #ffcf7a;
+    animation: pulse 1.1s ease-in-out infinite;
+  }
+  .motion-chip.unknown {
+    background: #2b2f37;
+    color: #9aa3ad;
+  }
+  .stale-chip {
+    background: #3a2020;
+    color: #ff9a9a;
+  }
+  /* A stream that dies mid-move must not pulse "moving" forever. */
+  .board-card.stale .motion-chip {
+    opacity: 0.45;
+    animation: none;
+  }
+  @keyframes pulse {
+    0%,
+    100% {
+      opacity: 1;
+    }
+    50% {
+      opacity: 0.5;
+    }
+  }
+
+  /* ---- card body: [preview][board column] ------------------------------------
+     The preview docks to the board's left (see FramePreview.svelte); this is just
+     the two-column layout that holds it and the board next to each other. */
+  .card-body {
+    display: flex;
+    align-items: flex-start;
+    gap: 12px;
+  }
+
+  /* Stale = the reading is old, so it stops asserting itself. The `.live` row is
+     exempt: how stale it is, is exactly what you want to read on a stale card. */
+  .board-wrap,
+  .meta > :not(.live) {
+    transition: filter 150ms linear;
+  }
+  .board-card.stale .board-wrap,
+  .board-card.stale .meta > :not(.live) {
+    filter: saturate(0.15) brightness(0.62);
+  }
+
+  .board-actions {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-top: 10px;
+  }
+  .calib {
+    font: inherit;
+    font-size: 13px;
+    padding: 6px 12px;
+    border-radius: 8px;
+    border: 1px solid #35507a;
+    background: #1e2a3d;
+    color: #8fb6e8;
+    cursor: pointer;
+  }
+  .calib:hover:not(:disabled) {
+    background: #24344b;
+    color: #cfe0f7;
+  }
+  .calib:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+  }
+  .legend {
+    font-size: 12px;
+    color: #7d8590;
+    display: flex;
+    gap: 10px;
+    flex-wrap: wrap;
+  }
+  .legend i {
+    width: 9px;
+    height: 9px;
+    border-radius: 50%;
+    display: inline-block;
+    vertical-align: -1px;
+    margin-right: 4px;
+  }
+  .legend .lo {
+    background: #ffcf33;
+  }
+  .legend .ch {
+    background: #5ad17a;
+  }
+
+  .banner {
+    font-size: 13px;
+    padding: 8px 11px;
+    border-radius: 8px;
+    margin-bottom: 10px;
+    max-width: var(--board-size, 360px);
+  }
+  .banner.ok {
+    background: #1f3a24;
+    color: #97e0a6;
+  }
+  .banner.err {
+    background: #3a2020;
+    color: #ff9a9a;
+    white-space: pre-wrap;
+  }
+
+  .meta {
+    margin-top: 10px;
+    font-size: 12px;
+    color: #9aa3ad;
+    display: grid;
+    gap: 4px;
+    max-width: var(--board-size, 360px);
+  }
+  .live {
+    color: #c8cdd4;
+    font-variant-numeric: tabular-nums;
+  }
+  .pl {
+    word-break: break-all;
+  }
+  .bar {
+    height: 6px;
+    border-radius: 3px;
+    background: #2b2f37;
+    overflow: hidden;
+  }
+  .bar > i {
+    display: block;
+    height: 100%;
+  }
+  .bar.conf > i {
+    background: #5ad17a;
+  }
+  .bar.stab > i {
+    background: #6aa8ff;
+  }
+  code {
+    color: #c8cdd4;
+  }
+</style>

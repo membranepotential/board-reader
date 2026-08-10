@@ -1,10 +1,17 @@
 # board-reader — one command to run it locally.
 #
 #   make dev     start inference + both viewers; Ctrl-C stops all three
+#   make ui      build the SvelteKit viewer frontend into the Python package
 #   make stop    stop anything left running
 #   make test     the suite in parallel, minus the GPU tests
 #   make test-gpu the GPU tests alone (needs an idle GPU)
 #   make test-all everything, GPU included
+#
+# `dev` depends on `ui`, unconditionally: the viewer server (server.py) refuses to
+# start if packages/viewer/src/board_reader_viewer/web/ is missing, and that
+# directory is generated + gitignored, so a fresh checkout has none. Rebuilding it
+# on every `make dev` also means an edit under packages/viewer/ui/ is never served
+# stale — there is no separate "did the UI change" check to fall out of date.
 #
 # The env below is the *deployed* config, not a convenience default: BR_MODEL
 # alone serves the trained model (599/640 on the labeled eval), and only with
@@ -32,7 +39,7 @@
 # the group again — bash recurses until it overflows its stack and segfaults.
 # The trap disarms itself first for the same reason.
 
-.PHONY: dev stop test test-gpu test-all lint lint-fix
+.PHONY: dev ui stop test test-gpu test-all test-ui test-e2e test-front lint lint-fix
 
 # `wait -n` below is a bashism, and the teardown relies on bash trap semantics.
 SHELL := /bin/bash
@@ -48,7 +55,15 @@ INFERENCE_PORT  ?= 8000
 VIEWER_PORT     ?= 8080
 VIEWER_TLS_PORT ?= 8443
 
-dev:
+# Prerenders the live / snapshot / camera pages (adapter-static) straight into
+# packages/viewer/src/board_reader_viewer/web/, which ships as that package's data
+# (packages/viewer/pyproject.toml). `--frozen-lockfile` matches `uv sync --frozen`'s
+# discipline on the Python side: this installs exactly pnpm-lock.yaml, never a
+# resolution that drifts from what is committed.
+ui:
+	cd packages/viewer/ui && pnpm install --frozen-lockfile && pnpm build
+
+dev: ui
 	@test -f "$(BR_MODEL)" || echo "!! $(BR_MODEL) missing — server will degrade to the stub"
 	@test -f "$(BR_SESSION_BANK)" || echo "!! $(BR_SESSION_BANK) missing — trained model only, no ensemble"
 	@echo "  camera     https://$(HOST):$(VIEWER_TLS_PORT)/camera   (accept the warning once)"
@@ -102,6 +117,25 @@ dev:
 test:
 	CUDA_VISIBLE_DEVICES="" uv run pytest -n auto -m "not gpu"
 	@echo "   (GPU tests deselected — run 'make test-gpu' on an idle machine)"
+	@echo "   (frontend not covered here — run 'make test-front')"
+
+# The frontend's two test layers. `make test` is the Python suite only, and most of
+# what the viewer does now lives in packages/viewer/ui — these are not optional.
+#
+#   test-ui   Vitest: the tracker maths, the FEN sanitizer, the stores (~1s)
+#   test-e2e  Playwright: the three pages driven in a real Chromium against a stubbed
+#             inference node — no GPU, no model. It runs `vite build` first and serves
+#             the result with `vite preview`, so what is driven is what ships (~15s).
+test-ui:
+	cd packages/viewer/ui && pnpm install --frozen-lockfile && pnpm test
+
+# `playwright install` is a one-off on a fresh checkout: Playwright pins its own
+# Chromium build and refuses to run against another.
+test-e2e:
+	cd packages/viewer/ui && pnpm install --frozen-lockfile && \
+	  pnpm exec playwright install chromium && pnpm test:e2e
+
+test-front: test-ui test-e2e
 
 # The deselected remainder, serially: they contend with each other too.
 test-gpu:

@@ -1,0 +1,15 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <!-- `viewport-fit=cover` is load-bearing, not cosmetic: /camera is a full-screen
+         viewfinder whose rail, chips and sheet are positioned with
+         `env(safe-area-inset-*)`, and those insets read as 0 without it — putting
+         controls under the notch and the home indicator on a phone. -->
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    %sveltekit.head%
+  </head>
+  <body data-sveltekit-preload-data="hover">
+    <div style="display: contents">%sveltekit.body%</div>
+  </body>
+</html>

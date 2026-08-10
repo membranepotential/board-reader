@@ -1,0 +1,163 @@
+import { describe, expect, it, vi } from 'vitest';
+import { PositionStream } from './positions.svelte';
+import { NUM_CLASSES, START_PLACEMENT } from '../protocol';
+import { FLASH_MS, STALE_MS } from './liveness';
+
+function event(over: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    board_id: 'phone',
+    seq: 1,
+    utc: '2026-08-07T10:00:00.000Z',
+    placement: START_PLACEMENT,
+    confidence: 0.9,
+    stability: 0.95,
+    clock: { running: 'none' },
+    status: 'ok',
+    ...over
+  };
+}
+
+/** A stream driven by an explicit clock, so nothing here waits on real time. */
+function streamAt(clock: { now: number }): PositionStream {
+  return new PositionStream({ clock: () => clock.now });
+}
+
+describe('PositionStream', () => {
+  it('keys boards by board_id and keeps them in a stable order', () => {
+    const clock = { now: 0 };
+    const stream = streamAt(clock);
+    stream.ingest(event({ board_id: 'b' }));
+    stream.ingest(event({ board_id: 'a' }));
+    expect(stream.boards.map((b) => b.id)).toEqual(['a', 'b']);
+  });
+
+  it('drops a malformed frame instead of rendering a broken board', () => {
+    const stream = streamAt({ now: 0 });
+    expect(stream.ingest('{"nope": true}')).toBeNull();
+    expect(stream.boards).toHaveLength(0);
+  });
+
+  it('sanitizes the placement once, at ingest', () => {
+    const stream = streamAt({ now: 0 });
+    stream.ingest(event({ placement: 'rxbqkbnr/8/8/8/8/8/8/8' }));
+    expect(stream.board('phone')?.grid[0]).toEqual(['r', '', 'b', 'q', 'k', 'b', 'n', 'r']);
+  });
+
+  it('marks only the squares that changed, diffed against the previous grid', () => {
+    const clock = { now: 1000 };
+    const stream = streamAt(clock);
+    stream.ingest(event());
+    expect(Object.keys(stream.board('phone')!.changedAt)).toEqual([]);
+    clock.now = 1100;
+    stream.ingest(event({ seq: 2, placement: 'rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR' }));
+    expect(Object.keys(stream.board('phone')!.changedAt).sort()).toEqual(['e2', 'e4']);
+  });
+
+  it('keeps no history beyond the previous grid', () => {
+    // The store's whole memory is one grid per board (DESIGN D1) — a third event
+    // must not resurrect the first one's squares.
+    const clock = { now: 0 };
+    const stream = streamAt(clock);
+    stream.ingest(event());
+    clock.now = 100;
+    stream.ingest(event({ seq: 2, placement: 'rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR' }));
+    clock.now = 200;
+    stream.ingest(event({ seq: 3, placement: 'rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR' }));
+    // e2/e4 are still fading (they are inside FLASH_MS) but nothing NEW changed.
+    const board = stream.board('phone')!;
+    expect(Object.keys(board.changedAt).sort()).toEqual(['e2', 'e4']);
+    expect(board.changedAt['e4']).toBe(100);
+  });
+
+  it('forgets a ring once it has finished fading', () => {
+    const clock = { now: 0 };
+    const stream = streamAt(clock);
+    stream.ingest(event());
+    clock.now = 100;
+    stream.ingest(event({ seq: 2, placement: 'rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR' }));
+    clock.now = 100 + FLASH_MS + 1;
+    stream.ingest(event({ seq: 3, placement: 'rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR' }));
+    expect(Object.keys(stream.board('phone')!.changedAt)).toEqual([]);
+  });
+
+  it('rings the squares under the confidence floor', () => {
+    const dist = Array.from({ length: 8 }, () =>
+      Array.from({ length: 8 }, () =>
+        Array.from({ length: NUM_CLASSES }, (_, i) => (i === 0 ? 0.9 : 0.1 / (NUM_CLASSES - 1)))
+      )
+    );
+    dist[2]![3] = Array.from({ length: NUM_CLASSES }, () => 1 / NUM_CLASSES);
+    const stream = streamAt({ now: 0 });
+    stream.ingest(event({ square_dist: dist }));
+    expect(stream.board('phone')?.low).toEqual(['d6']);
+  });
+
+  it('reads a 1 fps keepalive as 1.0 ev/s and goes stale when it stops', () => {
+    const clock = { now: 0 };
+    const stream = streamAt(clock);
+    for (let i = 0; i <= 3; i++) {
+      clock.now = i * 1000;
+      stream.ingest(event({ seq: i }));
+    }
+    const board = stream.board('phone')!;
+    expect(stream.liveness(board).eventsPerSecond).toBeCloseTo(1.0, 9);
+    expect(stream.liveness(board).stale).toBe(false);
+  });
+
+  it('connects, reports live, and reconnects with backoff after a close', () => {
+    vi.useFakeTimers();
+    const sockets: Array<Partial<WebSocket> & { fire: (name: 'open' | 'close') => void }> = [];
+    const stream = new PositionStream({
+      url: 'ws://test/ws/viewer',
+      clock: () => 0,
+      reconnectMinMs: 100,
+      reconnectMaxMs: 400,
+      socketFactory: () => {
+        const socket = {
+          onopen: null as ((e: Event) => void) | null,
+          onclose: null as ((e: CloseEvent) => void) | null,
+          onerror: null,
+          onmessage: null,
+          close: () => {},
+          fire(name: 'open' | 'close') {
+            if (name === 'open') this.onopen?.({} as Event);
+            else this.onclose?.({} as CloseEvent);
+          }
+        };
+        sockets.push(socket as unknown as (typeof sockets)[number]);
+        return socket as unknown as WebSocket;
+      }
+    });
+    stream.start();
+    expect(stream.connection).toBe('connecting');
+    sockets[0]!.fire('open');
+    expect(stream.connection).toBe('live');
+
+    sockets[0]!.fire('close');
+    expect(stream.connection).toBe('disconnected');
+    vi.advanceTimersByTime(100);
+    expect(sockets).toHaveLength(2);
+    sockets[1]!.fire('close');
+    vi.advanceTimersByTime(199);
+    expect(sockets).toHaveLength(2); // 200 ms this time, not 100
+    vi.advanceTimersByTime(1);
+    expect(sockets).toHaveLength(3);
+
+    stream.stop();
+    vi.advanceTimersByTime(10_000);
+    expect(sockets).toHaveLength(3);
+    vi.useRealTimers();
+  });
+
+  it('reports staleness against the ticker, not against event.utc', () => {
+    const clock = { now: 1000 };
+    const stream = streamAt(clock);
+    stream.ingest(event());
+    const board = stream.board('phone')!;
+    expect(stream.liveness(board).stale).toBe(false);
+    // Nothing arrives for longer than STALE_MS; the store's own clock is what says so.
+    clock.now = 1000 + STALE_MS + 1;
+    stream.ingest(event({ board_id: 'other' })); // advances the shared clock
+    expect(stream.liveness(board).stale).toBe(true);
+  });
+});

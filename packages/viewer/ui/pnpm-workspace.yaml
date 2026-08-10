@@ -1,0 +1,11 @@
+# Supply chain: dependencies are 7-day seasoned, mirroring the Python side's
+# `[tool.uv] exclude-newer` (see CLAUDE.md "Supply chain"). pnpm 11 already defaults
+# `minimumReleaseAge` to 1440 minutes (1 day); 10080 is the week this project wants,
+# so a freshly-published — possibly compromised — release is never resolved.
+#
+# To take a newer dependency deliberately, either wait it out or name the single
+# package under `minimumReleaseAgeExclude`, then re-run `pnpm install` and the tests.
+minimumReleaseAge: 10080
+
+packages:
+  - .
