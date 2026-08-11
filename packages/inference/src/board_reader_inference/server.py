@@ -51,6 +51,12 @@ from board_reader_inference.squares import (
     crop_squares_photo,
     square_boxes,
 )
+from board_reader_inference.trained import (
+    DEFAULT_CASCADE_TAU,
+    CascadeEstimator,
+    TrainedEstimator,
+    TrainedReader,
+)
 
 
 def _parse_corners(spec: str) -> np.ndarray:
@@ -175,6 +181,48 @@ def _estimator_from_bank(
     )
 
 
+def _cascade_tau() -> float:
+    """``BR_CASCADE_TAU`` -> the cascade's confidence gate (default 0.95)."""
+    raw = os.environ.get("BR_CASCADE_TAU")
+    if not raw:
+        return DEFAULT_CASCADE_TAU
+    try:
+        return float(raw)
+    except ValueError as e:
+        raise ValueError(f"BR_CASCADE_TAU={raw!r} is not a number") from e
+
+
+def _trained_component(model: str) -> TrainedReader | None:
+    """The zero-shot trained member named by the environment, or ``None``.
+
+    ``BR_MODEL`` alone is one :class:`TrainedEstimator`, unchanged. ``BR_MODEL_B``
+    names a second, differently-cropped classifier and turns the pair into a
+    :class:`CascadeEstimator` (``BR_CASCADE_TAU`` moves the gate). Either way the
+    result is *the trained component*: a session bank still wraps it in an
+    ``EnsembleEstimator`` on top, with the same arithmetic.
+
+    A broken ``BR_MODEL`` degrades to the next tier so ``docker compose up`` works
+    on a fresh clone without ``models/``. A broken ``BR_MODEL_B`` does **not**: it
+    is never set by default, so setting it is deliberate, and quietly serving one
+    model instead of the requested two would show up only as "the ensemble didn't
+    help" months later.
+    """
+    model_b = os.environ.get("BR_MODEL_B")
+    try:
+        trained = TrainedEstimator(model)
+    except Exception as e:
+        if model_b:
+            raise RuntimeError(
+                f"BR_MODEL_B={model_b!r} requests the cascade, but its first member "
+                f"BR_MODEL={model!r} is not usable ({e})"
+            ) from e
+        print(f"BR_MODEL={model!r} not usable ({e}); serving without it")
+        return None
+    if not model_b:
+        return trained
+    return CascadeEstimator(trained, TrainedEstimator(model_b), tau=_cascade_tau())
+
+
 def _default_estimator(occupancy_est: CentroidEstimator | None = None) -> Estimator:
     """Pick the style (piece-type) estimator from the environment.
 
@@ -196,15 +244,8 @@ def _default_estimator(occupancy_est: CentroidEstimator | None = None) -> Estima
     model = os.environ.get("BR_MODEL")
     if model:
         from board_reader_inference.estimator import EnsembleEstimator
-        from board_reader_inference.trained import TrainedEstimator
 
-        try:
-            trained = TrainedEstimator(model)
-        except Exception as e:
-            # file, ORT version, truncated ONNX) degrades to the next tier so
-            # `docker compose up` works on a fresh clone without models/.
-            print(f"BR_MODEL={model!r} not usable ({e}); serving without it")
-            trained = None
+        trained = _trained_component(model)
         if trained is not None:
             bank = session_bank_path()
             if bank and Path(bank).exists():
@@ -332,6 +373,17 @@ def create_app(
         }
         if recorder is not None:
             health["recording"] = recorder.stats()
+        # The cascade's whole economic claim is "the second model runs on under a
+        # third of squares". Ride it on liveness so an operator can check the
+        # claim against their own boards instead of trusting the experiment.
+        cascade = session.base_trained()
+        if isinstance(cascade, CascadeEstimator):
+            health["cascade"] = {
+                "tau": cascade.tau,
+                "model": cascade.primary.model_path,
+                "model_b": cascade.secondary.model_path,
+                **cascade.metrics.as_dict(),
+            }
         return health
 
     @app.get("/boards/{board_id}")

@@ -51,6 +51,8 @@ photograph a start position.
 | Variable | Effect |
 |---|---|
 | `BR_MODEL` | ONNX crop classifier → `TrainedEstimator`. The zero-shot default. Reads its crop geometry from `<model>.onnx.meta.json`. |
+| `BR_MODEL_B` | A second crop classifier on a different crop geometry → `CascadeEstimator`. Squares `BR_MODEL` is unsure about are re-read by this one and the two averaged. **Both members must ship a geometry sidecar** — a missing one is a startup failure, not a warning. `GET /healthz` reports how often it fires. |
+| `BR_CASCADE_TAU` | The cascade's confidence gate (default `0.95`): squares whose max probability falls below it go to `BR_MODEL_B`. Lower = cheaper and closer to `BR_MODEL` alone. |
 | `BR_SESSION_BANK` | Path for the per-set exemplar bank. **Opt-in: unset means nothing is ever written.** With `BR_MODEL` set, the two are ensembled. |
 | `BR_CENTROIDS` | An explicit curated calibration file. Outranks `BR_MODEL`. |
 | `BR_OCCUPANCY_BANK` | A style-agnostic occupancy bank; enables the occupancy-only answer and start-position auto-calibration before any piece-type calibration exists. |

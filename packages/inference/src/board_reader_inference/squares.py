@@ -31,6 +31,7 @@ suppressing grid lines and neighbouring-square spill.
 from __future__ import annotations
 
 import math
+from collections.abc import Sequence
 from dataclasses import dataclass
 
 import cv2
@@ -413,8 +414,9 @@ def crop_squares_photo(
     *,
     geometry: CropGeometry = DEFAULT_GEOMETRY,
     size: int = 224,
+    squares: Sequence[int] | None = None,
 ) -> list[np.ndarray]:
-    """Cut 64 *tall* per-square boxes out of the ORIGINAL photo (rank 8→1, file a→h).
+    """Cut *tall* per-square boxes out of the ORIGINAL photo (rank 8→1, file a→h).
 
     Each box (:func:`square_boxes`, per ``geometry``) is clipped to the image,
     padded to a square (edge replication), and resized to ``size``².
@@ -424,9 +426,14 @@ def crop_squares_photo(
     trick that recovers real-photo accuracy.
 
     ``corners``: playing-surface corners in image pixels, order **a8, h8, h1, a1**.
+    ``squares``: which of the 64 board indices to cut, in the order given (default
+    all 64). The cascade's second model only ever looks at the squares its first
+    model was unsure about, so it pays for those crops and no others.
     """
     h_img, w_img = image.shape[:2]
     boxes = square_boxes(corners, geometry, image.shape)
+    if squares is not None:
+        boxes = boxes[np.asarray(squares, dtype=int)]
     crops: list[np.ndarray] = []
     for box in boxes:
         x0, y0 = box[0]

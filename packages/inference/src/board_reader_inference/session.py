@@ -67,7 +67,11 @@ from board_reader_inference.routing import (
     route_for,
 )
 from board_reader_inference.squares import BboxGeometry, crop_squares_photo
-from board_reader_inference.trained import TrainedEstimator
+from board_reader_inference.trained import (
+    CascadeEstimator,
+    TrainedEstimator,
+    TrainedReader,
+)
 
 # /calibrate sanity floor: of the squares the claimed placement says hold a
 # PIECE, at least this fraction must agree with a stateless probe of the photo
@@ -204,12 +208,16 @@ class EstimatorSession:
         """The active estimator's photo path, if it has one."""
         return photo_estimator(self._estimator)
 
-    def base_trained(self) -> TrainedEstimator | None:
-        """The zero-shot trained member of the active estimator, if any."""
-        if isinstance(self._estimator, EnsembleEstimator):
-            primary = self._estimator.primary
-            return primary if isinstance(primary, TrainedEstimator) else None
-        return self._estimator if isinstance(self._estimator, TrainedEstimator) else None
+    def base_trained(self) -> TrainedReader | None:
+        """The zero-shot trained member of the active estimator, if any.
+
+        One model or the two-model cascade — the bank arithmetic on top does not
+        care which, and neither does auto-calibration.
+        """
+        est = self._estimator
+        if isinstance(est, EnsembleEstimator):
+            est = est.primary
+        return est if isinstance(est, TrainedEstimator | CascadeEstimator) else None
 
     def centroid_part(self) -> CentroidEstimator | None:
         """The per-set exemplar/centroid member of the active estimator, if any."""

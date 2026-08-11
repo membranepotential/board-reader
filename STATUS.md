@@ -9,6 +9,20 @@ confidences**. No moves, no legality, no PGN — those are the downstream applic
 
 ## Now
 
+- repair-uploads-labels (agent) — photometric rotation repair of the 20 mislabeled `uploads_calibrate` sidecars + corrected eval numbers — running — valid comparison set.
+- ensemble-serving — DONE 08-11, reviewed + committed: `BR_MODEL_B` turns the trained
+  component into a τ-gated `CascadeEstimator` (default 0.95, `BR_CASCADE_TAU`); each
+  member crops with its OWN sidecar geometry, sidecar-less members refused at startup;
+  bank ensemble arithmetic untouched; `/healthz` exposes deferred-fraction. 735 tests
+  green; live-verified (real photo → sane placement, 5/64 deferred). **Deploy step
+  still open: promote `run_f` into `models/` + compose env.**
+- confirm-finetune (agent) — confirming run DONE: **NOT CONFIRMED as drop-in** — the
+  gain replicates on fresh seeds (0.968 [0.963–0.975], q→b confusion → 0, no
+  forgetting) but each arm fails one occupancy condition by a hair (halluc 3.2 vs ≤2 /
+  wrongtype 10.4 vs ≤10). Same coupled type-vs-occupancy trade as run_f. Now running
+  the registered follow-up: tuned⊕run_e 50/50 composition under the same rule.
+  `scratch/experiments/calib_finetune_confirm/report.md`.
+
 - exp-ensemble-ef — DONE 08-11, **prob_50_50 ensemble is DEPLOY-WORTHY under the
   pre-registered rule**: beats BOTH models on every set — user_photos 0.938→**0.956**
   (halluc 1, wrongtype 19→13), chesscog_transfer 0.856→**0.861** (wrongtype 118),

@@ -1058,6 +1058,172 @@ def test_default_estimator_degrades_when_model_unloadable(tmp_path, monkeypatch)
     assert isinstance(srv._default_estimator(None), StubEstimator)
 
 
+def _two_models(tmp_path, monkeypatch, *, sidecars: bool = True) -> tuple[str, str]:
+    """Two loadable ONNX-shaped models with their crop-geometry sidecars.
+
+    run_e's bbox geometry and run_f's pose geometry — the deployed pair — because
+    "each member crops with its own geometry" is the thing the cascade's env
+    surface has to carry from the sidecars all the way to the server.
+    """
+    from pathlib import Path
+
+    import numpy as np
+
+    from board_reader_inference import trained as trained_mod
+
+    def fake_session(path):
+        # Mirrors ORT: a path that is not there fails at session construction.
+        if not Path(path).exists():
+            raise OSError(f"no such model file: {path}")
+        return lambda b: np.zeros((b.shape[0], 13), dtype=np.float32)
+
+    monkeypatch.setattr(trained_mod, "_onnx_logits_fn", fake_session)
+    geometries = [
+        {"headroom": 1.6, "side_pad": 0.15, "square_size": 224},
+        {
+            "crop_geometry": {
+                "kind": "pose",
+                "piece_height": 1.9,
+                "piece_radius": 0.5,
+                "focal_ratio": 1.0,
+            },
+            "square_size": 224,
+        },
+    ]
+    paths = []
+    for name, meta in zip(("a.onnx", "b.onnx"), geometries, strict=True):
+        path = tmp_path / name
+        path.write_bytes(b"stub")
+        if sidecars:
+            (tmp_path / f"{name}.meta.json").write_text(json.dumps(meta))
+        paths.append(str(path))
+    return paths[0], paths[1]
+
+
+def test_br_model_b_builds_the_cascade(tmp_path, monkeypatch):
+    """BR_MODEL alone is unchanged; BR_MODEL_B turns the pair into the cascade,
+    each member on its own sidecar geometry, with BR_CASCADE_TAU moving the gate."""
+    from board_reader_inference import server as srv
+    from board_reader_inference.squares import BboxGeometry, PoseGeometry
+    from board_reader_inference.trained import (
+        DEFAULT_CASCADE_TAU,
+        CascadeEstimator,
+        TrainedEstimator,
+    )
+
+    model_a, model_b = _two_models(tmp_path, monkeypatch)
+    monkeypatch.delenv("BR_CENTROIDS", raising=False)
+    monkeypatch.delenv("BR_SESSION_BANK", raising=False)
+    monkeypatch.delenv("BR_CASCADE_TAU", raising=False)
+    monkeypatch.setenv("BR_MODEL", model_a)
+
+    assert isinstance(srv._default_estimator(None), TrainedEstimator)
+
+    monkeypatch.setenv("BR_MODEL_B", model_b)
+    est = srv._default_estimator(None)
+    assert isinstance(est, CascadeEstimator)
+    assert est.tau == DEFAULT_CASCADE_TAU
+    assert est.primary.geometry == BboxGeometry(1.6, 0.15)
+    assert est.secondary.geometry == PoseGeometry(1.9, 0.5, 1.0)
+    # The cascade IS the trained component: geometry and photo-mode still read
+    # off it exactly as off a single model.
+    assert est.crop_mode == "photo" and est.geometry == est.primary.geometry
+
+    monkeypatch.setenv("BR_CASCADE_TAU", "0.8")
+    assert srv._default_estimator(None).tau == 0.8
+
+
+def test_cascade_still_gets_boosted_by_the_session_bank(tmp_path, monkeypatch):
+    """The cascade replaces the trained *component*, not the bank arithmetic: a
+    persisted bank still wraps it in the same EnsembleEstimator blend."""
+    from board_reader_inference import server as srv
+    from board_reader_inference.estimator import EnsembleEstimator
+    from board_reader_inference.trained import CascadeEstimator
+
+    model_a, model_b = _two_models(tmp_path, monkeypatch)
+    bank_path = tmp_path / "bank.npz"
+    _lite_start_estimator().classifier.save(bank_path)
+    monkeypatch.delenv("BR_CENTROIDS", raising=False)
+    monkeypatch.setenv("BR_MODEL", model_a)
+    monkeypatch.setenv("BR_MODEL_B", model_b)
+    monkeypatch.setenv("BR_SESSION_BANK", str(bank_path))
+
+    est = srv._default_estimator(None)
+    assert isinstance(est, EnsembleEstimator)
+    assert isinstance(est.primary, CascadeEstimator)
+    # ...and the session still finds the trained member inside both wrappers, so
+    # /calibrate's orientation probe and the bank bootstrap keep working.
+    from board_reader_inference.session import EstimatorSession
+
+    assert isinstance(EstimatorSession(est).base_trained(), CascadeEstimator)
+
+
+def test_broken_second_model_is_fatal_not_silent(tmp_path, monkeypatch):
+    """Unlike BR_MODEL, BR_MODEL_B has no fresh-clone excuse: setting it is
+    deliberate, and quietly serving one model would surface months later as
+    'the ensemble didn't help'."""
+    from board_reader_inference import server as srv
+
+    model_a, model_b = _two_models(tmp_path, monkeypatch)
+    monkeypatch.delenv("BR_CENTROIDS", raising=False)
+    monkeypatch.delenv("BR_SESSION_BANK", raising=False)
+    monkeypatch.setenv("BR_MODEL", model_a)
+
+    # A second model with no geometry sidecar: refused, never assumed.
+    bare = tmp_path / "bare.onnx"
+    bare.write_bytes(b"stub")
+    monkeypatch.setenv("BR_MODEL_B", str(bare))
+    with pytest.raises(ValueError, match="sidecar"):
+        srv._default_estimator(None)
+
+    # A first model that cannot load is fatal too once a cascade was requested.
+    monkeypatch.setenv("BR_MODEL_B", model_b)
+    monkeypatch.setenv("BR_MODEL", str(tmp_path / "nonexistent.onnx"))
+    with pytest.raises(RuntimeError, match="BR_MODEL_B"):
+        srv._default_estimator(None)
+
+
+def test_healthz_reports_cascade_invocations(tmp_path, monkeypatch):
+    """The cascade's economic claim (second model on <30% of squares) has to be
+    checkable against the operator's own boards, not just the experiment."""
+    import numpy as np
+    from starlette.testclient import TestClient
+
+    from board_reader_core.wire import encode_jpeg
+
+    from board_reader_inference.hub import PositionHub
+    from board_reader_inference.server import create_app
+    from board_reader_inference.squares import (
+        BboxGeometry,
+        PoseGeometry,
+        full_frame_corners,
+    )
+    from board_reader_inference.trained import CascadeEstimator, TrainedEstimator
+
+    monkeypatch.chdir(tmp_path)
+    photo = render_board(START_PLACEMENT)
+    # Model A is torn on every square (uniform logits), so every square defers.
+    flat = lambda b: np.zeros((b.shape[0], 13), dtype=np.float32)  # noqa: E731
+    est = CascadeEstimator(
+        TrainedEstimator(flat, geometry=BboxGeometry(1.6, 0.15)),
+        TrainedEstimator(flat, geometry=PoseGeometry(1.9, 0.5, 1.0)),
+    )
+    client = TestClient(create_app(est, PositionHub()))
+
+    assert client.get("/healthz").json()["cascade"]["squares"] == 0
+    corners = ",".join(f"{x:.1f},{y:.1f}" for x, y in full_frame_corners(photo))
+    client.post(
+        f"/estimate?corners={corners}",
+        content=encode_jpeg(photo),
+        headers={"Content-Type": "image/jpeg"},
+    )
+    cascade = client.get("/healthz").json()["cascade"]
+    assert cascade["frames"] == 1
+    assert cascade["squares"] == 64 and cascade["deferred"] == 64
+    assert cascade["deferred_fraction"] == 1.0
+    assert cascade["tau"] == 0.95
+
+
 def test_calibrate_corrects_mislabeled_orientation(tmp_path, monkeypatch):
     """/calibrate must not trust corner orientation blindly: labels that disagree
     with the trained model's own reading of the photo by a rotation are rotated

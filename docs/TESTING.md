@@ -511,6 +511,38 @@ short-crop geometry to whatever weights you point at — the decapitation
 signature (kings on the back rank read as bishops). The server now warns on
 stderr when a sidecar is missing; do not ignore that line.
 
+**Two models instead of one (the cascade).** `BR_MODEL_B` names a second crop
+classifier trained on a *different* crop geometry and turns the pair into a
+confidence-gated cascade: every square is read by `BR_MODEL`, and only the
+squares it was unsure about (max probability below `BR_CASCADE_TAU`, default
+`0.95`) are re-read by `BR_MODEL_B` — cropped with **its own** sidecar geometry —
+and the two distributions averaged 50/50.
+
+```bash
+BR_MODEL=models/run_e/model.onnx \
+BR_MODEL_B=scratch/runs/run_f/model.onnx \
+  uv run board-reader-inference serve --host 0.0.0.0 --port 8000
+```
+
+Measured 2026-08-11 on 60 boards: `user_photos` 0.938 → 0.956,
+`chesscog_transfer` 0.819 → 0.861, OVERALL 0.696 → 0.718, at ~1.3× the single
+model's cost because the second model sees under 30% of squares. Two things to
+check by hand:
+
+- `GET /healthz` grows a `cascade` block naming both models and counting
+  `squares` / `deferred` / `deferred_fraction`. After a handful of real photos
+  the fraction should sit near 0.3; if it is near 1.0 the first model is
+  unconfident on everything (wrong geometry? wrong model?), and if it is 0.0 the
+  second model is never being consulted.
+- A `BR_MODEL_B` that cannot load, or that has no `.onnx.meta.json` sidecar, is a
+  **hard startup failure**, not a warning — unlike `BR_MODEL`, whose fresh-clone
+  fallback exists so `docker compose up` works without `models/`. Asking for the
+  cascade and silently getting one model would only ever show up much later as
+  "the ensemble didn't help".
+
+`run_f` is not in `models/` yet — promoting it there (and into `compose.yaml`) is
+a deliberate deploy step, so the example above points at its export in `scratch/`.
+
 Manual test, on the phone (`/snapshot` as in Option F):
 
 1. With `models/exemplars_session.npz` moved away, photograph a **mid-game**

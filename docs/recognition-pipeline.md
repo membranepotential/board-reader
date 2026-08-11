@@ -88,6 +88,7 @@ plus `estimate_photo(frame, corners)` for the photo-box path.
 | `StubEstimator` | reports a fixed placement, ignores pixels | M0 walking skeleton; fresh clone with no `models/` |
 | `CentroidEstimator` | an `Embedder` (DINOv2-S ONNX) + a classifier — either class centroids or a kNN exemplar bank | conditions it has been calibrated on |
 | `TrainedEstimator` | multi-style supervised ResNet18, ONNX, crop → 13 logits | chess sets it has never seen |
+| `CascadeEstimator` | two trained models on *different* crop geometries; the second is consulted only on squares the first was unsure about, and averaged in there | the same places a single trained model serves, more accurately |
 | `EnsembleEstimator` | distribution-level blend of a trained member and a bank member | everywhere — it tracks the better member square by square |
 
 ### Selection at startup
@@ -95,14 +96,20 @@ plus `estimate_photo(frame, corners)` for the photo-box path.
 Resolved from the environment at import time, in this order:
 
 1. `BR_CENTROIDS` — an explicit curated calibration file wins outright.
-2. `BR_MODEL` — the trained classifier. If `BR_SESSION_BANK` also names an existing bank,
-   the two are wrapped in an `EnsembleEstimator` rather than one replacing the other.
+2. `BR_MODEL` — the trained classifier; plus `BR_MODEL_B`, if set, as a
+   `CascadeEstimator` over the two. If `BR_SESSION_BANK` also names an existing bank,
+   the result is wrapped in an `EnsembleEstimator` rather than one replacing the other.
 3. A persisted session bank alone, when auto-calibration is enabled.
 4. `StubEstimator`.
 
+Step 2 is one *trained component* either way — the cascade replaces the model inside
+it, never the bank arithmetic on top of it.
+
 A `BR_MODEL` that fails to load (missing file, ONNX Runtime mismatch, truncated download)
 prints a warning and falls through to the next tier — a fresh clone with no `models/`
-directory still runs `docker compose up` successfully.
+directory still runs `docker compose up` successfully. `BR_MODEL_B` gets no such grace:
+it is never set by default, so a broken one (or one without a geometry sidecar) fails
+startup rather than quietly serving a single model.
 
 ### Why blending beats either member
 
