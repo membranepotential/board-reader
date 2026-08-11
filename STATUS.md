@@ -26,11 +26,15 @@ confidences**. No moves, no legality, no PGN — those are the downstream applic
   bank ensemble arithmetic untouched; `/healthz` exposes deferred-fraction. 735 tests
   green; live-verified (real photo → sane placement, 5/64 deferred). **Deploy step
   still open: promote `run_f` into `models/` + compose env.**
-- confirm-finetune (agent) — confirming run DONE: **NOT CONFIRMED as drop-in** — the
-  gain replicates on fresh seeds (0.968 [0.963–0.975], q→b confusion → 0, no
-  forgetting) but each arm fails one occupancy condition by a hair (halluc 3.2 vs ≤2 /
-  wrongtype 10.4 vs ≤10). Same coupled type-vs-occupancy trade as run_f. Now running
-  the registered follow-up: tuned⊕run_e 50/50 composition under the same rule.
+- confirm-finetune — DONE 08-11: drop-in NOT confirmed (small occupancy tax, same
+  coupled trade as run_f), but the registered follow-up **tuned⊕run_e 50/50 composition
+  PASSES all five pre-registered conditions on both arms**: 0.969 user_photos,
+  hallucinations exactly **1 on all ten composed runs**, wrongtype 19→9, chesscog
+  0.819→0.853–0.858 (gains). **Recommended production recipe: 3 start frames from 3
+  different lighting sessions, LP-FT, served as 50/50 average with the base** (3 frames
+  ties 5, costs the user less). Trigger: board's stored calibrate frames span ≥3
+  sessions. Caveat on record: generalization to unseen footage untested (same 5
+  user_photos throughout). Productionizing into `/calibrate` is the next decision.
   `scratch/experiments/calib_finetune_confirm/report.md`.
 
 - exp-ensemble-ef — DONE 08-11, **prob_50_50 ensemble is DEPLOY-WORTHY under the
