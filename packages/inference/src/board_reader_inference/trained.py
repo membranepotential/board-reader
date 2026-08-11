@@ -11,10 +11,14 @@ fixture produced by the training pipeline): crops arrive as BGR uint8 (cv2),
 are converted to RGB, scaled to [0,1], normalized with ImageNet mean/std, and
 batched NCHW float32.
 
-:class:`CascadeEstimator` puts two such models behind the same seam: the second
-one is consulted only on the squares the first was unsure about (2026-08-11
-run_e ⊕ run_f experiment), which buys the full ensemble's accuracy at ~1.3× a
-single model's cost.
+Two composites put a pair of such models behind the same seam:
+
+* :class:`CascadeEstimator` — models on *different* geometries, the second
+  consulted only where the first was unsure (2026-08-11 run_e ⊕ run_f), which
+  buys the full ensemble's accuracy at ~1.3× a single model's cost;
+* :class:`AveragedEstimator` — models on *one shared* geometry (a
+  calibration-fine-tuned model and the base it came from), averaged 50/50 on
+  every square off a single crop pass (2026-08-11 calib_finetune).
 """
 
 from __future__ import annotations
@@ -90,16 +94,54 @@ def _onnx_logits_fn(model_path: str | Path) -> LogitsFn:
     return run
 
 
-class TrainedEstimator:
+class _CropReader:
+    """The photo/frame read path shared by every crop-classifier estimator.
+
+    :meth:`estimate` and :meth:`estimate_photo` are pure functions of
+    :meth:`square_dist` and ``orientation``, so the single model and both
+    composites below inherit them rather than each carrying a copy of the event
+    shape for it to drift from.
+    """
+
+    # These estimators read ORIGINAL photos (tall full-piece boxes), never a
+    # rectified warp — the crop geometry the models were trained with (must
+    # match tools/train/cropcache.py).
+    crop_mode = "photo"
+
+    orientation: str
+
+    def square_dist(
+        self,
+        image: np.ndarray,
+        corners: np.ndarray,
+        squares: Sequence[int] | None = None,
+    ) -> np.ndarray:
+        raise NotImplementedError
+
+    def estimate(self, frame: Frame) -> PositionEvent:
+        """Rectified-crop path: treat the whole frame as the board."""
+        return self.estimate_photo(frame, full_frame_corners(frame.image))
+
+    def estimate_photo(self, frame: Frame, corners: np.ndarray) -> PositionEvent:
+        dist = self.square_dist(frame.image, corners)
+        return PositionEvent.from_square_dist(
+            board_id=frame.board_id,
+            seq=frame.seq,
+            utc=iso_utc(frame.capture_ts),
+            square_dist=dist.reshape(8, 8, NUM_CLASSES),
+            stability=frame.stability,
+            clock=ClockState(frame.clock),
+            status="ok",
+            orientation=self.orientation,
+        )
+
+
+class TrainedEstimator(_CropReader):
     """Stateless per-frame estimator backed by the trained ONNX crop classifier.
 
     ``logits_fn`` is injectable for tests (a callable ``(N,3,224,224) float32 ->
     (N,13) logits``); production use passes a model path.
     """
-
-    # The photo-crop geometry the model was trained with (must match
-    # tools/train/cropcache.py).
-    crop_mode = "photo"
 
     def __init__(
         self,
@@ -170,7 +212,12 @@ class TrainedEstimator:
         geo = self.geometry if isinstance(self.geometry, BboxGeometry) else DEFAULT_GEOMETRY
         return geo.side_pad
 
-    def _dist(self, crops: list[np.ndarray]) -> np.ndarray:
+    def crop_dist(self, crops: list[np.ndarray]) -> np.ndarray:
+        """``(N, 13)`` distributions for crops that are already cut.
+
+        The seam below :meth:`square_dist`: two models that share one geometry
+        (see :class:`AveragedEstimator`) must pay for the warp once, not twice.
+        """
         outs = []
         for i in range(0, len(crops), self.batch_size):
             outs.append(self.logits_fn(preprocess(crops[i : i + self.batch_size])))
@@ -200,24 +247,7 @@ class TrainedEstimator:
             size=self.square_size,
             squares=squares,
         )
-        return self._dist(crops)
-
-    def estimate(self, frame: Frame) -> PositionEvent:
-        """Rectified-crop path: treat the whole frame as the board."""
-        return self.estimate_photo(frame, full_frame_corners(frame.image))
-
-    def estimate_photo(self, frame: Frame, corners: np.ndarray) -> PositionEvent:
-        dist = self.square_dist(frame.image, corners)
-        return PositionEvent.from_square_dist(
-            board_id=frame.board_id,
-            seq=frame.seq,
-            utc=iso_utc(frame.capture_ts),
-            square_dist=dist.reshape(8, 8, NUM_CLASSES),
-            stability=frame.stability,
-            clock=ClockState(frame.clock),
-            status="ok",
-            orientation=self.orientation,
-        )
+        return self.crop_dist(crops)
 
 
 #: Squares whose max probability is below this go to the cascade's second model.
@@ -259,7 +289,7 @@ class CascadeMetrics:
         }
 
 
-class CascadeEstimator:
+class CascadeEstimator(_CropReader):
     """Two crop classifiers, each on its own geometry, gated by confidence.
 
     ``primary`` reads all 64 squares. Every square whose max probability lands
@@ -280,8 +310,6 @@ class CascadeEstimator:
     *trained component*, and an :class:`~board_reader_inference.estimator.EnsembleEstimator`
     still blends a calibration bank on top of it, unchanged.
     """
-
-    crop_mode = "photo"
 
     def __init__(
         self,
@@ -359,26 +387,106 @@ class CascadeEstimator:
         dist[unsure] = 0.5 * dist[unsure] + 0.5 * second
         return dist
 
-    def estimate(self, frame: Frame) -> PositionEvent:
-        return self.estimate_photo(frame, full_frame_corners(frame.image))
 
-    def estimate_photo(self, frame: Frame, corners: np.ndarray) -> PositionEvent:
-        dist = self.square_dist(frame.image, corners)
-        return PositionEvent.from_square_dist(
-            board_id=frame.board_id,
-            seq=frame.seq,
-            utc=iso_utc(frame.capture_ts),
-            square_dist=dist.reshape(8, 8, NUM_CLASSES),
-            stability=frame.stability,
-            clock=ClockState(frame.clock),
-            status="ok",
-            orientation=self.orientation,
+class AveragedEstimator(_CropReader):
+    """A calibration-fine-tuned model averaged 50/50 with the base it came from.
+
+    Both members were trained on the *same* crop geometry — the tuned one is
+    ``base`` continued on a handful of the operator's own start-position photos
+    (``tools/train/calibrate_finetune.py``), so it inherits the geometry rather
+    than choosing one. That is what makes this cheaper than
+    :class:`CascadeEstimator`: the photo is warped **once** and the same 64 crops
+    feed both networks. There is no gate — the validated composition averages
+    every square, sure or not.
+
+    Measured 2026-08-11 (``scratch/experiments/calib_finetune_confirm``, seeds
+    10–14, 3 frames from 3 sessions of the user's board): the average reads
+    user_photos at 0.969 against run_e's 0.938, fixes the decapitation confusions
+    (q recall 0.40 → 1.00), and — the load-bearing part — keeps hallucinations at
+    run_e's 1 on all ten runs. **The tuned model alone is not shippable**: alone
+    it invents pieces on empty squares (halluc 1 → 3.2), and it is the base's
+    occupancy confidence in this average that votes them back down. Hence the
+    hard requirement of both members here and in the server's env wiring.
+
+    Sits exactly where a single :class:`TrainedEstimator` sits: it is the
+    *trained component*, and a calibration bank still blends on top of it.
+    """
+
+    def __init__(self, base: TrainedEstimator, tuned: TrainedEstimator) -> None:
+        # A shared geometry is this class's premise, not a coincidence: it is why
+        # one crop pass is legitimate. If the sidecars disagree, the pair is not
+        # a base and its fine-tune — averaging them would feed one model crops it
+        # never trained on, which reads as "the tuned model didn't help".
+        for role, member in (("base", base), ("tuned", tuned)):
+            if member.geometry_source == "fallback":
+                raise ValueError(
+                    f"averaged {role} model {member.model_path!r} has no crop-geometry "
+                    "sidecar (<model>.meta.json); guessing the geometry decapitates "
+                    "its crops. Export the sidecar, or pass geometry= explicitly."
+                )
+        if base.geometry != tuned.geometry or base.square_size != tuned.square_size:
+            raise ValueError(
+                "averaged models must share one crop geometry (the tuned model "
+                f"inherits the base's): base {base.model_path!r} crops "
+                f"{base.geometry} at {base.square_size}px, tuned "
+                f"{tuned.model_path!r} crops {tuned.geometry} at "
+                f"{tuned.square_size}px"
+            )
+        self.base = base
+        self.tuned = tuned
+
+    # Geometry/orientation come from the base: the tuned model shares them by
+    # construction, and the base is the model a bbox exemplar bank and ``?debug=1``
+    # are anchored to.
+    @property
+    def geometry(self) -> CropGeometry:
+        return self.base.geometry
+
+    @property
+    def headroom(self) -> float:
+        return self.base.headroom
+
+    @property
+    def side_pad(self) -> float:
+        return self.base.side_pad
+
+    @property
+    def square_size(self) -> int:
+        return self.base.square_size
+
+    @property
+    def orientation(self) -> str:
+        return self.base.orientation
+
+    @property
+    def model_path(self) -> str | None:
+        return self.base.model_path
+
+    @property
+    def tuned_path(self) -> str | None:
+        return self.tuned.model_path
+
+    def square_dist(
+        self,
+        image: np.ndarray,
+        corners: np.ndarray,
+        squares: Sequence[int] | None = None,
+    ) -> np.ndarray:
+        """``(N, 13)`` 50/50 probability averages, off one shared crop pass."""
+        crops = crop_squares_photo(
+            image,
+            corners,
+            geometry=self.geometry,
+            size=self.square_size,
+            squares=squares,
         )
+        return 0.5 * self.base.crop_dist(crops) + 0.5 * self.tuned.crop_dist(crops)
 
 
 #: The zero-shot trained component of the estimator stack: one ONNX crop
-#: classifier, or the confidence-gated cascade over two of them. Both crop
-#: original photos themselves and expose the bbox scalars an exemplar bank is
-#: built against, so everything downstream (the booster blend, auto-calibration,
-#: ``/calibrate``) treats them identically.
-TrainedReader = TrainedEstimator | CascadeEstimator
+#: classifier, the confidence-gated cascade over two of them, or a
+#: calibration-fine-tuned model averaged with its base. All crop original photos
+#: themselves and expose the bbox scalars an exemplar bank is built against, so
+#: everything downstream (the booster blend, auto-calibration, ``/calibrate``)
+#: treats them identically.
+TrainedReader = TrainedEstimator | CascadeEstimator | AveragedEstimator

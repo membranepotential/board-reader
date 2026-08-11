@@ -1200,6 +1200,141 @@ def test_cascade_with_both_models_absent_degrades_like_fresh_clone(tmp_path, mon
     assert not isinstance(session.base_trained(), (TrainedEstimator, CascadeEstimator))
 
 
+def _base_and_tuned(tmp_path, monkeypatch) -> tuple[str, str]:
+    """A base model and a calibration fine-tune of it: ONE shared geometry.
+
+    That is the whole difference from :func:`_two_models` — a fine-tune inherits
+    its base's crop geometry, and the served average asserts that it did.
+    """
+    from pathlib import Path
+
+    import numpy as np
+
+    from board_reader_inference import trained as trained_mod
+
+    def fake_session(path):
+        if not Path(path).exists():
+            raise OSError(f"no such model file: {path}")
+        return lambda b: np.zeros((b.shape[0], 13), dtype=np.float32)
+
+    monkeypatch.setattr(trained_mod, "_onnx_logits_fn", fake_session)
+    meta = json.dumps({"headroom": 1.6, "side_pad": 0.15, "square_size": 224})
+    paths = []
+    for name in ("base.onnx", "tuned.onnx"):
+        path = tmp_path / name
+        path.write_bytes(b"stub")
+        (tmp_path / f"{name}.meta.json").write_text(meta)
+        paths.append(str(path))
+    return paths[0], paths[1]
+
+
+def test_br_model_tuned_builds_the_calibration_average(tmp_path, monkeypatch):
+    """BR_MODEL_TUNED averages the fine-tune with its base, 50/50, on one geometry."""
+    from board_reader_inference import server as srv
+    from board_reader_inference.squares import BboxGeometry
+    from board_reader_inference.trained import AveragedEstimator, TrainedEstimator
+
+    base, tuned = _base_and_tuned(tmp_path, monkeypatch)
+    monkeypatch.delenv("BR_CENTROIDS", raising=False)
+    monkeypatch.delenv("BR_SESSION_BANK", raising=False)
+    monkeypatch.delenv("BR_MODEL_B", raising=False)
+    monkeypatch.setenv("BR_MODEL", base)
+
+    assert isinstance(srv._default_estimator(None), TrainedEstimator)
+
+    monkeypatch.setenv("BR_MODEL_TUNED", tuned)
+    est = srv._default_estimator(None)
+    assert isinstance(est, AveragedEstimator)
+    assert est.model_path == base and est.tuned_path == tuned
+    # It IS the trained component: geometry and photo-mode read off it exactly as
+    # off a single model, and a session bank still finds it to boost.
+    assert est.crop_mode == "photo" and est.geometry == BboxGeometry(1.6, 0.15)
+    assert isinstance(srv.EstimatorSession(est).base_trained(), AveragedEstimator)
+
+
+def test_tuned_and_model_b_together_are_refused_as_unmeasured(tmp_path, monkeypatch):
+    """Two validated configurations, no validated stack of them. Guessing which
+    one wins would ship a model nobody measured."""
+    from board_reader_inference import server as srv
+
+    base, tuned = _base_and_tuned(tmp_path, monkeypatch)
+    monkeypatch.delenv("BR_CENTROIDS", raising=False)
+    monkeypatch.delenv("BR_SESSION_BANK", raising=False)
+    monkeypatch.setenv("BR_MODEL", base)
+    monkeypatch.setenv("BR_MODEL_TUNED", tuned)
+    monkeypatch.setenv("BR_MODEL_B", tuned)
+
+    with pytest.raises(RuntimeError, match="UNMEASURED"):
+        srv._default_estimator(None)
+
+
+def test_tuned_without_a_usable_base_is_fatal(tmp_path, monkeypatch):
+    """No fresh-clone grace for BR_MODEL_TUNED: a tuned model only exists because
+    somebody ran the tool, and alone it hallucinates pieces onto empty squares."""
+    from board_reader_inference import server as srv
+
+    base, tuned = _base_and_tuned(tmp_path, monkeypatch)
+    monkeypatch.delenv("BR_CENTROIDS", raising=False)
+    monkeypatch.delenv("BR_SESSION_BANK", raising=False)
+    monkeypatch.delenv("BR_MODEL_B", raising=False)
+    monkeypatch.setenv("BR_MODEL_TUNED", tuned)
+
+    # Base named but absent — the graceful degrade BR_MODEL alone would get.
+    monkeypatch.setenv("BR_MODEL", str(tmp_path / "models/run_e/model.onnx"))
+    with pytest.raises(RuntimeError, match="BR_MODEL_TUNED"):
+        srv._default_estimator(None)
+
+    # Base not named at all: the same error, not a silent fall-through to the stub
+    # (which would serve a fixed placement under a "calibrated" banner).
+    monkeypatch.delenv("BR_MODEL")
+    with pytest.raises(RuntimeError, match="BR_MODEL_TUNED"):
+        srv._default_estimator(None)
+
+
+def test_tuned_average_still_gets_boosted_by_the_session_bank(tmp_path, monkeypatch):
+    """Calibration arithmetic is unchanged: the average replaces the trained
+    *component*, and a persisted bank still wraps it in the same blend."""
+    from board_reader_inference import server as srv
+    from board_reader_inference.estimator import EnsembleEstimator
+    from board_reader_inference.trained import AveragedEstimator
+
+    base, tuned = _base_and_tuned(tmp_path, monkeypatch)
+    bank_path = tmp_path / "bank.npz"
+    _lite_start_estimator().classifier.save(bank_path)
+    monkeypatch.delenv("BR_CENTROIDS", raising=False)
+    monkeypatch.delenv("BR_MODEL_B", raising=False)
+    monkeypatch.setenv("BR_MODEL", base)
+    monkeypatch.setenv("BR_MODEL_TUNED", tuned)
+    monkeypatch.setenv("BR_SESSION_BANK", str(bank_path))
+
+    est = srv._default_estimator(None)
+    assert isinstance(est, EnsembleEstimator)
+    assert isinstance(est.primary, AveragedEstimator)
+    assert isinstance(srv.EstimatorSession(est).base_trained(), AveragedEstimator)
+
+
+def test_healthz_names_both_members_of_the_average(tmp_path, monkeypatch):
+    """"Which model read my board?" must be answerable from outside the process —
+    and for a tuned model, "which base is it averaged with?" is half the answer."""
+    from starlette.testclient import TestClient
+
+    from board_reader_inference import server as srv
+    from board_reader_inference.hub import PositionHub
+
+    base, tuned = _base_and_tuned(tmp_path, monkeypatch)
+    monkeypatch.delenv("BR_CENTROIDS", raising=False)
+    monkeypatch.delenv("BR_SESSION_BANK", raising=False)
+    monkeypatch.delenv("BR_MODEL_B", raising=False)
+    monkeypatch.setenv("BR_MODEL", base)
+    monkeypatch.setenv("BR_MODEL_TUNED", tuned)
+    monkeypatch.chdir(tmp_path)
+
+    client = TestClient(srv.create_app(srv._default_estimator(None), PositionHub()))
+    health = client.get("/healthz").json()
+    assert health["tuned"] == {"model": base, "model_tuned": tuned, "weight": 0.5}
+    assert "cascade" not in health
+
+
 def test_healthz_reports_cascade_invocations(tmp_path, monkeypatch):
     """The cascade's economic claim (second model on <30% of squares) has to be
     checkable against the operator's own boards, not just the experiment."""

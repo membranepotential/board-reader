@@ -89,6 +89,7 @@ plus `estimate_photo(frame, corners)` for the photo-box path.
 | `CentroidEstimator` | an `Embedder` (DINOv2-S ONNX) + a classifier — either class centroids or a kNN exemplar bank | conditions it has been calibrated on |
 | `TrainedEstimator` | multi-style supervised ResNet18, ONNX, crop → 13 logits | chess sets it has never seen |
 | `CascadeEstimator` | two trained models on *different* crop geometries; the second is consulted only on squares the first was unsure about, and averaged in there | the same places a single trained model serves, more accurately |
+| `AveragedEstimator` | a trained model fine-tuned on one board's calibrate frames, averaged 50/50 with the base it came from on every square — they share a geometry, so one crop pass feeds both | the one physical board and set the fine-tune was calibrated for |
 | `EnsembleEstimator` | distribution-level blend of a trained member and a bank member | everywhere — it tracks the better member square by square |
 
 ### Selection at startup
@@ -96,20 +97,24 @@ plus `estimate_photo(frame, corners)` for the photo-box path.
 Resolved from the environment at import time, in this order:
 
 1. `BR_CENTROIDS` — an explicit curated calibration file wins outright.
-2. `BR_MODEL` — the trained classifier; plus `BR_MODEL_B`, if set, as a
-   `CascadeEstimator` over the two. If `BR_SESSION_BANK` also names an existing bank,
-   the result is wrapped in an `EnsembleEstimator` rather than one replacing the other.
+2. `BR_MODEL` — the trained classifier, alone or paired with exactly one companion:
+   `BR_MODEL_B` makes a `CascadeEstimator`, `BR_MODEL_TUNED` an `AveragedEstimator`.
+   If `BR_SESSION_BANK` also names an existing bank, the result is wrapped in an
+   `EnsembleEstimator` rather than one replacing the other.
 3. A persisted session bank alone, when auto-calibration is enabled.
 4. `StubEstimator`.
 
-Step 2 is one *trained component* either way — the cascade replaces the model inside
-it, never the bank arithmetic on top of it.
+Step 2 is one *trained component* however it is composed — the composites replace the
+model inside it, never the bank arithmetic on top of it.
 
 A `BR_MODEL` that fails to load (missing file, ONNX Runtime mismatch, truncated download)
 prints a warning and falls through to the next tier — a fresh clone with no `models/`
-directory still runs `docker compose up` successfully. `BR_MODEL_B` gets no such grace:
-it is never set by default, so a broken one (or one without a geometry sidecar) fails
-startup rather than quietly serving a single model.
+directory still runs `docker compose up` successfully. Neither companion gets that grace:
+they are never set by default, so a broken one (or one without a geometry sidecar) fails
+startup rather than quietly serving a single model. `BR_MODEL_TUNED` is stricter still —
+`BR_MODEL` missing entirely is fatal rather than a fall-through, because the fine-tuned
+model alone was measured to hallucinate pieces onto empty squares, and setting both
+`BR_MODEL_TUNED` and `BR_MODEL_B` is refused as an unmeasured stack.
 
 ### Why blending beats either member
 

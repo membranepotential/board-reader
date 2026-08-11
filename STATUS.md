@@ -9,6 +9,19 @@ confidences**. No moves, no legality, no PGN — those are the downstream applic
 
 ## Now
 
+- dim-dark-repair — DONE 08-11 (user-approved): 180° roll applied to the 5 a8-dark
+  sidecars (backups kept), verified — uploads_calibrate now run_e 0.7420 / ensemble
+  **0.7527** on disk, matching the predicted column to the digit; user-frame sanity
+  gate passed. All 35 boards now carry sound labels; the residual weakness there is
+  the 13 out-of-domain 384px warps + genuinely-hard dim frames (27/64).
+- calibrate-finetune-prod — DONE 08-11, reviewed + committed: `tools/train/calibrate_finetune.py`
+  (≥3-session gate enforced, refuses single-sitting input quoting the measurement;
+  `--force` overrides loudly) + `AveragedEstimator` behind `BR_MODEL_TUNED` (one crop
+  pass, 50/50 with base; tuned+cascade together is a hard error — unmeasured stack).
+  E2e on the real board: 56 s fine-tune, serving reproduces the experiment to the digit
+  (0.9688/halluc 1/wrongtype 9), live `/estimate` 63/64 vs base 58/64. 768 tests + GPU 2
+  green, ruff clean. Note: a user's tuned.onnx has no compose story yet (per-operator).
+
 - repair-uploads-labels — DONE 08-11: 14/19 rotated sidecars repaired (two independent
   channels — photometric + run_e side-score under 4 rotations — had to agree; every
   known-sound board came back rotation 0; user frames untouched; backups

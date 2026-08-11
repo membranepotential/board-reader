@@ -545,6 +545,59 @@ the Docker demo runs the cascade whenever `models/` is populated. A fresh clone
 (neither model file present) degrades to the stub exactly as `BR_MODEL` alone
 always has; only a *partial* pair is a hard startup error.
 
+**A model tuned for one board (the calibration average).** `BR_MODEL_TUNED` names
+a fine-tune of `BR_MODEL` on the operator's own board, produced offline by
+`tools/train/calibrate_finetune.py`. It is a different trade from the cascade:
+the cascade buys accuracy on *any* board, this buys more accuracy on *one*.
+
+Producing it needs only calibrate frames already sitting in `data/uploads` — a
+calibrate sidecar carries the corners and means "this board is in the start
+position", which is where the labels come from for free:
+
+```bash
+tools/train/calibrate_finetune.sh \
+  --frames ../../data/uploads/20260717-232704-0011-calibrate.jpg \
+           ../../data/uploads/20260718-155204-0010-calibrate.jpg \
+           ../../data/uploads/20260806-232827-0008-calibrate.jpg \
+  --out ../../scratch/tuned/user_board          # add --dry-run to just see the sessions
+```
+
+The tool **refuses to run on frames from fewer than three capture sessions** (it
+clusters them by sidecar `ts`; a gap over an hour starts a new session). That is
+not caution, it is the measurement: 3 frames from 1 sitting scored 0.932 on
+`user_photos`, *below* the un-tuned 0.938, while 3 frames from 3 sittings scored
+0.968. Condition diversity is the ingredient, not frame count. `--force`
+overrides and says loudly that the result is outside every measured
+configuration. Expect ~60 s on the GPU, and note that the onnxscript traceback
+printed during export is expected noise — the success signal is the `round-trip
+OK` line under it.
+
+```bash
+BR_MODEL=models/run_e/model.onnx \
+BR_MODEL_TUNED=scratch/tuned/user_board/tuned.onnx \
+  uv run board-reader-inference serve --host 0.0.0.0 --port 8000
+```
+
+Measured 2026-08-11 on the five `user_photos` boards: 0.938 → **0.969**,
+hallucinations unchanged at 1, wrong-type 19 → 9, and the decapitation
+confusions gone (queen recall 0.40 → 1.00). Verified through this serving path,
+not just the experiment. Three things to check by hand:
+
+- `GET /healthz` grows a `tuned` block naming the tuned model **and its base**.
+  If it is missing, the average is not running.
+- **Never serve the tuned model as `BR_MODEL`.** Alone it reads 0.966 but invents
+  pieces on empty squares (hallucinations 1 → 4 on the same five boards); the
+  base's confident "empty" is what votes them back down. The server enforces
+  this: `BR_MODEL_TUNED` without `BR_MODEL` is a hard startup error, with no
+  fresh-clone grace — a tuned model only exists because somebody ran the tool.
+- `BR_MODEL_TUNED` **and** `BR_MODEL_B` together is also a hard startup error.
+  Both pairings are measured; stacking them is not, and the error names the two
+  numbers (0.969 calibrated vs 0.956 zero-shot) so the choice is informed.
+
+The `≥3 sessions` rule is unit-tested in the workspace suite
+(`tools/train/tests/test_calibrate_finetune.py`, the one torch-free file in that
+directory — it is named explicitly in `testpaths`).
+
 Manual test, on the phone (`/snapshot` as in Option F):
 
 1. With `models/exemplars_session.npz` moved away, photograph a **mid-game**

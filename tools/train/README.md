@@ -36,6 +36,7 @@ hard-code it on either side; let the sidecar carry it.
 | `plots.py` | Learning curves + diagnostics + confusion heatmap PNGs, re-rendered each epoch; also a CLI for any (old) run dir. |
 | `evaluate.py` | Final held-out eval on the user's own set (`data/eval` + dim-light `data/uploads` calibrate shots). Torch or ONNX. |
 | `export.py` | Checkpoint → ONNX (`crop`→`logits`, dynamic batch) + onnxruntime round-trip parity check. |
+| `calibrate_finetune.py` | **Calibration fine-tune** (`calibrate_finetune.sh` wraps it with the preflight): LP-FT a deployed model on one operator's own calibrate frames, ~60 s, → `tuned.onnx` + geometry sidecar. Refuses frames from fewer than 3 capture sessions, and the result is only ever *served averaged with its base* (`BR_MODEL_TUNED`) — see docs/TESTING.md. |
 | `configs/` | `smoke.yaml` (10-min sanity), `loso_resnet.yaml`, `loso_dinov2.yaml`, `run_f.yaml`. |
 | `_env.sh` | Resolves `PY` to the scratch torch venv and **preflights** it (torch+CUDA, onnx, onnxscript, onnxruntime, cv2, yaml) before any GPU time. Sourced by the driver scripts. |
 | `run_f.sh` | Self-driving scoring run: cache → train → export → evaluate → summary. `set -e`, so a dead stage aborts instead of printing a blank result. |
