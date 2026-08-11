@@ -24,7 +24,17 @@ confidences**. No moves, no legality, no PGN — those are the downstream applic
   80→400 boards = 248→255). Surviving nuance: central is better at cross-style
   *occupancy* (p→e misses 10→1) at the cost of type — right embedding if a
   zero-setup occupancy-only head ever ships. `scratch/experiments/central_pooling/report.md`.
-- exp-calib-finetune (agent) — quick validation of calibration-time fine-tune of the piece head (chesscog recipe, research rec #2) — running — beat 0.938 held-out or answered-negative.
+- exp-calib-finetune — DONE 08-11: **prereg (2 frames/1 session) NOT validated**
+  (0.935 vs 0.938), but the sweep found the real lever — **session diversity**: 3 frames
+  from 3 lighting sessions → user's board 0.938→**0.969** [0.966–0.972, 3 seeds],
+  wrongtype 19→**7**, occupancy held, NO forgetting (chesscog 0.819→0.856, it gains).
+  Single-session frames are worthless for tuning no matter the count. Needs one
+  confirming pre-registered run before productionizing (trigger: board's stored
+  calibrate frames span ≥3 sessions). `scratch/experiments/calib_finetune/report.md`.
+  **Side discovery:** 20/25 non-user `uploads_calibrate` boards have ROTATED corner
+  labels (run_e 17–26/64 on them) — the ~0.59 uploads numbers were floored by a label
+  bug all along; same repair as `chesscog_transfer` (f362f78) applies. Until then that
+  set is not a valid comparison.
 - research-crossstyle — DONE 08-11: ranked report at `scratch/experiments/research_crossstyle.md`. Top-2: (1) decouple occupancy/type onto own geometries (zero-cost, = exp-ensemble-ef variant C), (2) calibration-time fine-tune of the type head (chesscog measured 9.33→0.11 errors/board from 2 start photos). Rejected with evidence: YOLO detection (inherits style problem, CS231N 2025), end-to-end 64-head whole-image (collapses cross-set, CVChess), TTA/TENT (measured harmful). Prerequisite P: real-photo val set for checkpoint selection — synthetic holdout proxy is refuted externally too (chesscog 0.15→42.87).
 
 - **ccbf-r5 live calibration (calibration session, 2026-08-07) — WORKS; landed in `63923c7`.**
