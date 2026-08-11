@@ -1183,6 +1183,23 @@ def test_broken_second_model_is_fatal_not_silent(tmp_path, monkeypatch):
         srv._default_estimator(None)
 
 
+def test_cascade_with_both_models_absent_degrades_like_fresh_clone(tmp_path, monkeypatch):
+    """compose.yaml ships the cascade env pointing into the git-ignored models/
+    directory, so a fresh clone has NEITHER file — that is the same graceful
+    fresh-clone case BR_MODEL alone always had, not a misconfiguration. Only a
+    partial pair fails hard (previous test)."""
+    from board_reader_inference import server as srv
+    from board_reader_inference.trained import CascadeEstimator, TrainedEstimator
+
+    monkeypatch.delenv("BR_CENTROIDS", raising=False)
+    monkeypatch.delenv("BR_SESSION_BANK", raising=False)
+    monkeypatch.setenv("BR_MODEL", str(tmp_path / "models/run_e/model.onnx"))
+    monkeypatch.setenv("BR_MODEL_B", str(tmp_path / "models/run_f/model.onnx"))
+    est = srv._default_estimator(None)
+    session = srv.EstimatorSession(est)
+    assert not isinstance(session.base_trained(), (TrainedEstimator, CascadeEstimator))
+
+
 def test_healthz_reports_cascade_invocations(tmp_path, monkeypatch):
     """The cascade's economic claim (second model on <30% of squares) has to be
     checkable against the operator's own boards, not just the experiment."""

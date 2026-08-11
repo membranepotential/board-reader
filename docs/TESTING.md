@@ -540,8 +540,10 @@ check by hand:
   cascade and silently getting one model would only ever show up much later as
   "the ensemble didn't help".
 
-`run_f` is not in `models/` yet — promoting it there (and into `compose.yaml`) is
-a deliberate deploy step, so the example above points at its export in `scratch/`.
+`run_f` is deployed at `models/run_f/` and `compose.yaml` sets both members, so
+the Docker demo runs the cascade whenever `models/` is populated. A fresh clone
+(neither model file present) degrades to the stub exactly as `BR_MODEL` alone
+always has; only a *partial* pair is a hard startup error.
 
 Manual test, on the phone (`/snapshot` as in Option F):
 

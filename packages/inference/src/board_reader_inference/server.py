@@ -202,16 +202,24 @@ def _trained_component(model: str) -> TrainedReader | None:
     ``EnsembleEstimator`` on top, with the same arithmetic.
 
     A broken ``BR_MODEL`` degrades to the next tier so ``docker compose up`` works
-    on a fresh clone without ``models/``. A broken ``BR_MODEL_B`` does **not**: it
-    is never set by default, so setting it is deliberate, and quietly serving one
-    model instead of the requested two would show up only as "the ensemble didn't
-    help" months later.
+    on a fresh clone without ``models/`` — and with the cascade in compose.yaml
+    that courtesy has one more shape: **both** model files absent is the fresh
+    clone again, so it degrades too. Any *partial* pair (one file present, or a
+    file that exists but will not load) is a misconfiguration and fails hard:
+    quietly serving one model instead of the requested two would show up only as
+    "the ensemble didn't help" months later.
     """
     model_b = os.environ.get("BR_MODEL_B")
     try:
         trained = TrainedEstimator(model)
     except Exception as e:
         if model_b:
+            if not Path(model).exists() and not Path(model_b).exists():
+                print(
+                    f"BR_MODEL={model!r} and BR_MODEL_B={model_b!r} both absent "
+                    "(fresh clone?); serving without the trained component"
+                )
+                return None
             raise RuntimeError(
                 f"BR_MODEL_B={model_b!r} requests the cascade, but its first member "
                 f"BR_MODEL={model!r} is not usable ({e})"
