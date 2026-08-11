@@ -9,7 +9,17 @@ confidences**. No moves, no legality, no PGN — those are the downstream applic
 
 ## Now
 
-- repair-uploads-labels (agent) — photometric rotation repair of the 20 mislabeled `uploads_calibrate` sidecars + corrected eval numbers — running — valid comparison set.
+- repair-uploads-labels — DONE 08-11: 14/19 rotated sidecars repaired (two independent
+  channels — photometric + run_e side-score under 4 rotations — had to agree; every
+  known-sound board came back rotation 0; user frames untouched; backups
+  `*.json.pre-rotation-repair`). `uploads_calibrate` 0.59→**0.74** (ensemble 0.7415),
+  hallucinations 254→30. **Open decision:** 5 `dim_dark` frames left alone — the
+  physical board is set up a8-DARK, so the photometric channel is structurally
+  inapplicable there; model+visual agree on 180 (+25 squares if applied). **Deeper
+  finding:** the set mixes 3 populations — 17 real photos score **0.919** (comparable
+  to user_photos); 13 pre-rectified 384×384 warps (0.63, out-of-domain crops) drag the
+  average — quote the photo subset, not the whole set.
+  `scratch/experiments/uploads_repair/report.md`, `tools/repair_upload_orientation.py`.
 - ensemble-serving — DONE 08-11, reviewed + committed: `BR_MODEL_B` turns the trained
   component into a τ-gated `CascadeEstimator` (default 0.95, `BR_CASCADE_TAU`); each
   member crops with its OWN sidecar geometry, sidecar-less members refused at startup;
