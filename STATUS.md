@@ -9,6 +9,24 @@ confidences**. No moves, no legality, no PGN — those are the downstream applic
 
 ## Now
 
+- exp-ensemble-ef — DONE 08-11, **prob_50_50 ensemble is DEPLOY-WORTHY under the
+  pre-registered rule**: beats BOTH models on every set — user_photos 0.938→**0.956**
+  (halluc 1, wrongtype 19→13), chesscog_transfer 0.856→**0.861** (wrongtype 118),
+  OVERALL 0.696→**0.718**. The decoupled routing variant (occ from run_e, type from
+  run_f) answered-negative: 0.928 user_photos, −70 squares vs averaging — combine
+  evidence across geometries, don't route. Sanity gate reproduced both baselines
+  exactly. `scratch/experiments/ensemble_ef/{PREREGISTRATION,report}.md`. Next
+  decision: ship ensemble serving in `board_reader_inference` (2 sessions, 2 crop
+  passes, ~2× inference cost).
+- exp-central-pooling — DONE 08-11, **swap answered-negative (Next #5 closed)**: the
+  bakeoff's +9 doesn't survive the shipped 400-board bank — CLS 255 vs central 254
+  cross-style (tie), same-style LOBO 294 = 294. Bank size was the real lever (CLS
+  80→400 boards = 248→255). Surviving nuance: central is better at cross-style
+  *occupancy* (p→e misses 10→1) at the cost of type — right embedding if a
+  zero-setup occupancy-only head ever ships. `scratch/experiments/central_pooling/report.md`.
+- exp-calib-finetune (agent) — quick validation of calibration-time fine-tune of the piece head (chesscog recipe, research rec #2) — running — beat 0.938 held-out or answered-negative.
+- research-crossstyle — DONE 08-11: ranked report at `scratch/experiments/research_crossstyle.md`. Top-2: (1) decouple occupancy/type onto own geometries (zero-cost, = exp-ensemble-ef variant C), (2) calibration-time fine-tune of the type head (chesscog measured 9.33→0.11 errors/board from 2 start photos). Rejected with evidence: YOLO detection (inherits style problem, CS231N 2025), end-to-end 64-head whole-image (collapses cross-set, CVChess), TTA/TENT (measured harmful). Prerequisite P: real-photo val set for checkpoint selection — synthetic holdout proxy is refuted externally too (chesscog 0.15→42.87).
+
 - **ccbf-r5 live calibration (calibration session, 2026-08-07) — WORKS; landed in `63923c7`.**
   Root cause of "won't calibrate": the guard's probe reads the *angled* t=0 start frame at
   28/32 but the edge-rectified *warp* at 6/32 (aspect 0.635), and an angled-photo bank reads
@@ -32,18 +50,48 @@ Also staged and waiting on a decision to start:
   `feed --video --adaptive --corners`, judge the stream, then decide whether `stability`
   earns its keep (D3). **Use `--corners`, not auto-detect** — see the false-negative
   finding below.
-- **`run_f` (the pose-aware-crop bet) — ready to relaunch,** stopped by the operator at e0.
-  Harness fixed and verified; `tools/train/run_f.sh` with no `PY=` (it resolves and
-  preflights its own interpreter). 20 epochs, `patience: 8`, ~40 min, crop cache warm.
-  `scratch/runs/run_f/` holds a disposable one-epoch partial the driver overwrites.
-  **Early evidence favours the bet:** a truncated e3 checkpoint (0.8466) still beat run_e on
-  `chesscog_transfer` — **0.855 vs 0.819**, piece-type errors 173 → **115**, exactly the
-  steep-angle decapitation pose crops target. It loses on the user's own sets so far
-  (user_photos 0.894 vs 0.938), possibly just undertraining. Compare against **0.898**
-  holdout / **0.819** transfer on `===F_DONE===`; deploy only if it wins both.
 
 ## Done (recent)
 
+- 08-11: **Per-board display rotation on the live page** (the ccbf-r5 remainder) —
+  UNCOMMITTED in the working tree. A rotate button on each live board card cycles
+  0/90/180/270° via CSS `transform` on the square `.board-wrap` (chessground's
+  `orientation` can only flip, so the whole picture turns, labels included — deliberate,
+  like turning a printed diagram). Pure `rotation.ts` + Vitest; persisted per board id in
+  localStorage (`board-reader.live.rotation.<id>`), Playwright covers cycle/isolation/
+  reload. 339 Vitest · 17 Playwright · 720 pytest green, `svelte-check` clean.
+
+- 08-10: **`run_f` (the pose-aware-crop bet) ran to completion 21:57→22:38, and it does
+  NOT deploy.** 20/20 epochs on the GPU, best val **0.8942 @ e17** (`scratch/runs/run_f/`,
+  `eval.txt`, exported `model.onnx` + pose sidecar, round-trip `2.98e-07` / argmax 8/8).
+  Clean run: preflight passed on `scratch/torchvenv`, cache warm (no rebuild), `set -e` held,
+  `===F_DONE===` printed over a *real* eval. Scored against run_e re-run on the same 60 boards
+  (`run_e/eval_rerun_20260810.txt`) — each model on its own geometry sidecar:
+
+  | set | run_e (bbox hr1.6) | run_f (pose h1.9/r0.5) | verdict |
+  |---|---|---|---|
+  | synthetic holdout `chessr_vlab_wooden` | **0.898** | 0.8942 | loses by 0.004 (tie) |
+  | `chesscog_transfer` (unseen real photos) | 0.819 · wrongtype 173 | **0.856** · **121** | **wins +3.7pp, −30% wrongtype** |
+  | `user_photos` (the deployed target) | **0.938** · halluc 1 | 0.894 · halluc **12** | **loses −4.4pp on occupancy** |
+  | `uploads_calibrate` | 0.592 | 0.593 | tie (both weak) |
+  | OVERALL | 0.696 · perfect 1/60 | **0.706** · perfect 0/60 | wins +1.0pp |
+
+  **The pre-registered rule was "deploy only if it wins both" — it wins neither the holdout
+  nor `user_photos`, so run_e stays deployed and the geometry bet is ANSWERED, not pending.**
+  What pose crops actually trade: they fix cross-style piece **type** (the decapitation
+  weakness they targeted — wrongtype 173 → 121 on unseen photos) and pay for it in
+  **occupancy** on the user's own board (hallucinations 1 → 12, occ 0.997 → 0.963), which is
+  consistent with a taller prism swallowing part of the neighbouring piece.
+  **The more valuable finding: 14 extra epochs bought nothing real.** e3-partial (val 0.8466)
+  vs final (val 0.8942) → transfer 0.855→0.856, user_photos 0.900→0.894, OVERALL 0.707→0.706.
+  **+4.8pp of synthetic holdout transferred as 0.0pp on real photos**, so the synthetic
+  holdout is a near-useless proxy for deployment quality on this task — training longer is not
+  where the remaining accuracy lives. Item 5 (central-column pooling) is what survives this.
+  **Trap found:** with no sidecar `evaluate.py` silently assumes `BboxGeometry(headroom=0.15)`
+  and scores a pose model on short crops — it warns, but does not refuse.
+  Corpus note: `uploads_calibrate` grew 7 → 35 boards since 08-07, so the 08-07
+  `eval_rerun.txt` is no longer corpus-comparable — quote neither its `uploads_calibrate` nor
+  its `OVERALL`.
 - 08-10: **The three pages become one typed SvelteKit app** (`fc2cae2`, docs `90ed183`).
   `index.html` 465 · `camera.html` 1682 · `snapshot.html` 2407 + `tracker.js` 536 —
   ~4,550 hand-written lines, carrying three near-identical copies of `fenToGrid`, corner
@@ -227,8 +275,13 @@ Also staged and waiting on a decision to start:
 
 ## Next
 
-1. **Score run_f against run_e** on both holdouts; deploy only if it wins both. If pose crops
-   lose, the geometry bet is answered and item 5 is what survives it.
+1. **~~Score run_f~~ — done 08-10; it lost `user_photos` and tied the holdout, so run_e stays
+   deployed.** What replaces it: the geometry knob is exhausted (bbox swept 07-18, pose
+   answered 08-10), and the synthetic holdout is now known not to predict real-photo accuracy,
+   so **stop tuning crops and epochs** — go to item 5 (central-column pooling), the one
+   measured +9 win still unspent. A pose/bbox *ensemble* is the only geometry idea left worth
+   a run: the two models fail differently (pose −52 wrongtype on unseen photos, bbox −11
+   hallucinations on the user's board), which is the precondition for one helping the other.
 2. **Run M2 over `ccbf-r5`** with `--forward-original --corners` (verified path; the warp
    path is unusable at this angle — see Now), then settle D3 (`stability`).
    Review follow-ups on the new flag (non-blocking): geometry sanity-check (convex/in-frame)
@@ -239,8 +292,9 @@ Also staged and waiting on a decision to start:
    `p->b` (11). The ensemble's residual differs in kind — `empty->p`/`empty->P` is a third of it.
 4. **Decide whether calibrated confidences go on the wire** — a decision, not an experiment:
    argmax is invariant, and DESIGN §9 says the downstream smoother wants them.
-5. **Central-column pooling A/B.** `dinov2_small_central.onnx` is exported; build
-   `exemplars_chessred_central.npz` and score it under the uncontaminated cross-style protocol.
+5. ~~**Central-column pooling A/B.**~~ Answered-negative 08-11 (see Now): the +9 was an
+   80-board-bank artifact; at the shipped 400-board bank CLS ties central and same-style
+   ties at 294. Occupancy nuance kept in `scratch/experiments/central_pooling/report.md`.
 6. **Crop attribution / occlusion** — pose fixed coverage and resolution, not attribution: the
    box is still the prism's *bounding* box, so a piece behind can fall inside it unflagged.
 7. **Event loop: `/estimate` and `/calibrate` still block it.** Same bug class as `/detect`,
