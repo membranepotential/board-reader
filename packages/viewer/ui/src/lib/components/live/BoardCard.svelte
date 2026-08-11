@@ -20,7 +20,9 @@
   import type { BoardLiveness, BoardState } from '$lib/stores/positions.svelte';
   import { calibBlockReason, calibSuccessMessage, calibTitle } from './calibration';
   import FramePreview from './FramePreview.svelte';
+  import { nextRotation, parseStoredRotation, rotationKey, type BoardRotation } from './rotation';
   import { boardShapes } from './shapes';
+  import { untrack } from 'svelte';
 
   interface Props {
     board: BoardState;
@@ -37,6 +39,35 @@
   let banner = $state<{ readonly kind: 'ok' | 'err'; readonly text: string } | null>(null);
   // Not `$state`: a timer handle is never rendered, only ever replaced or cleared.
   let bannerTimer: ReturnType<typeof setTimeout> | null = null;
+
+  // `board.id` is this instance's key in the `{#each}` on the live page (never
+  // reassigned to a different board), so reading it once at construction is
+  // deliberate — `untrack` says so instead of leaving it looking like a missed
+  // dependency.
+  let rotation = $state<BoardRotation>(
+    untrack(() => parseStoredRotation(readLocal(rotationKey(board.id))))
+  );
+
+  function readLocal(key: string): string | null {
+    try {
+      return localStorage.getItem(key);
+    } catch {
+      return null; // private mode: preferences simply do not persist
+    }
+  }
+
+  function writeLocal(key: string, value: string): void {
+    try {
+      localStorage.setItem(key, value);
+    } catch {
+      /* private mode */
+    }
+  }
+
+  function rotateBoard(): void {
+    rotation = nextRotation(rotation);
+    writeLocal(rotationKey(board.id), String(rotation));
+  }
 
   const event = $derived(board.event);
   const placement = $derived(gridToFen(board.grid));
@@ -130,13 +161,20 @@
         <div class="banner {banner.kind}">{banner.text}</div>
       {/if}
 
-      <div class="board-wrap">
+      <div class="board-wrap" style="transform: rotate({rotation}deg)">
         <Board {placement} {shapes} />
       </div>
 
       <div class="board-actions">
         <button class="calib" disabled={calibDisabled} title={calibTitleText} onclick={calibrateBoard}>
           calibrate
+        </button>
+        <button
+          class="rotate"
+          title="rotate this board's on-screen picture — display only, saved for this board"
+          onclick={rotateBoard}
+        >
+          ↻ {rotation}°
         </button>
         <span class="legend">
           <span><i class="lo"></i>low confidence</span>
@@ -259,6 +297,14 @@
   .board-card.stale .meta > :not(.live) {
     filter: saturate(0.15) brightness(0.62);
   }
+  /* Square box: rotating it in 90° steps never changes its bounding box, so this
+     never fights the layout above. Own rule so the transform transition is scoped
+     to the board and does not also apply to the .meta rows sharing the filter one. */
+  .board-wrap {
+    transition:
+      filter 150ms linear,
+      transform 200ms ease;
+  }
 
   .board-actions {
     display: flex;
@@ -283,6 +329,20 @@
   .calib:disabled {
     opacity: 0.4;
     cursor: not-allowed;
+  }
+  .rotate {
+    font: inherit;
+    font-size: 13px;
+    padding: 6px 10px;
+    border-radius: 8px;
+    border: 1px solid #35404e;
+    background: #1c222b;
+    color: #9aa3ad;
+    cursor: pointer;
+  }
+  .rotate:hover {
+    background: #232b36;
+    color: #c8cdd4;
   }
   .legend {
     font-size: 12px;

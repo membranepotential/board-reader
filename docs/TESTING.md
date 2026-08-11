@@ -230,6 +230,14 @@ frame that does not actually show the starting position is **refused** by the no
 with its reason shown on the card — calibrating from the wrong frame would poison
 the bank.
 
+The **rotate** button next to it turns the card's board picture in 90° steps —
+purely cosmetic (CSS transform on the rendered card; the placement stays
+white's-view a8-first on the wire), for matching the screen to however you're
+standing relative to the physical board. At 90°/270° the coordinates turn
+sideways with the picture, like turning a printed diagram. Manual check: clicking
+cycles 0→90→180→270→0, a second board's card is unaffected, and the choice
+survives a reload (persisted per board id in localStorage).
+
 This runs three containers: `edge` (game feed) → `inference` (estimator +
 gateway) → `viewer` (UI). The browser loads the UI from `viewer` but connects for
 *data* straight to `inference` on `localhost:8000`.
