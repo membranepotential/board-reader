@@ -55,6 +55,7 @@ Note the trap in row 3: `packages/inference` is 371 of the 783 tests and runs
 | Port already in use / e2e weirdness | A previous session left `make dev` running | `make stop` — it now names the pids it killed, escalates to SIGKILL, and exits non-zero if anything survived |
 | Node aborts mid-stream (status 134), `BFCArena`/`CL_MEM_OBJECT_ALLOCATION_FAILURE` | The GPU is full — often a leaked server still holding a CUDA context | `nvidia-smi --query-compute-apps=pid,used_memory --format=csv`, then `make stop`. A released port does **not** mean the process is gone |
 | GPU test fails (`BFCArena`, OOM) | The GPU is busy, not a code bug | Re-run `make test-gpu` when idle. `make test` excludes these for exactly this reason. |
+| An external monitor blanks while the node runs | The card drives your display too, and X lost the VRAM for its scanout surface | `make dev-cpu` instead. Recover the screen with `xrandr --output <out> --mode 1920x1080` and back — see [the runbook](runbook.md#when-the-card-is-also-driving-your-screens) |
 | A `/boards/{id}` 404 or a WS read that never returns | You asserted on an estimate before it landed | See **the ingest rule** below |
 
 **The ingest rule (the one gotcha worth knowing).** `WS /ingest` acks a frame when

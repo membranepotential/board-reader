@@ -76,6 +76,7 @@ photograph a start position.
 | `BR_RECORD_DIR` | Directory for recorded ingress sessions. `serve` sets it to `recordings/` by default, so **every served run is replayable**; `serve --no-record` turns it off. |
 | `BR_RECORD_MAX_MB` | Disk-fill stop for the recorder (default: no cap). The session truncates rather than rotating. |
 | `BR_DINOV2_ONNX` | Backbone path (default `models/dinov2_small.onnx`). |
+| `BR_GPU_MEM_LIMIT_MB` | Ceiling on each ONNX session's CUDA arena (default `1024`). **Per session, and serving builds three** — the cascade's two models plus the embedder. `0` removes the cap. See [the GPU section](#stopping-it-and-the-gpu-it-leaves-behind) for why a display GPU needs one. |
 | `BR_ALLOW_ORIGINS` | CORS origins, comma-separated (default `*`). |
 
 ### Reproducing a run
@@ -165,6 +166,48 @@ catch. The warps are small enough that the CPU path costs nothing worth that
 risk. This is **not** mirrored in `compose.yaml`, which declares no GPU device and
 runs the same cascade on CPU — the two entry points share an environment, not a
 hardware envelope.
+
+### When the card is also driving your screens
+
+> [!warning] The display cannot fall back to CPU
+> On a laptop the GPU this node uses is usually the display pipeline too, and an
+> external monitor is often the worst case: with the common Optimus layout
+> (`xrandr --listproviders` showing NVIDIA as **Sink Output** only) the screen is
+> rendered by the iGPU and copied into a **reverse-PRIME surface in NVIDIA VRAM**
+> for scanout. That surface is reallocated on DPMS wake, resolution changes and
+> monitor re-probes — and if the card is full at that moment, X has nowhere to
+> degrade to. On 2026-08-13 a `/calibrate` batch took the VRAM and a 4K monitor
+> went dark twice, once losing its mode pool entirely:
+>
+> ```
+> (WW) NVIDIA(G0): Failed to allocate reverse prime surface: out of memory.
+> (EE) NVIDIA(G0): Failed to allocate memory for composition pipeline: out of memory..
+> (EE) NVIDIA(GPU-0): Unable to add "nvidia-auto-select" mode to ModePool
+> ```
+>
+> Recover without a reboot by forcing a smaller surface and back:
+> ```bash
+> xrandr --output HDMI-1-0 --mode 1920x1080 && xrandr --output HDMI-1-0 --mode 3840x2160
+> ```
+
+Two defences, and they are different in kind:
+
+* **`BR_GPU_MEM_LIMIT_MB` (default 1024, always on).** Caps each session's CUDA
+  arena so a runaway extension fails as a *catchable* ORT error rather than by
+  taking the display's headroom, and pins two non-default ORT knobs that exist
+  for the same reason: `arena_extend_strategy=kSameAsRequested` (the default
+  rounds every extension up to the next power of two and never gives it back)
+  and `cudnn_conv_algo_search=HEURISTIC` (the default benchmarks every conv
+  algorithm with large transient workspaces). Measured peak for the real
+  three-session shape at this default: **~1.6 GiB of the 4 GiB card**.
+* **`make dev-cpu` (opt in).** The same stack — same models, same cascade, same
+  ports — with `CUDA_VISIBLE_DEVICES=` empty, which is CUDA's "no devices". The
+  node then never touches the card at all, so the display's VRAM is not a shared
+  resource. Costs ~5x on embedding, and is exactly what `compose.yaml` runs. Use
+  it when the machine running the node is also the machine displaying it.
+
+`make dev` prints which one you are on (`gpu visible — onnxruntime capped at …` /
+`gpu hidden — the same cascade on CPU`).
 
 ## Verifying a restart
 

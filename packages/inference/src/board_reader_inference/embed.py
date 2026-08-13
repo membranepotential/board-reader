@@ -20,7 +20,7 @@ from typing import Protocol, runtime_checkable
 import cv2
 import numpy as np
 
-from board_reader_inference.onnxrt import cuda_providers
+from board_reader_inference.onnxrt import Provider, cuda_providers
 
 
 @runtime_checkable
@@ -118,7 +118,7 @@ class DinoV2Embedder:
         model_path: str | Path = DEFAULT_DINOV2_ONNX,
         *,
         image_size: int = 224,
-        providers: list[str] | None = None,
+        providers: list[Provider] | None = None,
         batch_size: int = 64,
     ) -> None:
         import onnxruntime as ort

@@ -18,6 +18,12 @@ confidences**. No moves, no legality, no PGN — those are the downstream applic
 
 ## Done (recent)
 
+- 08-13: **The node stops starving the display GPU** — `cuda_providers()` now ships CUDA EP
+  options (`BR_GPU_MEM_LIMIT_MB`, default 1024 MiB/session, `kSameAsRequested`, `HEURISTIC`)
+  and `make dev-cpu` runs the same stack with the card hidden. Diagnosed from Xorg logs: a
+  `/calibrate` batch took the VRAM X needed for the 4K monitor's reverse-PRIME surface, twice.
+  Measured: 3-session peak ~1.6 GiB of the 4 GiB card; DINOv2 @batch 64 needs ≥896 MiB.
+
 - 08-11: **Calibration fine-tune ships** (`9fe975f`) — `tools/train/calibrate_finetune.py`
   (≥3-session gate) + `AveragedEstimator` behind `BR_MODEL_TUNED`, 50/50 with base; live
   `/estimate` 63/64 vs base 58/64. Untested on unseen footage (same 5 `user_photos` throughout).

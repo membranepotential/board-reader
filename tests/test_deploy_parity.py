@@ -71,15 +71,15 @@ def _compose_inference_env() -> dict[str, str]:
     return {k: str(v) for k, v in env.items()}
 
 
-def _make_dev_env(**overrides: str) -> dict[str, str]:
-    """The environment ``make dev`` would give ``board-reader-inference serve``.
+def _make_dev_env(target: str = "dev", **overrides: str) -> dict[str, str]:
+    """The environment ``make <target>`` would give ``board-reader-inference serve``.
 
     Read from ``make -n`` rather than by pattern-matching the Makefile, so the
     conditional wiring (``CASCADE_ENV`` and friends) is exercised as make itself
     resolves it. ``-n`` prints recipes without running any of them, so the
     ``ui`` prerequisite costs nothing here.
     """
-    cmd = ["make", "-n", "dev", *(f"{k}={v}" for k, v in overrides.items())]
+    cmd = ["make", "-n", target, *(f"{k}={v}" for k, v in overrides.items())]
     proc = subprocess.run(
         cmd, cwd=_ROOT, capture_output=True, text=True, timeout=120, check=True
     )
@@ -208,6 +208,61 @@ def test_dev_disables_opencv_opencl_on_the_host_gpu() -> None:
             )
             return
     pytest.fail("`make dev` no longer sets OPENCV_OPENCL_RUNTIME at all")
+
+
+def _inference_launch_block(target: str) -> str:
+    """The shell text ``make -n <target>`` runs to start the inference server.
+
+    Everything up to and including the ``uv run board-reader-inference serve``
+    line — which is exactly the set of assignments that command inherits.
+    """
+    proc = subprocess.run(
+        ["make", "-n", target],
+        cwd=_ROOT,
+        capture_output=True,
+        text=True,
+        timeout=120,
+        check=True,
+    )
+    head, sep, _ = proc.stdout.partition("uv run board-reader-inference serve")
+    assert sep, f"`make -n {target}` never starts board-reader-inference serve"
+    return head + sep
+
+
+def test_dev_cpu_hides_the_card_and_dev_keeps_it() -> None:
+    """`make dev-cpu` must deny the node a GPU — and `make dev` must not.
+
+    On a laptop this card is also the display pipeline, and the display has no
+    fallback to degrade to: on 2026-08-13 an inference batch took the VRAM an X
+    server needed for a 4K external monitor's reverse-PRIME surface and the
+    screen went dark twice. `dev-cpu` is the escape hatch, so the assertion is
+    on the *value*: CUDA reads an EMPTY CUDA_VISIBLE_DEVICES as "no devices",
+    while unset means "all of them" — the two are one character apart and only
+    one of them is the feature.
+    """
+    hidden = re.search(r"\bCUDA_VISIBLE_DEVICES=(\S*)", _inference_launch_block("dev-cpu"))
+    assert hidden is not None, "`make dev-cpu` no longer sets CUDA_VISIBLE_DEVICES"
+    assert hidden.group(1) == "", (
+        "CUDA_VISIBLE_DEVICES must be set to the EMPTY string to hide the card, "
+        f"got {hidden.group(1)!r} — a non-empty value names devices to use"
+    )
+    assert "CUDA_VISIBLE_DEVICES" not in _inference_launch_block("dev"), (
+        "`make dev` must leave the GPU visible; hiding it there would silently "
+        "make the default dev path slower than the demo it rehearses"
+    )
+
+
+def test_dev_cpu_reads_boards_exactly_like_dev() -> None:
+    """The CPU escape hatch must differ in hardware only, never in recognition.
+
+    A `dev-cpu` that quietly served a different composition would be the same
+    class of bug as the compose/`make dev` cascade drift this module exists to
+    catch — and harder to see, because the two targets look identical.
+    """
+    existing = str(_ROOT / "pyproject.toml")
+    assert _make_dev_env("dev-cpu", BR_MODEL=existing, BR_MODEL_B=existing) == (
+        _make_dev_env("dev", BR_MODEL=existing, BR_MODEL_B=existing)
+    )
 
 
 @pytest.mark.parametrize("path", [_COMPOSE, _MAKEFILE])

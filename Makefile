@@ -1,6 +1,8 @@
 # board-reader — one command to run it locally.
 #
 #   make dev     start inference + both viewers; Ctrl-C stops all three
+#   make dev-cpu the same stack with the GPU hidden — for when the card is
+#                also driving your screens (see CUDA_ENV below)
 #   make ui      build the SvelteKit viewer frontend into the Python package
 #   make stop    stop anything left running
 #   make test     the suite in parallel, minus the GPU tests
@@ -39,7 +41,7 @@
 # the group again — bash recurses until it overflows its stack and segfaults.
 # The trap disarms itself first for the same reason.
 
-.PHONY: dev ui stop test test-gpu test-all test-ui test-e2e test-front lint lint-fix
+.PHONY: dev dev-cpu ui stop test test-gpu test-all test-ui test-e2e test-front lint lint-fix
 
 # `wait -n` below is a bashism, and the teardown relies on bash trap semantics.
 SHELL := /bin/bash
@@ -84,6 +86,23 @@ endif
 # envelope — see tests/test_deploy_parity.py.
 OPENCV_OPENCL_RUNTIME ?= disabled
 
+# The inference node's view of the card, empty for `make dev` and emptied *of
+# devices* by `make dev-cpu` (target-specific variables apply to a target's
+# prerequisites, which is how one assignment reaches the `dev` recipe).
+#
+# `dev-cpu` exists because on a laptop this GPU is usually also the display
+# pipeline, and the display cannot fall back to anything: on 2026-08-13 a
+# calibration batch took the card, the X server could no longer allocate the
+# reverse-PRIME surface for a 4K external monitor, and the screen went dark
+# twice ("Failed to allocate reverse prime surface: out of memory" in
+# Xorg.0.log). BR_GPU_MEM_LIMIT_MB caps the arena so that fails catchably
+# instead; hiding the card removes the question. It costs ~5x on embedding and
+# is exactly what compose.yaml runs, which declares no GPU device at all.
+#
+# CUDA reads an EMPTY CUDA_VISIBLE_DEVICES as "no devices" — unset would mean
+# "all of them", so the assignment below deliberately has nothing after the `=`.
+CUDA_ENV :=
+
 INFERENCE_PORT  ?= 8000
 VIEWER_PORT     ?= 8080
 VIEWER_TLS_PORT ?= 8443
@@ -106,6 +125,7 @@ else ifneq ($(CASCADE_ENV),)
 else
 	@echo "!! $(BR_MODEL_B) missing — serving BR_MODEL alone, NOT the cascade the canonical demo runs"
 endif
+	@echo "  gpu        $(if $(CUDA_ENV),hidden — the same cascade on CPU; nothing of ours can reach the display's card,visible — onnxruntime capped at $${BR_GPU_MEM_LIMIT_MB:-768} MiB/session so the display keeps its VRAM)"
 	@echo "  camera     https://$(HOST):$(VIEWER_TLS_PORT)/camera   (accept the warning once)"
 	@echo "  snapshot   http://$(HOST):$(VIEWER_PORT)/snapshot"
 	@echo "  live       http://$(HOST):$(VIEWER_PORT)"
@@ -117,6 +137,7 @@ endif
 	$(if $(BR_MODEL_TUNED),BR_MODEL_TUNED=$(BR_MODEL_TUNED),) \
 	$(if $(BR_CASCADE_TAU),BR_CASCADE_TAU=$(BR_CASCADE_TAU),) \
 	OPENCV_OPENCL_RUNTIME=$(OPENCV_OPENCL_RUNTIME) \
+	$(CUDA_ENV) \
 	  uv run board-reader-inference serve --host 0.0.0.0 --port $(INFERENCE_PORT) & \
 	inference=$$!; \
 	BR_INFERENCE_HTTP=http://127.0.0.1:$(INFERENCE_PORT) \
@@ -136,6 +157,14 @@ endif
 	wait -n; status=$$?; \
 	echo "!! a server exited on its own (status $$status) — stopping the others"; \
 	exit $$status
+
+# The whole `dev` stack with the card hidden from the inference node. One
+# assignment does it: target-specific variables reach a target's prerequisites,
+# so this is the value `dev`'s recipe expands. Nothing else differs — same
+# models, same cascade, same ports — so it is a straight swap when the machine
+# running this is also the machine displaying it.
+dev-cpu: CUDA_ENV := CUDA_VISIBLE_DEVICES=
+dev-cpu: dev
 
 # `-n auto` (pytest-xdist) fans the suite across every core: ~23s -> ~10s here.
 # Deliberately *not* in pyproject's addopts — worker startup makes a single
