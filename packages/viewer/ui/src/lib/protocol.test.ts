@@ -74,6 +74,37 @@ describe('parsePositionEvent', () => {
     expect(parsed.value.prior?.residual).toEqual({ kings: 1 });
   });
 
+  it('carries the settled board when the event has one, and null when not', () => {
+    const bare = parsePositionEvent(validEvent);
+    expect(bare.ok && bare.value.settled).toBeNull();
+
+    const parsed = parsePositionEvent({
+      ...validEvent,
+      settled: { placement: '8/8/8/8/8/8/8/8', pending: ['e4', 'e2'] }
+    });
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+    expect(parsed.value.settled?.placement).toBe('8/8/8/8/8/8/8/8');
+    expect(parsed.value.settled?.pending).toEqual(['e4', 'e2']);
+  });
+
+  it('reads a settled block with no pending field as settled but quiescent', () => {
+    const parsed = parsePositionEvent({
+      ...validEvent,
+      settled: { placement: START_PLACEMENT }
+    });
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+    expect(parsed.value.settled?.pending).toEqual([]);
+  });
+
+  it('reads a settled block with no usable placement as absent, not partial', () => {
+    const parsed = parsePositionEvent({ ...validEvent, settled: { pending: ['e4'] } });
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+    expect(parsed.value.settled).toBeNull();
+  });
+
   it.each(['board_id', 'seq', 'utc', 'placement'])('refuses an event missing %s', (field) => {
     const broken: Record<string, unknown> = { ...validEvent };
     delete broken[field];

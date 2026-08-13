@@ -39,21 +39,35 @@ function flippedSquares(event: PositionEvent): SquareKey[] {
     .filter((square): square is SquareKey => /^[a-h][1-8]$/.test(square));
 }
 
+/**
+ * The settled board's pending squares, kept only when they name real squares —
+ * same defensive filter as `flippedSquares`, for the same reason: the wire is
+ * untrusted, and a stray string must not reach chessground as a shape origin.
+ */
+function pendingSquares(event: PositionEvent): SquareKey[] {
+  if (event.settled === null) return [];
+  return event.settled.pending.filter((square): square is SquareKey => /^[a-h][1-8]$/.test(square));
+}
+
 /** Everything one card knows about its board. Replaced wholesale on every event. */
 export interface BoardState {
   readonly id: string;
   readonly event: PositionEvent;
   /**
    * The sanitized 8×8 — what the board is drawn from, never the raw string.
-   * From the node's prior-repaired placement when the event carries one: the raw
-   * argmax can spell an impossible board (two kings), and a board that cannot
-   * exist must not be what the operator stares at.
+   * `settled.placement` when the event carries one (a debounced board, held
+   * still against flicker); else the node's prior-repaired placement, since the
+   * raw argmax can spell an impossible board (two kings) that must never be what
+   * the operator stares at; else the raw placement itself.
    */
   readonly grid: BoardGrid;
   /** Squares currently under `LOW_CONFIDENCE`. */
   readonly low: readonly SquareKey[];
   /** Squares the prior decoder relabelled to make the board possible. */
   readonly flipped: readonly SquareKey[];
+  /** Squares the settled board hasn't adopted yet — a move in flight, or a
+   *  misread still being debounced. Empty when the event carries no `settled`. */
+  readonly pending: readonly SquareKey[];
   /** Square → when it last changed, for the fading ring. The only history kept. */
   readonly changedAt: Readonly<Partial<Record<SquareKey, number>>>;
   /** Arrival, not `event.utc`: this is stream freshness, not sensor time. */
@@ -173,7 +187,7 @@ export class PositionStream {
     this.#now = now;
 
     const previous = this.#boards[event.board_id];
-    const grid = fenToGrid(event.prior?.placement ?? event.placement);
+    const grid = fenToGrid(event.settled?.placement ?? event.prior?.placement ?? event.placement);
     // Diffed against the previous GRID, which is this store's whole memory of the
     // past — see the module note on DESIGN D1.
     const changed = changedSquares(previous?.grid ?? null, grid);
@@ -189,6 +203,7 @@ export class PositionStream {
       grid,
       low: lowConfidenceSquares(event.square_dist, LOW_CONFIDENCE),
       flipped: flippedSquares(event),
+      pending: pendingSquares(event),
       changedAt,
       lastAt: now,
       stamps: [...withinWindow(previous?.stamps ?? [], now), now]

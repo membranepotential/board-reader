@@ -71,7 +71,7 @@
 
   const event = $derived(board.event);
   const placement = $derived(gridToFen(board.grid));
-  const shapes = $derived(boardShapes(board.low, liveness.rings, board.flipped));
+  const shapes = $derived(boardShapes(board.low, liveness.rings, board.flipped, board.pending));
 
   const moving = $derived(event.stability !== null && event.stability < MOVING_BELOW);
   const motionLabel = $derived(
@@ -179,6 +179,7 @@
         <span class="legend">
           <span><i class="lo"></i>low confidence</span>
           <span><i class="ch"></i>just changed</span>
+          <span><i class="pd"></i>pending</span>
         </span>
       </div>
 
@@ -311,6 +312,13 @@
     align-items: center;
     gap: 10px;
     margin-top: 10px;
+    flex-wrap: wrap;
+    /* Unconstrained, this row grows to fit its widest content instead of wrapping —
+       and `.board-wrap` above it is `width: auto`, so it grows to match and carries
+       the extra width into its own rotate transform. Same cap `.banner`/`.meta`
+       already use, so a third legend chip wraps onto its own line instead of
+       widening the whole card. */
+    max-width: var(--board-size, 360px);
   }
   .calib {
     font: inherit;
@@ -364,6 +372,11 @@
   }
   .legend .ch {
     background: #5ad17a;
+  }
+  .legend .pd {
+    box-sizing: border-box;
+    background: none;
+    border: 1.5px dashed #e2a03f;
   }
 
   .banner {

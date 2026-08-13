@@ -206,3 +206,47 @@ describe('prior repair on the stream', () => {
     expect(stream.board('phone')!.flipped).toEqual([]);
   });
 });
+
+describe('settled board on the stream', () => {
+  const SETTLED = 'rnbqkbnr/pppp1ppp/8/4p3/4P3/8/PPPP1PPP/RNBQKBNR';
+  const settled = { placement: SETTLED, pending: ['e2', 'e4'] };
+
+  it('draws the settled board ahead of the raw one, and exposes its pending squares', () => {
+    const stream = streamAt({ now: 0 });
+    stream.ingest(event({ placement: START_PLACEMENT, settled }));
+    const board = stream.board('phone')!;
+    expect(board.grid[3]).toEqual(['', '', '', '', 'p', '', '', '']); // rank 5, e5
+    expect(board.event.placement).toBe(START_PLACEMENT); // the raw read stays readable
+    expect(board.pending).toEqual(['e2', 'e4']);
+  });
+
+  it('prefers settled over prior when an event carries both', () => {
+    const stream = streamAt({ now: 0 });
+    const prior = { placement: START_PLACEMENT, flips: [], residual: {} };
+    stream.ingest(event({ placement: START_PLACEMENT, prior, settled }));
+    expect(stream.board('phone')!.grid[3]).toEqual(['', '', '', '', 'p', '', '', '']);
+  });
+
+  it('diffs change rings against the settled grid, so a quiet debounce is quiet', () => {
+    const clock = { now: 1000 };
+    const stream = streamAt(clock);
+    stream.ingest(event({ placement: START_PLACEMENT, settled }));
+    clock.now = 2000;
+    stream.ingest(event({ seq: 2, placement: START_PLACEMENT, settled }));
+    expect(Object.keys(stream.board('phone')!.changedAt)).toEqual([]);
+  });
+
+  it('ignores pending squares that are not squares', () => {
+    const stream = streamAt({ now: 0 });
+    stream.ingest(
+      event({ settled: { placement: START_PLACEMENT, pending: ['e4', 'z9'] } })
+    );
+    expect(stream.board('phone')!.pending).toEqual(['e4']);
+  });
+
+  it('an event without a settled board draws its prior (or raw) placement and exposes no pending squares', () => {
+    const stream = streamAt({ now: 0 });
+    stream.ingest(event());
+    expect(stream.board('phone')!.pending).toEqual([]);
+  });
+});

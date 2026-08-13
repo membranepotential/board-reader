@@ -133,6 +133,15 @@ export interface PositionEvent {
    * from `prior.placement` when present — `placement` above can spell two kings.
    */
   readonly prior: PriorDecode | null;
+  /**
+   * The node's ingest-stabilizer debounce (`PositionEvent.settled` on the wire):
+   * a square must hold the same class for several consecutive reads before this
+   * board adopts it, so a display that must not flicker draws
+   * `settled.placement` — ahead of `prior.placement`, which the raw read still
+   * takes when this is absent. Only ever present on a streamed reading; a
+   * one-shot `/estimate` has nothing to settle over.
+   */
+  readonly settled: SettledBoard | null;
 }
 
 // ---- geometry on the wire ----------------------------------------------------
@@ -261,6 +270,16 @@ export interface PriorDecode {
   readonly placement: string;
   readonly flips: readonly PriorFlip[];
   readonly residual: Readonly<Record<string, number>>;
+}
+
+/**
+ * A temporally debounced board, served beside the raw read (`prior.SettledBoard`
+ * on the wire, sibling of `PriorDecode`). `pending` names the squares currently
+ * reading differently from `placement` — board order, may be empty.
+ */
+export interface SettledBoard {
+  readonly placement: string;
+  readonly pending: readonly string[];
 }
 
 export interface AutoCalibration {
@@ -476,7 +495,8 @@ export function parsePositionEvent(raw: unknown): ParseResult<PositionEvent> {
     orientation: asString(data['orientation']) ?? DEFAULT_ORIENTATION,
     clock: asMember(isRecord(clock) ? clock['running'] : undefined, CLOCK_STATES, 'none'),
     square_dist: parseSquareDist(data['square_dist']),
-    prior: parsePrior(data['prior'])
+    prior: parsePrior(data['prior']),
+    settled: parseSettled(data['settled'])
   });
 }
 
@@ -539,6 +559,15 @@ function parsePrior(value: unknown): PriorDecode | null {
     }
   }
   return { placement, flips, residual };
+}
+
+function parseSettled(value: unknown): SettledBoard | null {
+  if (!isRecord(value)) return null;
+  const placement = asString(value['placement']);
+  if (placement === null) return null;
+  const rawPending = Array.isArray(value['pending']) ? value['pending'] : [];
+  const pending = rawPending.filter((s): s is string => typeof s === 'string');
+  return { placement, pending };
 }
 
 function parseAutoCalibration(value: unknown): AutoCalibration | null {

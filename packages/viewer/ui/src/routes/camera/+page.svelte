@@ -55,6 +55,7 @@
   import { TrialLog } from '$lib/edge/triallog';
   import { EMPTY_PLACEMENT, type CornerQuad, type Point } from '$lib/protocol';
   import { PositionStream } from '$lib/stores/positions.svelte';
+  import { pendingShapes } from '$lib/components/live/shapes';
 
   import Banner from '$lib/components/camera/Banner.svelte';
   import BlockedNotice from '$lib/components/camera/BlockedNotice.svelte';
@@ -218,13 +219,15 @@
   const board = $derived(positions.board(boardId));
   const placement = $derived(board === undefined ? EMPTY_PLACEMENT : gridToFen(board.grid));
   // Yellow: low confidence. Red: the prior decoder relabelled this square to make
-  // the board possible — the drawn piece is the repair, not the raw read.
+  // the board possible — the drawn piece is the repair, not the raw read. Dashed
+  // amber: the settled board hasn't adopted this square yet.
   const shapes = $derived<DrawShape[]>(
     board === undefined
       ? []
       : [
           ...board.low.map((square): DrawShape => ({ orig: square, brush: 'yellow' })),
-          ...board.flipped.map((square): DrawShape => ({ orig: square, brush: 'red' }))
+          ...board.flipped.map((square): DrawShape => ({ orig: square, brush: 'red' })),
+          ...pendingShapes(board.pending)
         ]
   );
   const panelStatus = $derived.by(() => {
