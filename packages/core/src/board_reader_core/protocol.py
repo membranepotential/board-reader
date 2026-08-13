@@ -246,6 +246,36 @@ class PriorRepair:
         )
 
 
+@dataclass(frozen=True)
+class SettledBoard:
+    """A temporally debounced board, served beside the raw read (never instead).
+
+    The producer is the inference node's ingest stabilizer: a square must hold the
+    same class for K consecutive *estimated* reads before the settled board adopts
+    it, so one-frame flicker (a hand crossing the board, a coin-flip repair) never
+    reaches a display that draws this block. ``pending`` names the squares
+    currently reading differently from the settled board — a move in flight looks
+    like its from/to squares going pending, then being adopted.
+
+    Advisory like :class:`PriorRepair`: ``placement``/``square_dist`` on the event
+    stay exactly what the estimator produced, and a consumer running its own
+    smoothing ignores this block entirely.
+    """
+
+    placement: str
+    pending: tuple[str, ...] = ()  # algebraic squares, board order
+
+    def to_dict(self) -> dict:
+        return {"placement": self.placement, "pending": list(self.pending)}
+
+    @classmethod
+    def from_dict(cls, d: dict) -> SettledBoard:
+        return cls(
+            placement=str(d["placement"]),
+            pending=tuple(str(s) for s in d.get("pending") or ()),
+        )
+
+
 @dataclass
 class PositionEvent:
     """One L3 position event (DESIGN.md §5).
@@ -268,6 +298,10 @@ class PositionEvent:
     #: node's prior decoder. ``placement`` above stays the raw argmax; a display
     #: that must never show an impossible board draws ``prior.placement`` instead.
     prior: PriorRepair | None = None
+    #: Optional debounced board, produced by the ingest stabilizer on streamed
+    #: frames only (a one-shot ``/estimate`` has no stream to settle over). A
+    #: display that must not flicker draws ``settled.placement``.
+    settled: SettledBoard | None = None
 
     @classmethod
     def from_square_dist(
@@ -324,6 +358,8 @@ class PositionEvent:
             raise ValueError("seq must be non-negative")
         if self.prior is not None:
             parse_placement(self.prior.placement)  # raises on a malformed repair
+        if self.settled is not None:
+            parse_placement(self.settled.placement)
         return self
 
     def to_dict(self, *, round_dist: int | None = 4) -> dict:
@@ -346,6 +382,8 @@ class PositionEvent:
         }
         if self.prior is not None:
             d["prior"] = self.prior.to_dict()
+        if self.settled is not None:
+            d["settled"] = self.settled.to_dict()
         return d
 
     def to_json(self) -> str:
@@ -369,6 +407,7 @@ class PositionEvent:
             status=d.get("status", "ok"),
             orientation=d.get("orientation", DEFAULT_ORIENTATION),
             prior=PriorRepair.from_dict(d["prior"]) if d.get("prior") else None,
+            settled=SettledBoard.from_dict(d["settled"]) if d.get("settled") else None,
         )
 
     @classmethod

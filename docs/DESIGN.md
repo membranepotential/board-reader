@@ -736,15 +736,31 @@ Field notes:
   downstream smoother that runs its own priors over the raw distribution simply
   ignores this block and can never double-count it. Displays that must not show
   an impossible board (the viewer, `/camera`) draw `prior.placement`.
+- `settled` (optional, streamed frames only) = a **display debounce** of the
+  repaired reads, served beside the raw fields like `prior`:
+  `{"placement": <debounced board>, "pending": [<squares reading differently, not yet adopted>]}`.
+  A square must hold the same class on every read across a ~2.5 s window (and
+  ≥2 reads) before the settled board adopts it, so a hand crossing the board or
+  a coin-flip repair (the 08-13 trial's alternating k/q demotion) never reaches
+  a display that draws this block. The window is time, not a read count: the
+  read rate varies an order of magnitude with estimator load, and a count tuned
+  at one rate is wrong at the other. This is deliberately **not** the downstream smoother
+  (D3): it consults no move model and no legality, holds whatever the reads
+  converge to (right or wrong), and one-shot `/estimate` reads never carry it.
+  Estimation stays memoryless (D1) — the debounce is gateway state over
+  *published* reads, and the raw `placement`/`square_dist` stay byte-identical.
+  Flicker-free displays (the viewer, `/camera`) draw `settled.placement` and may
+  mark `pending` squares as in flux.
 
 The application layer (a consumer) is responsible for turning this stream into
 moves, full FENs, legality decisions, and PGN.
 
 > This socket is the seam, and nothing has been built on the far side of it yet —
 > the consumers that exist (the viewer UI, the headless `board-reader-inference
-> positions` tail) render or capture the stream and smooth nothing, so no
-> temporal consistency exists anywhere. Not a change to D1/D3; a statement of
-> what is unbuilt. See `docs/architecture.md`, "Temporal consistency".
+> positions` tail) render or capture the stream and smooth nothing beyond the
+> advisory `settled` debounce above, so no move-aware temporal consistency exists
+> anywhere. Not a change to D1/D3; a statement of what is unbuilt. See
+> `docs/architecture.md`, "Temporal consistency".
 
 ---
 

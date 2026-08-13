@@ -46,11 +46,12 @@ from board_reader_core.wire import Frame
 from board_reader_inference.hub import PositionHub
 from board_reader_inference.prior import decode
 from board_reader_inference.routing import Route, Uncalibrated
+from board_reader_inference.stabilize import BoardStabilizer
 
 log = logging.getLogger(__name__)
 
 
-def _read_with_prior(route: Route) -> PositionEvent:
+def _read_with_prior(route: Route, stabilizer: BoardStabilizer) -> PositionEvent:
     """One estimate plus its hard-constraint repair, both off the event loop.
 
     The repair rides the event as :attr:`PositionEvent.prior` (raw ``placement``
@@ -60,9 +61,16 @@ def _read_with_prior(route: Route) -> PositionEvent:
     not passed: the stream's orientation is operator-claimed, not established,
     and a guessed frame makes the back-rank constraint circular (see
     :mod:`.prior`).
+
+    The repaired read then feeds the board's :class:`.stabilize.BoardStabilizer`,
+    and the debounced board rides as :attr:`PositionEvent.settled` — safe here
+    despite the worker thread because each board's worker estimates strictly one
+    frame at a time, in order, which is exactly the stream a debounce needs.
     """
     event = route.read()
-    event.prior = decode(event.square_dist).to_repair()
+    repair = decode(event.square_dist)
+    event.prior = repair.to_repair()
+    event.settled = stabilizer.observe(repair.placement, route.frame.capture_ts)
     return event
 
 
@@ -77,6 +85,10 @@ class _BoardWorker:
     inbox: asyncio.Queue[tuple[Frame, float]]
     idle: asyncio.Event  # set while the inbox is empty and nothing is in flight
     task: asyncio.Task[None]
+    #: The board's debounce state (:attr:`PositionEvent.settled`). Lives with the
+    #: worker so a restarted board starts settling afresh rather than holding a
+    #: board from before the gap.
+    stabilizer: BoardStabilizer
 
 
 class FrameIngest:
@@ -178,16 +190,18 @@ class FrameIngest:
         inbox: asyncio.Queue[tuple[Frame, float]] = asyncio.Queue(maxsize=1)
         idle = asyncio.Event()
         idle.set()
+        stabilizer = BoardStabilizer()
         task = asyncio.create_task(
-            self._run(board_id, inbox, idle), name=f"ingest:{board_id}"
+            self._run(board_id, inbox, idle, stabilizer), name=f"ingest:{board_id}"
         )
-        return _BoardWorker(inbox=inbox, idle=idle, task=task)
+        return _BoardWorker(inbox=inbox, idle=idle, task=task, stabilizer=stabilizer)
 
     async def _run(
         self,
         board_id: str,
         inbox: asyncio.Queue[tuple[Frame, float]],
         idle: asyncio.Event,
+        stabilizer: BoardStabilizer,
     ) -> None:
         """Estimate whatever is in the inbox, forever, one frame at a time."""
         try:
@@ -204,7 +218,7 @@ class FrameIngest:
                                 " skipping until a calibration lands", board_id,
                             )
                         continue
-                    event = await asyncio.to_thread(_read_with_prior, route)
+                    event = await asyncio.to_thread(_read_with_prior, route, stabilizer)
                 except asyncio.CancelledError:
                     raise
                 except Exception:
@@ -249,17 +263,19 @@ class FrameIngest:
         repair. ``proc`` is receive→publish on this node's own clock — never
         capture→publish, which subtracts the *edge's* clock (a phone off NTP)
         from ours and would print nonsense in the one log meant to diagnose lag.
-        "Changed" is judged on the *repaired* placement, because that is what a
-        viewer displays; a raw argmax flickering between impossible boards that
-        repair to the same position is a DEBUG detail, not news.
+        "Changed" is judged on the *settled* placement, because that is what a
+        viewer displays; a read flickering between boards that debounce to the
+        same position is a DEBUG detail, not news.
         """
-        repaired = event.prior.placement if event.prior else event.placement
-        before = (
-            (previous.prior.placement if previous.prior else previous.placement)
-            if previous
-            else None
-        )
-        changed = repaired != before
+
+        def displayed(ev: PositionEvent) -> str:
+            if ev.settled is not None:
+                return ev.settled.placement
+            return ev.prior.placement if ev.prior else ev.placement
+
+        shown = displayed(event)
+        before = displayed(previous) if previous else None
+        changed = shown != before
         flips = event.prior.flips if event.prior else ()
         residual = event.prior.residual if event.prior else {}
         log.log(
@@ -269,7 +285,7 @@ class FrameIngest:
             frame.seq,
             event.confidence,
             time.time() - received,
-            repaired,
+            shown,
             "".join(
                 f" [{f.square} {f.from_class}->{f.to_class}]" for f in flips
             ),

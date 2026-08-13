@@ -312,6 +312,38 @@ def test_app_shutdown_stops_the_ingest_workers():
     assert ingest._boards == {}  # lifespan shutdown cancelled and forgot the workers
 
 
+def test_settled_rides_the_stream_and_holds_through_a_one_read_flicker():
+    """Every streamed event carries ``settled``, and a single flickered read (a
+    hand over the board, a mid-move blur) never changes the settled placement.
+
+    The flicker satisfies every hard constraint on purpose: the stabilizer sees
+    the *repaired* read, so a constraint-violating flicker would be (correctly)
+    erased by the prior decoder before the debounce is even exercised.
+    """
+    flicker = "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR"  # 1.e4 for a read
+
+    async def run():
+        placements = [START_PLACEMENT, flicker, START_PLACEMENT]
+        events = []
+        hub = PositionHub()
+        ingest = FrameIngest(
+            lambda frame: WholeFrameRead(
+                StubEstimator(placements[frame.seq]), frame
+            ),
+            hub,
+            on_event=lambda event, frame: events.append(event),
+        )
+        for seq in range(3):
+            ingest.submit(_frame(seq=seq))
+            await asyncio.wait_for(ingest.drain(), timeout=2.0)
+        await ingest.close()
+        assert [e.settled.placement for e in events] == [START_PLACEMENT] * 3
+        assert events[1].settled.pending == ("e4", "e2")  # board order: rank 8 first
+        assert events[2].settled.pending == ()
+
+    asyncio.run(run())
+
+
 def test_an_uncalibrated_route_skips_frames_and_the_stream_wakes_on_hot_swap():
     """§4.6 uncalibrated state: the router answers ``Uncalibrated`` and the stream
     publishes NOTHING (the hub carries estimated positions, never a placeholder) —

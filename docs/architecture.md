@@ -309,10 +309,19 @@ identically. It smooths nothing — a piece flickering between two classes on al
 frames yields a transition on *every single frame*. That is the honest picture of what a
 stateless estimator emits, and precisely the argument for the layer above it.
 
+One narrow exception ships since 08-13: the gateway attaches an advisory `settled` block
+to *streamed* events (DESIGN §5) — a per-square display debounce (an unbroken ~2.5 s of
+consistent reads, `board_reader_inference.stabilize`) over the repaired placements, born from the first
+phone trial where a hand mid-move and a coin-flip two-kings repair made the live board
+flicker at burst rate. It is a debounce, not the missing layer: no move model, no
+legality, no use of `stability`, and it holds whatever the reads converge to — the trial's
+persistent d8/e8 misread settles *wrong*, just stably. The raw fields stay untouched
+beside it.
+
 The seam is `WS /viewer`, or an `.ndjson` capture of it — the same bytes either way.
-Anything cleverer than a diff lives on the far side of that seam and wants its own design.
-DESIGN §9 still carries "does `stability` earn its keep?" as an open question; it cannot
-be answered until something consumes it.
+Anything cleverer than a debounce lives on the far side of that seam and wants its own
+design. DESIGN §9 still carries "does `stability` earn its keep?" as an open question; it
+cannot be answered until something consumes it.
 
 ## Related
 

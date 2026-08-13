@@ -225,3 +225,37 @@ def test_validate_rejects_a_malformed_prior_placement():
     ev.prior = PriorRepair(placement="not/a/board")
     with pytest.raises(ValueError):
         ev.validate()
+
+
+def test_settled_board_rides_the_event_and_round_trips():
+    """The optional ``settled`` block survives to_dict/from_dict byte-identically —
+    and its absence stays absence, exactly like ``prior``."""
+    from board_reader_core.protocol import SettledBoard
+
+    dist = dist_from_placement(START_PLACEMENT)
+    bare = PositionEvent.from_square_dist(
+        board_id="A1", seq=0, utc=iso_utc(0.0), square_dist=dist
+    )
+    assert bare.settled is None
+    assert "settled" not in bare.to_dict()
+    assert PositionEvent.from_json(bare.to_json()).settled is None
+
+    bare.settled = SettledBoard(placement=START_PLACEMENT, pending=("e2", "e4"))
+    back = PositionEvent.from_json(bare.to_json())
+    assert back.settled == bare.settled
+    assert back.to_dict()["settled"] == {
+        "placement": START_PLACEMENT,
+        "pending": ["e2", "e4"],
+    }
+
+
+def test_validate_rejects_a_malformed_settled_placement():
+    from board_reader_core.protocol import SettledBoard
+
+    dist = dist_from_placement(START_PLACEMENT)
+    ev = PositionEvent.from_square_dist(
+        board_id="A1", seq=0, utc=iso_utc(0.0), square_dist=dist
+    )
+    ev.settled = SettledBoard(placement="not/a/board")
+    with pytest.raises(ValueError):
+        ev.validate()
