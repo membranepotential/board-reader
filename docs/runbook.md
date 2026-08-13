@@ -46,6 +46,21 @@ photograph a start position.
 
 ## Environment
 
+> [!important] Both entry points must agree on the recognition composition
+> Two things start a real node — `docker compose up` (compose.yaml) and `make dev`
+> (the Makefile) — and each picks its models out of the variables below. They must
+> choose the *same* ones: when the cascade landed in compose alone, `make dev` went
+> on serving `BR_MODEL` by itself and every live phone test silently rehearsed a
+> weaker reader than the demo. A new deploy-time variable therefore belongs in
+> **both** files, or in `tests/test_deploy_parity.py`'s recorded list of
+> deliberately environment-specific ones. `aspects.yaml` carries the pair as the
+> `deploy` aspect so `/drift` sees them together.
+>
+> `make dev` prints the composition it resolved on startup (`recognition BR_MODEL +
+> BR_MODEL_B — the same cascade compose.yaml serves`). It withholds `BR_MODEL_B`
+> when that file is absent, or when `BR_MODEL_TUNED` asks for the other
+> composition — both of which the node treats as hard startup errors.
+
 **Inference node**
 
 | Variable | Effect |

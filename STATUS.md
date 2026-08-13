@@ -9,8 +9,8 @@ confidences**. No moves, no legality, no PGN — those are the downstream applic
 
 ## Now
 
-- _Nothing in flight._ Tree clean, no agents or training runs; the 08-10/08-11 experiment burst
-  all landed. What comes next is a decision (Next #1), not a resumption.
+- phone-live-test — `make dev` up on 192.168.1.10 (:8443 https for `/camera`), now serving the
+  run_e⊕run_f cascade + session bank per `/healthz`. Next: calibrate from the phone, judge it.
 
 ## Done (recent)
 

@@ -29,6 +29,10 @@ dev = [
     # CPU-bound and independent per test, so this roughly halves wall clock.
     "pytest-xdist>=3",
     "httpx>=0.27",
+    # compose.yaml and aspects.yaml are both parsed by guardrail tests
+    # (tests/test_deploy_parity.py). Already in the lock as a transitive dep, so
+    # declaring it resolves to the same pinned version — no new surface.
+    "pyyaml>=6",
     # The lint gate (`make lint`). Pinned into the dev group rather than run via
     # `uvx` so every checkout and every agent lints with the same version — a
     # gate whose ruleset drifts by machine is not a gate.

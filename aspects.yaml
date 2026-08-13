@@ -102,7 +102,11 @@ aspects:
       - aspect: deploy
         role: >-
           A new or renamed env var that the deployed configuration relies on
-          must be set in compose.yaml.
+          must be set in BOTH entry points — compose.yaml and the Makefile's
+          `dev` target — or recorded as deliberately environment-specific in
+          tests/test_deploy_parity.py. Setting it in one place is how the
+          confidence-gated cascade ended up running in the demo but not under
+          `make dev` for two days without a single failure.
 
   edge:
     description: >-
@@ -222,7 +226,10 @@ aspects:
           rather than assumed.
       - aspect: deploy
         role: >-
-          BR_MODEL in compose.yaml must point at a model file that exists.
+          BR_MODEL and BR_MODEL_B must point at model files that exist — in
+          compose.yaml and in the Makefile's defaults alike. A partial pair (one
+          member present) is a hard startup error by design, so a half-populated
+          models/ dir breaks a run rather than degrading it.
       - aspect: status
         role: >-
           A newly trained or newly deployed model is a state change the
@@ -248,16 +255,31 @@ aspects:
 
   deploy:
     description: >-
-      How the system is actually run — the parametrised Docker image and the
-      compose file that wires edge, inference, and viewer together.
-    files: ["compose.yaml", "docker/**", ".dockerignore"]
+      How the system is actually run — *both* entry points that start a real
+      node: the canonical demo (the parametrised Docker image and the compose
+      file wiring edge, inference and viewer) and the dev path (`make dev`,
+      which starts inference plus two viewer binds on the host). The Makefile
+      belongs here because it chooses a recognition composition out of the same
+      environment compose does; when it was missing from this list, `/drift` had
+      no way to see the two halves disagree.
+    files: ["compose.yaml", "docker/**", ".dockerignore", "Makefile"]
     affects:
       - aspect: testing-guide
         role: >-
           The canonical `docker compose up` demo in TESTING.md must match the
-          services, ports, and environment the compose file declares.
+          services, ports, and environment the compose file declares — and the
+          `make dev` commands quoted there must match the Makefile's targets.
       - aspect: docs
-        role: The runbook's serve commands and env table must match compose.
+        role: >-
+          The runbook's serve commands and env table must match what BOTH entry
+          points set, and must not describe a composition only one of them runs.
+      - aspect: tests
+        role: >-
+          tests/test_deploy_parity.py is the executable half of this aspect: the
+          recognition env family (BR_MODEL, BR_MODEL_B, BR_MODEL_TUNED,
+          BR_CASCADE_TAU, BR_CENTROIDS) must be identical across compose.yaml and
+          `make dev`, and any var set by only one of them must carry a recorded
+          reason. A new deploy-time env var means that guard needs updating.
 
   docs:
     description: >-

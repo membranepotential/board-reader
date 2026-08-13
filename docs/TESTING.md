@@ -682,7 +682,9 @@ forwarding all happen in the phone's browser; the desktop shows the position
 evolving on the live viewer.
 
 `make dev` sets all of this up — it starts inference plus **two** binds of the
-viewer and prints the URL for each page:
+viewer, serves the **same cascade `docker compose up` does** (it prints the
+composition it resolved, and falls back to `BR_MODEL` alone with a warning if
+`models/run_f/` is absent), and prints the URL for each page:
 
 ```bash
 make dev

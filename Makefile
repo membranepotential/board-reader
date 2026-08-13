@@ -50,6 +50,24 @@ HOST := $(shell ip route get 1.1.1.1 2>/dev/null | grep -oP 'src \K[\d.]+' || ec
 BR_MODEL        ?= models/run_e/model.onnx
 BR_SESSION_BANK ?= models/exemplars_session.npz
 BR_SAVE_UPLOADS ?= data/uploads
+# The cascade's second member, so the dev path reads boards the same way the
+# canonical `docker compose up` demo does. These two drifted once already: the
+# cascade landed in compose.yaml alone (3a55d41) and `make dev` went on quietly
+# serving BR_MODEL by itself for two days. tests/test_deploy_parity.py is now
+# the guard, and aspects.yaml carries the Makefile as part of `deploy`.
+BR_MODEL_B      ?= models/run_f/model.onnx
+
+# ...but forwarded only when the node can actually serve it. Two configurations
+# are hard startup errors *by design* — a partial pair (one member missing, so
+# it would silently serve one model where two were asked for) and TUNED+B (an
+# unmeasured stack). Neither should be reachable by running `make dev` against a
+# half-populated models/ dir, so the composition is resolved here rather than
+# discovered as a traceback on port 8000.
+ifdef BR_MODEL_TUNED
+CASCADE_ENV :=
+else
+CASCADE_ENV := $(if $(and $(wildcard $(BR_MODEL)),$(wildcard $(BR_MODEL_B))),BR_MODEL_B=$(BR_MODEL_B),)
+endif
 
 INFERENCE_PORT  ?= 8000
 VIEWER_PORT     ?= 8080
@@ -66,6 +84,13 @@ ui:
 dev: ui
 	@test -f "$(BR_MODEL)" || echo "!! $(BR_MODEL) missing — server will degrade to the stub"
 	@test -f "$(BR_SESSION_BANK)" || echo "!! $(BR_SESSION_BANK) missing — trained model only, no ensemble"
+ifdef BR_MODEL_TUNED
+	@echo "  recognition BR_MODEL + BR_MODEL_TUNED — the calibration average; cascade withheld (stacking them is unmeasured)"
+else ifneq ($(CASCADE_ENV),)
+	@echo "  recognition BR_MODEL + BR_MODEL_B — the same cascade compose.yaml serves"
+else
+	@echo "!! $(BR_MODEL_B) missing — serving BR_MODEL alone, NOT the cascade the canonical demo runs"
+endif
 	@echo "  camera     https://$(HOST):$(VIEWER_TLS_PORT)/camera   (accept the warning once)"
 	@echo "  snapshot   http://$(HOST):$(VIEWER_PORT)/snapshot"
 	@echo "  live       http://$(HOST):$(VIEWER_PORT)"
@@ -73,6 +98,9 @@ dev: ui
 	@BR_MODEL=$(BR_MODEL) \
 	BR_SESSION_BANK=$(BR_SESSION_BANK) \
 	BR_SAVE_UPLOADS=$(BR_SAVE_UPLOADS) \
+	$(CASCADE_ENV) \
+	$(if $(BR_MODEL_TUNED),BR_MODEL_TUNED=$(BR_MODEL_TUNED),) \
+	$(if $(BR_CASCADE_TAU),BR_CASCADE_TAU=$(BR_CASCADE_TAU),) \
 	  uv run board-reader-inference serve --host 0.0.0.0 --port $(INFERENCE_PORT) & \
 	inference=$$!; \
 	BR_INFERENCE_HTTP=http://127.0.0.1:$(INFERENCE_PORT) \
