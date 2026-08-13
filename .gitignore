@@ -32,6 +32,7 @@ scratch/
 # `board-reader-edge feed --recording`. Large and machine-local; promote a
 # session into data/ deliberately if it is worth keeping.
 recordings/
+client-logs/
 
 # Browser-automation captures (playwright-mcp session snapshots)
 .playwright-mcp/

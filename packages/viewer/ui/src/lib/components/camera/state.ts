@@ -644,6 +644,70 @@ export function placePanel(
   };
 }
 
+// ---- camera stall watchdog ----------------------------------------------------
+// A phone's camera track dies quietly: iOS mutes it when the app is backgrounded
+// or another app takes the camera, and sometimes never revives it on return. The
+// preview then shows the last frame forever while the loop happily streams it.
+// The watchdog reads `video.currentTime` every tick — a live capture advances it;
+// a dead one does not — and escalates: first `play()` (fixes the paused-on-return
+// case for free), then a full camera reopen, backed off so a genuinely absent
+// camera is not hammered.
+
+/** No clock advance for this long (while visible) → try `play()`. */
+export const STALL_PLAY_MS = 2000;
+/** Still no advance → reopen the camera. Also the floor of the reopen backoff. */
+export const STALL_REOPEN_MS = 6000;
+export const STALL_REOPEN_MAX_MS = 60000;
+
+export interface FrameClock {
+  /** Last observed `video.currentTime` (seconds — its own clock, not ours). */
+  readonly time: number;
+  /** When it last advanced, `performance.now()` ms. */
+  readonly changedAt: number;
+  /** Whether `play()` has already been tried for THIS stall. */
+  readonly played: boolean;
+  /** Consecutive reopens without the clock ever advancing in between. */
+  readonly reopens: number;
+  readonly nextReopenAt: number;
+}
+
+export type StallAction = 'none' | 'play' | 'reopen';
+
+export function freshFrameClock(now: number): FrameClock {
+  return { time: -1, changedAt: now, played: false, reopens: 0, nextReopenAt: 0 };
+}
+
+/**
+ * Fold one tick's reading in. `hidden` resets the grace period rather than
+ * counting: a backgrounded page throttles both the video clock and this very
+ * loop, and recovery must not fire the instant the operator returns.
+ */
+export function noteFrameClock(
+  clock: FrameClock,
+  time: number,
+  now: number,
+  hidden: boolean
+): { clock: FrameClock; action: StallAction } {
+  if (hidden || time !== clock.time) {
+    return {
+      clock: { time, changedAt: now, played: false, reopens: 0, nextReopenAt: 0 },
+      action: 'none'
+    };
+  }
+  const stalledMs = now - clock.changedAt;
+  if (stalledMs >= STALL_PLAY_MS && !clock.played) {
+    return { clock: { ...clock, played: true }, action: 'play' };
+  }
+  if (stalledMs >= STALL_REOPEN_MS && now >= clock.nextReopenAt) {
+    const backoff = Math.min(STALL_REOPEN_MS * 2 ** clock.reopens, STALL_REOPEN_MAX_MS);
+    return {
+      clock: { ...clock, reopens: clock.reopens + 1, nextReopenAt: now + backoff },
+      action: 'reopen'
+    };
+  }
+  return { clock, action: 'none' };
+}
+
 export function parseStoredPanel(raw: string | null | undefined): PanelState {
   if (raw === null || raw === undefined) return PANEL_START;
   let saved: unknown;

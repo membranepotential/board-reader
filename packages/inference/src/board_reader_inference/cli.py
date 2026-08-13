@@ -23,10 +23,12 @@ DEFAULT_RECORD_DIR = "recordings"
 
 
 def cmd_serve(args: argparse.Namespace) -> int:
+    import logging
+
     import uvicorn
 
     if args.centroids:
-        # Picked up by server._default_estimator() at import time.
+        # Picked up by server._default_estimator() when the app is built.
         os.environ["BR_CENTROIDS"] = args.centroids
 
     # Every served run records its ingress by default (WP-H2), so a session can
@@ -37,8 +39,20 @@ def cmd_serve(args: argparse.Namespace) -> int:
     if args.record_dir:
         os.environ["BR_RECORD_DIR"] = args.record_dir
 
+    # The app's own loggers (per-read trial lines, refused frames), which
+    # uvicorn's config leaves unconfigured — without this they fall to
+    # ``lastResort`` and everything below WARNING is silently dropped.
+    logging.basicConfig(
+        level=os.environ.get("BR_LOG_LEVEL", "INFO").upper(),
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    )
+
+    # ``--factory`` matters: the app must be BUILT here, after the env above is
+    # set. The server module deliberately has no import-time app — see the note
+    # at the bottom of ``server.py``.
     uvicorn.run(
-        "board_reader_inference.server:app",
+        "board_reader_inference.server:create_app",
+        factory=True,
         host=args.host,
         port=args.port,
         log_level="info",

@@ -127,6 +127,12 @@ export interface PositionEvent {
   readonly orientation: string;
   readonly clock: ClockRunning;
   readonly square_dist: SquareDist | null;
+  /**
+   * The node's hard-constraint repair of this read (`PositionEvent.prior` on the
+   * wire): the nearest *possible* board, beside the raw one. Boards are drawn
+   * from `prior.placement` when present — `placement` above can spell two kings.
+   */
+  readonly prior: PriorDecode | null;
 }
 
 // ---- geometry on the wire ----------------------------------------------------
@@ -469,7 +475,8 @@ export function parsePositionEvent(raw: unknown): ParseResult<PositionEvent> {
     status: asMember(data['status'], POSITION_STATUSES, 'ok'),
     orientation: asString(data['orientation']) ?? DEFAULT_ORIENTATION,
     clock: asMember(isRecord(clock) ? clock['running'] : undefined, CLOCK_STATES, 'none'),
-    square_dist: parseSquareDist(data['square_dist'])
+    square_dist: parseSquareDist(data['square_dist']),
+    prior: parsePrior(data['prior'])
   });
 }
 

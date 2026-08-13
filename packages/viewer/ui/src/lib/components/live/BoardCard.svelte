@@ -71,7 +71,7 @@
 
   const event = $derived(board.event);
   const placement = $derived(gridToFen(board.grid));
-  const shapes = $derived(boardShapes(board.low, liveness.rings));
+  const shapes = $derived(boardShapes(board.low, liveness.rings, board.flipped));
 
   const moving = $derived(event.stability !== null && event.stability < MOVING_BELOW);
   const motionLabel = $derived(

@@ -26,10 +26,13 @@ forwards bytes, reinforcing the layer split.
 from __future__ import annotations
 
 import argparse
+import json
+import os
 import sys
+import time
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -110,6 +113,56 @@ def create_app() -> FastAPI:
         """Phone camera page: the browser edge (DESIGN §4.1 "virtual Pi")."""
         return _page(_WEB, "camera.html")
 
+    # The phone's trial log sink — registered BEFORE proxy.install so the /api
+    # catch-all never relays it to the inference node: these notes are about the
+    # *client*, and the viewer is the machine an operator debugs a trial from.
+    # Viewer-local, no board_reader_* imports — layer separation holds.
+    #
+    # Opt-in like every other on-disk writer in this project (twice bitten):
+    # ``BR_CLIENT_LOG_DIR`` unset -> the endpoint accepts and drops, so the page
+    # never sees an error either way. ``main()`` opts real servers in by default.
+    log_dir = os.environ.get("BR_CLIENT_LOG_DIR")
+    log_path = (
+        Path(log_dir) / f"{time.strftime('%Y%m%d-%H%M%S')}.ndjson" if log_dir else None
+    )
+
+    # The sink is reachable by anything on the LAN (the viewer binds 0.0.0.0 so
+    # the phone can), so it is bounded everywhere: per-batch body cap, per-batch
+    # note cap, and a per-file ceiling past which batches are dropped. The page's
+    # own batches are a few hundred bytes every few seconds; only abuse hits these.
+    MAX_LOG_BODY = 128 * 1024
+    MAX_LOG_NOTES = 500
+    MAX_LOG_FILE = 50 * 1024 * 1024
+
+    @app.post("/api/client-log")
+    async def client_log(request: Request) -> dict:
+        body = await request.body()
+        if len(body) > MAX_LOG_BODY:
+            return {"kept": 0}
+        try:
+            payload = json.loads(body)
+        except ValueError:
+            return {"kept": 0}
+        notes = payload.get("notes") if isinstance(payload, dict) else None
+        if not isinstance(notes, list) or log_path is None:
+            return {"kept": 0}
+        notes = notes[:MAX_LOG_NOTES]
+        received = time.time()
+        client = request.client.host if request.client else None
+        lines = "".join(
+            json.dumps({**note, "received_ts": received, "client": client}) + "\n"
+            for note in notes
+            if isinstance(note, dict)
+        )
+        # Open-append-close per batch: batches arrive every few seconds and this
+        # keeps the handle-lifetime problem (reload, rotation, crash) nonexistent.
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        if log_path.exists() and log_path.stat().st_size >= MAX_LOG_FILE:
+            return {"kept": 0}
+        with log_path.open("a", encoding="utf-8") as f:
+            f.write(lines)
+        return {"kept": len(notes)}
+
     # /ws/ingest, /ws/viewer and /api/{path} — registered before the /_app mount below
     # so a future catch-all there can never shadow them; Starlette matches routes in
     # registration order.
@@ -182,6 +235,12 @@ def main(argv: list[str] | None = None) -> int:
     # pages 503 is never what anyone wants, and the operator should learn that from one
     # readable line rather than from a blank phone screen at the board.
     _require_web(_WEB)
+
+    # A real viewer keeps the phone's trial notes by default (mirroring the
+    # inference node's ingress recording); a test app writes nothing unless it
+    # sets the env itself. ``setdefault`` so an operator can still point it
+    # elsewhere — or at "" to disable.
+    os.environ.setdefault("BR_CLIENT_LOG_DIR", "client-logs")
 
     cert = tls.ensure_certificate() if args.ssl else None
     _announce(args.host, args.port, cert=cert)

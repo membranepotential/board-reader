@@ -83,6 +83,12 @@ services:
       # demo works with it removed.
       BR_INFERENCE_WS: "ws://inference:8000/viewer"
       BR_INFERENCE_HTTP: "http://inference:8000"
+      # The phone /camera page posts its trial notes to /api/client-log; they land
+      # here, beside the node's ingress recording, so a failed phone session is
+      # diagnosable from this machine.
+      BR_CLIENT_LOG_DIR: /client-logs
+    volumes:
+      - ./client-logs:/client-logs
     ports:
       - "8080:8080"
     depends_on:

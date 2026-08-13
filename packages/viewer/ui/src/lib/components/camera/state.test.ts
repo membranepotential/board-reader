@@ -389,3 +389,83 @@ describe('the position panel', () => {
     });
   });
 });
+
+import {
+  freshFrameClock,
+  noteFrameClock,
+  STALL_PLAY_MS,
+  STALL_REOPEN_MS,
+  STALL_REOPEN_MAX_MS
+} from './state';
+
+describe('camera stall watchdog', () => {
+  it('an advancing clock is healthy and resets every escalation', () => {
+    let clock = freshFrameClock(0);
+    for (let now = 50, t = 0.05; now < 500; now += 50, t += 0.05) {
+      const step = noteFrameClock(clock, t, now, false);
+      clock = step.clock;
+      expect(step.action).toBe('none');
+    }
+    expect(clock.reopens).toBe(0);
+  });
+
+  it('escalates play -> reopen -> backed-off reopen while the clock is stuck', () => {
+    let clock = freshFrameClock(0);
+    clock = noteFrameClock(clock, 1.0, 0, false).clock; // first reading
+
+    let step = noteFrameClock(clock, 1.0, STALL_PLAY_MS, false);
+    expect(step.action).toBe('play');
+    clock = step.clock;
+
+    // play() did nothing; still stalled at the reopen threshold
+    step = noteFrameClock(clock, 1.0, STALL_REOPEN_MS, false);
+    expect(step.action).toBe('reopen');
+    clock = step.clock;
+    expect(clock.reopens).toBe(1);
+    expect(clock.nextReopenAt).toBe(STALL_REOPEN_MS + STALL_REOPEN_MS);
+
+    // before the backoff expires: quiet, not a reopen storm
+    step = noteFrameClock(clock, 1.0, STALL_REOPEN_MS + 100, false);
+    expect(step.action).toBe('none');
+
+    // after it: the second reopen, with a doubled backoff
+    step = noteFrameClock(clock, 1.0, clock.nextReopenAt, false);
+    expect(step.action).toBe('reopen');
+    expect(step.clock.nextReopenAt - clock.nextReopenAt).toBe(2 * STALL_REOPEN_MS);
+  });
+
+  it('caps the reopen backoff', () => {
+    let clock = freshFrameClock(0);
+    clock = noteFrameClock(clock, 1.0, 0, false).clock;
+    clock = noteFrameClock(clock, 1.0, STALL_PLAY_MS, false).clock; // play, spent
+    for (let i = 0; i < 8; i++) {
+      const at = Math.max(clock.nextReopenAt, STALL_REOPEN_MS);
+      const step = noteFrameClock(clock, 1.0, at, false);
+      expect(step.action).toBe('reopen');
+      expect(step.clock.nextReopenAt - at).toBeLessThanOrEqual(STALL_REOPEN_MAX_MS);
+      clock = step.clock;
+    }
+  });
+
+  it('a hidden page is never a stall, and returning starts a fresh grace period', () => {
+    let clock = freshFrameClock(0);
+    clock = noteFrameClock(clock, 1.0, 0, false).clock;
+    // hidden through what would have been a stall
+    let step = noteFrameClock(clock, 1.0, STALL_REOPEN_MS * 2, true);
+    expect(step.action).toBe('none');
+    clock = step.clock;
+    // just visible again: still no action — the grace period restarted
+    step = noteFrameClock(clock, 1.0, STALL_REOPEN_MS * 2 + 100, false);
+    expect(step.action).toBe('none');
+  });
+
+  it('recovery is proven by the clock advancing, which zeroes the backoff', () => {
+    let clock = freshFrameClock(0);
+    clock = noteFrameClock(clock, 1.0, 0, false).clock;
+    clock = noteFrameClock(clock, 1.0, STALL_REOPEN_MS, false).clock; // reopen #1
+    const step = noteFrameClock(clock, 0.1, STALL_REOPEN_MS + 500, false); // new stream
+    expect(step.action).toBe('none');
+    expect(step.clock.reopens).toBe(0);
+    expect(step.clock.nextReopenAt).toBe(0);
+  });
+});

@@ -8,10 +8,12 @@ them is throwing away information it already has in ``square_dist``.
 This module is a pure function from an 8x8x13 distribution to a *placement* that
 satisfies those conditions, reached by relabelling the fewest, lowest-margin
 squares. It is a **decoder, never part of estimation** (DESIGN D1): it does not
-mutate or rewrite ``square_dist``, and it never touches :class:`PositionEvent`.
-The raw distribution stays on the wire exactly as the estimator produced it, so a
-downstream legality smoother cannot double-count this prior. Callers that want
-the repaired board take :attr:`PriorDecode.placement` alongside the event.
+mutate or rewrite ``square_dist`` or ``placement``. The raw distribution stays on
+the wire exactly as the estimator produced it, so a downstream legality smoother
+cannot double-count this prior. The repaired board travels *beside* the raw read
+— HTTP responses carry it as ``result["prior"]``, and the live stream carries
+:meth:`PriorDecode.to_repair` as :attr:`PositionEvent.prior` — always as an
+auxiliary block a consumer may ignore.
 
 Deliberately *only* the hard constraints (:class:`Constraint`). Soft priors — two
 queens are unlikely, bishops sit on opposite colours, castled kings have a rook
@@ -51,6 +53,8 @@ from board_reader_core.protocol import (
     CLASSES,
     GRID,
     NUM_CLASSES,
+    PriorFlip,
+    PriorRepair,
     encode_placement,
     square_name_at,
 )
@@ -189,6 +193,23 @@ class PriorDecode:
             "flips": [f.to_dict() for f in self.flips],
             "residual": self.residual.to_dict(),
         }
+
+    def to_repair(self) -> PriorRepair:
+        """The wire shape (:attr:`PositionEvent.prior`) of this decode."""
+        return PriorRepair(
+            placement=self.placement,
+            flips=tuple(
+                PriorFlip(
+                    square=f.square,
+                    from_class=f.from_class,
+                    to_class=f.to_class,
+                    cost=f.cost,
+                    constraint=f.constraint.value,
+                )
+                for f in self.flips
+            ),
+            residual=self.residual.to_dict(),
+        )
 
 
 #: Flat square index (row 0 = rank 8, col 0 = file a) -> algebraic name. The

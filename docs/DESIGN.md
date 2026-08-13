@@ -726,6 +726,16 @@ Field notes:
   `needs_setup` = camera repositioned, orientation reference invalidated, awaiting
   operator re-setup (see §4.4.1). Note: **no `illegal`** — legality is not ours to
   judge; an illegal-looking placement is reported as `ok`.
+- `prior` (optional) = the hard-constraint decoder's repair of this read, served
+  **beside** the raw fields, never instead of them:
+  `{"placement": <nearest possible board>, "flips": [{"square","from","to","cost","constraint"}], "residual": {<constraint>: <excess>}}`.
+  The four constraints are necessary conditions on the piece multiset (≤1 king
+  per side, ≤16 pieces, promotion budget, no back-rank pawns when the frame is
+  established) — **not** legality, which stays the consumer's. `placement` and
+  `square_dist` above remain exactly what the estimator produced, so a
+  downstream smoother that runs its own priors over the raw distribution simply
+  ignores this block and can never double-count it. Displays that must not show
+  an impossible board (the viewer, `/camera`) draw `prior.placement`.
 
 The application layer (a consumer) is responsible for turning this stream into
 moves, full FENs, legality decisions, and PGN.

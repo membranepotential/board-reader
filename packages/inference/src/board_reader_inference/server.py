@@ -22,6 +22,7 @@ import contextlib
 import datetime
 import itertools
 import json
+import logging
 import os
 import time
 from pathlib import Path
@@ -58,6 +59,8 @@ from board_reader_inference.trained import (
     TrainedEstimator,
     TrainedReader,
 )
+
+log = logging.getLogger(__name__)
 
 
 def _parse_corners(spec: str) -> np.ndarray:
@@ -350,7 +353,25 @@ def create_app(
     # including out of the §4.6 uncalibrated state, where the route is
     # ``Uncalibrated`` and the worker skips the frame instead of publishing the
     # stub's fabricated placement.
-    ingest_ = FrameIngest(session.route, hub_)
+    def _record_published(event, frame) -> None:
+        """One compact line per published event into the session's events.ndjson.
+
+        ``square_dist`` is stripped — replaying ``frames.ndjson`` through the same
+        estimator reproduces it, and at burst rate it is ~25 kB per line. The
+        frame's own ``seq`` and ``capture_ts`` ride along so an event can be
+        joined back to the exact recorded frame it was estimated from.
+        """
+        if recorder is None or not recorder.active:
+            return
+        line = event.to_dict()
+        line.pop("square_dist", None)
+        line["frame_seq"] = frame.seq
+        line["capture_ts"] = frame.capture_ts
+        line["published_ts"] = time.time()
+        if not recorder.record_event(line):
+            print(f"frame recording stopped: {recorder.stopped_reason}")
+
+    ingest_ = FrameIngest(session.route, hub_, on_event=_record_published)
     # Latest-wins raw-frame retention, one entry per board, in-memory only (no
     # disk write, unbounded board count — mirrors the hub's own retention). This
     # is what ``GET /boards/{id}/frame`` serves for the live video-like preview;
@@ -422,6 +443,7 @@ def create_app(
                 "dropped": ingest_.frames_dropped,
                 "failed": ingest_.frames_failed,
                 "skipped": ingest_.frames_skipped,
+                "refused": ingest_.frames_refused,
             },
         }
         if recorder is not None:
@@ -616,8 +638,6 @@ def create_app(
             return JSONResponse(result)
 
         event = auto.reread(route.frame, route.corners)
-        await hub_.publish(event)
-        result = event.to_dict()
         # This branch answers with real piece types, so it gets the same repair as
         # the calibrated path. (The occupancy-only branch above does not: with no
         # piece identity and no colour there is nothing the constraints can read.)
@@ -626,8 +646,15 @@ def create_app(
         # heuristic — but a start position has no pawn on rank 1/8 by
         # construction, so the one frame-dependent constraint could never fire.
         # Passing it would add an untestable convention for zero gain.
+        #
+        # Attached BEFORE the publish: the hub's subscribers (the live page, the
+        # /camera panel) draw ``prior.placement``, and an event published bare
+        # would put an impossible board on exactly the surface the repair exists
+        # for. ``result`` then inherits it through ``to_dict``.
         repair = _prior_decode(event)
-        result["prior"] = repair.to_dict()
+        event.prior = repair.to_repair()
+        await hub_.publish(event)
+        result = event.to_dict()
         result["autocalibrated"] = {
             "matches": auto.matches,
             "rotation": auto.rotation,
@@ -719,10 +746,13 @@ def create_app(
                     orientation=event.orientation,
                 )
                 rotated_deg = k * 90
+        # Repair attached before the publish — the hub's subscribers draw
+        # ``prior.placement``, so publishing bare would show an impossible board
+        # on the one surface the repair exists for. ``result`` inherits it.
+        repair = _prior_decode(event)
+        event.prior = repair.to_repair()
         await hub_.publish(event)
         result = event.to_dict()
-        repair = _prior_decode(event)
-        result["prior"] = repair.to_dict()
         if autocal is not None:
             result["autocalibrated"] = {
                 "matches": autocal.matches,
@@ -1044,6 +1074,7 @@ def create_app(
         """
         await ws.accept()
         boards: set[str] = set()
+        warned_refusals: set[str] = set()
         try:
             while True:
                 raw = await ws.receive_text()
@@ -1055,7 +1086,17 @@ def create_app(
                     # One bad frame (malformed corners, truncated JPEG, missing
                     # header field) must not kill the whole stream: a browser
                     # edge would reconnect-loop forever on its own bug. Refuse
-                    # the frame in the ack slot and keep the socket.
+                    # the frame in the ack slot and keep the socket. Counted, and
+                    # logged once per distinct reason per connection — a stream
+                    # whose every frame is refused must not be indistinguishable
+                    # from one that never sent (the reason only ever reached the
+                    # phone's banner), but a 12 fps header bug must not bury the
+                    # read lines under 43k identical warnings an hour either.
+                    ingest_.frames_refused += 1
+                    reason = str(e)
+                    if reason not in warned_refusals:
+                        warned_refusals.add(reason)
+                        log.warning("refused ingest frame: %s", reason)
                     await ws.send_json({"error": f"bad frame: {e}"})
                     continue
                 boards.add(frame.board_id)
@@ -1089,5 +1130,10 @@ def create_app(
     return app
 
 
-# Module-level app for ``uvicorn board_reader_inference.server:app``.
-app = create_app()
+# Deliberately NO module-level ``app = create_app()``. The package imports this
+# module (``__init__`` re-exports create_app), so a module-level app would be
+# built at *import* time — before the CLI has set ``BR_RECORD_DIR``/
+# ``BR_CENTROIDS`` — and ``serve`` would then run a server whose recording and
+# estimator silently ignore its own flags. That is not hypothetical: it shipped,
+# and every ``make dev`` trial ran unrecorded. Serve with
+# ``uvicorn board_reader_inference.server:create_app --factory`` instead.

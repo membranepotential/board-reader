@@ -254,3 +254,55 @@ def test_the_viewer_imports_no_board_reader_package():
         text = module.read_text(encoding="utf-8")
         for forbidden in ("board_reader_core", "board_reader_edge", "board_reader_inference"):
             assert forbidden not in text, f"{module.name}: {forbidden}"
+
+
+# ----------------------------------------------------------------- client trial log
+def test_client_log_is_viewer_local_and_appends_ndjson(tmp_path, monkeypatch):
+    """The phone's trial notes land on the viewer's OWN disk — the /api catch-all
+    must not relay this one to the node, whose logs are about what *arrived*."""
+    import json
+
+    monkeypatch.setenv("BR_CLIENT_LOG_DIR", str(tmp_path / "logs"))
+    client = TestClient(create_app())
+    reply = client.post(
+        "/api/client-log",
+        json={"notes": [{"t": 1, "kind": "camera-stall-reopen"}, {"t": 2, "kind": "pagehide"}]},
+    )
+    assert reply.json() == {"kept": 2}
+
+    (log_file,) = list((tmp_path / "logs").iterdir())
+    lines = [json.loads(line) for line in log_file.read_text().splitlines()]
+    assert [line["kind"] for line in lines] == ["camera-stall-reopen", "pagehide"]
+    assert all("received_ts" in line and "client" in line for line in lines)
+
+
+def test_client_log_without_a_dir_accepts_and_drops(monkeypatch):
+    """Unset (the test/default-app state) -> 200 and nothing written anywhere:
+    the page must never see an error for logging, and a test app never writes."""
+    monkeypatch.delenv("BR_CLIENT_LOG_DIR", raising=False)
+    client = TestClient(create_app())
+    assert client.post("/api/client-log", json={"notes": [{"t": 1, "kind": "x"}]}).json() == {
+        "kept": 0
+    }
+
+
+def test_client_log_rejects_garbage_without_erroring(tmp_path, monkeypatch):
+    monkeypatch.setenv("BR_CLIENT_LOG_DIR", str(tmp_path / "logs"))
+    client = TestClient(create_app())
+    assert client.post("/api/client-log", content=b"not json").json() == {"kept": 0}
+    assert client.post("/api/client-log", json={"notes": "nope"}).json() == {"kept": 0}
+    assert not (tmp_path / "logs").exists()
+
+
+def test_client_log_bounds_the_batch_and_the_body(tmp_path, monkeypatch):
+    """LAN-reachable sink: an oversized body is dropped whole, an oversized
+    batch is truncated — nothing here may buffer or write without a ceiling."""
+    monkeypatch.setenv("BR_CLIENT_LOG_DIR", str(tmp_path / "logs"))
+    client = TestClient(create_app())
+
+    huge = {"notes": [{"t": 1, "kind": "x", "pad": "y" * 200_000}]}
+    assert client.post("/api/client-log", json=huge).json() == {"kept": 0}
+    assert not (tmp_path / "logs").exists()
+
+    many = {"notes": [{"t": i, "kind": "tick"} for i in range(600)]}
+    assert client.post("/api/client-log", json=many).json() == {"kept": 500}

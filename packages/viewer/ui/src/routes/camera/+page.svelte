@@ -52,6 +52,7 @@
   } from '$lib/edge/motion';
   import { IngestClient, type IngestStatus } from '$lib/edge/ingest';
   import { tenengrad } from '$lib/edge/sharpness';
+  import { TrialLog } from '$lib/edge/triallog';
   import { EMPTY_PLACEMENT, type CornerQuad, type Point } from '$lib/protocol';
   import { PositionStream } from '$lib/stores/positions.svelte';
 
@@ -86,9 +87,11 @@
     calibrateBlockReason,
     cornerKey,
     denormaliseQuad,
+    freshFrameClock,
     hintFor,
     isFramed,
     normaliseQuad,
+    noteFrameClock,
     noteTracking,
     parseStoredFraming,
     parseStoredPanel,
@@ -152,11 +155,15 @@
   const meter = new MotionMeter();
   const forwarder = new AdaptiveForwarder(meter);
   const positions = new PositionStream();
+  // The phone's half of a trial's story — every lifecycle event worth a
+  // post-mortem goes through `trial.note`, batched to the viewer's log sink.
+  const trial = new TrialLog();
   let lastRefusal: string | null = null;
   const ingest = new IngestClient({
     onStatus: (status, detail) => {
       connStatus = status;
       connDetail = detail;
+      trial.note('ingest-status', { status, detail });
     },
     onAck: () => {
       ackedSeq = ingest.acked;
@@ -167,6 +174,7 @@
     onFrameRefused: (reason) => {
       if (reason === lastRefusal) return;
       lastRefusal = reason;
+      trial.note('frame-refused', { reason });
       setBanner('warn', `the node refused a frame: ${reason}`);
     }
   });
@@ -186,6 +194,8 @@
 
   /** The frame size the current corners are expressed against — see `onVideoResize`. */
   let lastFrame: FrameSize | null = null;
+  /** The stall watchdog's whole memory — see `state.ts`, "camera stall watchdog". */
+  let frameClock = freshFrameClock(0);
   let encoding = false;
   let lastCornerSave = 0;
   let stamps: number[] = [];
@@ -207,14 +217,22 @@
 
   const board = $derived(positions.board(boardId));
   const placement = $derived(board === undefined ? EMPTY_PLACEMENT : gridToFen(board.grid));
+  // Yellow: low confidence. Red: the prior decoder relabelled this square to make
+  // the board possible — the drawn piece is the repair, not the raw read.
   const shapes = $derived<DrawShape[]>(
-    board === undefined ? [] : board.low.map((square) => ({ orig: square, brush: 'yellow' }))
+    board === undefined
+      ? []
+      : [
+          ...board.low.map((square): DrawShape => ({ orig: square, brush: 'yellow' })),
+          ...board.flipped.map((square): DrawShape => ({ orig: square, brush: 'red' }))
+        ]
   );
   const panelStatus = $derived.by(() => {
     if (board === undefined) return 'waiting…';
     const confidence = board.event.confidence;
     const suffix = confidence === null ? '' : ` · confidence ${confidence.toFixed(2)}`;
-    return `${board.event.status} · seq ${board.event.seq}${suffix}`;
+    const repaired = board.flipped.length === 0 ? '' : ` · repaired ${board.flipped.length}`;
+    return `${board.event.status} · seq ${board.event.seq}${suffix}${repaired}`;
   });
 
   // ---- little helpers -----------------------------------------------------------
@@ -377,6 +395,7 @@
     const frame = camera.frame;
     const captureTs = Date.now() / 1000;
 
+    watchFrameClock();
     trackFrame(frame);
 
     const thumbnail = grabThumbnail();
@@ -465,6 +484,70 @@
     droppedCount = ingest.dropped;
   }
 
+  // ---- camera stall recovery ------------------------------------------------------
+  // A phone camera dies quietly: iOS mutes the track when the page is backgrounded
+  // or the camera is taken by another app, and sometimes never revives it — the
+  // preview then shows one frame forever while the loop streams it. Three layers,
+  // all funnelling into `recoverCamera`: track events (the polite notification),
+  // the visibility/pageshow handlers (the common cause), and the `video.currentTime`
+  // watchdog (the backstop that needs no notification at all).
+
+  function watchFrameClock(): void {
+    if (video === undefined) return;
+    // A calibration burst owns the camera; yanking the stream out from under it
+    // would pair its frames with a dead device. The stall outlives the burst, so
+    // the watchdog simply fires afterwards.
+    if (activity.kind === 'calibrating') return;
+    const { clock, action } = noteFrameClock(
+      frameClock,
+      video.currentTime,
+      performance.now(),
+      document.hidden
+    );
+    frameClock = clock;
+    if (action === 'play') {
+      trial.note('camera-stall-play');
+      void video.play().catch(() => {});
+    } else if (action === 'reopen') {
+      trial.note('camera-stall-reopen', { attempt: clock.reopens });
+      setBanner('warn', 'The camera stalled — restarting it…');
+      void recoverCamera();
+    }
+  }
+
+  /**
+   * Reopen the same lens if it is still there, any camera if not. The framing is
+   * untouched — corners belong to the board, and `onLoadedMetadata` restores them
+   * for the incoming stream.
+   *
+   * One recovery at a time: the case being recovered from is exactly the one
+   * where `getUserMedia` can block past the watchdog's next firing (a contended
+   * device), and two interleaved recoveries end with one stream assigned and the
+   * other's tracks never stopped — a camera held claimed for the session.
+   */
+  let recovering = false;
+  async function recoverCamera(): Promise<void> {
+    if (recovering) return;
+    if (camera.kind !== 'live') return; // blocked/idle: `startCamera` owns bring-up
+    recovering = true;
+    try {
+      await openCamera(currentDeviceId());
+      trial.note('camera-recovered');
+    } catch {
+      try {
+        await openCamera(null);
+        trial.note('camera-recovered', { lens: 'fallback' });
+      } catch (cause) {
+        trial.note('camera-recover-failed', {
+          name: cause instanceof Error ? cause.name : String(cause)
+        });
+        setBanner('err', 'The camera did not come back — reload the page or check the lens.');
+      }
+    } finally {
+      recovering = false;
+    }
+  }
+
   // ---- streaming ----------------------------------------------------------------
 
   async function acquireWakeLock(): Promise<void> {
@@ -485,6 +568,7 @@
       streaming = false;
       ingest.stop();
       releaseWakeLock();
+      trial.note('streaming-off', { sent: ingest.sent, acked: ingest.acked, dropped: ingest.dropped });
       return;
     }
     streaming = true;
@@ -492,6 +576,7 @@
     stamps = [];
     ingest.start();
     void acquireWakeLock();
+    trial.note('streaming-on');
   }
 
   // ---- detect -------------------------------------------------------------------
@@ -707,6 +792,7 @@
 
       const result = await postCalibrate(jpeg, { corners: shot.corners });
       if (!result.ok) {
+        trial.note('calibrate-refused', { status: result.error.status, message: result.error.message });
         // The node refuses calibrations that would poison the bank (the frame not
         // showing the claimed position); surface its reason verbatim.
         setBanner(
@@ -720,6 +806,11 @@
 
       const reply = result.value;
       calibrations++;
+      trial.note('calibrated', {
+        classes: reply.classes_calibrated,
+        exemplars: reply.exemplars,
+        label_rotation: reply.label_rotation
+      });
       let text =
         `Calibrated ${reply.classes_calibrated}/13 classes — ` +
         `bank now holds ${reply.exemplars} exemplars`;
@@ -850,7 +941,22 @@
     stream = null;
   }
 
-  async function openCamera(deviceId: string | null): Promise<void> {
+  /**
+   * All camera opens go through one queue. `openCameraNow` stops the outgoing
+   * tracks and then AWAITS `getUserMedia`; two of these interleaved (a lens
+   * switch racing the stall watchdog, say) would each stop what the other was
+   * mid-way through starting, and the loser's stream — assigned last or never —
+   * keeps its tracks live with nothing pointing at them: a camera held claimed
+   * for the rest of the session.
+   */
+  let cameraOpen: Promise<void> = Promise.resolve();
+  function openCamera(deviceId: string | null): Promise<void> {
+    const next = cameraOpen.then(() => openCameraNow(deviceId));
+    cameraOpen = next.catch(() => {}); // a refused lens must not wedge the queue
+    return next;
+  }
+
+  async function openCameraNow(deviceId: string | null): Promise<void> {
     stopTracks();
     // Forget the old frame size, so the incoming one reads as a first sighting
     // rather than as the phone having been rotated mid-stream.
@@ -869,6 +975,25 @@
       audio: false
     });
     stream = next;
+    // The track tells us when it dies — listen, but only while it is the CURRENT
+    // stream: a replaced lens's tracks end too, and that ending is history.
+    const track = next.getVideoTracks()[0];
+    track?.addEventListener('ended', () => {
+      if (stream !== next) return;
+      trial.note('camera-track-ended');
+      setBanner('warn', 'The camera stopped — restarting it…');
+      void recoverCamera();
+    });
+    // iOS mutes the track when the page loses the camera (backgrounding, a call).
+    // Noted for the trial log; recovery waits for `unmute`/visibility/the watchdog.
+    track?.addEventListener('mute', () => {
+      if (stream === next) trial.note('camera-track-mute');
+    });
+    track?.addEventListener('unmute', () => {
+      if (stream !== next) return;
+      trial.note('camera-track-unmute');
+      void video?.play().catch(() => {});
+    });
     if (video !== undefined) {
       video.srcObject = next;
       await video.play().catch(() => {}); // autoplay policy: muted+playsinline is enough
@@ -922,14 +1047,10 @@
     try {
       await openCamera(null);
     } catch (cause) {
-      camera = {
-        kind: 'blocked',
-        reason: {
-          kind: 'refused',
-          name: cause instanceof Error ? cause.name : 'Error',
-          detail: cause instanceof Error ? cause.message : String(cause)
-        }
-      };
+      const name = cause instanceof Error ? cause.name : 'Error';
+      const detail = cause instanceof Error ? cause.message : String(cause);
+      trial.note('camera-blocked', { name, detail });
+      camera = { kind: 'blocked', reason: { kind: 'refused', name, detail } };
       return;
     }
     // Labels only exist once permission has been granted, so the remembered lens
@@ -956,6 +1077,7 @@
     if (video === undefined) return;
     const frame: FrameSize = { width: video.videoWidth, height: video.videoHeight };
     if (frame.width === 0 || frame.height === 0) return;
+    trial.note('camera-live', { frame });
     lastFrame = frame;
     camera = {
       kind: 'live',
@@ -992,6 +1114,7 @@
     lastFrame = frame;
     if (camera.kind !== 'live') return;
     if (previous !== null) {
+      trial.note('frame-resized', { from: previous, to: frame });
       camera = {
         ...camera,
         frame,
@@ -1025,6 +1148,8 @@
 
     positions.start(TICK_MS);
     statusTimer = setInterval(paintStatus, TICK_MS);
+    trial.start();
+    trial.note('page-open', { ua: navigator.userAgent });
     void startCamera();
 
     return () => {
@@ -1035,17 +1160,47 @@
       ingest.stop();
       releaseWakeLock();
       stopTracks();
+      trial.stop();
     };
   });
 
   /**
-   * A screen lock is released for us when the page is hidden, so coming back needs
-   * a fresh one — otherwise the phone dims out halfway through a game.
+   * Coming back from the background is the common way a phone camera dies: the
+   * screen lock is gone (reacquire it), the video element may be paused (play is
+   * free), and on iOS the track may have been ended outright (reopen). The mere
+   * `mute` case is left to `unmute`/the watchdog — muted-while-hidden is normal.
    */
   function onVisibilityChange(): void {
-    if (document.visibilityState === 'visible' && streaming && wakeLock === null) {
-      void acquireWakeLock();
+    trial.note('visibility', { state: document.visibilityState });
+    if (document.visibilityState !== 'visible') return;
+    // The watchdog restarts its grace period HERE, not in the loop: iOS suspends
+    // `setInterval` outright while backgrounded, so the loop's own hidden-reset
+    // may never have run — the first ticks after return would then read a 30 s
+    // "stall" and escalate straight to a reopen before `play()` had a chance.
+    frameClock = freshFrameClock(performance.now());
+    if (streaming && wakeLock === null) void acquireWakeLock();
+    if (camera.kind !== 'live') return;
+    const track = stream?.getVideoTracks()[0];
+    if (track === undefined || track.readyState === 'ended') {
+      trial.note('camera-dead-on-return');
+      void recoverCamera();
+    } else {
+      void video?.play().catch(() => {});
     }
+  }
+
+  /** A bfcache restore resurrects the page with every stream in it dead. */
+  function onPageShow(event: PageTransitionEvent): void {
+    if (!event.persisted) return;
+    trial.note('bfcache-restore');
+    frameClock = freshFrameClock(performance.now());
+    void recoverCamera();
+  }
+
+  /** The most interesting notes are the ones just before the page dies. */
+  function onPageHide(): void {
+    trial.note('pagehide');
+    trial.flushBeacon();
   }
 </script>
 
@@ -1059,6 +1214,7 @@
 </svelte:head>
 
 <svelte:document onvisibilitychange={onVisibilityChange} ondragstart={(e) => e.preventDefault()} />
+<svelte:window onpageshow={onPageShow} onpagehide={onPageHide} />
 
 {#snippet chrome()}
   <!-- Everything the page has to SAY lives down here, in one stack. The top of the

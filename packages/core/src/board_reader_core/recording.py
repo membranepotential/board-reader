@@ -42,6 +42,11 @@ FORMAT = 1
 
 MANIFEST_NAME = "manifest.json"
 INDEX_NAME = "frames.ndjson"
+#: Published position events (one JSON line each, ``square_dist`` stripped by the
+#: writer — the distribution is reproducible by replaying ``frames.ndjson``
+#: through the same estimator, and at burst rate it would dominate the session's
+#: size). The *outputs* of a run, beside the inputs that produced them.
+EVENTS_NAME = "events.ndjson"
 JPEG_DIR = "jpeg"
 
 # JPEGs are sharded this many per subdirectory. A three-hour burst-heavy session
@@ -132,8 +137,10 @@ class FrameRecorder:
         self.max_bytes = max_bytes
         self.frames_written = 0
         self.bytes_written = 0
+        self.events_written = 0
         self.stopped_reason: str | None = None
         self._index = None  # opened on the first frame
+        self._events = None  # opened on the first event
 
     @property
     def active(self) -> bool:
@@ -172,16 +179,41 @@ class FrameRecorder:
             self.stop(f"max_bytes reached ({self.max_bytes} B)")
         return True
 
+    def record_event(self, line: dict) -> bool:
+        """Append one published position event. Returns whether it was written.
+
+        Same crash-safety contract as :meth:`record` (flushed per line) and the
+        same failure semantics: an ``OSError`` stops the whole recorder, because
+        a session with silently-partial outputs would be mistaken for one where
+        the estimator went quiet.
+        """
+        if self.stopped_reason is not None:
+            return False
+        try:
+            if self._index is None and self._events is None:
+                self._open()
+            if self._events is None:
+                self._events = (self.path / EVENTS_NAME).open("a", encoding="utf-8")
+            self._events.write(json.dumps(line) + "\n")
+            self._events.flush()
+        except OSError as e:
+            self.stop(f"{type(e).__name__}: {e}")
+            return False
+        self.events_written += 1
+        return True
+
     def stop(self, reason: str = "closed") -> None:
         """Stop recording. Idempotent; keeps the first reason."""
         if self.stopped_reason is None:
             self.stopped_reason = reason
-        if self._index is not None:
-            try:
-                self._index.close()
-            except OSError:
-                pass
-            self._index = None
+        for handle in (self._index, self._events):
+            if handle is not None:
+                try:
+                    handle.close()
+                except OSError:
+                    pass
+        self._index = None
+        self._events = None
 
     close = stop
 
@@ -191,6 +223,7 @@ class FrameRecorder:
             "path": str(self.path),
             "session_id": self.session_id,
             "frames": self.frames_written,
+            "events": self.events_written,
             "bytes": self.bytes_written,
             "active": self.active,
             "stopped_reason": self.stopped_reason,

@@ -36,22 +36,45 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import time
 from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass
 
+from board_reader_core.protocol import PositionEvent
 from board_reader_core.wire import Frame
 
 from board_reader_inference.hub import PositionHub
+from board_reader_inference.prior import decode
 from board_reader_inference.routing import Route, Uncalibrated
 
 log = logging.getLogger(__name__)
+
+
+def _read_with_prior(route: Route) -> PositionEvent:
+    """One estimate plus its hard-constraint repair, both off the event loop.
+
+    The repair rides the event as :attr:`PositionEvent.prior` (raw ``placement``
+    and ``square_dist`` untouched), so every consumer of the stream — the viewer,
+    ``GET /boards/{id}``, a recording — sees the same repaired board the HTTP
+    endpoints already serve beside their reads. ``quarter_turns`` is deliberately
+    not passed: the stream's orientation is operator-claimed, not established,
+    and a guessed frame makes the back-rank constraint circular (see
+    :mod:`.prior`).
+    """
+    event = route.read()
+    event.prior = decode(event.square_dist).to_repair()
+    return event
 
 
 @dataclass(frozen=True, slots=True)
 class _BoardWorker:
     """Per-board ingress state: the latest-wins inbox and the task draining it."""
 
-    inbox: asyncio.Queue[Frame]  # maxsize=1 — the pre-filter (G1)
+    #: maxsize=1 — the pre-filter (G1). Each entry is (frame, received_ts): the
+    #: gateway's own clock at submit, because the frame's ``capture_ts`` is the
+    #: *edge's* clock (a phone seconds off NTP is normal) and subtracting one
+    #: from the other says nothing about how far behind this node runs.
+    inbox: asyncio.Queue[tuple[Frame, float]]
     idle: asyncio.Event  # set while the inbox is empty and nothing is in flight
     task: asyncio.Task[None]
 
@@ -71,9 +94,18 @@ class FrameIngest:
     stream comes alive mid-flight.
     """
 
-    def __init__(self, route: Callable[[Frame], Route], hub: PositionHub) -> None:
+    def __init__(
+        self,
+        route: Callable[[Frame], Route],
+        hub: PositionHub,
+        *,
+        on_event: Callable[[PositionEvent, Frame], None] | None = None,
+    ) -> None:
         self._route = route
         self._hub = hub
+        #: Called (on the event loop) for every published event, with the frame it
+        #: was estimated from — the gateway hangs its trial log off this.
+        self._on_event = on_event
         self._boards: dict[str, _BoardWorker] = {}
         self._warned_unready = False
         self.frames_received = 0
@@ -81,6 +113,11 @@ class FrameIngest:
         self.frames_dropped = 0
         self.frames_failed = 0
         self.frames_skipped = 0  # arrived while no estimator was ready
+        #: Incremented by the gateway's ``/ingest`` handler for frames refused at
+        #: the wire (malformed header, truncated JPEG) — they never reach
+        #: :meth:`submit`, but a stream that is *all* refusals must not be
+        #: indistinguishable from one that never sent.
+        self.frames_refused = 0
 
     def submit(self, frame: Frame) -> None:
         """Hand ``frame`` to its board's worker and return immediately.
@@ -96,13 +133,14 @@ class FrameIngest:
             worker = self._spawn(frame.board_id)
             self._boards[frame.board_id] = worker
         worker.idle.clear()
+        entry = (frame, time.time())
         try:
-            worker.inbox.put_nowait(frame)
+            worker.inbox.put_nowait(entry)
         except asyncio.QueueFull:
             # No await since the put, so the queue is still full and this cannot miss.
             worker.inbox.get_nowait()
             self.frames_dropped += 1
-            worker.inbox.put_nowait(frame)
+            worker.inbox.put_nowait(entry)
 
     async def drain(self, *board_ids: str) -> None:
         """Wait until the named boards (default: all) have nothing left to estimate.
@@ -137,7 +175,7 @@ class FrameIngest:
         await self.close()
 
     def _spawn(self, board_id: str) -> _BoardWorker:
-        inbox: asyncio.Queue[Frame] = asyncio.Queue(maxsize=1)
+        inbox: asyncio.Queue[tuple[Frame, float]] = asyncio.Queue(maxsize=1)
         idle = asyncio.Event()
         idle.set()
         task = asyncio.create_task(
@@ -146,12 +184,15 @@ class FrameIngest:
         return _BoardWorker(inbox=inbox, idle=idle, task=task)
 
     async def _run(
-        self, board_id: str, inbox: asyncio.Queue[Frame], idle: asyncio.Event
+        self,
+        board_id: str,
+        inbox: asyncio.Queue[tuple[Frame, float]],
+        idle: asyncio.Event,
     ) -> None:
         """Estimate whatever is in the inbox, forever, one frame at a time."""
         try:
             while True:
-                frame = await inbox.get()
+                frame, received = await inbox.get()
                 try:
                     route = self._route(frame)
                     if isinstance(route, Uncalibrated):
@@ -163,7 +204,7 @@ class FrameIngest:
                                 " skipping until a calibration lands", board_id,
                             )
                         continue
-                    event = await asyncio.to_thread(route.read)
+                    event = await asyncio.to_thread(_read_with_prior, route)
                 except asyncio.CancelledError:
                     raise
                 except Exception:
@@ -174,9 +215,63 @@ class FrameIngest:
                     )
                 else:
                     self.frames_estimated += 1
+                    previous = self._hub.latest(board_id)
                     await self._hub.publish(event)
+                    # Observers only, and guarded as such: a logging or recording
+                    # failure must not take the board's worker down with it.
+                    try:
+                        self._log_read(event, frame, previous, received)
+                        if self._on_event is not None:
+                            self._on_event(event, frame)
+                    except Exception:
+                        log.exception(
+                            "post-publish observer failed (board %s, seq %d)",
+                            board_id,
+                            frame.seq,
+                        )
                 finally:
                     if inbox.empty():
                         idle.set()
         finally:
             idle.set()  # a stopped worker is never busy — never strand a drain()
+
+    def _log_read(
+        self,
+        event: PositionEvent,
+        frame: Frame,
+        previous: PositionEvent | None,
+        received: float,
+    ) -> None:
+        """One line per published read — INFO when the board changed, DEBUG otherwise.
+
+        This is the trial log an operator tails: which placement the stream
+        settled on, how long this node took, and what the prior decoder had to
+        repair. ``proc`` is receive→publish on this node's own clock — never
+        capture→publish, which subtracts the *edge's* clock (a phone off NTP)
+        from ours and would print nonsense in the one log meant to diagnose lag.
+        "Changed" is judged on the *repaired* placement, because that is what a
+        viewer displays; a raw argmax flickering between impossible boards that
+        repair to the same position is a DEBUG detail, not news.
+        """
+        repaired = event.prior.placement if event.prior else event.placement
+        before = (
+            (previous.prior.placement if previous.prior else previous.placement)
+            if previous
+            else None
+        )
+        changed = repaired != before
+        flips = event.prior.flips if event.prior else ()
+        residual = event.prior.residual if event.prior else {}
+        log.log(
+            logging.INFO if changed else logging.DEBUG,
+            "read %s seq=%d conf=%.3f proc=%.2fs %s%s%s",
+            event.board_id,
+            frame.seq,
+            event.confidence,
+            time.time() - received,
+            repaired,
+            "".join(
+                f" [{f.square} {f.from_class}->{f.to_class}]" for f in flips
+            ),
+            f" residual={residual}" if residual else "",
+        )

@@ -224,3 +224,31 @@ def test_jpegs_are_sharded_so_a_long_session_stays_navigable(tmp_path):
     index = (tmp_path / "s1" / INDEX_NAME).read_text().splitlines()
     paths = [json.loads(line)["jpeg"] for line in index]
     assert paths == ["jpeg/0000/000000.jpg", "jpeg/0000/000001.jpg", "jpeg/0000/000002.jpg"]
+
+
+def test_events_land_beside_the_frames_they_came_from(tmp_path):
+    """Published events are the OUTPUTS of a run; they belong in the session dir,
+    one JSON line each, flushed like the index so a crash loses at most one."""
+    from board_reader_core.recording import EVENTS_NAME
+
+    rec = FrameRecorder(tmp_path, session_id="s", writer="test")
+    _record(rec, _frame(0))
+    assert rec.record_event({"board_id": "A1", "seq": 0, "placement": "8/8/8/8/8/8/8/8"})
+    assert rec.record_event({"board_id": "A1", "seq": 1, "placement": "8/8/8/8/8/8/8/8"})
+
+    lines = (tmp_path / "s" / EVENTS_NAME).read_text().splitlines()
+    assert [json.loads(line)["seq"] for line in lines] == [0, 1]
+    assert rec.stats()["events"] == 2
+    rec.close()
+    assert not rec.record_event({"seq": 2})  # a closed recorder refuses, quietly
+
+
+def test_an_event_before_any_frame_still_opens_the_session(tmp_path):
+    """A stream can publish its first event while frame 0 is still being written."""
+    from board_reader_core.recording import EVENTS_NAME, MANIFEST_NAME
+
+    rec = FrameRecorder(tmp_path, session_id="s", writer="test")
+    assert rec.record_event({"seq": 0})
+    assert (tmp_path / "s" / MANIFEST_NAME).exists()
+    assert (tmp_path / "s" / EVENTS_NAME).exists()
+    rec.close()

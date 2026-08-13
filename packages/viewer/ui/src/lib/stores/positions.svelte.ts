@@ -28,14 +28,32 @@ import {
 
 export type ConnectionState = 'connecting' | 'live' | 'disconnected';
 
+/**
+ * The prior's flip squares, kept only when they name real squares — the wire is
+ * untrusted, and a stray string must not reach chessground as a shape origin.
+ */
+function flippedSquares(event: PositionEvent): SquareKey[] {
+  if (event.prior === null) return [];
+  return event.prior.flips
+    .map((flip) => flip.square)
+    .filter((square): square is SquareKey => /^[a-h][1-8]$/.test(square));
+}
+
 /** Everything one card knows about its board. Replaced wholesale on every event. */
 export interface BoardState {
   readonly id: string;
   readonly event: PositionEvent;
-  /** The sanitized 8×8 — what the board is drawn from, never the raw string. */
+  /**
+   * The sanitized 8×8 — what the board is drawn from, never the raw string.
+   * From the node's prior-repaired placement when the event carries one: the raw
+   * argmax can spell an impossible board (two kings), and a board that cannot
+   * exist must not be what the operator stares at.
+   */
   readonly grid: BoardGrid;
   /** Squares currently under `LOW_CONFIDENCE`. */
   readonly low: readonly SquareKey[];
+  /** Squares the prior decoder relabelled to make the board possible. */
+  readonly flipped: readonly SquareKey[];
   /** Square → when it last changed, for the fading ring. The only history kept. */
   readonly changedAt: Readonly<Partial<Record<SquareKey, number>>>;
   /** Arrival, not `event.utc`: this is stream freshness, not sensor time. */
@@ -155,7 +173,7 @@ export class PositionStream {
     this.#now = now;
 
     const previous = this.#boards[event.board_id];
-    const grid = fenToGrid(event.placement);
+    const grid = fenToGrid(event.prior?.placement ?? event.placement);
     // Diffed against the previous GRID, which is this store's whole memory of the
     // past — see the module note on DESIGN D1.
     const changed = changedSquares(previous?.grid ?? null, grid);
@@ -170,6 +188,7 @@ export class PositionStream {
       event,
       grid,
       low: lowConfidenceSquares(event.square_dist, LOW_CONFIDENCE),
+      flipped: flippedSquares(event),
       changedAt,
       lastAt: now,
       stamps: [...withinWindow(previous?.stamps ?? [], now), now]

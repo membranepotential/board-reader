@@ -53,6 +53,27 @@ describe('parsePositionEvent', () => {
     expect(parsed.ok).toBe(true);
   });
 
+  it('carries the prior repair when the event has one, and null when not', () => {
+    const bare = parsePositionEvent(validEvent);
+    expect(bare.ok && bare.value.prior).toBeNull();
+
+    const parsed = parsePositionEvent({
+      ...validEvent,
+      prior: {
+        placement: '8/8/8/8/8/8/8/8',
+        flips: [{ square: 'e8', from: 'k', to: 'q', cost: 0.74, constraint: 'kings' }],
+        residual: { kings: 1 }
+      }
+    });
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+    expect(parsed.value.prior?.placement).toBe('8/8/8/8/8/8/8/8');
+    expect(parsed.value.prior?.flips[0]).toEqual({
+      square: 'e8', from: 'k', to: 'q', cost: 0.74, constraint: 'kings'
+    });
+    expect(parsed.value.prior?.residual).toEqual({ kings: 1 });
+  });
+
   it.each(['board_id', 'seq', 'utc', 'placement'])('refuses an event missing %s', (field) => {
     const broken: Record<string, unknown> = { ...validEvent };
     delete broken[field];

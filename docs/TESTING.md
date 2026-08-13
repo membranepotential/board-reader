@@ -804,6 +804,21 @@ barrel distortion near the frame edges — the four-corner quad is a projective 
 and fits the board progressively less well out there, so keep the board near the
 middle. Re-check the corners after switching: the frame size changes with the lens.
 
+**Camera stall recovery.** Phone cameras die quietly (backgrounding, a call,
+another app taking the lens); the page must come back on its own. Things to try
+mid-stream: switch to another app for ten seconds and return — the preview
+resumes (worst case after the `The camera stalled — restarting it…` banner);
+lock the phone and unlock it — same; open the system camera app and come back —
+the track is dead outright, and the page reopens the lens. The watchdog reads
+`video.currentTime` every tick, so it needs no cooperation from the browser: any
+stall of a few seconds escalates play → reopen with backoff. Every attempt is in
+`client-logs/` (see Option K's post-mortem kit).
+
+**Impossible boards.** The live panel draws the node's prior-repaired placement:
+force a two-kings read (swap the queen for a spare king mid-stream, or just watch
+a marginal angle) and the panel shows one king, the repaired square ringed red,
+`repaired N` in the status line. The raw argmax stays on the wire untouched.
+
 ### Option K — Reproduce a run from its recording (WP-H2)
 
 Every frame that reaches `WS /ingest` is written to disk, so **any** of the runs
@@ -847,6 +862,31 @@ re-fed is a run you can bisect a recognition regression against.
 Turn it off with `serve --no-record` (runs are then not reproducible); cap it
 with `BR_RECORD_MAX_MB` on a small disk — the session truncates rather than
 rotating, so a capped recording keeps its beginning.
+
+**What a trial leaves behind (the post-mortem kit).** Beside `frames.ndjson`
+(the inputs) a session also holds `events.ndjson` — every *published* position,
+one compact line each (`square_dist` stripped; `frame_seq`/`capture_ts`/
+`published_ts` join it to the exact frame it came from, and `prior` records what
+the hard-constraint decoder repaired):
+
+```bash
+tail -f recordings/*/events.ndjson | jq -c '{seq, placement, prior: .prior.flips}'
+```
+
+Three more places to look after a phone trial:
+
+- the serve terminal — one INFO line per *changed* read
+  (`read <board> seq=… conf=… latency=… <placement> [d8 k->q]`), WARNINGs for
+  refused frames; `BR_LOG_LEVEL=DEBUG` logs every read.
+- `client-logs/*.ndjson` (written by the **viewer**) — the phone's own story:
+  socket status changes, camera track mute/ended, stall-watchdog play/reopen
+  attempts, calibrate/detect outcomes, `pagehide`. This is the file that says
+  *why the node heard silence* — a page that never connected, a camera that
+  froze, or a stream whose every frame was refused all look identical from the
+  node's side.
+- `curl -s localhost:8000/healthz | jq .ingest` — `received/estimated/dropped/
+  failed/skipped/refused` counters; all zeros while the phone claims to stream
+  means the frames never arrived.
 
 ### Option L — Watch or capture the position stream
 

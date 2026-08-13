@@ -30,3 +30,12 @@ describe('boardShapes', () => {
     expect(boardShapes([], [])).toEqual([]);
   });
 });
+
+describe('prior flips', () => {
+  it('rings a repaired square red, after the low rings', () => {
+    expect(boardShapes(['e4'], [], ['e8'])).toEqual([
+      { orig: 'e4', brush: 'yellow' },
+      { orig: 'e8', brush: 'red' }
+    ]);
+  });
+});

@@ -93,6 +93,12 @@ export class FakeViewerSocket {
 
   #attach(route: WebSocketRoute): void {
     this.#route = route;
+    // A reload closes this socket; without this, a send() racing the reloaded
+    // page's reconnect goes to the DEAD route instead of the queue and the event
+    // silently never renders. Cleared only if a newer route has not taken over.
+    route.onClose(() => {
+      if (this.#route === route) this.#route = null;
+    });
     for (const message of this.#queued) route.send(message);
     this.#queued = [];
   }

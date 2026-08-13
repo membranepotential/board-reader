@@ -161,3 +161,48 @@ describe('PositionStream', () => {
     expect(stream.liveness(board).stale).toBe(true);
   });
 });
+
+describe('prior repair on the stream', () => {
+  const TWO_KINGS = 'rnbkkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR';
+  const REPAIRED = 'rnbkqbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR';
+  const prior = {
+    placement: REPAIRED,
+    flips: [{ square: 'e8', from: 'k', to: 'q', cost: 0.74, constraint: 'kings' }],
+    residual: {}
+  };
+
+  it('draws the repaired board, never the impossible raw one', () => {
+    const stream = streamAt({ now: 0 });
+    stream.ingest(event({ placement: TWO_KINGS, prior }));
+    const board = stream.board('phone')!;
+    expect(board.grid[0]).toEqual(['r', 'n', 'b', 'k', 'q', 'b', 'n', 'r']);
+    expect(board.event.placement).toBe(TWO_KINGS); // the raw read stays readable
+    expect(board.flipped).toEqual(['e8']);
+  });
+
+  it('diffs change rings against the repaired grid, so a stable repair is quiet', () => {
+    const clock = { now: 1000 };
+    const stream = streamAt(clock);
+    stream.ingest(event({ placement: TWO_KINGS, prior }));
+    clock.now = 2000;
+    stream.ingest(event({ seq: 2, placement: TWO_KINGS, prior }));
+    expect(Object.keys(stream.board('phone')!.changedAt)).toEqual([]);
+  });
+
+  it('ignores flip squares that are not squares', () => {
+    const stream = streamAt({ now: 0 });
+    stream.ingest(
+      event({
+        placement: TWO_KINGS,
+        prior: { ...prior, flips: [...prior.flips, { square: 'z9', from: 'k', to: 'q', cost: 1, constraint: 'kings' }] }
+      })
+    );
+    expect(stream.board('phone')!.flipped).toEqual(['e8']);
+  });
+
+  it('an event without a prior draws its own placement and flips nothing', () => {
+    const stream = streamAt({ now: 0 });
+    stream.ingest(event());
+    expect(stream.board('phone')!.flipped).toEqual([]);
+  });
+});

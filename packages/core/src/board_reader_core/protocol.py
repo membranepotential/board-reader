@@ -181,6 +181,71 @@ class ClockState:
         return cls(running=d.get("running", "none"))
 
 
+@dataclass(frozen=True)
+class PriorFlip:
+    """One square the hard-constraint decoder relabelled, as it travels on the wire.
+
+    The producer is the inference node's prior decoder; this is only its wire
+    shape. ``cost`` is the log-probability margin given up, in nats.
+    """
+
+    square: str  # algebraic, e.g. "d8"
+    from_class: str
+    to_class: str
+    cost: float
+    constraint: str
+
+    def to_dict(self) -> dict:
+        return {
+            "square": self.square,
+            "from": self.from_class,
+            "to": self.to_class,
+            "cost": round(self.cost, 4),
+            "constraint": self.constraint,
+        }
+
+    @classmethod
+    def from_dict(cls, d: dict) -> PriorFlip:
+        return cls(
+            square=str(d["square"]),
+            from_class=str(d["from"]),
+            to_class=str(d["to"]),
+            cost=float(d.get("cost", 0.0)),
+            constraint=str(d.get("constraint", "")),
+        )
+
+
+@dataclass(frozen=True)
+class PriorRepair:
+    """The nearest *possible* board to a read, served beside it (never instead).
+
+    ``square_dist`` and ``placement`` stay exactly what the estimator produced —
+    a consumer that wants the repaired board takes :attr:`placement` from here,
+    and one that runs its own smoothing over the raw distribution can ignore this
+    block entirely, so the prior is never double-counted. ``residual`` holds the
+    per-constraint excess the decoder could not repair (empty = fully possible).
+    """
+
+    placement: str
+    flips: tuple[PriorFlip, ...] = ()
+    residual: dict[str, int] = field(default_factory=dict)
+
+    def to_dict(self) -> dict:
+        return {
+            "placement": self.placement,
+            "flips": [f.to_dict() for f in self.flips],
+            "residual": dict(self.residual),
+        }
+
+    @classmethod
+    def from_dict(cls, d: dict) -> PriorRepair:
+        return cls(
+            placement=str(d["placement"]),
+            flips=tuple(PriorFlip.from_dict(f) for f in d.get("flips") or ()),
+            residual={str(k): int(v) for k, v in (d.get("residual") or {}).items()},
+        )
+
+
 @dataclass
 class PositionEvent:
     """One L3 position event (DESIGN.md §5).
@@ -199,6 +264,10 @@ class PositionEvent:
     clock: ClockState = field(default_factory=ClockState)
     status: str = "ok"
     orientation: str = DEFAULT_ORIENTATION
+    #: Optional hard-constraint repair of this read, produced by the inference
+    #: node's prior decoder. ``placement`` above stays the raw argmax; a display
+    #: that must never show an impossible board draws ``prior.placement`` instead.
+    prior: PriorRepair | None = None
 
     @classmethod
     def from_square_dist(
@@ -253,6 +322,8 @@ class PositionEvent:
             raise ValueError(f"clock.running must be one of {VALID_RUNNING}")
         if self.seq < 0:
             raise ValueError("seq must be non-negative")
+        if self.prior is not None:
+            parse_placement(self.prior.placement)  # raises on a malformed repair
         return self
 
     def to_dict(self, *, round_dist: int | None = 4) -> dict:
@@ -260,7 +331,7 @@ class PositionEvent:
         arr = np.asarray(self.square_dist, dtype=float)
         if round_dist is not None:
             arr = np.round(arr, round_dist)
-        return {
+        d = {
             "board_id": self.board_id,
             "utc": self.utc,
             "seq": self.seq,
@@ -273,6 +344,9 @@ class PositionEvent:
             "clock": self.clock.to_dict(),
             "status": self.status,
         }
+        if self.prior is not None:
+            d["prior"] = self.prior.to_dict()
+        return d
 
     def to_json(self) -> str:
         return json.dumps(self.to_dict())
@@ -294,6 +368,7 @@ class PositionEvent:
             clock=ClockState.from_dict(d.get("clock")),
             status=d.get("status", "ok"),
             orientation=d.get("orientation", DEFAULT_ORIENTATION),
+            prior=PriorRepair.from_dict(d["prior"]) if d.get("prior") else None,
         )
 
     @classmethod

@@ -183,3 +183,53 @@ def test_max_mb_caps_the_session(tmp_path, monkeypatch):
 
     lines = (Recording.open(tmp_path / "rec").path / INDEX_NAME).read_text().splitlines()
     assert 0 <= len(lines) < 5
+
+
+def test_published_events_land_in_the_session_beside_their_frames(recorded):
+    """The outputs of a run, joined to its inputs: each events.ndjson line names
+    the frame it was estimated from and drops square_dist (replay reproduces it)."""
+    from board_reader_core.recording import EVENTS_NAME
+
+    client, root = recorded
+    _send(client, _frame(0), _frame(1))
+    _await_position(client)
+
+    session = next(p for p in root.iterdir() if p.is_dir())
+    deadline = time.monotonic() + 5.0
+    lines = []
+    while time.monotonic() < deadline:
+        events = session / EVENTS_NAME
+        if events.exists():
+            lines = [json.loads(line) for line in events.read_text().splitlines()]
+            if lines:
+                break
+        time.sleep(0.01)
+
+    assert lines, "no published event reached events.ndjson"
+    first = lines[0]
+    assert first["board_id"] == "A1"
+    assert "square_dist" not in first
+    assert first["frame_seq"] in (0, 1)
+    assert first["capture_ts"] >= 1000.0
+    assert first["published_ts"] > 0
+    assert "prior" in first  # the repair is part of the run's record
+
+
+def test_a_refused_frame_is_counted_and_the_socket_survives():
+    """A stream that is ALL refusals must not look like one that never sent —
+    the refusal used to reach only the phone's banner."""
+    with TestClient(create_app(estimator=StubEstimator())) as client:
+        with client.websocket_connect("/ingest") as ws:
+            ws.send_text(json.dumps({"type": "frame", "board_id": "A1", "seq": 0}))
+            ws.send_bytes(b"not a jpeg")
+            reply = ws.receive_json()
+            assert "error" in reply
+            # The socket is still usable for a good frame afterwards.
+            header, jpeg = _frame(1).encode()
+            ws.send_text(json.dumps(header))
+            ws.send_bytes(jpeg)
+            assert ws.receive_json()["ack"] == 1
+
+        health = client.get("/healthz").json()
+        assert health["ingest"]["refused"] == 1
+        assert health["ingest"]["received"] == 1

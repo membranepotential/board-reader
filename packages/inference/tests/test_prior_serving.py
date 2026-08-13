@@ -79,3 +79,51 @@ def test_the_back_rank_constraint_sits_out_when_the_frame_is_only_guessed():
 
     assert body["prior"]["flips"] == []
     assert body["prior"]["placement"] == pawn_on_rank_8
+
+
+def test_the_live_stream_carries_the_repair_beside_the_raw_read():
+    """The WS path is what the /camera panel displays — the two-kings fix must
+    reach it, not just the HTTP endpoints (it shipped without, and a trial's live
+    panel showed two kings that no /estimate response would have)."""
+    import asyncio
+
+    from board_reader_core.wire import Frame
+
+    from board_reader_inference.hub import PositionHub
+    from board_reader_inference.ingest import FrameIngest
+    from board_reader_inference.routing import route_for
+
+    est = StubEstimator(TWO_WHITE_KINGS)
+    published: list = []
+
+    async def run():
+        hub = PositionHub()
+        ingest = FrameIngest(
+            lambda frame: route_for(est, frame),
+            hub,
+            on_event=lambda event, frame: published.append((event, frame)),
+        )
+        ingest.submit(
+            Frame(
+                board_id="A1",
+                seq=7,
+                capture_ts=1000.0,
+                image=np.zeros((64, 64, 3), dtype=np.uint8),
+            )
+        )
+        await asyncio.wait_for(ingest.drain(), timeout=5.0)
+        await ingest.close()
+        return hub.latest("A1")
+
+    event = asyncio.run(run())
+
+    # Raw read untouched (the §5 invariant), repair riding beside it.
+    assert event.placement == TWO_WHITE_KINGS
+    assert event.prior is not None
+    assert event.prior.placement.count("K") == 1
+    assert event.prior.placement != TWO_WHITE_KINGS
+    assert [f.constraint for f in event.prior.flips] == ["kings"]
+    # The wire shape a viewer parses.
+    assert event.to_dict()["prior"]["flips"][0]["constraint"] == "kings"
+    # The on_event hook (the gateway's trial log) saw the same event and its frame.
+    assert published and published[0][0] is event and published[0][1].seq == 7

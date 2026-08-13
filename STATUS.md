@@ -9,12 +9,15 @@ confidences**. No moves, no legality, no PGN — those are the downstream applic
 
 ## Now
 
-- phone-live-test — `make dev` up on 192.168.1.10 (:8443 https for `/camera`), run_e⊕run_f
-  cascade + session bank. /camera layout **rebuilt** after the floating-pill build ran its
-  controls off the right of the screen in landscape on the phone: one fixed stage, safe-area
-  insets taken once as padding, one flex line `frame | rail`, no reservation arithmetic
-  anywhere (40/40 e2e green; costs 0 px of picture). Next: re-test on the phone, then judge
-  whether positions track play.
+- phone-live-test — trial 08-13 evening **failed twice over**: the phone camera froze
+  (nothing recovered it) and its stream delivered **zero frames** to the node — which was
+  additionally invisible because CLI `serve` built the app at import time and silently ran
+  **without ingress recording** all along. Fixed in-session (uncommitted): camera stall
+  watchdog + track recovery on /camera; prior repair now rides the live stream (two-kings
+  reproduced from the 18:22 calibration frame and repaired); recording default actually
+  works, plus events.ndjson, per-read INFO logs, refused-frame counter, and a phone→viewer
+  client-log sink. Next: **restart `make dev`**, re-trial on the phone, then read
+  recordings/, client-logs/ and the serve log.
 
 ## Done (recent)
 
