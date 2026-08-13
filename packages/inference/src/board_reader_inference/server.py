@@ -33,6 +33,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
 
 from board_reader_core.boarddetect import LOW_ANGLE_ASPECT, quad_aspect
+from board_reader_core.corners import parse_corners
 from board_reader_core.protocol import GRID, START_PLACEMENT
 from board_reader_core.recording import FrameRecorder
 from board_reader_core.wire import Frame, decode_jpeg
@@ -61,14 +62,6 @@ from board_reader_inference.trained import (
 )
 
 log = logging.getLogger(__name__)
-
-
-def _parse_corners(spec: str) -> np.ndarray:
-    """``x0,y0,...,x3,y3`` -> a 4x2 float32 quad; raises ValueError on bad input."""
-    nums = [float(x) for x in spec.split(",") if x.strip()]
-    if len(nums) != 8:
-        raise ValueError("corners needs 8 comma-separated numbers")
-    return np.array(nums, dtype=np.float32).reshape(4, 2)
 
 
 def _parse_debug(spec: str | None) -> bool:
@@ -619,8 +612,12 @@ def create_app(
         """
         from board_reader_inference.autocalib import occupancy_grid
 
-        reading = route.read()
-        auto = session.adopt_start(route, reading)
+        # Both do real model/embedding work (occupancy read, then a fresh
+        # exemplar bank built off it) — off the event loop for the same reason
+        # /detect's search is (see below): /ingest acks and /viewer must not
+        # stall behind a snapshot upload.
+        reading = await asyncio.to_thread(route.read)
+        auto = await asyncio.to_thread(session.adopt_start, route, reading)
         if auto is None:
             result = {
                 "board_id": route.frame.board_id,
@@ -637,7 +634,7 @@ def create_app(
                 result["debug"] = _debug_payload(route.view(), reading.dist)
             return JSONResponse(result)
 
-        event = auto.reread(route.frame, route.corners)
+        event = await asyncio.to_thread(auto.reread, route.frame, route.corners)
         # This branch answers with real piece types, so it gets the same repair as
         # the calibrated path. (The occupancy-only branch above does not: with no
         # piece identity and no colour there is nothing the constraints can read.)
@@ -651,7 +648,7 @@ def create_app(
         # /camera panel) draw ``prior.placement``, and an event published bare
         # would put an impossible board on exactly the surface the repair exists
         # for. ``result`` then inherits it through ``to_dict``.
-        repair = _prior_decode(event)
+        repair = await asyncio.to_thread(_prior_decode, event)
         event.prior = repair.to_repair()
         await hub_.publish(event)
         result = event.to_dict()
@@ -693,7 +690,7 @@ def create_app(
         quad = None
         if corners is not None:
             try:
-                quad = _parse_corners(corners)
+                quad = parse_corners(corners)
             except ValueError as e:
                 return JSONResponse({"error": str(e)}, status_code=400)
 
@@ -718,15 +715,23 @@ def create_app(
             # the zero-setup path handles this photo entirely.
             return await _uncalibrated_estimate(route, debug_on, warns, sidecar)
 
-        event = route.read()
+        # The read itself, plus any bank bootstrap/refresh it triggers, are real
+        # model/embedding work — off the event loop for the same reason /detect's
+        # search is (see below): /ingest acks and /viewer must not stall behind a
+        # snapshot upload.
+        event = await asyncio.to_thread(route.read)
         autocal = refresh = None
         if isinstance(route, PhotoRead):
-            autocal = session.bootstrap_bank(frame, route.corners, event)
+            autocal = await asyncio.to_thread(
+                session.bootstrap_bank, frame, route.corners, event
+            )
             if autocal is not None:
                 # Answer through the just-upgraded ensemble, not the bare model.
-                event = autocal.reread(frame, route.corners)
+                event = await asyncio.to_thread(autocal.reread, frame, route.corners)
             else:
-                refresh = session.refresh_bank(frame, route.corners, event)
+                refresh = await asyncio.to_thread(
+                    session.refresh_bank, frame, route.corners, event
+                )
         rotated_deg = None
         if isinstance(route, PhotoRead) and _parse_debug(autorotate):
             from board_reader_core.protocol import PositionEvent
@@ -749,7 +754,7 @@ def create_app(
         # Repair attached before the publish — the hub's subscribers draw
         # ``prior.placement``, so publishing bare would show an impossible board
         # on the one surface the repair exists for. ``result`` inherits it.
-        repair = _prior_decode(event)
+        repair = await asyncio.to_thread(_prior_decode, event)
         event.prior = repair.to_repair()
         await hub_.publish(event)
         result = event.to_dict()
@@ -814,12 +819,18 @@ def create_app(
         body = await request.body()
         try:
             image = decode_jpeg(body)
-            quad = _parse_corners(corners)
+            quad = parse_corners(corners)
         except ValueError as e:
             return JSONResponse({"error": str(e)}, status_code=400)
         _save_upload("calibrate", body, corners=corners, placement=placement)
         try:
-            outcome = session.calibrate_from(image, quad, placement)
+            # Builds/extends an exemplar bank off real embeddings — the same class
+            # of blocking work /detect already moved off the loop (see below); run
+            # it in a worker thread so /ingest acks and /viewer keep flowing while
+            # a calibration photo is processed.
+            outcome = await asyncio.to_thread(
+                session.calibrate_from, image, quad, placement
+            )
         except ValueError as e:
             return JSONResponse({"error": str(e)}, status_code=400)
         if isinstance(outcome, CalibrationRejected):
