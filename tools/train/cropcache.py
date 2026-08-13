@@ -49,7 +49,10 @@ from board_reader_inference.squares import (
 
 CACHE_ROOT = _bootstrap.ROOT / "data" / "external" / "_cropcache"
 
-# Deployed photo-crop geometry (must match the gateway + build_exemplar_bank*).
+# The cache's legacy tight-crop default — NOT the deployed geometry. The gateway
+# and models/*.meta.json cut at BboxGeometry(headroom=1.6, side_pad=0.15)
+# (squares.DEFAULT_GEOMETRY); headroom 0.15 decapitates every tall piece. Runs
+# that must match deployment pass crop_geometry explicitly (run_e/run_f do).
 HEADROOM = 0.15
 SIDE_PAD = 0.15
 DEFAULT_CACHE_GEOMETRY: CropGeometry = BboxGeometry(HEADROOM, SIDE_PAD)

@@ -936,6 +936,68 @@ nothing (an empty stream is not a working one), `2` when there is no gateway at 
 
 ---
 
+### Option M — Score a trial recording (and export crops from it)
+
+Option K replays a recording. This one *grades* it. A trial — a person at a real
+board with a phone on the /camera page — records every frame and every published
+event, which makes it eval data as soon as somebody writes down what was actually
+on the board. That is `truth.json`, and it goes **inside the recording it
+describes**:
+
+```bash
+# 1. Find the session (they sort chronologically) and see what it needs:
+uv run board-reader-inference eval-session recordings/20260813-193308
+#    -> exits 2, prints a skeleton with the board id and first seq filled in
+```
+
+Redirect that skeleton into place and fill in the boards, one segment per
+position, `from_seq` being the frame seq the position started holding from
+(`jq -r '[.frame_seq, .prior.placement] | @tsv' recordings/<s>/events.ndjson`
+is a good way to find the boundaries — read the *board*, not the page, or the
+label is only as good as the estimator that produced it):
+
+```json
+{
+  "format": 1,
+  "board_id": "phone",
+  "segments": [
+    {"from_seq": 0,   "placement": "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR"},
+    {"from_seq": 178, "placement": "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR"}
+  ],
+  "guard_seqs": 12
+}
+```
+
+```bash
+# 2. Score it (no model, no GPU — it reads events.ndjson, ~0.1 s):
+uv run board-reader-inference eval-session recordings/20260813-193308
+
+# 3. Same run, plus per-square training crops labeled from the same truth:
+uv run board-reader-inference eval-session recordings/20260813-193308 \
+    --export-crops data/external/trial_20260813 --every 5 --json trial.json
+```
+
+What to check:
+
+- the three streams are scored apart — raw `placement`, the hard-constraint repair
+  (`prior.placement`) and the debounce (`settled.placement`). A repair that fixes
+  as many squares as it breaks shows up as an unchanged per-square number with a
+  *different* perfect-board rate, which is the whole reason they are not summed;
+- `settled: DERIVED` in the header means the recording predates the settled block
+  and that row was replayed offline through today's `BoardStabilizer` — a
+  prediction, not a measurement;
+- excluded counts are on the `events:` line. `guard_seqs` drops the events within
+  that many frames *after* a segment boundary (the hand is over the board); if it
+  is swallowing most of the session, the boundaries are wrong, not the guard;
+- the export writes a `labels_normalized.json` crop-level style plus an
+  `export.json` naming the geometry that cut it. `uv run --directory tools/train
+  python styles.py` should then list it, and `python cropcache.py <style>` shard it.
+
+Exit codes: `0` scored, `1` nothing left to score, `2` no `truth.json` (skeleton
+printed) or a `truth.json` that cannot be trusted.
+
+---
+
 ## Quick health checks
 
 ```bash

@@ -7,6 +7,7 @@
     board-reader-inference positions --changes-only              # tail the position stream
     board-reader-inference positions --out run.ndjson --quiet    # capture it to a file
     board-reader-inference eval                                  # score the deployed stack
+    board-reader-inference eval-session recordings/              # score a recorded trial
 
 Imports only :mod:`board_reader_core` and this package; it never imports the edge.
 Calibration takes an **already-rectified** board crop (run ``board-reader-edge
@@ -60,18 +61,11 @@ def cmd_serve(args: argparse.Namespace) -> int:
     return 0
 
 
-def _parse_corners(spec: str):
-    import numpy as np
-
-    nums = [float(x) for x in spec.replace(";", ",").split(",") if x.strip()]
-    if len(nums) != 8:
-        raise SystemExit("--corners needs 8 numbers: x0,y0,...,x3,y3 (a8,h8,h1,a1)")
-    return np.array(nums, dtype="float32").reshape(4, 2)
-
-
 def cmd_calibrate(args: argparse.Namespace) -> int:
     import cv2
     import numpy as np
+
+    from board_reader_core.corners import parse_corners
 
     from board_reader_inference.centroid import build_centroids
     from board_reader_inference.embed import make_embedder
@@ -90,9 +84,13 @@ def cmd_calibrate(args: argparse.Namespace) -> int:
         photo = cv2.imread(args.photo, cv2.IMREAD_COLOR)
         if photo is None:
             raise SystemExit(f"could not read photo: {args.photo}")
+        try:
+            corners = parse_corners(args.corners)
+        except ValueError as e:
+            raise SystemExit(f"--corners {e}") from e
         crops = crop_squares_photo(
             photo,
-            _parse_corners(args.corners),
+            corners,
             geometry=BboxGeometry(headroom=args.headroom, side_pad=args.side_pad),
             size=args.square_size or 224,
         )
@@ -176,6 +174,43 @@ def cmd_eval(args: argparse.Namespace) -> int:
     print(report.render())
     # 1 when there was nothing to score: an empty eval is not a passing eval.
     return 0 if report.boards else 1
+
+
+def cmd_eval_session(args: argparse.Namespace) -> int:
+    from board_reader_core.recording import Recording
+
+    from board_reader_inference.trial import TRUTH_NAME, TruthError, run, truth_skeleton
+
+    try:
+        recording = Recording.open(args.recording)
+    except FileNotFoundError as e:
+        print(f"cannot score: {e}", file=sys.stderr)
+        return 2
+    truth_path = recording.path / TRUTH_NAME
+    if not truth_path.exists():
+        # The operator has to author this by hand — nothing in the recording knows
+        # what was on the board — so say exactly where it goes and hand over a
+        # skeleton with the board id and first seq already filled in.
+        print(
+            f"no ground truth for {recording.path}: write {truth_path} first. Skeleton:",
+            file=sys.stderr,
+        )
+        print(truth_skeleton(recording))
+        return 2
+    try:
+        report = run(
+            recording,
+            json_out=args.json,
+            export_dir=args.export_crops,
+            every=args.every,
+        )
+    except (TruthError, ValueError) as e:
+        print(f"cannot score {recording.path}: {e}", file=sys.stderr)
+        return 2
+    print(report.render())
+    # 1 when the guards (or a board-id mismatch) left nothing: an empty session
+    # is not a passing one, same rule `eval` applies to an empty eval.
+    return 0 if report.events_scored else 1
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -305,6 +340,34 @@ def build_parser() -> argparse.ArgumentParser:
     )
     e.add_argument("--json", help="also write the full report as JSON here")
     e.set_defaults(func=cmd_eval)
+
+    from board_reader_inference.trial import DEFAULT_EVERY, TRUTH_NAME
+
+    t = sub.add_parser(
+        "eval-session",
+        help="score a recorded live session against its truth.json (raw vs prior "
+        "vs settled), and export labeled crops from it",
+    )
+    t.add_argument(
+        "recording",
+        help=f"a recording session directory (or a root — the newest is taken); "
+        f"its ground truth is read from <dir>/{TRUTH_NAME}",
+    )
+    t.add_argument("--json", help="also write the full report as JSON here")
+    t.add_argument(
+        "--export-crops",
+        dest="export_crops",
+        help="also cut per-square training crops from the scored frames into this "
+        "directory, labeled from truth (a labels_normalized.json style)",
+    )
+    t.add_argument(
+        "--every",
+        type=int,
+        default=DEFAULT_EVERY,
+        help=f"export crops from every Nth scored frame (default {DEFAULT_EVERY}); "
+        "consecutive frames of a still board are near-duplicates",
+    )
+    t.set_defaults(func=cmd_eval_session)
     return p
 
 

@@ -79,10 +79,38 @@ class SquareError:
     truth: str
     predicted: str
     kind: str
-    confidence: float
+    #: The estimator's confidence in the wrong answer, when it is known. A caller
+    #: comparing two *placements* — a recorded session, whose ``square_dist`` was
+    #: stripped before it hit disk — has none, and ``None`` says so rather than
+    #: inventing a zero.
+    confidence: float | None = None
 
     def __str__(self) -> str:
         return f"{self.square} {self.truth}->{self.predicted}"
+
+
+def square_errors(
+    truth: str, predicted: str, confidence: np.ndarray | None = None
+) -> tuple[SquareError, ...]:
+    """Every square where ``predicted`` disagrees with ``truth``, tagged by kind.
+
+    Both arguments are FEN field 1, so this works equally on a distribution's
+    argmax and on a placement read back off a recorded stream. ``confidence`` is
+    the optional 8x8 grid of per-square max probability.
+    """
+    t, p = parse_placement(truth), parse_placement(predicted)
+    return tuple(
+        SquareError(
+            square=square_name(r, c),
+            truth=t[r][c],
+            predicted=p[r][c],
+            kind=error_kind(t[r][c], p[r][c]),
+            confidence=None if confidence is None else float(confidence[r][c]),
+        )
+        for r in range(GRID)
+        for c in range(GRID)
+        if t[r][c] != p[r][c]
+    )
 
 
 @dataclass(frozen=True)
@@ -115,7 +143,7 @@ class BoardResult:
                     "truth": e.truth,
                     "predicted": e.predicted,
                     "kind": e.kind,
-                    "confidence": round(e.confidence, 4),
+                    "confidence": _round_opt(e.confidence),
                 }
                 for e in self.errors
             ],
@@ -665,30 +693,20 @@ def score_board(board: LabeledBoard, dist: np.ndarray) -> BoardResult:
     """Compare one distribution against its truth, square by square."""
     from board_reader_core.protocol import encode_placement
 
-    truth = parse_placement(board.placement)
     idx = dist.argmax(axis=-1)
     conf = dist.max(axis=-1)
-    predicted = [[CLASSES[int(idx[r, c])] for c in range(GRID)] for r in range(GRID)]
-    errors = [
-        SquareError(
-            square=square_name(r, c),
-            truth=truth[r][c],
-            predicted=predicted[r][c],
-            kind=error_kind(truth[r][c], predicted[r][c]),
-            confidence=float(conf[r, c]),
-        )
-        for r in range(GRID)
-        for c in range(GRID)
-        if truth[r][c] != predicted[r][c]
-    ]
+    predicted = encode_placement(
+        [[CLASSES[int(idx[r, c])] for c in range(GRID)] for r in range(GRID)]
+    )
+    errors = square_errors(board.placement, predicted, conf)
     return BoardResult(
         board_id=board.board_id,
         source=board.source,
         truth=board.placement,
-        predicted=encode_placement(predicted),
+        predicted=predicted,
         correct=GRID * GRID - len(errors),
         confidence=float(conf.mean()),
-        errors=tuple(errors),
+        errors=errors,
     )
 
 
