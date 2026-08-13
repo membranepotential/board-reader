@@ -54,6 +54,11 @@ glue that wires both, and only across the network.
 
 ## Dev workflow
 
+**Commit at logical checkpoints, unprompted.** When a unit of work is done and
+verified — a fix landed with its tests, a feature demoed green, a subagent's work
+validated — commit it right then (conventional message, one concern per commit).
+Never let several finished workstreams pile up uncommitted in the tree.
+
 **Testing costs ~12 s. If it is costing you more, read
 [docs/TESTING.md §0](docs/TESTING.md#0-read-this-first-the-60-second-version)** —
 it is the 60-second agent briefing: which command to run when, the four habits that

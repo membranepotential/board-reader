@@ -9,17 +9,28 @@ confidences**. No moves, no legality, no PGN — those are the downstream applic
 
 ## Now
 
-- phone-live-test — trial 08-13 evening **failed twice over**: the phone camera froze
-  (nothing recovered it) and its stream delivered **zero frames** to the node — which was
-  additionally invisible because CLI `serve` built the app at import time and silently ran
-  **without ingress recording** all along. Fixed in-session (uncommitted): camera stall
-  watchdog + track recovery on /camera; prior repair now rides the live stream (two-kings
-  reproduced from the 18:22 calibration frame and repaired); recording default actually
-  works, plus events.ndjson, per-read INFO logs, refused-frame counter, and a phone→viewer
-  client-log sink. Next: **restart `make dev`**, re-trial on the phone, then read
-  recordings/, client-logs/ and the serve log.
+- phone-live-test — 19:33 re-trial **worked** (748/748 frames, watchdog recovered two
+  stalls) and its defects are diagnosed + fixed in-tree (uncommitted, see Done). Next:
+  commit, restart `make dev`, re-trial; then attack the one residual — d8/e8 k/q model
+  confusion (decapitated rank-8 crops) via the tall-crop retrain, gated on
+  `eval-session` numbers instead of the synthetic holdout.
 
 ## Done (recent)
+
+- 08-13 (eve, uncommitted): **Trial 19:33 analyzed end-to-end; four fixes landed.**
+  (1) *Kings repair chooses by evidence* — surplus kings demote the lowest-`p(k)` square,
+  not the smallest k→runner-up margin (that margin is q-tail noise: wrong 55% on the 628
+  two-king replay frames, evidence rule wrong 27%; EMA smoothing fixes nothing — the
+  misread is systematic). (2) *`settled` ships* — advisory per-square time debounce
+  (2.5 s + ≥2 reads; count-based K does NOT transfer across the 10× read-rate range) on
+  the wire beside `prior`, drawn by viewer + /camera with dashed-amber pending rings.
+  (3) *`eval-session`* — truth.json per recording, three-stream scorer, labeled crop
+  export; trial scored: raw 0% perfect boards, prior 45.4%, settled **66.6%** (98.96%
+  per-square), residual is *only* d8/e8 k/q. (4) `_parse_corners` deduped into core;
+  /estimate + /calibrate off the event loop (the trial's 6.6 s latency spike). Trial
+  facts: estimator sustains ~0.85 reads/s vs 7.5 fps input; the "phantom b6 rook" was a
+  real c6 knight leaning across the b6 boundary (attribution bleed, also corrupts b7);
+  rank-8 crops at phone height are decapitated — k/q indistinguishable in-crop.
 
 - 08-13: **The node stops starving the display GPU** — `cuda_providers()` now ships CUDA EP
   options (`BR_GPU_MEM_LIMIT_MB`, default 1024 MiB/session, `kSameAsRequested`, `HEURISTIC`)
@@ -49,17 +60,21 @@ confidences**. No moves, no legality, no PGN — those are the downstream applic
 
 ## Next
 
-1. **Run M2 over `ccbf-r5`** with `--forward-original --corners` (the warp path is unusable at
+1. **Tall-crop retrain, gated on `eval-session`** — the d8/e8 k/q residual is a crop
+   problem (decapitated rank-8); score candidates on recordings/20260813-193308 truth.
+2. **Estimator throughput** — 0.85 reads/s vs 7.5 fps input; profile the
+   cascade+ensemble path (bank embed batching?); faster reads shrink settle lag too.
+3. **Run M2 over `ccbf-r5`** with `--forward-original --corners` (the warp path is unusable at
    this angle), judge the stream, then settle D3 — does `stability` earn its keep?
-2. **Give a user's `tuned.onnx` a deploy story** — per-operator artifact, no compose path today.
-3. **Attack the residual type confusions** — `p->b` leads trained-alone; a third of the
-   ensemble's residual is `empty->p`/`empty->P`, a different animal.
-4. **Decide whether calibrated confidences go on the wire** — a decision, not an experiment:
+4. **Give a user's `tuned.onnx` a deploy story** — per-operator artifact, no compose path today.
+5. **Attack the residual type confusions** — `p->b` leads trained-alone (confirmed live:
+   b7 pawn read `b` behind the leaning knight); a third of the ensemble's residual is
+   `empty->p`/`empty->P`, a different animal.
+6. **Decide whether calibrated confidences go on the wire** — a decision, not an experiment:
    argmax is invariant, DESIGN §9 says the downstream smoother wants them.
-5. **`/estimate` and `/calibrate` still block the event loop** (`server.py:743`, `:875`) — same
-   class as the `/detect` bug already fixed with `asyncio.to_thread`. Both stall ingest acks.
-6. **Crop attribution / occlusion** — the prism is a *bounding* volume, so a piece behind can
-   fall inside the crop unflagged. Plus detection follow-ups (`3f93e57`, non-blocking).
+7. **Crop attribution / occlusion** — the prism is a *bounding* volume: the c6 knight's lean
+   hallucinated a b6 rook and corrupted b7 all trial. Base-weighted attribution over
+   bounding-prism membership. Plus detection follow-ups (`3f93e57`, non-blocking).
 
 ## Open questions
 
