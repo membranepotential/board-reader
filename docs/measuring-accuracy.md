@@ -218,6 +218,21 @@ construction, boards the bank was not built from.
 > for the user's own boards — but it is the only number here that no part of the stack
 > has ever seen.
 
+> [!warning] `uploads_calibrate` is three populations — never quote its mean
+> Its long-standing ~0.59 was a **label bug**, not a model result: 19 boards carried rotated
+> corner labels (repaired 2026-08-11, `tools/repair_upload_orientation.py`; the set now reads
+> **0.75** with hallucinations down 254 → 30). Even repaired, the average is meaningless —
+> 17 real photos read at **0.919**, 13 pre-rectified 384×384 warps at 0.63 (out-of-domain
+> crops the deployed cropper would never cut), plus 5 hard dim frames. Quote the population
+> you mean. Details in [[training-and-data]].
+
+> [!note] "The deployed reader" is no longer one model
+> The table above compares *one* trained model against the trained⊕bank ensemble. Since
+> 2026-08-11 the trained member can itself be a pair — a confidence-gated **cascade** of two
+> models on different crop geometries (`BR_MODEL_B`), or a per-board fine-tune **averaged**
+> with the base (`BR_MODEL_TUNED`), never both at once. When quoting a number, say which
+> composition produced it; [[recognition-pipeline]] and [[runbook]] define them.
+
 > [!tip] Split by session, not by photo
 > A different photo of the same set in the same light is nearly as contaminating as
 > being in the bank. When there are enough confirmed labels to hold some out, hold

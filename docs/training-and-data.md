@@ -33,6 +33,7 @@ with zero calibration.
 | `models.py` | two recipes → 13 logits: `resnet18` (ImageNet / scratch / SIN init) and `dinov2` (last-N-block fine-tune) |
 | `metrics.py` | per-square accuracy split into empty→piece / piece→empty / piece→piece, plus occupancy and the full 13×13 confusion |
 | `train.py` / `evaluate.py` / `export.py` | config-driven loop (fail-fast, instrumented — next section), held-out eval, ONNX export with round-trip parity |
+| `calibrate_finetune.py` | the **per-board** LP-FT tool: fine-tunes the deployed model on one board's stored calibrate frames and exports a `tuned.onnx` served 50/50 with the base ([[calibration-and-the-bank#The second adaptation mechanism the calibration fine-tune]]). Refuses input that does not span ≥3 sessions |
 | `runlog.py` / `plots.py` | the run observability pair: JSONL event stream + per-epoch PNG rendering |
 | `configs/` | one YAML per run — every result below is reproducible from one |
 
@@ -113,6 +114,25 @@ Board corners are always `a8, h8, h1, a1` — the playing surface, in that order
 > ones. And *"the data is broken" is a hypothesis, not a diagnosis*: the 0.597 was real, but
 > it pointed at the wrong layer, and the set sat unused for weeks as a result.
 
+> [!success] `uploads_calibrate` — repaired 2026-08-11, and it is **three sets, not one**
+> The same label-orientation bug bit here, and it floored the number for months: 19 of the
+> non-user boards carried corner labels rotated off true, so `run_e` read them at 17–26/64 and
+> the set reported ~**0.59**. `tools/repair_upload_orientation.py` repairs them the same way
+> `repair_orientation.py` does for `chesscog_transfer`, but demands that **two independent
+> channels agree** — the photometric one and a side-score of the model's own reading under all
+> four rotations — before it writes; every known-sound board came back rotation 0, and backups
+> land at `*.json.pre-rotation-repair`. The set went 0.59 → **0.75** and hallucinations
+> 254 → 30.
+>
+> Quote the subset, not the mean. The corpus mixes three populations: **17 real photos read at
+> 0.919** (comparable to `user_photos`), 13 pre-rectified 384×384 warps at 0.63 — out-of-domain
+> crops that are not what the deployed cropper cuts — and 5 genuinely-hard dim frames. A single
+> average over the three says nothing about any of them.
+>
+> One class of board the photometric channel **cannot** judge: this physical board is set up
+> a8-**dark**, which inverts the checkerboard-parity assumption. Those 5 were resolved by the
+> model channel plus a human look, not automatically.
+
 ## Run history
 
 All under `scratch/runs/` (git-ignored; reproducible from `tools/train/configs/`).
@@ -124,14 +144,25 @@ All under `scratch/runs/` (git-ignored; reproducible from `tools/train/configs/`
 | `loso_resnet_sin` | candidate (b): Stylized-ImageNet init | lost (0.665 holdout) — consistent with the frozen SIN negative |
 | `d16` | headroom sweep, `hr=1.6` | **won** — holdout 0.665 → 0.835; deployed 2026-07-18 → 2026-08-06 |
 | `d18` | headroom sweep, `hr=1.8 / sp=0.25` | ties the holdout, loses on real photos (409 vs 430) |
-| `run_e` | wave-2: 11 styles incl. wooden-Staunton dim renders | **won** — holdout 0.835 → 0.898; **currently deployed** |
+| `run_e` | wave-2: 11 styles incl. wooden-Staunton dim renders | **won** — holdout 0.835 → 0.898; **deployed as the primary member** |
+| `run_f` | the pose-aware crop bet: a camera-pose-derived prism (`h1.9/r0.5`) instead of the axis-aligned box | **did not win its pre-registered rule** (holdout 0.894 ties, `user_photos` 0.938 → 0.894). Kept anyway: it fails *differently* — cross-style wrongtype 173 → 121, at the cost of hallucinations 1 → 12 — which is what makes it usable as the cascade's second member (2026-08-11) |
 
-> [!note] The crop-geometry sweep was **scalar only**
-> `d16`/`d18` swept `headroom`/`side_pad` — two numbers. Every variant, including the deployed
-> `hr1.6/sp0.15`, is still an axis-aligned bounding box extended along **fixed image axes** by a
-> multiple of the square's projected width. No camera-pose-aware / 3D box geometry has ever been
-> built or measured (verified 2026-08-07 across code, docs, learnings and full git history). See
-> STATUS *Next 6* for the untried bounding-cylinder idea and what it would cost.
+> [!note] Crop geometry is an **exhausted knob** (closed 2026-08-10)
+> `d16`/`d18` swept `headroom`/`side_pad` — two scalars on an axis-aligned bounding box. The
+> pose-aware 3D geometry that note used to call untried was then built and measured as `run_f`
+> (a `CropGeometry` ADT rides the `.onnx` sidecar, so a train/serve mismatch is
+> unrepresentable): it trades cross-style piece **type** for occupancy on the user's own board
+> and wins neither pre-registered condition. Both ends of the knob are now measured, so
+> geometry is not where the remaining accuracy lives — what survives is *combining* the two
+> geometries (the cascade) rather than choosing between them.
+>
+> The sharper lesson from that run: **+4.8pp of synthetic-holdout gain transferred as 0.0pp on
+> real photos** (e3-partial 0.8466 vs final 0.8942 → `user_photos` 0.900 vs 0.894). The
+> synthetic holdout does not predict deployment quality on this task; do not select a
+> checkpoint on it alone.
+>
+> Still open: **crop attribution**. Even the prism is the piece's *bounding* volume, so a piece
+> standing behind can fall inside the crop unflagged. See STATUS *Next*.
 
 ### How `run_e` was decided (2026-08-06)
 

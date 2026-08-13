@@ -119,6 +119,34 @@ Each fix is now a guardrail in the code.
 Recovery from any of these is `tools/rebuild_session_bank.py` — see
 [[runbook#Recovering a poisoned bank]].
 
+## The second adaptation mechanism: the calibration fine-tune
+
+The bank is not the only thing a calibrate photo can buy. Since 2026-08-11 the *same stored
+frames* can also fine-tune the deployed classifier itself — LP-FT (linear probe, then
+full fine-tune) on that one board — producing a per-board `tuned.onnx` that is served as a
+**50/50 average with the base model**, not as a replacement (`BR_MODEL_TUNED`; see
+[[runbook]]). The bank adapts the *comparison*; this adapts the *model*. They stack.
+
+Measured on the user's own board: per-square 0.938 → **0.969** [0.966–0.972, 3 seeds],
+wrong-type errors 19 → 9, hallucinations 1, occupancy held — and **no catastrophic
+forgetting**: `chesscog_transfer`, an unseen physical set, *gains* (0.819 → 0.856). Live
+`/estimate` reads 63/64 against the base model's 58/64, from a 56-second fine-tune.
+
+> [!important] Session diversity is the lever — frame count is not
+> Three frames from **three different lighting sessions** produce the result above. Frames
+> from a single sitting are worthless for tuning **no matter how many you take** (2 frames /
+> 1 session was the original pre-registration, and it did not validate: 0.935 vs 0.938).
+> This is the same finding as the calibrate-in-your-playing-light tip above, sharpened: what
+> the model needs is *variation*, and one sitting contains none.
+>
+> `calibrate_finetune.py` enforces this — it **refuses** input that does not span ≥3 sessions
+> and quotes the measurement when it does; `--force` overrides loudly.
+
+Two limits on record. Generalization was only ever measured on the same five `user_photos`,
+so this is a per-board win, not a proven general one. And a tuned model **cannot be combined
+with the two-model cascade** — that stack has never been measured, so requesting both is a
+hard startup error rather than a silent guess.
+
 ## The fifth way it went wrong: it ate the eval set
 
 Not a corruption — a measurement failure. `tools/build_exemplar_bank.py` builds the
