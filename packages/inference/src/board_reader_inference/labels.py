@@ -40,6 +40,7 @@ from pathlib import Path
 
 import numpy as np
 
+from board_reader_core.corners import parse_corners
 from board_reader_core.protocol import encode_placement, parse_placement
 
 LABEL_SUFFIX = ".label.json"
@@ -82,21 +83,6 @@ def rotate_square(square: str, k: int) -> str:
     moved = np.rot90(np.arange(64).reshape(8, 8), k)
     rows, cols = np.where(moved == r * 8 + c)
     return f"{'abcdefgh'[int(cols[0])]}{8 - int(rows[0])}"
-
-
-def parse_corners(spec: str) -> np.ndarray:
-    """``x0,y0,...,x3,y3`` -> a 4x2 float32 quad (a8, h8, h1, a1).
-
-    Anything that is not such a string is a ValueError, including ``None`` — a
-    label written before the corner requirement existed carries a null there, and
-    a loader must skip it rather than die on it.
-    """
-    if not isinstance(spec, str):
-        raise ValueError("corners must be a comma-separated string")
-    nums = [float(x) for x in spec.split(",") if x.strip()]
-    if len(nums) != 8:
-        raise ValueError("corners needs 8 comma-separated numbers")
-    return np.array(nums, dtype=np.float32).reshape(4, 2)
 
 
 @dataclass(frozen=True)

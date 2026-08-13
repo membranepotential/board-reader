@@ -26,6 +26,7 @@ import cv2
 import numpy as np
 
 from board_reader_core.boarddetect import detect_board_quad
+from board_reader_core.corners import parse_corners
 from board_reader_core.protocol import START_PLACEMENT
 from board_reader_core.sim import render_board, simulate_angled_view
 
@@ -186,7 +187,7 @@ def cmd_feed(args: argparse.Namespace) -> int:
 
 
 def _parse_corners(spec: str) -> np.ndarray:
-    """Parse ``x0,y0,...,x3,y3`` and refuse a quad that cannot be a board.
+    """Parse ``x0,y0,...,x3,y3`` (core) and refuse a quad that cannot be a board.
 
     The single boundary every ``--corners`` consumer goes through, so the check
     lands before any file is opened and any socket is dialled: a typo'd quad must
@@ -195,12 +196,9 @@ def _parse_corners(spec: str) -> np.ndarray:
     corners actually land on the picture — is checked on the first frame instead.
     """
     try:
-        nums = [float(x) for x in spec.replace(";", ",").split(",") if x.strip()]
+        quad = parse_corners(spec)
     except ValueError as e:
-        raise SystemExit(f"--corners takes numbers: {e}") from e
-    if len(nums) != 8:
-        raise SystemExit("--corners needs 8 numbers: x0,y0,x1,y1,x2,y2,x3,y3")
-    quad = np.array(nums, dtype="float32").reshape(4, 2)
+        raise SystemExit(f"--corners {e}") from e
     defect = check_quad_shape(quad)
     if defect is not None:
         raise SystemExit(f"--corners {defect.message}")

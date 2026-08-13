@@ -4,6 +4,7 @@ Imported by both the edge and the inference node. Contains no node-specific logi
 the L3 position protocol, the L1->L2 wire envelope, and sim helpers.
 """
 
+from board_reader_core.corners import parse_corners
 from board_reader_core.protocol import (
     CLASSES,
     EMPTY_PLACEMENT,
@@ -27,5 +28,6 @@ __all__ = [
     "dist_from_placement",
     "encode_jpeg",
     "iso_utc",
+    "parse_corners",
     "placement_from_dist",
 ]
