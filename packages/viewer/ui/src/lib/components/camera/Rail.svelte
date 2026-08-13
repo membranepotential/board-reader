@@ -4,16 +4,18 @@
    *
    * It used to be an opaque strip beside the picture, and the operator's verdict on
    * it was that the buttons were cramped and the strip ate the frame. So: no strip,
-   * no border, four translucent targets over the picture itself, sized for a thumb.
-   * A right-hand column in landscape with the primary button at the bottom where the
+   * no border, translucent targets over the picture itself, sized for a thumb. A
+   * right-hand column in landscape with the primary button at the bottom where the
    * thumb rests; a bottom row in portrait. One DOM order serves both.
    *
-   * **Four controls, not six.** `detect board` and `rotate labels` moved into the
-   * sheet — the hint line's "look again" already covers a manual detect in the common
-   * case. `rotate labels` comes BACK out here, warn-styled, for the one case that
-   * cannot wait for somebody to find a sheet: an automatic re-detection may have put
-   * a8 on a different physical corner (DESIGN decision #15), and until the operator
-   * says otherwise every reading on the wire is turned.
+   * **Five controls, and a sixth that only appears when it matters.** `detect board`
+   * is out here because a phone at a board needs it often enough that a sheet is too
+   * far — it came back after the first phone test. `rotate labels` did NOT: a
+   * labelling is set once per board, so the sheet is the right home for it. It still
+   * appears here, warn-ringed, for the one case that cannot wait for somebody to find
+   * a sheet — an automatic re-detection may have put a8 on a different physical
+   * corner (DESIGN decision #15), and until the operator says otherwise every reading
+   * on the wire is turned.
    *
    * The nav itself is INERT and only the pills take pointers, so the gaps between
    * them pass touches through to the corner handles now underneath — the picture is
@@ -24,6 +26,8 @@
    */
   interface Props {
     positionShown: boolean;
+    /** Something else already owns the camera and the quad — a detection, a calibration. */
+    detectDisabled: boolean;
     rotateDisabled: boolean;
     /**
      * A re-detection can land the labels on a different physical corner than the
@@ -40,6 +44,7 @@
     streaming: boolean;
     onMore: () => void;
     onPosition: () => void;
+    onDetect: () => void;
     onRotate: () => void;
     onCalibrate: () => void;
     onStream: () => void;
@@ -47,6 +52,7 @@
 
   const {
     positionShown,
+    detectDisabled,
     rotateDisabled,
     rotateAttention,
     calibrateDisabled,
@@ -55,6 +61,7 @@
     streaming,
     onMore,
     onPosition,
+    onDetect,
     onRotate,
     onCalibrate,
     onStream
@@ -65,6 +72,9 @@
   <button class="pill" type="button" onclick={onMore}>more</button>
   <button class="pill" class:active={positionShown} type="button" onclick={onPosition}>
     position
+  </button>
+  <button class="pill" type="button" disabled={detectDisabled} onclick={onDetect}>
+    detect board
   </button>
   {#if rotateAttention}
     <button
@@ -163,6 +173,30 @@
     min-height: 0;
   }
 
+  /* Short landscape stages, in two measured steps. The column's fixed height is
+     `pills x min-height + gaps + padding`, and the stage clips it — so the PRIMARY
+     button is what goes off the bottom, which is the one that must never happen.
+     Measured with six pills (the contextual `rotate labels` is up):
+
+       844x390  6x48 + 6x10 + 8 + 21 = 377   fits
+       812x375  6x48 + 6x10 + 8 + 21 = 377   clips by 2px behind the home indicator
+       568x320  6x48 + 6x10 + 8 +  8 = 364   clips by 44px
+
+     A tighter gap buys 24px, which is what an iPhone X-class landscape needs; the
+     SE class has no home indicator but 55 fewer pixels, so it also drops to the 44px
+     touch floor. Both keep 48px targets on every stage with the room for them. */
+  @media (orientation: landscape) and (max-height: 420px) {
+    .cluster {
+      gap: 6px;
+    }
+  }
+
+  @media (orientation: landscape) and (max-height: 360px) {
+    .cluster .pill {
+      min-height: 44px;
+    }
+  }
+
   @media (orientation: portrait) {
     .cluster {
       top: auto;
@@ -172,15 +206,25 @@
       width: auto;
       height: var(--cluster-h);
       flex-direction: row;
+      /* THREE TO A ROW, always. Six across 390px gives 56px pills, and `position`
+         and `calibrate · N` are both wider than that — and the two arrive together,
+         since the contextual pill only appears once a calibration has already made
+         the calibrate label longer. Rows of three give 119px, which every label
+         fits on one line with room to spare. `--cluster-h` in `Viewfinder.svelte`
+         spells out this two-row height; the two have to move together. */
+      flex-wrap: wrap;
+      align-content: stretch;
       gap: 8px;
       padding: 8px max(8px, env(safe-area-inset-right)) max(8px, env(safe-area-inset-bottom))
         max(8px, env(safe-area-inset-left));
     }
 
     .cluster .pill {
-      flex: 1;
+      /* Minus 18 rather than 16 (two gaps): the couple of spare pixels stop a
+         sub-pixel rounding error from spilling the third pill onto its own row. */
+      flex: 1 1 calc((100% - 18px) / 3);
       min-width: 0;
-      padding: 8px 4px;
+      padding: 8px 6px;
     }
 
     .cluster .spacer {

@@ -603,7 +603,12 @@ export interface PlacedPanel {
  */
 export const PANEL_START: PanelState = { left: null, top: null, width: 220, shown: false };
 
-/** Default park: the top-left corner, clear of the chips above it. */
+/**
+ * Default park: the top-left corner. The top offset is not clearance for anything —
+ * all of the page's chrome is along the bottom now — it is simply an inset that keeps
+ * the panel from looking wedged into the corner, and leaves the a8 handle reachable
+ * when the board fills the frame.
+ */
 const PANEL_PARK_LEFT = 12;
 const PANEL_PARK_TOP = 46;
 
@@ -612,8 +617,9 @@ const PANEL_PARK_TOP = 46;
  * panel parked in the corner of a landscape phone would otherwise be off-screen in
  * portrait, with no way to reach its own drag strip.
  *
- * It parks top-LEFT because the overlay buttons float down the right-hand edge in
- * landscape; the chips own the very top, so the default top clears them.
+ * It parks top-LEFT because that is the emptiest corner of the viewfinder: the
+ * overlay buttons float down the right-hand edge in landscape, and everything the
+ * page says — chips, banner, hint — sits along the bottom.
  *
  * One degree of freedom, on purpose: the WIDTH. The board is a square sized from
  * that single number, because chessground derives its container's height from its

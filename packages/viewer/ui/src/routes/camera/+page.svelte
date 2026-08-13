@@ -753,16 +753,10 @@
   }
 
   /**
-   * Both of the sheet's framing controls close it first. Their entire result is on
-   * the picture — where the handles moved to, which corner now says a8 — and a sheet
-   * covering the bottom of the screen while a detection runs is a control that
-   * appears to do nothing.
+   * The sheet's framing control closes it first. Its entire result is on the picture
+   * — which corner now says a8 — and a sheet covering the bottom of the screen while
+   * that changes is a control that appears to do nothing.
    */
-  function detectFromSheet(): void {
-    sheetOpen = false;
-    void detectCorners();
-  }
-
   function rotateFromSheet(): void {
     sheetOpen = false;
     rotateLabels();
@@ -1063,16 +1057,26 @@
 <svelte:document onvisibilitychange={onVisibilityChange} ondragstart={(e) => e.preventDefault()} />
 
 {#snippet chrome()}
-  <div class="chips">
-    <span class="chip {connTone}">{connDetail}</span>
-    <span class="chip {trackChip.tone}">{trackChip.text}</span>
+  <!-- Everything the page has to SAY lives down here, in one stack. The top of the
+       picture is the part being aimed at a board, and status floating over it was the
+       operator's complaint. One container rather than three floating boxes because
+       the three have to be placed against each other — the chips must not end up
+       under the hint pill on a narrow landscape screen — and a flex row states that
+       once instead of three sets of offsets that agree by luck. -->
+  <div class="bottom-chrome">
+    <div class="chips">
+      <span class="chip {connTone}">{connDetail}</span>
+      <span class="chip {trackChip.tone}">{trackChip.text}</span>
+    </div>
+    <div class="messages">
+      <Banner {banner} />
+      <HintBar {hint} onLookAgain={() => void detectCorners()} />
+    </div>
   </div>
-
-  <Banner {banner} />
-  <HintBar {hint} onLookAgain={() => void detectCorners()} />
 
   <Rail
     positionShown={panel.shown}
+    detectDisabled={camera.kind !== 'live' || activity.kind !== 'idle'}
     rotateDisabled={camera.kind !== 'live'}
     rotateAttention={labelsNeedCheck}
     calibrateDisabled={calibrateBlock !== null}
@@ -1082,6 +1086,7 @@
     {streaming}
     onMore={() => (sheetOpen = !sheetOpen)}
     onPosition={togglePanel}
+    onDetect={() => void detectCorners()}
     onRotate={rotateLabels}
     onCalibrate={() => void runCalibrate()}
     onStream={toggleStreaming}
@@ -1122,7 +1127,6 @@
     open={sheetOpen}
     {boardId}
     {tracking}
-    detectDisabled={camera.kind !== 'live' || activity.kind !== 'idle'}
     rotateDisabled={camera.kind !== 'live'}
     {lenses}
     {lensId}
@@ -1137,7 +1141,6 @@
     onBoardId={changeBoard}
     onToggleTracking={toggleTracking}
     onResetCrop={resetCrop}
-    onDetect={detectFromSheet}
     onRotate={rotateFromSheet}
     onLens={(id, label) => void switchLens(id, label)}
   />
@@ -1198,18 +1201,68 @@
     cursor: default;
   }
 
-  /* Inert throughout, so a chip can never intercept a corner handle underneath it. */
-  .chips {
+  /* The one bottom strip: chips on the left, messages centred in what is left of it.
+     Inert throughout, so nothing here can intercept a corner handle underneath — only
+     the hint's "look again" opts back in.
+
+     It dodges the button cluster the same way the messages always have: `--cluster-w`
+     in landscape, `--cluster-h` in portrait. The home-indicator inset is budgeted
+     ONCE, and which rule budgets it depends on the orientation — in landscape the
+     cluster reserves no height so this strip clears the indicator itself; in portrait
+     `--cluster-h` already contains it, and adding it again would float the whole
+     strip a second inset above the buttons. */
+  .bottom-chrome {
     position: absolute;
-    left: 0;
-    top: 0;
     z-index: 7;
     pointer-events: none;
+    left: 0;
+    right: var(--cluster-w);
+    bottom: max(10px, env(safe-area-inset-bottom));
     display: flex;
+    align-items: flex-end;
+    gap: 10px;
+    padding: 0 12px 0 calc(12px + env(safe-area-inset-left));
+  }
+
+  /* Portrait has width to spare and height to lose, so the strip stacks instead:
+     `column-reverse` keeps the chips at the bottom (nearest the button row) with the
+     messages above them, each still aligned the way it is in landscape. */
+  @media (orientation: portrait) {
+    .bottom-chrome {
+      bottom: calc(var(--cluster-h) + 10px);
+      flex-direction: column-reverse;
+      align-items: stretch;
+      gap: 8px;
+    }
+  }
+
+  /* A column, not a row: two chips side by side are ~230px, which on a landscape
+     phone leaves the sentence beside them nothing to be centred in. Portrait puts
+     them back in a row — there the constraint is vertical, not horizontal. */
+  .chips {
+    flex: 0 0 auto;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 6px;
+  }
+
+  @media (orientation: portrait) {
+    .chips {
+      flex-direction: row;
+      flex-wrap: wrap;
+    }
+  }
+
+  /* Banner above hint, both centred in whatever the chips leave. `min-width: 0` so a
+     long sentence wraps instead of pushing the chips off the screen. */
+  .messages {
+    flex: 1 1 auto;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
     gap: 8px;
-    flex-wrap: wrap;
-    padding: 10px 10px 10px calc(10px + env(safe-area-inset-left));
-    padding-top: calc(10px + env(safe-area-inset-top));
   }
 
   .chip {

@@ -12,8 +12,6 @@
     open: boolean;
     boardId: string;
     tracking: boolean;
-    /** Something else already owns the camera and the quad — a detection, a calibration. */
-    detectDisabled: boolean;
     rotateDisabled: boolean;
     lenses: readonly Lens[];
     lensId: string | null;
@@ -29,8 +27,7 @@
     onBoardId: (id: string) => void;
     onToggleTracking: () => void;
     onResetCrop: () => void;
-    /** Both close the sheet on the way out: their whole result is on the picture. */
-    onDetect: () => void;
+    /** Closes the sheet on the way out: its whole result is on the picture. */
     onRotate: () => void;
     onLens: (id: string, label: string) => void;
   }
@@ -39,7 +36,6 @@
     open,
     boardId,
     tracking,
-    detectDisabled,
     rotateDisabled,
     lenses,
     lensId,
@@ -54,7 +50,6 @@
     onBoardId,
     onToggleTracking,
     onResetCrop,
-    onDetect,
     onRotate,
     onLens
   }: Props = $props();
@@ -76,14 +71,12 @@
   </div>
 
   <h2>framing</h2>
-  <!-- These two used to sit on the viewfinder itself. They are here because they are
-       rare: the page finds the board by itself, the hint line's "look again" covers
-       the common manual detect, and a labelling is set once per board. `rotate labels`
-       still appears out there, warn-styled, when a re-detection may have moved it. -->
+  <!-- `rotate labels` and not `detect board`: a labelling is set once per board, so
+       this is the right distance away, while detect turned out to be wanted often
+       enough at a real board that it earned a pill back on the viewfinder. This one
+       still appears out there too, warn-ringed, when a re-detection may have moved
+       the labels — that case cannot wait for somebody to find a sheet. -->
   <div class="actions">
-    <button class="secondary" type="button" disabled={detectDisabled} onclick={onDetect}>
-      detect board
-    </button>
     <button class="secondary" type="button" disabled={rotateDisabled} onclick={onRotate}>
       rotate labels
     </button>
@@ -220,7 +213,11 @@
     background: var(--panel);
     border-top: 1px solid var(--line);
     border-radius: 14px 14px 0 0;
-    padding: 10px 16px calc(24px + env(safe-area-inset-bottom));
+    /* The sheet spans edge to edge, so in landscape it runs straight under the sensor
+       housing and the first 44-59 px of every line is unreadable. Which side that is
+       depends on which way the phone was turned, so both are budgeted. */
+    padding: 10px max(16px, env(safe-area-inset-right, 0px))
+      calc(24px + env(safe-area-inset-bottom)) max(16px, env(safe-area-inset-left, 0px));
     transform: translateY(101%);
     transition: transform 190ms ease;
     pointer-events: none;

@@ -2,6 +2,11 @@
   /**
    * What the node just said, over the picture. Inert throughout, so it can never
    * intercept a corner handle underneath it.
+   *
+   * It positions NOTHING: it is a block in the page's bottom chrome stack, which owns
+   * where the messages sit and what they dodge. It used to float top-centre, and the
+   * operator's verdict was that the top of the picture — the part being aimed — must
+   * stay clean.
    */
   import type { BannerMessage } from './state';
 
@@ -18,15 +23,8 @@
 
 <style>
   .banner {
-    position: absolute;
-    z-index: 7;
     pointer-events: none;
-    top: calc(44px + env(safe-area-inset-top));
-    /* Centred in what the button cluster leaves, not in the stage: the picture runs
-       under the cluster now, but a sentence rendered under a pill is unreadable. */
-    left: calc((100% - var(--cluster-w)) / 2);
-    transform: translateX(-50%);
-    width: min(460px, calc(100% - var(--cluster-w) - 24px));
+    max-width: min(460px, 100%);
     font-size: 13px;
     padding: 9px 12px;
     border-radius: 8px;

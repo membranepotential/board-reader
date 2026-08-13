@@ -193,7 +193,12 @@
   @media (orientation: portrait) {
     .camera-stage {
       --cluster-w: 0px;
-      --cluster-h: calc(64px + max(8px, env(safe-area-inset-bottom)));
+      /* The portrait row wraps to TWO rows of three (`Rail.svelte` says why), so this
+         is written as the sum it has to equal rather than as a total: top padding,
+         two pill rows, the row gap between them, and the home indicator. Getting this
+         wrong does not clip anything — it silently floats the bottom chrome at the
+         wrong distance from the buttons, which is why the arithmetic is spelled out. */
+      --cluster-h: calc(8px + 48px + 8px + 48px + max(8px, env(safe-area-inset-bottom)));
     }
   }
 

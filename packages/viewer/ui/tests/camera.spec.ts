@@ -28,16 +28,25 @@ import { FakeViewerSocket, positionEvent, stubJson } from './helpers/node';
 
 const LANDSCAPE = { width: 844, height: 390 };
 const PORTRAIT = { width: 390, height: 844 };
+/**
+ * The shortest landscape stage a phone still presents — an SE-class device with no
+ * home indicator to spend pixels on, and 70 fewer of them than the tall iPhones. It
+ * is the stage the button column runs out of room on first.
+ */
+const SHORT_LANDSCAPE = { width: 568, height: 320 };
 
 /**
- * The four controls that are always on the viewfinder, in DOM order — one order
- * serves both orientations. `detect board` and `rotate labels` live in the sheet;
- * `rotate labels` reappears here only when a re-detection may have moved the labels.
+ * The five controls that are always on the viewfinder, in DOM order — one order
+ * serves both orientations. `detect board` came back out here after the first phone
+ * test; a sheet was too far away for something wanted that often.
  */
-const CONTROLS = ['more', 'position', 'calibrate', 'start'];
+const CONTROLS = ['more', 'position', 'detect board', 'calibrate', 'start'];
 
-/** These two moved into the sheet, and must not be back out on the picture. */
-const SHEET_ONLY = ['detect board', 'rotate labels'];
+/**
+ * `rotate labels` lives in the sheet — a labelling is set once per board. It appears
+ * out here ONLY when a re-detection may have moved it, which is its own test below.
+ */
+const SHEET_ONLY = ['rotate labels'];
 
 /**
  * A finger is about 9 mm across; 44 px is the smallest target Apple and Google both
@@ -199,6 +208,63 @@ async function boxOf(locator: Locator): Promise<Box> {
 }
 
 /**
+ * Every pill is reachable, readable, and on the stage.
+ *
+ * One helper for every pill count and every stage size, because the cluster's two
+ * failure modes are the same shape whichever it is: a label wider than its pill
+ * (silently clipped — a 48 px target can still be unreadable), or a column taller
+ * than the stage, which puts the PRIMARY button under the fold since it sits at the
+ * bottom. Both have shipped here.
+ */
+async function assertPillsFit(page: Page, labels: readonly string[]): Promise<void> {
+  const stage = await boxOf(page.locator('.camera-stage'));
+  const buttons = page.locator('nav.cluster button');
+  await expect(buttons).toHaveCount(labels.length);
+  await expect(buttons).toHaveText(labels.map((label) => new RegExp(`^${label}`)));
+
+  for (let i = 0; i < labels.length; i++) {
+    const box = await boxOf(buttons.nth(i));
+    expect(box.height, `${labels[i]} height`).toBeGreaterThanOrEqual(MIN_TOUCH_PX);
+    expect(box.width, `${labels[i]} width`).toBeGreaterThanOrEqual(MIN_TOUCH_PX);
+    const clipped = await buttons.nth(i).evaluate((el) => el.scrollWidth - el.clientWidth);
+    expect(clipped, `${labels[i]} label is clipped`).toBeLessThanOrEqual(1);
+    expect(box.x, `${labels[i]} starts off-stage`).toBeGreaterThanOrEqual(stage.x - 1);
+    expect(box.x + box.width, `${labels[i]} runs off the side`).toBeLessThanOrEqual(
+      stage.x + stage.width + 1
+    );
+    expect(box.y, `${labels[i]} runs off the top`).toBeGreaterThanOrEqual(stage.y - 1);
+    expect(box.y + box.height, `${labels[i]} runs off the bottom`).toBeLessThanOrEqual(
+      stage.y + stage.height + 1
+    );
+  }
+}
+
+/**
+ * Calibrate once against a reply that turns the labels, and return the six labels the
+ * cluster then carries.
+ *
+ * The two things that make the cluster widest arrive TOGETHER and cannot be separated:
+ * a successful calibration lengthens `calibrate` to `calibrate · 1`, and a
+ * `label_rotation` in the same reply is what puts the sixth pill on screen. So the
+ * fullest cluster is also the one with the longest label in it.
+ */
+async function calibrateIntoRotateWarning(page: Page): Promise<readonly string[]> {
+  await stubJson(page, '**/api/calibrate**', {
+    classes_calibrated: 13,
+    backbone: 'resnet18',
+    saved: null,
+    exemplars: 64,
+    label_rotation: 1
+  });
+  page.on('dialog', (dialog) => void dialog.accept());
+  await page.locator('nav.cluster button', { hasText: 'calibrate' }).click();
+  await expect(page.locator('nav.cluster button', { hasText: 'rotate labels' })).toBeVisible({
+    timeout: 25_000
+  });
+  return ['more', 'position', 'detect board', 'rotate labels', 'calibrate · 1', 'start'];
+}
+
+/**
  * Wait for the fake camera to actually deliver a frame.
  *
  * `.picture` is sized from the video's own dimensions, so it has no box at all until
@@ -206,7 +272,11 @@ async function boxOf(locator: Locator): Promise<Box> {
  */
 async function liveViewfinder(page: Page): Promise<void> {
   await expect
-    .poll(async () => (await page.locator('.picture').boundingBox())?.width ?? 0)
+    .poll(async () => (await page.locator('.picture').boundingBox())?.width ?? 0, {
+      // Generous on purpose: several specs now drive a camera at once, and a
+      // contended machine can take a while to hand out the first frame.
+      timeout: 20_000
+    })
     .toBeGreaterThan(0);
 }
 
@@ -257,33 +327,9 @@ test.describe('the viewfinder', () => {
       await page.setViewportSize(viewport);
       await liveViewfinder(page);
 
+      await assertPillsFit(page, CONTROLS);
+
       const buttons = page.locator('nav.cluster button');
-      await expect(buttons).toHaveCount(CONTROLS.length);
-      await expect(buttons).toHaveText(CONTROLS.map((label) => new RegExp(`^${label}`)));
-
-      for (let i = 0; i < CONTROLS.length; i++) {
-        const box = await boxOf(buttons.nth(i));
-        expect(box.height, `${CONTROLS[i]} height`).toBeGreaterThanOrEqual(MIN_TOUCH_PX);
-        expect(box.width, `${CONTROLS[i]} width`).toBeGreaterThanOrEqual(MIN_TOUCH_PX);
-      }
-
-      // Inside the stage and therefore on screen. (Whether a given button actually
-      // covers picture rather than letterbox depends on the camera's aspect ratio —
-      // the fake device is 4:3, a phone is 16:9 — so that is not the assertion. What
-      // makes them floating rather than a rail is that the picture is fitted to the
-      // whole stage, which the test above measures.)
-      const stage = await boxOf(page.locator('.camera-stage'));
-      for (let i = 0; i < CONTROLS.length; i++) {
-        const box = await boxOf(buttons.nth(i));
-        expect(box.x, `${CONTROLS[i]} starts off-stage`).toBeGreaterThanOrEqual(stage.x - 1);
-        expect(box.x + box.width, `${CONTROLS[i]} runs off-stage`).toBeLessThanOrEqual(
-          stage.x + stage.width + 1
-        );
-        expect(box.y + box.height, `${CONTROLS[i]} runs off-stage`).toBeLessThanOrEqual(
-          stage.y + stage.height + 1
-        );
-      }
-
       const cluster = await page.locator('nav.cluster').evaluate((el) => {
         const style = getComputedStyle(el);
         return {
@@ -334,28 +380,43 @@ test.describe('the viewfinder', () => {
     expect(primary.y + primary.height).toBeGreaterThan(LANDSCAPE.height - 60);
   });
 
-  test('portrait lays the same controls out as a bottom row', async ({ page }) => {
+  test('portrait lays the same controls out three to a row', async ({ page }) => {
     await openCamera(page);
     await liveViewfinder(page);
     await page.setViewportSize(PORTRAIT);
 
     const buttons = page.locator('nav.cluster button');
-    const first = await boxOf(buttons.first());
-    const last = await boxOf(buttons.last());
-    expect(first.y).toBeCloseTo(last.y, 0);
-    expect(last.x).toBeGreaterThan(first.x);
+    const boxes = await Promise.all(
+      Array.from({ length: CONTROLS.length }, (_, i) => boxOf(buttons.nth(i)))
+    );
+    const [a, b, c, d] = boxes as [Box, Box, Box, Box];
+
+    // Three across, then a wrap. One row of five would leave 68 px a pill, which is
+    // narrower than `position` and `calibrate · N` need.
+    expect(a.y).toBeCloseTo(b.y, 0);
+    expect(b.y).toBeCloseTo(c.y, 0);
+    expect(c.x).toBeGreaterThan(a.x);
+    expect(d.y, 'the fourth control did not wrap').toBeGreaterThanOrEqual(a.y + a.height - 1);
+    expect(d.x).toBeCloseTo(a.x, 0);
+
+    // And the block still sits against the bottom of the stage.
+    const last = boxes[boxes.length - 1] as Box;
     expect(last.y + last.height).toBeGreaterThan(PORTRAIT.height - 60);
   });
 
-  test('detect board and rotate labels are in the sheet, not on the picture', async ({ page }) => {
+  test('rotate labels is in the sheet; detect board is not', async ({ page }) => {
     await openCamera(page);
     await liveViewfinder(page);
 
     for (const label of SHEET_ONLY) {
       await expect(page.locator('nav.cluster button', { hasText: label })).toHaveCount(0);
     }
+    // The one that came back out: a phone at a board reaches for this often enough
+    // that a sheet was the wrong home, and it must not be in both places at once.
+    await expect(page.locator('nav.cluster button', { hasText: 'detect board' })).toHaveCount(1);
 
     await page.locator('nav.cluster button', { hasText: 'more' }).click();
+    await expect(page.locator('.sheet button', { hasText: 'detect board' })).toHaveCount(0);
     for (const label of SHEET_ONLY) {
       const button = page.locator('.sheet button', { hasText: label });
       await expect(button).toBeVisible();
@@ -363,10 +424,60 @@ test.describe('the viewfinder', () => {
       expect((await boxOf(button)).height).toBeGreaterThanOrEqual(MIN_TOUCH_PX);
     }
 
-    // Their whole result is on the picture, so pressing one closes the sheet.
+    // Its whole result is on the picture, so pressing it closes the sheet.
     await page.locator('.sheet button', { hasText: 'rotate labels' }).click();
     await expect(page.locator('.sheet')).not.toHaveClass(/open/);
   });
+
+  test('rotate labels appears as a sixth pill when a reading may be turned', async ({ page }) => {
+    // The node corrects the labelling for its own use but cannot reach back and fix
+    // the corners this page keeps streaming, so until the operator turns them every
+    // reading on the wire is rotated. That case cannot wait for somebody to find a
+    // sheet — which is the whole reason this control has two homes.
+    await openCamera(page);
+    await liveViewfinder(page);
+
+    await expect(page.locator('nav.cluster button', { hasText: 'rotate labels' })).toHaveCount(0);
+    await calibrateIntoRotateWarning(page);
+
+    const rotate = page.locator('nav.cluster button', { hasText: 'rotate labels' });
+    // Warn-ringed, not merely present: it has to be impossible to miss.
+    const ring = await rotate.evaluate((el) => getComputedStyle(el).boxShadow);
+    expect(ring).toContain('255, 207, 51');
+
+    // Pressing it IS the acknowledgement, so it goes away again.
+    await rotate.click();
+    await expect(page.locator('nav.cluster button', { hasText: 'rotate labels' })).toHaveCount(0);
+  });
+
+  /**
+   * The fullest cluster on the smallest stages. Both of the cases below were real
+   * before they were tests: six pills across a 390 px portrait row clipped `position`
+   * and `calibrate · 1`, and six down a 320 px landscape column pushed `start` 36 px
+   * under the fold — where `overflow: hidden` on the stage simply swallowed it.
+   */
+  for (const [name, viewport] of [
+    ['landscape', LANDSCAPE],
+    ['portrait', PORTRAIT],
+    ['a short landscape stage', SHORT_LANDSCAPE]
+  ] as const) {
+    test(`all six pills fit, labels and all, in ${name}`, async ({ page }) => {
+      await openCamera(page);
+      await page.setViewportSize(viewport);
+      await liveViewfinder(page);
+
+      const labels = await calibrateIntoRotateWarning(page);
+      await assertPillsFit(page, labels);
+
+      // Said explicitly because it is the one that matters most and the one the
+      // column geometry sacrifices first: start/stop lives at the far end.
+      const primary = await boxOf(page.locator('nav.cluster button').last());
+      const stage = await boxOf(page.locator('.camera-stage'));
+      expect(primary.y + primary.height, 'the primary control is under the fold').toBeLessThanOrEqual(
+        stage.y + stage.height + 1
+      );
+    });
+  }
 
   test('calibrate is reachable handheld, and posts the best frame of a burst', async ({ page }) => {
     await openCamera(page);
@@ -486,6 +597,213 @@ test.describe('the viewfinder', () => {
 });
 
 /**
+ * Everything the page has to SAY sits along the bottom.
+ *
+ * The operator's verdict on the first build was that status floating over the top of
+ * the picture is clutter across the very thing being aimed at a board. So the chips,
+ * the banner and the hint moved into one bottom strip — and the three of them now
+ * have to be placed against EACH OTHER, which is what these measure.
+ */
+test.describe('the bottom chrome', () => {
+  /** Everything the page says, in the order it is stacked. */
+  const SAYS = ['.chips', '.banner', '.hint-bar'] as const;
+
+  /**
+   * A real banner through the page's own code path: `/api/detect` is unstubbed here,
+   * so it 404s against the preview server and a manual detect produces the warn
+   * banner. Injecting one would not carry Svelte's scoped styles and would measure
+   * nothing.
+   *
+   * Retried as a whole, because a manual detect is a NO-OP while an automatic one is
+   * in flight (`activity` admits one owner) and an automatic miss is deliberately
+   * silent — so a single click can land in a window where nothing at all happens.
+   */
+  async function withBanner(page: Page): Promise<void> {
+    const detect = page.locator('nav.cluster button', { hasText: 'detect board' });
+    await expect(async () => {
+      await expect(detect).toBeEnabled({ timeout: 2000 });
+      await detect.click();
+      // Long enough that a slow answer is waited out rather than retried: a retry
+      // re-encodes and re-posts a 1600 px JPEG, and half a dozen specs are driving
+      // cameras at once. The retry is a net for the no-op case, not the normal path.
+      await expect(page.locator('.banner')).toBeVisible({ timeout: 8000 });
+    }).toPass({ timeout: 25_000 });
+  }
+
+  for (const [name, viewport] of [
+    ['landscape', LANDSCAPE],
+    ['portrait', PORTRAIT]
+  ] as const) {
+    test(`nothing the page says is at the top of the picture in ${name}`, async ({ page }) => {
+      await openCamera(page);
+      await page.setViewportSize(viewport);
+      await liveViewfinder(page);
+      await withBanner(page);
+
+      // The bottom third, not merely the bottom half: "clean" means the operator's
+      // eye can stay on the board, and half a screen of status still crosses it.
+      const stage = await boxOf(page.locator('.camera-stage'));
+      const topOfBottomThird = stage.y + (stage.height * 2) / 3;
+      for (const selector of SAYS) {
+        const box = await boxOf(page.locator(selector));
+        expect(box.y, `${selector} reaches above the bottom third`).toBeGreaterThanOrEqual(
+          topOfBottomThird
+        );
+        expect(box.y + box.height, `${selector} runs off the stage`).toBeLessThanOrEqual(
+          stage.y + stage.height + 1
+        );
+      }
+
+      // And clear of the controls: in portrait the cluster owns the very bottom, so
+      // "along the bottom" has to mean above it rather than behind it.
+      const firstPill = await boxOf(page.locator('nav.cluster button').first());
+      const strip = await boxOf(page.locator('.bottom-chrome'));
+      if (viewport === PORTRAIT) {
+        expect(strip.y + strip.height, 'the strip runs into the button row').toBeLessThanOrEqual(
+          firstPill.y + 1
+        );
+      } else {
+        const primary = await boxOf(page.locator('nav.cluster button').last());
+        expect(strip.x + strip.width, 'the strip runs under the column').toBeLessThanOrEqual(
+          primary.x + 1
+        );
+      }
+    });
+  }
+
+  test('the banner stacks above the hint and never over it', async ({ page }) => {
+    await openCamera(page);
+    await liveViewfinder(page);
+    // Both visible at once is the case worth measuring: the hint is up because the
+    // board has not been framed, and the banner arrives on top of it.
+    await expect(page.locator('.hint-bar')).toBeVisible({ timeout: 20_000 });
+    await withBanner(page);
+
+    const banner = await boxOf(page.locator('.banner'));
+    const hint = await boxOf(page.locator('.hint-bar > span'));
+    expect(banner.y + banner.height, 'the banner overlaps the hint').toBeLessThanOrEqual(hint.y + 1);
+    // Stacked, not merely ordered: a gap this size means they are in one flex column
+    // rather than two absolutely-positioned boxes that happen to miss each other.
+    expect(hint.y - (banner.y + banner.height)).toBeLessThanOrEqual(16);
+  });
+
+  test('the chips keep out of the messages and out of the buttons', async ({ page }) => {
+    await openCamera(page);
+    await liveViewfinder(page);
+    await expect(page.locator('.hint-bar')).toBeVisible({ timeout: 20_000 });
+    await withBanner(page);
+
+    // Landscape is where this bites: the chips are ~230 px of text and the hint pill
+    // is centred in what is left, so the two share one row.
+    const chips = await boxOf(page.locator('.chips'));
+    const hint = await boxOf(page.locator('.hint-bar > span'));
+    const banner = await boxOf(page.locator('.banner'));
+    expect(chips.x + chips.width, 'the chips run under the hint pill').toBeLessThanOrEqual(
+      hint.x + 1
+    );
+    expect(chips.x + chips.width, 'the chips run under the banner').toBeLessThanOrEqual(
+      banner.x + 1
+    );
+
+    // And the whole strip stops short of the button column.
+    const primary = await boxOf(page.locator('nav.cluster button').last());
+    const strip = await boxOf(page.locator('.bottom-chrome'));
+    expect(strip.x + strip.width, 'the bottom strip runs under the buttons').toBeLessThanOrEqual(
+      primary.x + 1
+    );
+  });
+
+  test('portrait stacks the strip instead of sharing a row', async ({ page }) => {
+    await openCamera(page);
+    await page.setViewportSize(PORTRAIT);
+    await liveViewfinder(page);
+    await expect(page.locator('.hint-bar')).toBeVisible({ timeout: 20_000 });
+    await withBanner(page);
+
+    // 390 px of width cannot carry the chips AND a readable sentence side by side, so
+    // portrait puts the chips under the messages rather than beside them.
+    const chips = await boxOf(page.locator('.chips'));
+    const hint = await boxOf(page.locator('.hint-bar > span'));
+    expect(chips.y, 'portrait still puts the chips beside the hint').toBeGreaterThanOrEqual(
+      hint.y + hint.height - 1
+    );
+    // And it gets the whole width to be centred in: in portrait the button cluster
+    // reserves height (`--cluster-h`), never width, so nothing is inset from the right.
+    const stage = await boxOf(page.locator('.camera-stage'));
+    const strip = await boxOf(page.locator('.bottom-chrome'));
+    expect(strip.width).toBeCloseTo(stage.width, 0);
+
+    // Still above the button row.
+    const firstPill = await boxOf(page.locator('nav.cluster button').first());
+    expect(chips.y + chips.height).toBeLessThanOrEqual(firstPill.y + 1);
+  });
+
+  test('everything the page says stays inert, except the one way back', async ({ page }) => {
+    await openCamera(page);
+    await liveViewfinder(page);
+    await withBanner(page);
+
+    // A status line that eats a touch is a corner handle the operator cannot reach.
+    for (const selector of ['.bottom-chrome', ...SAYS]) {
+      expect(
+        await page.locator(selector).evaluate((el) => getComputedStyle(el).pointerEvents),
+        `${selector} takes pointers`
+      ).toBe('none');
+    }
+  });
+
+  test('"look again" is the one thing down here that can be pressed', async ({ page }) => {
+    // Once automatic detection gives up, this button is the ONLY way back other than
+    // dragging a handle onto the board — and it lives inside a chrome stack that is
+    // now `pointer-events: none` from the strip down, so it opts back in through a
+    // single rule that nothing else would fail loudly for. It has shipped broken here
+    // before (at 31 px, unreachable on a phone), which is why it is worth the wait.
+    //
+    // Reaching the give-up state costs real time and cannot be shortened: the page
+    // gives up after four misses spaced by its own back-off, and those gaps are
+    // measured against `performance.now()`. Attempts land at roughly 2.5 s, 10.5 s,
+    // 26.5 s and 58.5 s (AUTO_SETTLE_MS then AUTO_BACKOFF_MS), so the whole thing is
+    // a minute of wall clock. A manual press cannot be used to hurry it along —
+    // `detectCorners` resets the counter precisely so that asking again is a fresh
+    // start.
+    test.setTimeout(120_000);
+
+    await FakeViewerSocket.install(page);
+    // A quad the page will refuse: `checkQuadShape` rejects a sliver, so every
+    // attempt is a miss, and a still scene keeps the stability gate open so the
+    // attempts actually fire on schedule.
+    await stubJson(page, '**/api/detect**', {
+      corners: [
+        [10, 10],
+        [1200, 12],
+        [1201, 14],
+        [11, 12]
+      ]
+    });
+    await drawnBoardCamera(page);
+    await page.goto('/camera');
+    await liveViewfinder(page);
+
+    const lookAgain = page.locator('.hint-bar button');
+    await expect(lookAgain).toBeVisible({ timeout: 90_000 });
+    expect(
+      await lookAgain.evaluate((el) => getComputedStyle(el).pointerEvents),
+      'the escape hatch inherited the strip’s inertness'
+    ).toBe('auto');
+    // 44 px, the touch floor — the exact regression that shipped once.
+    const box = await boxOf(lookAgain);
+    expect(box.height, 'the escape hatch is not thumb-sized').toBeGreaterThanOrEqual(MIN_TOUCH_PX);
+
+    // And it really does ask again: a press puts a detect on the wire.
+    const asked = page.waitForRequest(
+      (request) => request.url().includes('/api/detect') && request.method() === 'POST'
+    );
+    await lookAgain.click();
+    await asked;
+  });
+});
+
+/**
  * The notch, driven for real.
  *
  * `viewport-fit=cover` (app.html) is what makes `env(safe-area-inset-*)` non-zero on a
@@ -565,9 +883,10 @@ test.describe('safe areas', () => {
     const chip = await boxOf(page.locator('.chip').first());
     expect(chip.x).toBeGreaterThanOrEqual(stage.x + NOTCH_PX);
 
-    // The hint line is centred, so what is asserted about it is its own gutter.
+    // The messages are centred, so what is asserted about them is the strip's own
+    // left gutter — the one thing the chips are also aligned against.
     const gutter = await page
-      .locator('.hint-bar')
+      .locator('.bottom-chrome')
       .evaluate((el) => parseFloat(getComputedStyle(el).paddingLeft));
     expect(gutter).toBeGreaterThanOrEqual(NOTCH_PX);
   });
@@ -624,6 +943,35 @@ test.describe('safe areas', () => {
     const flat = await gap();
     await withNotch(page, 'right');
     expect(await gap(), 'the hint counts the home indicator a second time').toBeCloseTo(flat, 0);
+  });
+
+  test('the sheet keeps its text out from under the notch', async ({ page }) => {
+    // The sheet spans edge to edge, so in landscape it runs straight under the sensor
+    // housing and the first 44-59 px of every line is unreadable — which is what the
+    // operator met on a real phone. Which side depends on which way it was turned, so
+    // both are exercised, and both are measured as the DIFFERENCE the inset makes.
+    await openCamera(page);
+    await liveViewfinder(page);
+    await page.locator('nav.cluster button', { hasText: 'more' }).click();
+
+    const heading = page.locator('.sheet h2.title');
+    const flat = await boxOf(heading);
+    const stage = await boxOf(page.locator('.camera-stage'));
+
+    await withNotch(page, 'left');
+    const shifted = await boxOf(heading);
+    expect(shifted.x, 'the sheet text is behind a left-hand notch').toBeGreaterThanOrEqual(
+      stage.x + NOTCH_PX
+    );
+    expect(shifted.x - flat.x).toBeCloseTo(NOTCH_PX - 16, 0);
+
+    // A right-hand notch pulls the far edge in instead.
+    await withNotch(page, 'right');
+    const close = page.locator('.sheet .grab button');
+    const box = await boxOf(close);
+    expect(box.x + box.width, 'the close button is behind a right-hand notch').toBeLessThanOrEqual(
+      stage.x + stage.width - NOTCH_PX + 1
+    );
   });
 
   test('the sheet clears the home indicator', async ({ page }) => {
