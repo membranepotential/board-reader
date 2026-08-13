@@ -284,6 +284,54 @@ def _driver(before: Violation, after: Violation) -> Constraint:
     )[2]
 
 
+def _kings_flip(
+    labels: list[int],
+    log_p: np.ndarray,
+    t: Tally,
+    excess: Violation,
+) -> tuple[tuple[float, int, int], Tally, Violation] | None:
+    """The surplus-kings flip, chosen by king *evidence* rather than flip cost.
+
+    Two argmax kings of one colour ask "which square holds the real king?", and
+    the margin the generic greedy minimises answers a different question — "where
+    is switching to the runner-up cheapest?". Its ``log p(k) - log p(q)`` is
+    dominated by the log of a tiny queen tail, which is noise. Comparing what the
+    estimator actually saw, ``p(king)`` per square, and demoting the weakest
+    king is both stabler and more often right: on the 08-13 phone-trial replay
+    (628 two-king frames, queen d8/king e8 ground truth) the margin rule demoted
+    the true king 54.8% of the time and swapped its choice 139 times; lowest
+    ``p(king)`` was wrong 26.6% with 61 swaps. Temporal smoothing of the
+    distributions fixes neither (the misread is systematic), so this choice of
+    *evidence* is the decoder's whole lever.
+
+    The demoted square still goes to its most probable class among those that
+    strictly reduce the total violation (so relieving KINGS cannot silently
+    worsen another constraint), and the recorded cost stays the margin given up,
+    comparable with every other flip. Returns ``None`` when no kings are in
+    excess or no target class helps — the generic greedy then decides.
+    """
+    if not excess.kings:
+        return None
+    for army in _ARMY:
+        king = CLASS_INDEX[army[5]]
+        if t.per_class[king] <= 1:
+            continue
+        weakest = min(
+            (i for i, current in enumerate(labels) if current == king),
+            key=lambda i: (float(log_p[i, king]), i),
+        )
+        for new in sorted(
+            (n for n in range(NUM_CLASSES) if n != king),
+            key=lambda n: (-float(log_p[weakest, n]), n),
+        ):
+            candidate = _tally_with(t, weakest, king, new)
+            after = violation(candidate)
+            if after.total < excess.total:
+                cost = float(log_p[weakest, king] - log_p[weakest, new])
+                return (cost, weakest, new), candidate, after
+    return None
+
+
 def decode(
     square_dist: np.ndarray,
     *,
@@ -296,10 +344,11 @@ def decode(
     board that already satisfies every constraint comes back as its own argmax
     with no flips.
 
-    Each iteration enumerates all 64x12 single-square relabels, keeps those that
-    *strictly* reduce :func:`violation`, and applies the cheapest in nats, with
-    ``(cost, square index, class index)`` as a total order so the same input always
-    yields the same output. Since the violation is a non-negative integer that
+    Each iteration first offers surplus kings their own, evidence-ordered flip
+    (:func:`_kings_flip`); otherwise it enumerates all 64x12 single-square
+    relabels, keeps those that *strictly* reduce :func:`violation`, and applies
+    the cheapest in nats, with ``(cost, square index, class index)`` as a total
+    order so the same input always yields the same output. Since the violation is a non-negative integer that
     strictly decreases per accepted flip, the loop terminates; if no single flip
     can help (or ``max_flips`` binds) the best board so far is returned with the
     surviving excess in :attr:`PriorDecode.residual`. It never raises on a
@@ -330,18 +379,22 @@ def decode(
     excess = violation(t)
     flips: list[Flip] = []
     while not excess.satisfied and len(flips) < max_flips:
-        best: tuple[tuple[float, int, int], Tally, Violation] | None = None
-        for index, current in enumerate(labels):
-            for new in range(NUM_CLASSES):
-                if new == current:
-                    continue
-                candidate = _tally_with(t, index, current, new)
-                after = violation(candidate)
-                if after.total >= excess.total:
-                    continue
-                key = (float(log_p[index, current] - log_p[index, new]), index, new)
-                if best is None or key < best[0]:
-                    best = (key, candidate, after)
+        # Surplus kings are resolved by evidence first (see _kings_flip): which
+        # square keeps the king is not a cost question, and the generic margin
+        # below answers it with tail noise.
+        best = _kings_flip(labels, log_p, t, excess)
+        if best is None:
+            for index, current in enumerate(labels):
+                for new in range(NUM_CLASSES):
+                    if new == current:
+                        continue
+                    candidate = _tally_with(t, index, current, new)
+                    after = violation(candidate)
+                    if after.total >= excess.total:
+                        continue
+                    key = (float(log_p[index, current] - log_p[index, new]), index, new)
+                    if best is None or key < best[0]:
+                        best = (key, candidate, after)
         if best is None:
             break  # possible in principle; leave the residual visible rather than loop
         (cost, index, new), t, after = best

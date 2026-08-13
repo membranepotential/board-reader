@@ -158,7 +158,7 @@ def test_the_event_keeps_the_raw_argmax_so_the_wire_stays_honest():
 # ---- repair -------------------------------------------------------------------
 
 
-def test_the_lower_margin_king_flips_not_the_confident_one():
+def test_the_weaker_king_flips_not_the_confident_one():
     # MIDGAME already has a white king on g1 (0.95). A second one on e8 at 0.60.
     result = decode(_dist(MIDGAME, {"e8": ("K", 0.60)}))
     (flip,) = result.flips
@@ -171,10 +171,31 @@ def test_the_lower_margin_king_flips_not_the_confident_one():
 
 
 def test_a_confident_second_king_still_loses_the_less_confident_one():
-    """Both kings wrong-ish: the *margin* decides, not the rank they sit on."""
+    """Both kings wrong-ish: the king *evidence* decides, not the rank they sit on."""
     result = decode(_dist(MIDGAME, {"e8": ("K", 0.99), "g1": ("K", 0.55)}))
     (flip,) = result.flips
     assert flip.square == "g1"
+
+
+def test_surplus_kings_resolve_by_king_evidence_not_by_margin():
+    """The 08-13 trial failure, in miniature. The estimator read two black kings
+    all session; the *true* king (e8) carried a fat queen tail, which made its
+    k-q margin the smallest on 55% of frames — so the margin rule demoted the
+    real king and the board's k/q flip-flopped. Which square keeps the king is a
+    question about evidence *for the king*, so the weaker ``p(k)`` square is the
+    one demoted, even when its margin to the runner-up is the larger."""
+    dist = _dist(MIDGAME)
+    d8 = np.full(NUM_CLASSES, 0.30 / 11)  # k 0.60, thin q tail: margin 1.79
+    d8[CLASS_INDEX["k"]], d8[CLASS_INDEX["q"]] = 0.60, 0.10
+    e8 = np.full(NUM_CLASSES, 0.04 / 11)  # k 0.66, fat q tail: margin 0.79
+    e8[CLASS_INDEX["k"]], e8[CLASS_INDEX["q"]] = 0.66, 0.30
+    dist[0, 3], dist[0, 4] = d8, e8
+    result = decode(dist)
+    (flip,) = result.flips
+    assert flip.square == "d8" and flip.from_class == "k" and flip.to_class == "q"
+    assert flip.constraint is Constraint.KINGS
+    assert result.residual.satisfied
+    assert result.placement.split("/")[0] == "r2qk2r"  # e8 kept the king
 
 
 def test_a_pawn_on_rank_eight_is_relabelled_when_the_frame_is_known():
