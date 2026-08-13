@@ -5,11 +5,15 @@
    * adaptively, stamp capture time) and streaming the result into the inference
    * node.
    *
-   * It is a VIEWFINDER, not a settings page. The picture fills the whole screen,
-   * four controls float ON it as translucent pills, one sentence of context floats
-   * over it, and everything else lives in a sheet that is closed by default. It is
-   * used one-handed, at arm's length, pointed at a physical board; it must be usable
+   * It is a VIEWFINDER, not a settings page. The picture gets the screen, a short
+   * column of translucent pills sits beside it, one sentence of context sits under
+   * it, and everything else lives in a sheet that is closed by default. It is used
+   * one-handed, at arm's length, pointed at a physical board; it must be usable
    * without reading anything. No emoji anywhere: state is text + colour.
+   *
+   * `Viewfinder.svelte` owns the layout and its header is the one place it is
+   * described — one fixed box, safe-area insets taken once as padding, and a single
+   * flex line whose direction is the only difference between the two orientations.
    *
    * Everything it talks to is same-origin and relative (`$lib/api`), relayed by the
    * viewer. That is deliberate: `getUserMedia` needs a secure context, and one
@@ -1048,10 +1052,10 @@
 <svelte:head>
   <title>board-reader · camera</title>
   <!-- No viewport override here: `app.html` now ships `viewport-fit=cover` for every
-       route, which is what makes the `env(safe-area-inset-*)` the button cluster, the
-       chips, the hint line and the sheet budget for non-zero — and what lets the
-       picture itself run under the notch. Emitting a second, identical tag only
-       invited the two to drift. -->
+       route, which is what makes the `env(safe-area-inset-*)` non-zero — and there
+       are only two places left that read them, the stage (`Viewfinder.svelte`) and
+       the sheet, which is its own fixed element. Emitting a second, identical tag
+       only invited the two to drift. -->
 </svelte:head>
 
 <svelte:document onvisibilitychange={onVisibilityChange} ondragstart={(e) => e.preventDefault()} />
@@ -1062,7 +1066,13 @@
        operator's complaint. One container rather than three floating boxes because
        the three have to be placed against each other — the chips must not end up
        under the hint pill on a narrow landscape screen — and a flex row states that
-       once instead of three sets of offsets that agree by luck. -->
+       once instead of three sets of offsets that agree by luck.
+
+       It is rendered INSIDE the frame (`Viewfinder.svelte`), which is the whole
+       reason it no longer dodges anything: the frame is what the rail leaves over, so
+       "left: 0; right: 0" here already stops at the buttons. It used to inset itself
+       by a `--cluster-w` the rail also claimed to obey — two numbers that had to
+       agree about a layout neither could see. -->
   <div class="bottom-chrome">
     <div class="chips">
       <span class="chip {connTone}">{connDetail}</span>
@@ -1073,7 +1083,9 @@
       <HintBar {hint} onLookAgain={() => void detectCorners()} />
     </div>
   </div>
+{/snippet}
 
+{#snippet controls()}
   <Rail
     positionShown={panel.shown}
     detectDisabled={camera.kind !== 'live' || activity.kind !== 'idle'}
@@ -1109,6 +1121,7 @@
       {onLoadedMetadata}
       onFrameResize={onVideoResize}
       {chrome}
+      {controls}
     />
   {/if}
 
@@ -1201,27 +1214,24 @@
     cursor: default;
   }
 
-  /* The one bottom strip: chips on the left, messages centred in what is left of it.
-     Inert throughout, so nothing here can intercept a corner handle underneath — only
-     the hint's "look again" opts back in.
+  /* The one bottom strip: chips on the left, messages centred in what is left of it,
+     along the bottom edge of the FRAME. It reserves nothing and dodges nothing — the
+     frame's edges are already the room the rail left over, in either orientation, so
+     `left: 0; right: 0; bottom: 0` is the whole placement.
 
-     It dodges the button cluster the same way the messages always have: `--cluster-w`
-     in landscape, `--cluster-h` in portrait. The home-indicator inset is budgeted
-     ONCE, and which rule budgets it depends on the orientation — in landscape the
-     cluster reserves no height so this strip clears the indicator itself; in portrait
-     `--cluster-h` already contains it, and adding it again would float the whole
-     strip a second inset above the buttons. */
+     Inert throughout, so nothing here can intercept a corner handle underneath — only
+     the hint's "look again" opts back in. */
   .bottom-chrome {
     position: absolute;
     z-index: 7;
     pointer-events: none;
     left: 0;
-    right: var(--cluster-w);
-    bottom: max(10px, env(safe-area-inset-bottom));
+    right: 0;
+    bottom: 10px;
     display: flex;
     align-items: flex-end;
     gap: 10px;
-    padding: 0 12px 0 calc(12px + env(safe-area-inset-left));
+    padding: 0 12px;
   }
 
   /* Portrait has width to spare and height to lose, so the strip stacks instead:
@@ -1229,7 +1239,6 @@
      messages above them, each still aligned the way it is in landscape. */
   @media (orientation: portrait) {
     .bottom-chrome {
-      bottom: calc(var(--cluster-h) + 10px);
       flex-direction: column-reverse;
       align-items: stretch;
       gap: 8px;

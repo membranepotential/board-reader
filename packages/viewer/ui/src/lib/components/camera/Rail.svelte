@@ -1,12 +1,21 @@
 <script lang="ts">
   /**
-   * The viewfinder's controls, as a cluster of pills floating ON the picture.
+   * The viewfinder's controls: a cluster of pills in their own flex track beside the
+   * picture — a right-hand column in landscape with the primary button at the bottom
+   * where the thumb rests, a bottom row in portrait. One DOM order serves both, and
+   * `Viewfinder.svelte`'s single `flex-direction` is what chooses.
    *
-   * It used to be an opaque strip beside the picture, and the operator's verdict on
-   * it was that the buttons were cramped and the strip ate the frame. So: no strip,
-   * no border, translucent targets over the picture itself, sized for a thumb. A
-   * right-hand column in landscape with the primary button at the bottom where the
-   * thumb rests; a bottom row in portrait. One DOM order serves both.
+   * **It has no size of its own to get wrong.** The column is as wide as its widest
+   * label and no wider (`flex: 0 0 auto` + `white-space: nowrap`), so nothing here
+   * states a pill width, and nothing elsewhere has to be told one. The build this
+   * replaced hard-coded 124 px in a `--cluster-w` that three other rules read; a
+   * label, a font size or a phone's text-size setting that disagreed with that number
+   * pushed the column off the right of the screen with nothing to catch it.
+   *
+   * Still no strip and no border — that part of the previous design was right, and
+   * was the operator's original complaint about the build before it. The pills are
+   * translucent targets on black; what changed is only that the black is the rail's
+   * own track rather than the far edge of the picture.
    *
    * **Five controls, and a sixth that only appears when it matters.** `detect board`
    * is out here because a phone at a board needs it often enough that a sheet is too
@@ -16,13 +25,6 @@
    * a sheet — an automatic re-detection may have put a8 on a different physical
    * corner (DESIGN decision #15), and until the operator says otherwise every reading
    * on the wire is turned.
-   *
-   * The nav itself is INERT and only the pills take pointers, so the gaps between
-   * them pass touches through to the corner handles now underneath — the picture is
-   * full-bleed, so there is something under them to reach.
-   *
-   * `--cluster-w` / `--cluster-h` come from the stage (`Viewfinder.svelte`), which is
-   * also what the banner and the hint line dodge, so the reservation is stated once.
    */
   interface Props {
     positionShown: boolean;
@@ -102,23 +104,28 @@
 </nav>
 
 <style>
+  /* Its own flex track, sized by its content: `flex: 0 0 auto` in a column, so the
+     width is the widest label plus padding and the frame gets the rest. No `env()`
+     anywhere — the stage already took the insets.
+
+     `overflow-y: auto` is the last-resort net rather than a feature: the `clamp()`
+     rules below already fit six pills on the shortest landscape stage a phone
+     presents, but if a future label wraps, or a phone's text-size setting inflates
+     the pills, the column scrolls instead of putting `start` under the fold where
+     `overflow: hidden` on the stage would simply swallow it. `pan-y` because the
+     stage is `touch-action: none` and would otherwise eat the scroll. */
   .cluster {
-    position: absolute;
-    top: 0;
-    right: 0;
-    bottom: 0;
-    width: var(--cluster-w);
+    flex: 0 0 auto;
     z-index: 9;
-    /* Inert: only the pills take pointers, so a corner handle in a gap is reachable. */
-    pointer-events: none;
     display: flex;
     flex-direction: column;
     align-items: stretch;
-    gap: 10px;
-    /* The notch is on the left OR the right in landscape depending on which way the
-       phone was turned; this cluster only ever touches the right edge. */
-    padding: calc(8px + env(safe-area-inset-top)) max(8px, env(safe-area-inset-right))
-      max(8px, env(safe-area-inset-bottom)) 8px;
+    gap: clamp(4px, 1.6vh, 10px);
+    padding: 8px;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    touch-action: pan-y;
+    scrollbar-width: none;
   }
 
   /* Every rule below is written `.cluster .pill…`, and that is not decoration: the
@@ -126,7 +133,6 @@
      class plus one type, so a bare `.pill` LOSES to it and the pills silently render
      as the old solid buttons. Two classes is the floor that wins. */
   .cluster .pill {
-    pointer-events: auto;
     background: rgba(20, 23, 28, 0.78);
     -webkit-backdrop-filter: blur(6px);
     backdrop-filter: blur(6px);
@@ -136,8 +142,17 @@
     font-size: 14px;
     font-weight: 600;
     line-height: 1.15;
-    padding: 8px 10px;
-    min-height: 48px;
+    padding: 8px 12px;
+    /* One line, always: it is what makes the column's intrinsic width equal to the
+       widest label, and it means a long label widens the rail rather than growing it
+       downwards into the space the primary button needs. */
+    white-space: nowrap;
+    /* 48 where there is room, never below the 44 px touch floor, and continuous in
+       between — this is what the three per-device `max-height` breakpoints used to
+       approximate. Worked through at the two stages that bite: 390 px of landscape
+       gives 47 px pills and 6 px gaps (six pills = 340 px, fits), 320 px gives the
+       44 px floor and 5 px gaps (six pills = 305 px, fits). */
+    min-height: clamp(44px, 12vh, 48px);
     box-shadow: 0 2px 12px rgba(0, 0, 0, 0.45);
   }
 
@@ -167,56 +182,26 @@
       0 2px 12px rgba(0, 0, 0, 0.45);
   }
 
-  /* Pushes the primary button to the bottom of the landscape column, under the thumb. */
+  /* Pushes the primary button to the bottom of the landscape column, under the thumb.
+     `flex: 1 1 0` so it is the FIRST thing to give when the column is tight: the
+     pills keep their touch height and the gap to the primary closes instead. */
   .cluster .spacer {
-    flex: 1;
+    flex: 1 1 0;
     min-height: 0;
-  }
-
-  /* Short landscape stages, in two measured steps. The column's fixed height is
-     `pills x min-height + gaps + padding`, and the stage clips it — so the PRIMARY
-     button is what goes off the bottom, which is the one that must never happen.
-     Measured with six pills (the contextual `rotate labels` is up):
-
-       844x390  6x48 + 6x10 + 8 + 21 = 377   fits
-       812x375  6x48 + 6x10 + 8 + 21 = 377   clips by 2px behind the home indicator
-       568x320  6x48 + 6x10 + 8 +  8 = 364   clips by 44px
-
-     A tighter gap buys 24px, which is what an iPhone X-class landscape needs; the
-     SE class has no home indicator but 55 fewer pixels, so it also drops to the 44px
-     touch floor. Both keep 48px targets on every stage with the room for them. */
-  @media (orientation: landscape) and (max-height: 420px) {
-    .cluster {
-      gap: 6px;
-    }
-  }
-
-  @media (orientation: landscape) and (max-height: 360px) {
-    .cluster .pill {
-      min-height: 44px;
-    }
   }
 
   @media (orientation: portrait) {
     .cluster {
-      top: auto;
-      left: 0;
-      right: 0;
-      bottom: 0;
-      width: auto;
-      height: var(--cluster-h);
       flex-direction: row;
       /* THREE TO A ROW, always. Six across 390px gives 56px pills, and `position`
          and `calibrate · N` are both wider than that — and the two arrive together,
          since the contextual pill only appears once a calibration has already made
-         the calibrate label longer. Rows of three give 119px, which every label
-         fits on one line with room to spare. `--cluster-h` in `Viewfinder.svelte`
-         spells out this two-row height; the two have to move together. */
+         the calibrate label longer. Rows of three give 119px, which every label fits
+         on one line with room to spare. The row's HEIGHT is whatever the pills come
+         to; nothing has to be told what that is. */
       flex-wrap: wrap;
-      align-content: stretch;
       gap: 8px;
-      padding: 8px max(8px, env(safe-area-inset-right)) max(8px, env(safe-area-inset-bottom))
-        max(8px, env(safe-area-inset-left));
+      overflow: visible;
     }
 
     .cluster .pill {

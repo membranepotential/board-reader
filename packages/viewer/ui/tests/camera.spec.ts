@@ -10,9 +10,13 @@
  *    half the layout ships untested — and it is the half a phone lands in first.
  *  - **Real touch targets.** A 31 px rail button shipped here once. A stylesheet
  *    assertion cannot catch that; a measured `boundingBox` can.
- *  - **A full-bleed picture.** The controls float ON the picture now, so "the picture
- *    fills the stage" is a measurement rather than a promise — and the arithmetic
- *    that used to inset it is exactly what regressed the day it was written.
+ *  - **One flex line, and nothing that reserves space for anything else.** The stage
+ *    is `frame | rail`; the picture fills the frame and the rail takes its own track.
+ *    The build before this one floated the rail ON the picture and had the text
+ *    chrome dodge it through hand-computed `--cluster-w` / `--cluster-h` numbers —
+ *    which is what ran the controls off the right of a real phone in landscape while
+ *    every assertion here still passed in Chromium. So what is measured now is that
+ *    the boxes do not overlap AT ALL, which no arithmetic can be wrong about.
  *  - **An empty board, not the start position.** The panel must not imply a reading it
  *    has not received.
  *  - **The blocked explainer.** Without a secure context the camera is never offered at
@@ -287,61 +291,68 @@ test.describe('the viewfinder', () => {
     ['landscape', LANDSCAPE],
     ['portrait', PORTRAIT]
   ] as const) {
-    test(`the picture fills the whole stage in ${name}`, async ({ page }) => {
+    test(`the picture fills the whole frame in ${name}`, async ({ page }) => {
       await openCamera(page);
       await page.setViewportSize(viewport);
       await liveViewfinder(page);
 
-      // The controls float over the picture rather than beside it, so the fit is
-      // against the whole stage: one axis is exhausted, neither overflows, and the
-      // letterbox on the other axis is CENTRED IN THE STAGE. That last one is the
-      // assertion that bites — the old inset layout produced a picture of exactly
-      // this size and hung it off-centre, in the stage minus the rail.
-      const stage = await boxOf(page.locator('.camera-stage'));
+      // The frame is the stage minus the rail's track, and the picture is fitted into
+      // exactly that: one axis is exhausted, neither overflows, and the letterbox on
+      // the other axis is CENTRED IN THE FRAME. The centring is the assertion that
+      // bites — a picture fitted to one box and hung off another is the shape of every
+      // regression this layout has had, in both directions.
+      const frame = await boxOf(page.locator('.frame'));
       const picture = await boxOf(page.locator('.picture'));
-      expect(picture.width).toBeLessThanOrEqual(stage.width + 1);
-      expect(picture.height).toBeLessThanOrEqual(stage.height + 1);
+      expect(picture.width).toBeLessThanOrEqual(frame.width + 1);
+      expect(picture.height).toBeLessThanOrEqual(frame.height + 1);
       expect(
-        Math.abs(picture.width - stage.width) < 2 || Math.abs(picture.height - stage.height) < 2,
-        'the picture exhausts neither axis of the stage'
+        Math.abs(picture.width - frame.width) < 2 || Math.abs(picture.height - frame.height) < 2,
+        'the picture exhausts neither axis of the frame'
       ).toBe(true);
-      expect(Math.abs(picture.x - stage.x - (stage.width - picture.width) / 2)).toBeLessThanOrEqual(
+      expect(Math.abs(picture.x - frame.x - (frame.width - picture.width) / 2)).toBeLessThanOrEqual(
         1
       );
       expect(
-        Math.abs(picture.y - stage.y - (stage.height - picture.height) / 2)
+        Math.abs(picture.y - frame.y - (frame.height - picture.height) / 2)
       ).toBeLessThanOrEqual(1);
 
-      // Uniform scale: the fitted box keeps the source frame's aspect ratio. A
+      // Uniform scale: the fitted box keeps the SOURCE frame's aspect ratio. A
       // second coordinate space here would put wrong corners on the wire while the
       // preview still looked perfect.
-      const frame = await page.locator('.picture video').evaluate((el) => {
+      const source = await page.locator('.picture video').evaluate((el) => {
         const video = el as HTMLVideoElement;
         return { w: video.videoWidth, h: video.videoHeight };
       });
-      expect(picture.width / picture.height).toBeCloseTo(frame.w / frame.h, 1);
+      expect(picture.width / picture.height).toBeCloseTo(source.w / source.h, 1);
     });
 
-    test(`the controls float on the picture and are thumb-sized in ${name}`, async ({ page }) => {
+    test(`the controls sit beside the picture and are thumb-sized in ${name}`, async ({ page }) => {
       await openCamera(page);
       await page.setViewportSize(viewport);
       await liveViewfinder(page);
 
       await assertPillsFit(page, CONTROLS);
 
+      // THE property this layout exists for: the rail and the frame do not overlap,
+      // so no corner handle can ever be under a button and no status line can ever be
+      // under one either. Measured as disjoint boxes rather than as a reservation
+      // arithmetic that happens to come out right.
+      const frame = await boxOf(page.locator('.frame'));
+      const rail = await boxOf(page.locator('nav.cluster'));
+      const disjoint =
+        rail.x >= frame.x + frame.width - 1 || rail.y >= frame.y + frame.height - 1;
+      expect(disjoint, 'the rail overlaps the frame').toBe(true);
+
       const buttons = page.locator('nav.cluster button');
       const cluster = await page.locator('nav.cluster').evaluate((el) => {
         const style = getComputedStyle(el);
         return {
-          pointerEvents: style.pointerEvents,
           background: style.backgroundColor,
           border: parseFloat(style.borderLeftWidth) + parseFloat(style.borderTopWidth)
         };
       });
-      // The gaps between the pills are inert, or a corner handle under the cluster
-      // would be unreachable now that the picture runs beneath it.
-      expect(cluster.pointerEvents).toBe('none');
-      // And the opaque strip is gone: it was the operator's actual complaint.
+      // The opaque strip is gone: it was the operator's actual complaint about the
+      // build before last, and reserving a track is not the same thing as painting one.
       expect(cluster.background).toBe('rgba(0, 0, 0, 0)');
       expect(cluster.border).toBe(0);
 
@@ -727,11 +738,11 @@ test.describe('the bottom chrome', () => {
     expect(chips.y, 'portrait still puts the chips beside the hint').toBeGreaterThanOrEqual(
       hint.y + hint.height - 1
     );
-    // And it gets the whole width to be centred in: in portrait the button cluster
-    // reserves height (`--cluster-h`), never width, so nothing is inset from the right.
-    const stage = await boxOf(page.locator('.camera-stage'));
+    // And it gets the whole width to be centred in: in portrait the rail is a row
+    // under the frame, so it takes height from the frame and never width.
+    const frame = await boxOf(page.locator('.frame'));
     const strip = await boxOf(page.locator('.bottom-chrome'));
-    expect(strip.width).toBeCloseTo(stage.width, 0);
+    expect(strip.width).toBeCloseTo(frame.width, 0);
 
     // Still above the button row.
     const firstPill = await boxOf(page.locator('nav.cluster button').first());
@@ -833,20 +844,36 @@ test.describe('safe areas', () => {
     });
   }
 
-  test('the stage keeps the whole viewport — the picture is meant to go under it', async ({
-    page
-  }) => {
+  test('the stage takes the insets once, and everything inside clears them', async ({ page }) => {
     await openCamera(page);
     await withNotch(page, 'right');
     await liveViewfinder(page);
 
-    // Nothing is carved off the stage for the inset: only the chrome inside it moves.
+    // The stage still spans the whole viewport — it is the black behind everything,
+    // and it is what clips a child that miscomputes itself.
     const stage = await boxOf(page.locator('.camera-stage'));
     expect(stage.width).toBeCloseTo(LANDSCAPE.width, 0);
     expect(stage.height).toBeCloseTo(LANDSCAPE.height, 0);
 
+    // It takes the insets as PADDING, which is the one place they are read. So this
+    // is the assertion that stands in for every component that used to budget for
+    // them itself: everything laid out inside the stage is already clear of the
+    // sensor housing and the home indicator, with no component-level rule involved.
+    for (const selector of ['.frame', 'nav.cluster']) {
+      const box = await boxOf(page.locator(selector));
+      expect(box.x + box.width, `${selector} runs under a right-hand notch`).toBeLessThanOrEqual(
+        stage.x + stage.width - NOTCH_PX + 1
+      );
+      expect(
+        box.y + box.height,
+        `${selector} runs under the home indicator`
+      ).toBeLessThanOrEqual(stage.y + stage.height - INDICATOR_PX + 1);
+    }
+
+    // And the picture is centred in the frame it was given, not in the stage.
+    const frame = await boxOf(page.locator('.frame'));
     const picture = await boxOf(page.locator('.picture'));
-    expect(Math.abs(picture.x - stage.x - (stage.width - picture.width) / 2)).toBeLessThanOrEqual(
+    expect(Math.abs(picture.x - frame.x - (frame.width - picture.width) / 2)).toBeLessThanOrEqual(
       1
     );
   });
@@ -883,12 +910,14 @@ test.describe('safe areas', () => {
     const chip = await boxOf(page.locator('.chip').first());
     expect(chip.x).toBeGreaterThanOrEqual(stage.x + NOTCH_PX);
 
-    // The messages are centred, so what is asserted about them is the strip's own
-    // left gutter — the one thing the chips are also aligned against.
-    const gutter = await page
-      .locator('.bottom-chrome')
-      .evaluate((el) => parseFloat(getComputedStyle(el).paddingLeft));
-    expect(gutter).toBeGreaterThanOrEqual(NOTCH_PX);
+    // Measured on the boxes, never on a padding: the strip declares a 12 px gutter
+    // and knows nothing about notches, and clearing the housing is entirely the
+    // stage's padding pushing the frame in. Reading the strip's own `padding-left`
+    // would assert the mechanism that was deleted rather than the result.
+    const strip = await boxOf(page.locator('.bottom-chrome'));
+    expect(strip.x, 'the status strip runs under a left-hand notch').toBeGreaterThanOrEqual(
+      stage.x + NOTCH_PX
+    );
   });
 
   test('the position panel parks clear of a left-hand notch, and drags from there', async ({
@@ -924,16 +953,18 @@ test.describe('safe areas', () => {
   });
 
   test('portrait budgets the home indicator ONCE, not twice', async ({ page }) => {
-    // `--cluster-h` already contains the inset in portrait, so the hint line must not
-    // add it again — the sentence would float a second indicator's height above the
-    // buttons for no reason, and the bug is invisible on a phone without one.
+    // Double-counting an inset is what happens when two components each decide to
+    // clear it, and it is invisible on any phone that does not have one — which is
+    // every machine this suite runs on. Only the stage reads the insets now, so this
+    // should be structurally impossible; it is asserted anyway, because "structurally
+    // impossible" is what the last layout also claimed.
     await openCamera(page);
     await page.setViewportSize(PORTRAIT);
     await liveViewfinder(page);
 
-    // The gap between the sentence and the buttons, which is the cluster's own
-    // padding and nothing else. An inset is budgeted by `--cluster-h`, which moves
-    // BOTH of them together — so the gap is the thing that must not change.
+    // The gap between the sentence and the buttons. A bottom inset shrinks the
+    // stage's content box, which moves the frame and the rail up TOGETHER — so the
+    // gap between them is the thing that must not change.
     const gap = async (): Promise<number> => {
       const hint = await boxOf(page.locator('.hint-bar > span'));
       const row = await boxOf(page.locator('nav.cluster button').first());

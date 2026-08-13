@@ -1,33 +1,52 @@
 <script lang="ts">
   /**
-   * The viewfinder: the picture, the quad drawn over it, the four handles, and the
-   * chrome floating on top.
+   * The viewfinder: the picture, the quad drawn over it, the four handles, the
+   * controls beside it and the status strip under it.
    *
-   * Two properties of this file are correctness, not style.
+   * # The layout, in three sentences
+   *
+   * The stage is one `position: fixed` box the size of the viewport, it takes the
+   * safe-area insets as PADDING, and its content is a single flex line: the frame,
+   * then the rail. Landscape lays that line as a row (rail on the right), portrait as
+   * a column (rail along the bottom); that one `flex-direction` is the entire
+   * difference between the two orientations. Everything else — the picture, the
+   * handles, the status strip — lives inside the frame and is positioned against the
+   * frame alone.
+   *
+   * That is the whole model, and it is deliberately dumber than what it replaced.
+   * The previous build floated the controls ON a full-bleed picture and had the text
+   * chrome dodge them through hand-computed `--cluster-w` / `--cluster-h` reservations
+   * — a stack of numbers (`calc(8px + 48px + 8px + 48px + inset)`, a 124 px pill
+   * width, per-device `max-height` breakpoints) that had to agree with a layout they
+   * could not see. On the phone they did not agree, and the right-hand controls ran
+   * off the screen. Nothing here reserves space for anything: the rail occupies its
+   * own flex track, so the frame is *by construction* the room that is left, and no
+   * arithmetic can drift.
+   *
+   * Three consequences worth stating, because each was previously a rule somebody had
+   * to remember:
+   *
+   * - **Nothing can be clipped by the notch.** The insets are applied once, at the
+   *   stage, so no component below knows the notch exists. It costs the picture the
+   *   inset strip it used to bleed into, which is the correct trade — that strip was
+   *   under a sensor housing and unreadable anyway.
+   * - **A corner handle can never land under a button.** The rail does not overlap
+   *   the picture, so the rail does not have to be inert and the handles do not have
+   *   to be recovered from beneath it.
+   * - **It costs no picture.** The picture is letterboxed into whatever box it is
+   *   given, and on phone aspect ratios the letterbox already exceeded the rail:
+   *   measured on an 844x390 landscape stage with a 16:9 camera, the picture is
+   *   693x390 whether the rail floats or reserves.
+   *
+   * # The one property that is correctness, not style
    *
    * **The picture is a JS-SIZED WRAPPER, not `object-fit: contain`.** `.picture` is
-   * given exactly the video's aspect ratio inside the stage's inner box, so the
-   * element's box IS the picture and `rect.width / videoWidth` is a single uniform
-   * scale. `contain` would letterbox inside the element and introduce a second
-   * coordinate space; the one thing that must never happen is screen space leaking
-   * into the crop, because the preview would still look perfect while the corners
-   * on the wire were wrong.
-   *
-   * **The picture is FULL-BLEED**, and that is a deliberate reversal. It used to be
-   * inset from the chrome so that a corner handle dragged to the extreme edge of the
-   * frame could never land under a button; the operator asked for the opposite — the
-   * controls float over the picture and the picture gets the whole stage, notch
-   * included (`viewport-fit=cover` in `app.html`). The accepted tradeoff is exactly
-   * the guarantee that was given up: a handle dragged into the last few millimetres
-   * of an edge can now sit under a pill. It is recoverable — the cluster is inert
-   * between its buttons, so the handle beside one is still grabbable, and the board
-   * can be re-framed from the sheet — and it costs a board that is bigger on screen
-   * for every second the page is used.
-   *
-   * `--cluster-w` / `--cluster-h` are what the cluster reserves at the right (or the
-   * bottom, in portrait). The PICTURE ignores them; the banner and the hint line dodge
-   * them, so a sentence never renders under a button. Stated here, once per
-   * orientation, because the stage is the element all three of them live in.
+   * given exactly the video's aspect ratio inside the frame's box, so the element's
+   * box IS the picture and `rect.width / videoWidth` is a single uniform scale.
+   * `contain` would letterbox inside the element and introduce a second coordinate
+   * space; the one thing that must never happen is screen space leaking into the
+   * crop, because the preview would still look perfect while the corners on the wire
+   * were wrong.
    *
    * Landscape is the BASE stylesheet and `@media (orientation: portrait)` the
    * override. That is as close to "landscape by default" as the platform allows:
@@ -56,8 +75,14 @@
      */
     onLoadedMetadata: () => void;
     onFrameResize: () => void;
-    /** Chips, banner, hint line and the button cluster — all of it floats over the picture. */
+    /**
+     * Chips, banner and hint line. Rendered INSIDE the frame, along its bottom edge,
+     * which is what makes "the status strip never runs under the buttons" a fact of
+     * the box tree rather than an offset somebody has to keep correct.
+     */
     chrome: Snippet;
+    /** The controls. Its own flex track beside the frame — see the note above. */
+    controls: Snippet;
   }
 
   let {
@@ -71,12 +96,13 @@
     onCancel,
     onLoadedMetadata,
     onFrameResize,
-    chrome
+    chrome,
+    controls
   }: Props = $props();
 
-  let stage: HTMLDivElement | undefined = $state();
+  let frameEl: HTMLDivElement | undefined = $state();
   let picture: HTMLDivElement | undefined = $state();
-  /** The stage's own box, which is now the whole box the picture is fitted into. */
+  /** The frame's own box — the room left over once the rail has taken its track. */
   let inner = $state.raw<Box | null>(null);
 
   const frame = $derived(camera.kind === 'live' ? camera.frame : null);
@@ -86,16 +112,16 @@
   const crop = $derived(frame !== null && quad !== null ? cropBox(quad, frame) : null);
 
   function measure(): void {
-    if (stage === undefined) return;
-    const box = stage.getBoundingClientRect();
+    if (frameEl === undefined) return;
+    const box = frameEl.getBoundingClientRect();
     inner = { w: Math.max(1, box.width), h: Math.max(1, box.height) };
   }
 
   $effect(() => {
-    if (stage === undefined) return;
+    if (frameEl === undefined) return;
     measure();
     const observer = new ResizeObserver(measure);
-    observer.observe(stage);
+    observer.observe(frameEl);
     return () => observer.disconnect();
   });
 
@@ -117,64 +143,81 @@
 
 <svelte:window onresize={measure} />
 
-<div class="camera-stage" bind:this={stage}>
-  <div
-    class="picture"
-    bind:this={picture}
-    style:width={layout ? `${layout.width}px` : undefined}
-    style:height={layout ? `${layout.height}px` : undefined}
-    style:left={layout ? `${layout.left}px` : undefined}
-    style:top={layout ? `${layout.top}px` : undefined}
-  >
-    <!-- svelte-ignore a11y_media_has_caption -->
-    <video
-      bind:this={video}
-      playsinline
-      muted
-      autoplay
-      onloadedmetadata={onLoadedMetadata}
-      onresize={onFrameResize}
-      oncontextmenu={(event) => event.preventDefault()}
-    ></video>
+<div class="camera-stage">
+  <div class="frame" bind:this={frameEl}>
+    <div
+      class="picture"
+      bind:this={picture}
+      style:width={layout ? `${layout.width}px` : undefined}
+      style:height={layout ? `${layout.height}px` : undefined}
+      style:left={layout ? `${layout.left}px` : undefined}
+      style:top={layout ? `${layout.top}px` : undefined}
+    >
+      <!-- svelte-ignore a11y_media_has_caption -->
+      <video
+        bind:this={video}
+        playsinline
+        muted
+        autoplay
+        onloadedmetadata={onLoadedMetadata}
+        onresize={onFrameResize}
+        oncontextmenu={(event) => event.preventDefault()}
+      ></video>
 
-    {#if frame !== null && quad !== null && crop !== null}
-      <svg
-        preserveAspectRatio="none"
-        viewBox="0 0 {frame.width} {frame.height}"
-        aria-hidden="true"
-      >
-        <rect class="crop-line" x={crop.x} y={crop.y} width={crop.w} height={crop.h} />
-        <!-- Tracking lost: the quad is frozen where it last fitted, and says so. -->
-        <polygon
-          class="quad-line"
-          class:lost={tracking === 'lost'}
-          points={quad.map((p) => p.join(',')).join(' ')}
+      {#if frame !== null && quad !== null && crop !== null}
+        <svg
+          preserveAspectRatio="none"
+          viewBox="0 0 {frame.width} {frame.height}"
+          aria-hidden="true"
+        >
+          <rect class="crop-line" x={crop.x} y={crop.y} width={crop.w} height={crop.h} />
+          <!-- Tracking lost: the quad is frozen where it last fitted, and says so. -->
+          <polygon
+            class="quad-line"
+            class:lost={tracking === 'lost'}
+            points={quad.map((p) => p.join(',')).join(' ')}
+          />
+        </svg>
+      {/if}
+
+      {#if framing !== null && layout !== null}
+        <CornerHandles
+          quad={framing.quad}
+          rot={framing.rot}
+          scale={layout.scale}
+          {dragging}
+          {toVideo}
+          {onGrab}
+          {onMove}
+          {onRelease}
+          {onCancel}
         />
-      </svg>
-    {/if}
+      {/if}
+    </div>
 
-    {#if framing !== null && layout !== null}
-      <CornerHandles
-        quad={framing.quad}
-        rot={framing.rot}
-        scale={layout.scale}
-        {dragging}
-        {toVideo}
-        {onGrab}
-        {onMove}
-        {onRelease}
-        {onCancel}
-      />
-    {/if}
+    {@render chrome()}
   </div>
 
-  {@render chrome()}
+  {@render controls()}
 </div>
 
 <style>
-  /* Nothing on this page scrolls, so the stage is `touch-action: none` — which also
-     stops iOS pull-to-refresh firing over the viewfinder. It never captures a
-     pointer and never preventDefaults a touch; only a handle does that. */
+  /* The whole viewport, and nothing may leave it: `overflow: hidden` is what makes
+     "cut off at an edge" unrepresentable rather than merely unlikely — a child that
+     miscomputes its size is clipped by the stage instead of widening the page and
+     pushing the far edge off the screen.
+
+     `100dvh` and not just `inset: 0`: on iOS Safari a fixed element's containing
+     block is the LARGE viewport, so `bottom: 0` sits behind the toolbar whenever the
+     toolbar is showing. `dvh` is the one that tracks it.
+
+     The safe-area insets are taken HERE, once, as padding. Every component inside is
+     then free of `env()` entirely — which is the point, because the insets are the
+     part of the geometry that only exists on a device nobody is testing on.
+
+     Nothing on this page scrolls, so the stage is `touch-action: none` — which also
+     stops iOS pull-to-refresh firing over the viewfinder. It never captures a pointer
+     and never preventDefaults a touch; only a handle does that. */
   .camera-stage {
     position: fixed;
     inset: 0;
@@ -183,23 +226,31 @@
     touch-action: none;
     overflow: hidden;
     z-index: 0;
-    /* What the floating controls reserve — for the TEXT chrome only; the picture
-       runs underneath them. `Rail.svelte` sizes itself from the same two numbers, so
-       the reservation and the thing reserved for cannot drift apart. */
-    --cluster-w: calc(124px + 8px + max(8px, env(safe-area-inset-right)));
-    --cluster-h: 0px;
+    padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom)
+      env(safe-area-inset-left);
+    /* The one flex line: frame, then rail. */
+    display: flex;
+    flex-direction: row;
   }
 
+  /* The entire portrait override. The rail is the last child either way, so a row
+     puts it on the right and a column puts it along the bottom — one DOM order, one
+     declaration, no second set of offsets to keep in agreement with the first. */
   @media (orientation: portrait) {
     .camera-stage {
-      --cluster-w: 0px;
-      /* The portrait row wraps to TWO rows of three (`Rail.svelte` says why), so this
-         is written as the sum it has to equal rather than as a total: top padding,
-         two pill rows, the row gap between them, and the home indicator. Getting this
-         wrong does not clip anything — it silently floats the bottom chrome at the
-         wrong distance from the buttons, which is why the arithmetic is spelled out. */
-      --cluster-h: calc(8px + 48px + 8px + 48px + max(8px, env(safe-area-inset-bottom)));
+      flex-direction: column;
     }
+  }
+
+  /* Whatever the rail leaves. `min-*: 0` because a flex item's automatic minimum size
+     is its content, and the picture is an absolutely-positioned child sized in JS —
+     without these the frame could refuse to shrink and push the rail off the edge,
+     which is precisely the failure being designed out. */
+  .frame {
+    position: relative;
+    flex: 1 1 auto;
+    min-width: 0;
+    min-height: 0;
   }
 
   .picture {

@@ -10,9 +10,11 @@ confidences**. No moves, no legality, no PGN — those are the downstream applic
 ## Now
 
 - phone-live-test — `make dev` up on 192.168.1.10 (:8443 https for `/camera`), run_e⊕run_f
-  cascade + session bank, on the reworked /camera UI (floating pills, bottom status strip,
-  notch-safe sheet, stabilized calibrate — phone-verified). Next: judge whether positions
-  track play.
+  cascade + session bank. /camera layout **rebuilt** after the floating-pill build ran its
+  controls off the right of the screen in landscape on the phone: one fixed stage, safe-area
+  insets taken once as padding, one flex line `frame | rail`, no reservation arithmetic
+  anywhere (40/40 e2e green; costs 0 px of picture). Next: re-test on the phone, then judge
+  whether positions track play.
 
 ## Done (recent)
 
