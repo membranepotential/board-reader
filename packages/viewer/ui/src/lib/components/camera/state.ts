@@ -31,7 +31,7 @@
 
 import { asRotation, type FrameSize, type LabelRotation } from '$lib/geometry/corners';
 import type { TrackerState } from '$lib/geometry/tracker';
-import { isRecord, MOVING_BELOW, type CornerQuad, type Point } from '$lib/protocol';
+import { isRecord, type CornerQuad, type Point } from '$lib/protocol';
 
 // ---- capture constants -------------------------------------------------------
 
@@ -42,6 +42,22 @@ export const JPEG_QUALITY = 0.75;
 export const DETECT_LONG_SIDE = 1600;
 /** Calibration reads one exemplar per square, so it gets the good pixels. */
 export const CALIBRATE_QUALITY = 0.95;
+
+/**
+ * Calibration grabs a BURST and keeps the sharpest frame of it (`$lib/edge/sharpness`).
+ *
+ * A phone is handheld, and one instantaneous grab lands on whichever 1/30 s the
+ * operator's thumb fell on — often a smeared one, and that one frame is the bank for
+ * the rest of the session. Ten candidates over about a second and a half is long
+ * enough for a hand to pass through at least one still moment, and short enough that
+ * nobody wonders whether the button worked. The corners are not held still across the
+ * burst and do not need to be: the tracker keeps following the board, so each
+ * candidate is paired with the quad measured at its own tick.
+ */
+export const CALIBRATE_SAMPLES = 10;
+export const CALIBRATE_SAMPLE_MS = 150;
+/** Long side of the scoring image — sharpness is a ranking, and 256 px ranks fine. */
+export const CALIBRATE_SCORE_LONG_SIDE = 256;
 
 /**
  * Tracking working resolution. Measured rather than guessed: ~2 ms a frame here,
@@ -369,23 +385,36 @@ export function shouldAutoDetect({
  * Why calibrate cannot run right now, in the words the operator is shown, or
  * `null` when it can.
  *
- * The hand-written page had a fourth branch here — "set the four board corners
- * first" — which is now unrepresentable: a live camera carries a framing by
- * construction, so there is no state in which the corners are missing.
+ * Deliberately no branch for stability. A stability gate shipped
+ * here once and made calibration UNREACHABLE on the device the page is for: the meter
+ * is tuned for a camera on a stand (DESIGN D3 mirrors it value-for-value with the
+ * Python edge), and a handheld phone's micro-shake parks it under `MOVING_BELOW`
+ * essentially always. D3 also says in so many words that stability is a hint and
+ * never a gate — and the frame is answered on its merits anyway, twice over: the page
+ * keeps the sharpest of a burst (`CALIBRATE_SAMPLES`), and the node refuses a frame
+ * that does not show the position it claims.
+ *
+ * A detection DOES block, and that one is not politeness: `/detect` takes 2-4 s on a
+ * miss, and its `finally` hands `activity` back to idle unconditionally. A
+ * calibration started underneath it would have that `finally` fire in the middle of
+ * its burst — un-pausing the forwarder into a half-rebuilt bank and re-enabling this
+ * very control. `Activity` says only one thing may own the camera at a time; this is
+ * the reading of it the operator sees.
+ *
+ * The hand-written page had a further branch — "set the four board corners first" —
+ * which is now unrepresentable: a live camera carries a framing by construction, so
+ * there is no state in which the corners are missing.
  */
 export function calibrateBlockReason(input: {
   readonly camera: CameraState;
   readonly activity: Activity;
-  readonly stability: number;
 }): string | null {
   if (input.activity.kind === 'calibrating') return 'calibrating…';
+  if (input.activity.kind === 'detecting') return 'looking for the board…';
   // Calibration reads the live camera directly, not the stream — it needs the
   // camera running, which is a weaker and more honest requirement than needing
   // the socket up.
   if (input.camera.kind !== 'live') return 'the camera is not running';
-  if (input.stability < MOVING_BELOW) {
-    return 'the board is moving — calibrate with the pieces at rest';
-  }
   return null;
 }
 
@@ -551,7 +580,7 @@ export const PANEL_MIN = 140;
 export const PANEL_MAX = 520;
 
 export interface PanelState {
-  /** `null` until the panel has been placed once — it parks itself top-right. */
+  /** `null` until the panel has been placed once — it parks itself top-left. */
   readonly left: number | null;
   readonly top: number | null;
   readonly width: number;
@@ -565,12 +594,26 @@ export interface PlacedPanel {
   readonly shown: boolean;
 }
 
-export const PANEL_START: PanelState = { left: null, top: null, width: 220, shown: true };
+/**
+ * Hidden until asked for. The panel is a second, smaller picture of the board laid
+ * over the first one, and the operator's complaint about it was simply that it
+ * covered the thing they were aiming — so `position` opens it and nothing else does.
+ * A phone that has already stored a panel state keeps whatever it chose: this is only
+ * the value a first visit starts from.
+ */
+export const PANEL_START: PanelState = { left: null, top: null, width: 220, shown: false };
+
+/** Default park: the top-left corner, clear of the chips above it. */
+const PANEL_PARK_LEFT = 12;
+const PANEL_PARK_TOP = 46;
 
 /**
  * Clamped back into the viewport every time, mirroring the snapshot page's loupe: a
  * panel parked in the corner of a landscape phone would otherwise be off-screen in
  * portrait, with no way to reach its own drag strip.
+ *
+ * It parks top-LEFT because the overlay buttons float down the right-hand edge in
+ * landscape; the chips own the very top, so the default top clears them.
  *
  * One degree of freedom, on purpose: the WIDTH. The board is a square sized from
  * that single number, because chessground derives its container's height from its
@@ -581,14 +624,12 @@ export function placePanel(
   view: {
     readonly innerWidth: number;
     readonly innerHeight: number;
-    /** The stage's picture area, which is where the panel parks by default. */
-    readonly stageWidth: number;
   },
   height: number
 ): PlacedPanel {
   const width = Math.round(Math.max(PANEL_MIN, Math.min(PANEL_MAX, panel.width)));
-  const preferredLeft = panel.left ?? Math.max(4, view.stageWidth - width - 12);
-  const preferredTop = panel.top ?? 12;
+  const preferredLeft = panel.left ?? PANEL_PARK_LEFT;
+  const preferredTop = panel.top ?? PANEL_PARK_TOP;
   return {
     width,
     shown: panel.shown,

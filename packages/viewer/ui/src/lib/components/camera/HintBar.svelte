@@ -33,17 +33,31 @@
 {/if}
 
 <style>
-  /* Inert, so a corner handle underneath it still takes the touch. */
+  /* Inert, so a corner handle underneath it still takes the touch.
+
+     Centred in whatever the button cluster leaves: `--cluster-w` keeps it clear of
+     the landscape column on the right, `--cluster-h` of the portrait row below.
+
+     The home-indicator inset is budgeted ONCE, and which rule budgets it depends on
+     the orientation: in landscape the cluster reserves no height, so this bar clears
+     the indicator itself; in portrait `--cluster-h` already contains it, and adding
+     it again here would float the sentence a second inset above the buttons. */
   .hint-bar {
     position: absolute;
     z-index: 7;
     pointer-events: none;
     left: 0;
-    right: var(--rail);
-    bottom: calc(var(--dock) + 10px);
+    right: var(--cluster-w);
+    bottom: max(10px, env(safe-area-inset-bottom));
     display: flex;
     justify-content: center;
     padding: 0 12px 0 calc(12px + env(safe-area-inset-left));
+  }
+
+  @media (orientation: portrait) {
+    .hint-bar {
+      bottom: calc(var(--cluster-h) + 10px);
+    }
   }
 
   .hint-bar > span {

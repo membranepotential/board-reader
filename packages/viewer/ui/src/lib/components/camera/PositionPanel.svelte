@@ -17,6 +17,16 @@
    * The gesture has ONE degree of freedom, the width, and the board is a square
    * driven by that single number (`--board-size`). A free two-axis drag would make
    * chessground derive a non-square container and render stretched pieces.
+   *
+   * **The left edge is a CSS `max()`, not just a number.** `placePanel` is pure and
+   * DOM-free — which is why it is testable — so it cannot know that an iPhone held
+   * landscape-left puts 44-59 px of sensor housing over the left of the viewport. Its
+   * 12 px default park would leave the drag strip physically unreachable, with no way
+   * to move the panel off the notch. Rather than teach the pure function about the
+   * DOM, the rendered left takes `max(that number, env(safe-area-inset-left) + 4px)`:
+   * the arithmetic stays testable, and the browser resolves the one fact only it
+   * knows. The pointer handler below measures the resulting box instead of trusting
+   * the number, which is what keeps the first drag from jumping.
    */
   import { untrack } from 'svelte';
   import Board from '$lib/board/Board.svelte';
@@ -25,8 +35,6 @@
 
   interface Props {
     panel: PanelState;
-    /** The stage's picture area — where the panel parks itself before it is moved. */
-    stageWidth: number;
     placement: string;
     shapes: DrawShape[];
     status: string;
@@ -34,7 +42,7 @@
     onCommit: () => void;
   }
 
-  let { panel = $bindable(), stageWidth, placement, shapes, status, onCommit }: Props = $props();
+  let { panel = $bindable(), placement, shapes, status, onCommit }: Props = $props();
 
   let element: HTMLDivElement | undefined = $state();
   let placed: PlacedPanel = $state({ left: 0, top: 0, width: panel.width, shown: panel.shown });
@@ -51,17 +59,17 @@
   function place(next: PanelState): void {
     const result = placePanel(
       next,
-      { innerWidth: window.innerWidth, innerHeight: window.innerHeight, stageWidth },
+      { innerWidth: window.innerWidth, innerHeight: window.innerHeight },
       element?.offsetHeight ?? 0
     );
     placed = result;
     if (!same(panel, result)) panel = result;
   }
 
-  // Only `stageWidth` is tracked; `panel` is read untracked so writing the clamped
-  // value back cannot re-enter this effect.
+  // The argument is read untracked so that writing the clamped value back cannot
+  // re-enter this effect; `same(panel, …)` inside `place` is the tracked read, which
+  // is what carries a parent's show/hide through to `placed`.
   $effect(() => {
-    void stageWidth;
     place(untrack(() => panel));
   });
 
@@ -76,7 +84,7 @@
   class="pos-panel"
   class:hidden={!placed.shown}
   bind:this={element}
-  style:left="{placed.left}px"
+  style:left="max({placed.left}px, calc(env(safe-area-inset-left, 0px) + 4px))"
   style:top="{placed.top}px"
   style:width="{placed.width}px"
 >
@@ -87,7 +95,16 @@
     class="pos-head"
     onpointerdown={(event) => {
       event.preventDefault();
-      drag = { id: event.pointerId, dx: event.clientX - placed.left, dy: event.clientY - placed.top };
+      // Measured, not taken from `placed`: the rendered left is a CSS `max()` that
+      // can sit further right than the number (see the style binding above), and
+      // grabbing by the number would teleport the panel by the difference on the
+      // first pointermove.
+      const box = element?.getBoundingClientRect();
+      drag = {
+        id: event.pointerId,
+        dx: event.clientX - (box?.left ?? placed.left),
+        dy: event.clientY - (box?.top ?? placed.top)
+      };
       event.currentTarget.setPointerCapture(event.pointerId);
     }}
     onpointermove={(event) => {

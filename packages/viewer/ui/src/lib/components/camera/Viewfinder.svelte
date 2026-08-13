@@ -13,12 +13,21 @@
    * into the crop, because the preview would still look perfect while the corners
    * on the wire were wrong.
    *
-   * **The picture is INSET FROM the chrome, never underneath it.** `--rail` and
-   * `--dock` are the chrome's own thickness, stated once per orientation in the
-   * stylesheet below and read back by the measurement. It costs nothing (measured:
-   * the same 693x390 picture either way on an 844x390 landscape phone) and it
-   * guarantees a corner handle dragged to the edge of the frame can never land
-   * under a button. Safe-area insets belong to the chrome, not the picture.
+   * **The picture is FULL-BLEED**, and that is a deliberate reversal. It used to be
+   * inset from the chrome so that a corner handle dragged to the extreme edge of the
+   * frame could never land under a button; the operator asked for the opposite — the
+   * controls float over the picture and the picture gets the whole stage, notch
+   * included (`viewport-fit=cover` in `app.html`). The accepted tradeoff is exactly
+   * the guarantee that was given up: a handle dragged into the last few millimetres
+   * of an edge can now sit under a pill. It is recoverable — the cluster is inert
+   * between its buttons, so the handle beside one is still grabbable, and the board
+   * can be re-framed from the sheet — and it costs a board that is bigger on screen
+   * for every second the page is used.
+   *
+   * `--cluster-w` / `--cluster-h` are what the cluster reserves at the right (or the
+   * bottom, in portrait). The PICTURE ignores them; the banner and the hint line dodge
+   * them, so a sentence never renders under a button. Stated here, once per
+   * orientation, because the stage is the element all three of them live in.
    *
    * Landscape is the BASE stylesheet and `@media (orientation: portrait)` the
    * override. That is as close to "landscape by default" as the platform allows:
@@ -33,8 +42,6 @@
   interface Props {
     /** The element the page attaches the camera stream to. */
     video: HTMLVideoElement | undefined;
-    /** The stage minus its chrome; the page parks the position panel against it. */
-    inner: Box | null;
     camera: CameraState;
     tracking: TrackingState;
     dragging: CornerIndex | null;
@@ -49,13 +56,12 @@
      */
     onLoadedMetadata: () => void;
     onFrameResize: () => void;
-    /** Chips, banner, hint line and rail — they float over the picture. */
+    /** Chips, banner, hint line and the button cluster — all of it floats over the picture. */
     chrome: Snippet;
   }
 
   let {
     video = $bindable(),
-    inner = $bindable(),
     camera,
     tracking,
     dragging,
@@ -70,6 +76,8 @@
 
   let stage: HTMLDivElement | undefined = $state();
   let picture: HTMLDivElement | undefined = $state();
+  /** The stage's own box, which is now the whole box the picture is fitted into. */
+  let inner = $state.raw<Box | null>(null);
 
   const frame = $derived(camera.kind === 'live' ? camera.frame : null);
   const framing = $derived(camera.kind === 'live' ? camera.framing : null);
@@ -77,17 +85,10 @@
   const quad = $derived(framing === null ? null : orderedCorners(framing.quad, framing.rot));
   const crop = $derived(frame !== null && quad !== null ? cropBox(quad, frame) : null);
 
-  /**
-   * The chrome's thickness comes from the stylesheet rather than from a second copy
-   * of the layout in here, so the two orientations state it once each.
-   */
   function measure(): void {
     if (stage === undefined) return;
-    const style = getComputedStyle(stage);
-    const rail = parseFloat(style.getPropertyValue('--rail')) || 0;
-    const dock = parseFloat(style.getPropertyValue('--dock')) || 0;
     const box = stage.getBoundingClientRect();
-    inner = { w: Math.max(1, box.width - rail), h: Math.max(1, box.height - dock) };
+    inner = { w: Math.max(1, box.width), h: Math.max(1, box.height) };
   }
 
   $effect(() => {
@@ -182,14 +183,17 @@
     touch-action: none;
     overflow: hidden;
     z-index: 0;
-    --rail: 150px;
-    --dock: 0px;
+    /* What the floating controls reserve — for the TEXT chrome only; the picture
+       runs underneath them. `Rail.svelte` sizes itself from the same two numbers, so
+       the reservation and the thing reserved for cannot drift apart. */
+    --cluster-w: calc(124px + 8px + max(8px, env(safe-area-inset-right)));
+    --cluster-h: 0px;
   }
 
   @media (orientation: portrait) {
     .camera-stage {
-      --rail: 0px;
-      --dock: 150px;
+      --cluster-w: 0px;
+      --cluster-h: calc(64px + max(8px, env(safe-area-inset-bottom)));
     }
   }
 

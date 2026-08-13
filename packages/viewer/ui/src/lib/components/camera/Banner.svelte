@@ -22,9 +22,11 @@
     z-index: 7;
     pointer-events: none;
     top: calc(44px + env(safe-area-inset-top));
-    left: calc((100% - var(--rail)) / 2);
+    /* Centred in what the button cluster leaves, not in the stage: the picture runs
+       under the cluster now, but a sentence rendered under a pill is unreadable. */
+    left: calc((100% - var(--cluster-w)) / 2);
     transform: translateX(-50%);
-    width: min(460px, calc(100% - var(--rail) - 24px));
+    width: min(460px, calc(100% - var(--cluster-w) - 24px));
     font-size: 13px;
     padding: 9px 12px;
     border-radius: 8px;

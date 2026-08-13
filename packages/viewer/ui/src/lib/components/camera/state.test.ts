@@ -13,6 +13,7 @@ import {
   isFramed,
   noteTracking,
   normaliseQuad,
+  PANEL_START,
   parseStoredFraming,
   parseStoredPanel,
   placeholderQuad,
@@ -235,17 +236,49 @@ describe('automatic detection', () => {
 });
 
 describe('calibrate guard', () => {
+  // No reason mentions stability. A stability gate shipped here once and made
+  // calibrate permanently unreachable on the one device the page is for: the meter is
+  // mirrored value-for-value with the MOUNTED Python edge, so handheld micro-shake
+  // sits under MOVING_BELOW essentially always. DESIGN D3 — a hint, never a gate.
   it('names its reason, in the words the operator is shown', () => {
-    expect(
-      calibrateBlockReason({ camera: live(), activity: { kind: 'calibrating' }, stability: 1 })
-    ).toBe('calibrating…');
-    expect(
-      calibrateBlockReason({ camera: { kind: 'requesting' }, activity: IDLE, stability: 1 })
-    ).toBe('the camera is not running');
-    expect(calibrateBlockReason({ camera: live(), activity: IDLE, stability: 0.5 })).toMatch(
-      /the board is moving/
+    expect(calibrateBlockReason({ camera: live(), activity: { kind: 'calibrating' } })).toBe(
+      'calibrating…'
     );
-    expect(calibrateBlockReason({ camera: live(), activity: IDLE, stability: 1 })).toBeNull();
+    expect(calibrateBlockReason({ camera: { kind: 'requesting' }, activity: IDLE })).toBe(
+      'the camera is not running'
+    );
+    // Live and idle is enough. Nothing about how still the phone is being held
+    // reaches this function at all — that is what the missing input means.
+    expect(calibrateBlockReason({ camera: live(), activity: IDLE })).toBeNull();
+  });
+
+  it('blocks under a detection, which owns the quad and ends by clearing `activity`', () => {
+    // `/detect` takes 2-4 s on a miss and its `finally` sets activity back to idle
+    // unconditionally. A calibration allowed to start underneath one would have that
+    // fire mid-burst, resuming the forwarder into a half-rebuilt bank.
+    for (const auto of [true, false]) {
+      expect(calibrateBlockReason({ camera: live(), activity: { kind: 'detecting', auto } })).toBe(
+        'looking for the board…'
+      );
+    }
+  });
+
+  it('feeds the hint line, so a disabled control says why on a screen with no hover', () => {
+    const block = calibrateBlockReason({
+      camera: live(),
+      activity: { kind: 'detecting', auto: true }
+    });
+    expect(
+      hintFor({
+        camera: live(),
+        activity: { kind: 'detecting', auto: true },
+        auto: AUTO_DETECT_START,
+        tracking: 'locked',
+        streaming: false,
+        calibrateBlock: block
+      })?.key
+      // The detecting hint outranks it — same fact, better sentence.
+    ).toBe('detecting');
   });
 });
 
@@ -320,12 +353,18 @@ describe('send rate', () => {
 });
 
 describe('the position panel', () => {
-  const view = { innerWidth: 800, innerHeight: 400, stageWidth: 650 } as const;
+  const view = { innerWidth: 800, innerHeight: 400 } as const;
 
-  it('parks itself against the picture area until it has been moved', () => {
+  it('starts hidden — it used to cover the picture the operator was aiming', () => {
+    expect(PANEL_START.shown).toBe(false);
+    // A phone that already chose still wins: this is a first-visit default only.
+    expect(parseStoredPanel('{"left":10,"top":20,"width":300,"shown":true}').shown).toBe(true);
+  });
+
+  it('parks top-left, clear of the chips and of the overlay buttons on the right', () => {
     const placed = placePanel({ left: null, top: null, width: 220, shown: true }, view, 250);
-    expect(placed.left).toBe(650 - 220 - 12);
-    expect(placed.top).toBe(12);
+    expect(placed.left).toBe(12);
+    expect(placed.top).toBe(46);
   });
 
   it('clamps a panel parked off-screen back into the viewport', () => {
@@ -341,7 +380,7 @@ describe('the position panel', () => {
 
   it('falls back to the defaults on anything unreadable', () => {
     expect(parseStoredPanel(null).width).toBe(220);
-    expect(parseStoredPanel('{').shown).toBe(true);
+    expect(parseStoredPanel('{').shown).toBe(false);
     expect(parseStoredPanel('{"left":10,"top":20,"width":300,"shown":false}')).toEqual({
       left: 10,
       top: 20,

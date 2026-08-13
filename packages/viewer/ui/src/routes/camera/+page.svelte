@@ -5,10 +5,10 @@
    * adaptively, stamp capture time) and streaming the result into the inference
    * node.
    *
-   * It is a VIEWFINDER, not a settings page. The picture fills the screen, six
-   * controls sit on a rail beside it, one sentence of context floats over it, and
-   * everything else lives in a sheet that is closed by default. It is used
-   * one-handed, at arm's length, pointed at a physical board; it must be usable
+   * It is a VIEWFINDER, not a settings page. The picture fills the whole screen,
+   * four controls float ON it as translucent pills, one sentence of context floats
+   * over it, and everything else lives in a sheet that is closed by default. It is
+   * used one-handed, at arm's length, pointed at a physical board; it must be usable
    * without reading anything. No emoji anywhere: state is text + colour.
    *
    * Everything it talks to is same-origin and relative (`$lib/api`), relayed by the
@@ -47,6 +47,7 @@
     type ForwardDecision
   } from '$lib/edge/motion';
   import { IngestClient, type IngestStatus } from '$lib/edge/ingest';
+  import { tenengrad } from '$lib/edge/sharpness';
   import { EMPTY_PLACEMENT, type CornerQuad, type Point } from '$lib/protocol';
   import { PositionStream } from '$lib/stores/positions.svelte';
 
@@ -62,6 +63,9 @@
     BANNER_MS,
     BOARD_KEY,
     CALIBRATE_QUALITY,
+    CALIBRATE_SAMPLES,
+    CALIBRATE_SAMPLE_MS,
+    CALIBRATE_SCORE_LONG_SIDE,
     DETECT_LONG_SIDE,
     JPEG_QUALITY,
     LENS_KEY,
@@ -96,7 +100,6 @@
     type AutoDetect,
     type BannerKind,
     type BannerMessage,
-    type Box,
     type CameraState,
     type CornerIndex,
     type Framing,
@@ -135,7 +138,6 @@
   let lenses = $state.raw<readonly Lens[]>([]);
   let lensId = $state<string | null>(null);
   let panel = $state.raw<PanelState>(PANEL_START);
-  let stageInner = $state.raw<Box | null>(null);
   let video = $state<HTMLVideoElement | undefined>();
   let port = $state('8080');
 
@@ -189,7 +191,7 @@
 
   // ---- derived ------------------------------------------------------------------
 
-  const calibrateBlock = $derived(calibrateBlockReason({ camera, activity, stability }));
+  const calibrateBlock = $derived(calibrateBlockReason({ camera, activity }));
   const hint = $derived(
     hintFor({ camera, activity, auto, tracking: trackingState, streaming, calibrateBlock })
   );
@@ -588,8 +590,94 @@
 
   // ---- calibrate ----------------------------------------------------------------
 
+  function wait(ms: number): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  interface CalibrationShot {
+    /** Full-resolution pixels, ready to encode. */
+    readonly canvas: HTMLCanvasElement;
+    /** The quad as it stood at the same tick those pixels were drawn. */
+    readonly corners: CornerQuad;
+    readonly score: number;
+  }
+
+  /**
+   * The sharpest frame of a short burst, with the corners that were true when it was
+   * taken.
+   *
+   * One frame decides the piece bank for the rest of the session, and this page is
+   * held in a hand — an instantaneous grab lands on whichever 1/30 s the thumb fell
+   * on, and a good half of those are smeared. So it watches for about a second and a
+   * half and keeps the best of ten (`$lib/edge/sharpness`).
+   *
+   * **Two full-resolution canvases, never ten.** One holds the best so far, the other
+   * takes the next candidate, and they swap when the candidate wins; ten 1920x1080
+   * canvases would be 80 MB of backing store on a phone.
+   *
+   * **Each candidate carries its OWN corners**, read beside the `drawImage` that
+   * fixed its pixels. `frameTick` keeps tracking right through a calibration — only
+   * forwarding pauses — so the quad follows the board while this runs, and pairing
+   * the winning pixels with the quad as it stood at the end would describe a board
+   * that has since moved. This is what makes hand shake geometrically harmless
+   * rather than merely blurry.
+   */
+  async function bestCalibrationShot(): Promise<CalibrationShot | null> {
+    let best = document.createElement('canvas');
+    let spare = document.createElement('canvas');
+    const scorer = document.createElement('canvas');
+    const scoreCtx = scorer.getContext('2d', { willReadFrequently: true });
+    let gray: Float32Array | null = null;
+    let winner: { corners: CornerQuad; score: number } | null = null;
+
+    for (let i = 0; i < CALIBRATE_SAMPLES; i++) {
+      if (i > 0) await wait(CALIBRATE_SAMPLE_MS);
+      if (camera.kind !== 'live' || video === undefined || scoreCtx === null) break;
+      const { frame, framing } = camera;
+      const corners = orderedCorners(framing.quad, framing.rot);
+
+      // Full resolution, deliberately NOT the downscaled stream frame: calibration
+      // reads one exemplar per square and every pixel of a piece is evidence.
+      spare.width = frame.width;
+      spare.height = frame.height;
+      spare.getContext('2d')?.drawImage(video, 0, 0);
+
+      // Scored on the BOARD's crop rather than the whole frame: a sharp bookshelf
+      // behind a smeared board would otherwise decide which candidate wins.
+      //
+      // And scored FROM `spare`, not from the video a second time: the two reads
+      // would be of different instants, so the ranking would be of frames that are
+      // not the ones on offer. This way the number describes the very pixels that
+      // would be posted.
+      const box = cropBox(corners, frame);
+      const k = Math.min(1, CALIBRATE_SCORE_LONG_SIDE / Math.max(box.w, box.h));
+      const w = Math.max(3, Math.round(box.w * k));
+      const h = Math.max(3, Math.round(box.h * k));
+      scorer.width = w;
+      scorer.height = h;
+      scoreCtx.drawImage(spare, box.x, box.y, box.w, box.h, 0, 0, w, h);
+      const { data } = scoreCtx.getImageData(0, 0, w, h);
+      // Reused across candidates, and safely — unlike the tracker's pyramid and the
+      // motion meter's thumbnail, `tenengrad` reads this buffer and retains nothing.
+      if (gray === null || gray.length !== w * h) gray = new Float32Array(w * h);
+      const score = tenengrad({ data: toGray(data, gray), width: w, height: h });
+
+      if (winner === null || score > winner.score) {
+        winner = { corners, score };
+        [best, spare] = [spare, best];
+      }
+    }
+    return winner === null ? null : { canvas: best, ...winner };
+  }
+
   async function runCalibrate(): Promise<void> {
     if (camera.kind !== 'live' || video === undefined) return;
+    // Exactly one thing owns the camera and the quad (`Activity`), and the pill being
+    // enabled is not proof: an automatic detection can start between the paint and
+    // the tap. `detectCorners` ends with an unconditional `activity = idle`, so a
+    // calibration begun underneath one would have that fire mid-burst — resuming the
+    // forwarder into a half-rebuilt bank. The disabled state says why; this enforces it.
+    if (activity.kind !== 'idle') return;
     if (
       !confirm(
         'Calibrate from the live camera?\n\n' +
@@ -599,24 +687,21 @@
     ) {
       return;
     }
-    const { frame, framing } = camera;
     activity = { kind: 'calibrating' };
     try {
-      // Full resolution, deliberately NOT the downscaled stream frame: calibration
-      // reads one exemplar per square and every pixel of a piece is evidence.
-      const canvas = document.createElement('canvas');
-      canvas.width = frame.width;
-      canvas.height = frame.height;
-      canvas.getContext('2d')?.drawImage(video, 0, 0);
-      const jpeg = await toBlob(canvas, CALIBRATE_QUALITY);
+      setBanner('warn', 'Hold steady — capturing…');
+      const shot = await bestCalibrationShot();
+      if (shot === null) {
+        setBanner('err', 'the camera stopped before a frame could be captured');
+        return;
+      }
+      const jpeg = await toBlob(shot.canvas, CALIBRATE_QUALITY);
       if (jpeg === null) {
         setBanner('err', 'the browser produced no image to calibrate from');
         return;
       }
 
-      const result = await postCalibrate(jpeg, {
-        corners: orderedCorners(framing.quad, framing.rot)
-      });
+      const result = await postCalibrate(jpeg, { corners: shot.corners });
       if (!result.ok) {
         // The node refuses calibrations that would poison the bank (the frame not
         // showing the claimed position); surface its reason verbatim.
@@ -665,6 +750,22 @@
     // Pressing this IS the acknowledgement of the "check the labels" warning.
     labelsNeedCheck = false;
     clearBanner();
+  }
+
+  /**
+   * Both of the sheet's framing controls close it first. Their entire result is on
+   * the picture — where the handles moved to, which corner now says a8 — and a sheet
+   * covering the bottom of the screen while a detection runs is a control that
+   * appears to do nothing.
+   */
+  function detectFromSheet(): void {
+    sheetOpen = false;
+    void detectCorners();
+  }
+
+  function rotateFromSheet(): void {
+    sheetOpen = false;
+    rotateLabels();
   }
 
   function resetCrop(): void {
@@ -953,9 +1054,10 @@
 <svelte:head>
   <title>board-reader · camera</title>
   <!-- No viewport override here: `app.html` now ships `viewport-fit=cover` for every
-       route, which is what makes the `env(safe-area-inset-*)` the rail, the chips and
-       the sheet budget for non-zero. Emitting a second, identical tag only invited the
-       two to drift. -->
+       route, which is what makes the `env(safe-area-inset-*)` the button cluster, the
+       chips, the hint line and the sheet budget for non-zero — and what lets the
+       picture itself run under the notch. Emitting a second, identical tag only
+       invited the two to drift. -->
 </svelte:head>
 
 <svelte:document onvisibilitychange={onVisibilityChange} ondragstart={(e) => e.preventDefault()} />
@@ -971,7 +1073,6 @@
 
   <Rail
     positionShown={panel.shown}
-    detectDisabled={camera.kind !== 'live' || activity.kind !== 'idle'}
     rotateDisabled={camera.kind !== 'live'}
     rotateAttention={labelsNeedCheck}
     calibrateDisabled={calibrateBlock !== null}
@@ -981,7 +1082,6 @@
     {streaming}
     onMore={() => (sheetOpen = !sheetOpen)}
     onPosition={togglePanel}
-    onDetect={() => void detectCorners()}
     onRotate={rotateLabels}
     onCalibrate={() => void runCalibrate()}
     onStream={toggleStreaming}
@@ -994,7 +1094,6 @@
   {:else}
     <Viewfinder
       bind:video
-      bind:inner={stageInner}
       {camera}
       tracking={trackingState}
       {dragging}
@@ -1013,7 +1112,6 @@
        stay real even when the stage is gone. -->
   <PositionPanel
     bind:panel
-    stageWidth={stageInner?.w ?? 0}
     {placement}
     {shapes}
     status={panelStatus}
@@ -1024,6 +1122,8 @@
     open={sheetOpen}
     {boardId}
     {tracking}
+    detectDisabled={camera.kind !== 'live' || activity.kind !== 'idle'}
+    rotateDisabled={camera.kind !== 'live'}
     {lenses}
     {lensId}
     sent={sentCount}
@@ -1037,6 +1137,8 @@
     onBoardId={changeBoard}
     onToggleTracking={toggleTracking}
     onResetCrop={resetCrop}
+    onDetect={detectFromSheet}
+    onRotate={rotateFromSheet}
     onLens={(id, label) => void switchLens(id, label)}
   />
 </div>

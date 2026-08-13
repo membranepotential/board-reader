@@ -11,6 +11,8 @@ confidences**. No moves, no legality, no PGN — those are the downstream applic
 
 - phone-live-test — `make dev` up on 192.168.1.10 (:8443 https for `/camera`), now serving the
   run_e⊕run_f cascade + session bank per `/healthz`. Next: calibrate from the phone, judge it.
+- camera-ux — landed; phone-verified (stabilized calibrate works handheld). Follow-up round in
+  flight: detect pill back in main view, sheet notch padding, status messages to the bottom.
 
 ## Done (recent)
 

@@ -12,6 +12,9 @@
     open: boolean;
     boardId: string;
     tracking: boolean;
+    /** Something else already owns the camera and the quad — a detection, a calibration. */
+    detectDisabled: boolean;
+    rotateDisabled: boolean;
     lenses: readonly Lens[];
     lensId: string | null;
     sent: number;
@@ -26,6 +29,9 @@
     onBoardId: (id: string) => void;
     onToggleTracking: () => void;
     onResetCrop: () => void;
+    /** Both close the sheet on the way out: their whole result is on the picture. */
+    onDetect: () => void;
+    onRotate: () => void;
     onLens: (id: string, label: string) => void;
   }
 
@@ -33,6 +39,8 @@
     open,
     boardId,
     tracking,
+    detectDisabled,
+    rotateDisabled,
     lenses,
     lensId,
     sent,
@@ -46,6 +54,8 @@
     onBoardId,
     onToggleTracking,
     onResetCrop,
+    onDetect,
+    onRotate,
     onLens
   }: Props = $props();
 
@@ -63,6 +73,20 @@
     <h2 class="title">settings</h2>
     <span class="spacer"></span>
     <button class="secondary" type="button" onclick={onClose}>close</button>
+  </div>
+
+  <h2>framing</h2>
+  <!-- These two used to sit on the viewfinder itself. They are here because they are
+       rare: the page finds the board by itself, the hint line's "look again" covers
+       the common manual detect, and a labelling is set once per board. `rotate labels`
+       still appears out there, warn-styled, when a re-detection may have moved it. -->
+  <div class="actions">
+    <button class="secondary" type="button" disabled={detectDisabled} onclick={onDetect}>
+      detect board
+    </button>
+    <button class="secondary" type="button" disabled={rotateDisabled} onclick={onRotate}>
+      rotate labels
+    </button>
   </div>
 
   <h2>board</h2>
@@ -237,6 +261,15 @@
     align-items: center;
   }
 
+  .actions {
+    display: flex;
+    gap: 10px;
+  }
+
+  .actions button {
+    flex: 1;
+  }
+
   details {
     margin-top: 10px;
     font-size: 13px;
@@ -386,7 +419,11 @@
     background: var(--warn);
   }
 
-  .text-btn {
+  /* `.row .text-btn`, not `.text-btn`: the page's `.camera button` base rule is one
+     class plus one type, so a single class loses to it and these render as solid
+     accent buttons with an underline through them — which is what they had been
+     doing. */
+  .row .text-btn {
     background: none;
     border: 0;
     color: var(--accent-soft);
