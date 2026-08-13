@@ -182,6 +182,34 @@ def test_dev_withholds_the_cascade_under_a_tuned_model() -> None:
     )
 
 
+def test_dev_disables_opencv_opencl_on_the_host_gpu() -> None:
+    """The host path must not let OpenCV's OpenCL backend abort the node.
+
+    Env parity with compose is not enough, because the two run on different
+    hardware: compose declares no GPU device and runs the cascade on CPU, while
+    `make dev` puts two ONNX sessions on the host card. When OpenCV's OpenCL
+    `warpAffine` then cannot allocate, it throws a cv::Exception through C++
+    terminate — the node *aborts* mid-stream (status 134) instead of degrading.
+    Measured 2026-08-13 on a 4GB GTX 1650. `disabled` is the strong form: the
+    runtime never loads, so it claims no VRAM at all.
+    """
+    proc = subprocess.run(
+        ["make", "-n", "dev"],
+        cwd=_ROOT,
+        capture_output=True,
+        text=True,
+        timeout=120,
+        check=True,
+    )
+    for line in proc.stdout.splitlines():
+        if "OPENCV_OPENCL_RUNTIME=" in line:
+            assert re.search(r"OPENCV_OPENCL_RUNTIME=disabled", line), (
+                f"OpenCL must be disabled for the host GPU path, got {line.strip()!r}"
+            )
+            return
+    pytest.fail("`make dev` no longer sets OPENCV_OPENCL_RUNTIME at all")
+
+
 @pytest.mark.parametrize("path", [_COMPOSE, _MAKEFILE])
 def test_both_entry_points_are_registered_in_the_deploy_aspect(path: Path) -> None:
     """`/drift` can only reason about files aspects.yaml claims.

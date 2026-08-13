@@ -137,6 +137,35 @@ smooths nothing, so a flickering square shows a transition on every frame. See
 > geometry, so it is **personal use only, not redistributable**. A fresh clone has no model;
 > the server degrades to the stub and still composes up. See [[training-and-data#Licensing ledger]].
 
+## Stopping it, and the GPU it leaves behind
+
+`make stop` signals both servers, waits, escalates to SIGKILL, and prints the pids
+it actually killed — it exits non-zero rather than claiming success it cannot
+verify (`tools/stop.sh`). That matters more than it sounds:
+
+> [!warning] A released port does not mean the process is gone
+> An inference server can wedge in uvicorn's shutdown behind an in-flight ONNX
+> call: it stops listening — so the port frees and nothing looks wrong — while
+> staying resident with its **CUDA context and hundreds of MB of VRAM**. One sat
+> that way for two hours on 2026-08-13; the next `make dev` inherited a card too
+> full for the cascade's second session and **aborted mid-stream** (status 134),
+> taking a live phone test with it. If a start fails with `BFCArena` or
+> `CL_MEM_OBJECT_ALLOCATION_FAILURE`, look before restarting:
+>
+> ```bash
+> nvidia-smi --query-compute-apps=pid,used_memory,process_name --format=csv
+> make stop        # names what it killed; SIGKILLs what ignores SIGTERM
+> ```
+
+`make dev` also runs with `OPENCV_OPENCL_RUNTIME=disabled`. OpenCV's OpenCL
+backend shares the card with onnxruntime, and it is the one that turns a tight
+GPU into a *crash* rather than a degradation: a failed `warpAffine` allocation
+throws a `cv::Exception` through C++ `terminate`, which no Python handler can
+catch. The warps are small enough that the CPU path costs nothing worth that
+risk. This is **not** mirrored in `compose.yaml`, which declares no GPU device and
+runs the same cascade on CPU — the two entry points share an environment, not a
+hardware envelope.
+
 ## Verifying a restart
 
 > [!danger] `healthz` proves nothing about recognition

@@ -69,6 +69,21 @@ else
 CASCADE_ENV := $(if $(and $(wildcard $(BR_MODEL)),$(wildcard $(BR_MODEL_B))),BR_MODEL_B=$(BR_MODEL_B),)
 endif
 
+# OpenCV's OpenCL backend shares the card with onnxruntime, and it is the one
+# that turns a tight GPU into a *crash*: when `warpAffine` cannot allocate, it
+# throws a cv::Exception through C++ terminate, so the node aborts (status 134)
+# mid-stream instead of degrading. Measured 2026-08-13 on the 4GB GTX 1650 —
+# the cascade's second session plus a leaked CUDA context from a previous run
+# was enough. The warps here are ~1280x680 and unremarkable on CPU, so the GPU
+# path buys nothing worth an uncatchable abort. `disabled` is the strong form:
+# the runtime is never loaded, so no VRAM is claimed at all (`=` to re-enable).
+#
+# NOTE this is deliberately NOT mirrored in compose.yaml: that stack declares no
+# GPU device, so it runs the same cascade on CPU where none of this applies.
+# Env parity between the two entry points does not imply the same hardware
+# envelope — see tests/test_deploy_parity.py.
+OPENCV_OPENCL_RUNTIME ?= disabled
+
 INFERENCE_PORT  ?= 8000
 VIEWER_PORT     ?= 8080
 VIEWER_TLS_PORT ?= 8443
@@ -101,6 +116,7 @@ endif
 	$(CASCADE_ENV) \
 	$(if $(BR_MODEL_TUNED),BR_MODEL_TUNED=$(BR_MODEL_TUNED),) \
 	$(if $(BR_CASCADE_TAU),BR_CASCADE_TAU=$(BR_CASCADE_TAU),) \
+	OPENCV_OPENCL_RUNTIME=$(OPENCV_OPENCL_RUNTIME) \
 	  uv run board-reader-inference serve --host 0.0.0.0 --port $(INFERENCE_PORT) & \
 	inference=$$!; \
 	BR_INFERENCE_HTTP=http://127.0.0.1:$(INFERENCE_PORT) \
@@ -187,7 +203,6 @@ lint-fix:
 	uv run ruff check --fix .
 
 # The bracket keeps the pattern from matching this recipe's own command line.
+# Verified, not assumed — see tools/stop.sh for why "stopped" used to be a lie.
 stop:
-	@pkill -f "[b]oard-reader-inference serve" 2>/dev/null; \
-	 pkill -f "[b]oard-reader-viewer" 2>/dev/null; \
-	 echo "stopped"
+	@tools/stop.sh "[b]oard-reader-inference serve" "[b]oard-reader-viewer"

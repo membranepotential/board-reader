@@ -262,7 +262,7 @@ aspects:
       belongs here because it chooses a recognition composition out of the same
       environment compose does; when it was missing from this list, `/drift` had
       no way to see the two halves disagree.
-    files: ["compose.yaml", "docker/**", ".dockerignore", "Makefile"]
+    files: ["compose.yaml", "docker/**", ".dockerignore", "Makefile", "tools/stop.sh"]
     affects:
       - aspect: testing-guide
         role: >-
