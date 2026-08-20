@@ -12,15 +12,21 @@ the downstream application layer's job (and out of scope here).
 
 ## Status
 
-**M0 + M1 done.** The end-to-end pipe is live and demoable, and per-frame recognition
-reads real phone photos: a multi-style-trained crop classifier blended with a per-set
-nearest-exemplar bank, at **633/640** squares on the labeled evaluation set. Point a
-phone at a board via `/snapshot` and you get a position back with no taps — corners are
-auto-detected, orientation auto-resolved, calibration bootstraps itself.
+**M0 + M1 done; M2 in flight.** The end-to-end pipe is live and demoable, and per-frame
+recognition reads real phone photos: a multi-style-trained crop classifier blended with
+a per-set nearest-exemplar bank. Point a phone at a board via `/snapshot` and you get a
+position back with no taps — corners are auto-detected, orientation auto-resolved,
+calibration bootstraps itself.
 
-**Next up: M2** — a live position stream over a full recorded game. See
-[STATUS.md](STATUS.md) for the current state and [DESIGN §7](docs/DESIGN.md) for the
-milestone ladder.
+The most recent live phone trial (2026-08-13) streamed **748/748 frames** without loss.
+Scored against hand-labelled truth for that recording, the debounced `settled` board is
+**98.96 % per-square** and **66.6 % perfect boards**; the residual is almost entirely one
+confusion — king vs queen on d8/e8, where a phone-height camera decapitates the rank-8
+crops.
+
+**Next up:** the tall-crop retrain that attacks that residual, gated on real recordings
+rather than a synthetic holdout. See [STATUS.md](STATUS.md) for the current state and
+[DESIGN §7](docs/DESIGN.md) for the milestone ladder.
 
 ## Quick start
 
@@ -57,3 +63,4 @@ aspects.yaml   which parts must stay in sync with which, and why
 
 The **edge** and **inference** nodes never share code — they meet only on the wire.
 This is enforced by `tests/test_layer_separation.py`.
+
