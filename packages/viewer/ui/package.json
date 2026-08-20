@@ -3,7 +3,8 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "board-reader viewer UI — the live page, /snapshot and the /camera browser edge",
+  "description": "board-reader viewer UI \u2014 the live page, /snapshot and the /camera browser edge",
+  "license": "GPL-3.0-or-later",
   "scripts": {
     "dev": "vite dev",
     "build": "vite build",

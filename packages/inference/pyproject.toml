@@ -3,6 +3,7 @@ name = "board-reader-inference"
 version = "0.1.0"
 description = "board-reader inference node: stateless per-frame position estimator + WS gateway"
 requires-python = ">=3.12"
+license = "Apache-2.0"
 dependencies = [
     "board-reader-core",
     "fastapi>=0.115",

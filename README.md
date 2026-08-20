@@ -64,3 +64,20 @@ aspects.yaml   which parts must stay in sync with which, and why
 The **edge** and **inference** nodes never share code — they meet only on the wire.
 This is enforced by `tests/test_layer_separation.py`.
 
+## License
+
+Apache-2.0 — see [LICENSE](LICENSE).
+
+Two carve-outs, both spelled out in **[THIRD-PARTY.md](THIRD-PARTY.md)**:
+
+- **The built viewer bundle is GPL-3.0-or-later.** `packages/viewer/ui` links
+  [chessground](https://github.com/lichess-org/chessground) (GPL-3.0-or-later) and its
+  cburnett sprites (GPLv2+), so whatever `make ui` produces is a combined GPL work.
+  Our source stays Apache-2.0, and `core`/`edge`/`inference` carry no GPL dependency
+  at all.
+- **Trained model artifacts are not redistributable.** The recognition model derives
+  from ChessReD (CC BY-NC-SA 4.0) and geometry of unclear provenance: fine for personal
+  and research use, **not** for commercial use, and not ours to hand on. `models/`,
+  `data/`, `scratch/` and `recordings/` are git-ignored for exactly this reason — do not
+  attach weights to a release or bake them into a published image. Run
+  `tools/export_dinov2_onnx.py` and calibrate against your own board instead.

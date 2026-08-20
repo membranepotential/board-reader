@@ -3,6 +3,7 @@ name = "board-reader-viewer"
 version = "0.1.0"
 description = "board-reader viewer: serves the live-position web UI (data comes from inference over WS)"
 requires-python = ">=3.12"
+license = "Apache-2.0"
 dependencies = [
     "fastapi>=0.115",
     "uvicorn[standard]>=0.30",

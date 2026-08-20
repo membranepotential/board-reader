@@ -3,6 +3,7 @@ name = "board-reader-core"
 version = "0.1.0"
 description = "Shared contract for board-reader: L3 position protocol, L1->L2 wire format, sim helpers"
 requires-python = ">=3.12"
+license = "Apache-2.0"
 dependencies = [
     "numpy>=2.0",
     "opencv-python-headless>=4.10",
