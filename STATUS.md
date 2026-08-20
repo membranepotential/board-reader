@@ -10,10 +10,10 @@ confidences**. No moves, no legality, no PGN — those are the downstream applic
 ## Now
 
 - public-release — repo is **push-ready**: Apache-2.0 + THIRD-PARTY.md, personal
-  details scrubbed, history rewritten onto `felix@peppert.de` (97 commits, all
-  re-signed). Remaining before the push: add `felix@peppert.de` as a UID on GPG key
-  `BB114CEF` and re-upload it to GitHub, or every commit shows Unverified. Optional:
-  a CI workflow (`make test` is 25 s) and CONTRIBUTING.md.
+  details scrubbed, history rewritten onto the current author email (97 commits, all
+  re-signed). Remaining before the push: add that address as a UID on the signing key
+  and re-upload it to GitHub, or every commit lands Unverified. Optional: a CI workflow
+  (`make test` is 25 s) and CONTRIBUTING.md.
 - phone-live-test — 19:33 re-trial **worked** (748/748 frames, watchdog recovered two
   stalls) and its defects are diagnosed + fixed in-tree (uncommitted, see Done). Next:
   commit, restart `make dev`, re-trial; then attack the one residual — d8/e8 k/q model
