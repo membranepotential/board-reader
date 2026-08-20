@@ -1,6 +1,6 @@
 # STATUS — board-reader
 
-_reconciled: 2026-08-13 @ `9fe975f`_ · decisions live in [docs/DESIGN.md](docs/DESIGN.md), detail in `git log` + `scratch/experiments/*/report.md`; this is state.
+_reconciled: 2026-08-20 @ `f196f24`_ · decisions live in [docs/DESIGN.md](docs/DESIGN.md), detail in `git log` + `scratch/experiments/*/report.md`; this is state.
 
 ## Goal
 
@@ -9,6 +9,11 @@ confidences**. No moves, no legality, no PGN — those are the downstream applic
 
 ## Now
 
+- public-release — repo is **push-ready**: Apache-2.0 + THIRD-PARTY.md, personal
+  details scrubbed, history rewritten onto `felix@peppert.de` (97 commits, all
+  re-signed). Remaining before the push: add `felix@peppert.de` as a UID on GPG key
+  `BB114CEF` and re-upload it to GitHub, or every commit shows Unverified. Optional:
+  a CI workflow (`make test` is 25 s) and CONTRIBUTING.md.
 - phone-live-test — 19:33 re-trial **worked** (748/748 frames, watchdog recovered two
   stalls) and its defects are diagnosed + fixed in-tree (uncommitted, see Done). Next:
   commit, restart `make dev`, re-trial; then attack the one residual — d8/e8 k/q model
@@ -16,6 +21,16 @@ confidences**. No moves, no legality, no PGN — those are the downstream applic
   `eval-session` numbers instead of the synthetic holdout.
 
 ## Done (recent)
+
+- 08-20: **Pre-publish pass — the repo can go public.** Audited the full object graph:
+  no photos, datasets, weights or secrets were ever committed (one UI screenshot is the
+  only binary in history). Licensed **Apache-2.0** (patent grant; MIT gives none) with
+  `THIRD-PARTY.md` recording the two things it does not cover — the built viewer bundle
+  is **GPL-3.0-or-later** because `packages/viewer/ui` links chessground + cburnett
+  sprites (our source stays Apache; `core`/`edge`/`inference` carry no GPL dep), and the
+  trained model is **not redistributable** (ChessReD CC BY-NC-SA + murky geometry).
+  Scrubbed the tunnel skill's DNS/mail disclosure, de-named eval provenance, repointed a
+  dead agent-scratchpad path, refreshed the README off the unreproducible 633/640.
 
 - 08-13 (eve, uncommitted): **Trial 19:33 analyzed end-to-end; four fixes landed.**
   (1) *Kings repair chooses by evidence* — surplus kings demote the lowest-`p(k)` square,
@@ -85,4 +100,3 @@ confidences**. No moves, no legality, no PGN — those are the downstream applic
 - **Confidence is not usable today** — no board-level signal; the ensemble is under-confident.
 - **Bank writes are not monotone** — a 64/64 board lost a square after two `/calibrate` writes.
 - **The 638/640 baseline is unreproducible** — 5 of 10 curated boards point at deleted photos.
-- Licensing: ChessReD (CC BY-NC-SA) + murky geometry → personal use only.
