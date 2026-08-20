@@ -1,7 +1,7 @@
 # Two-tier eval setup (team lead's recommendation):
 #   train  = all OTHER board-geometry styles (chessred + CR360 + synthetic as they land)
 #   val    = chesscog_transfer (22 real photos of a set seen nowhere in training)
-#   test   = Felix's photos + data/uploads (evaluate.py; touch ONLY for final reporting)
+#   test   = the operator's photos + data/uploads (evaluate.py; touch ONLY for final reporting)
 # Tune hyperparameters against the val number here; report the test number separately.
 styles: ["all"]
 require_mode: board

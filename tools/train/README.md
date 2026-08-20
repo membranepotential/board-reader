@@ -190,7 +190,7 @@ canonical `square_dist`.
    — see its README). Never put it in `styles`; score it after every run.
    `run_e` baseline: **0.819** per-square. Held-out synthetic
    `chessr_vlab_wooden` stays the `--holdout` for comparability with `d16`/`run_e`.
-3. **Final test (report only, never tune)** — Felix's photos (`data/eval`) + the
+3. **Final test (report only, never tune)** — the operator's photos (`data/eval`) + the
    dim-light `data/uploads` calibrate shots, via `evaluate.py`.
 4. **Auxiliary** — `zenodo_chesspieces` (4 crop-only sets, top-down; geometry ≠
    deployed). Separate crop-LOSO (`configs/zenodo_loso.yaml`) for a cross-style

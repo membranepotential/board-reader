@@ -7,7 +7,7 @@
 > legality, or game history — that is the application layer's job, downstream and
 > out of scope.
 
-**Status:** Draft v0.4 · **Date:** 2026-06-16 · **Author:** Felix (with research synthesis)
+**Status:** Draft v0.4 · **Date:** 2026-06-16 · **Author:** Felix Peppert (with research synthesis)
 
 ### Core philosophy (read this first)
 

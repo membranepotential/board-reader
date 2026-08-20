@@ -3,7 +3,7 @@
 **Goal.** Make the board reader work out of the box on a chess set it has never
 seen ("zero-shot"), instead of requiring per-set calibration.
 
-**Outcome.** A multi-style-trained ResNet18 reads Felix's set — never seen in
+**Outcome.** A multi-style-trained ResNet18 reads the operator's set — never seen in
 training — at **92.5% per-square accuracy (occupancy 99.7%)**, matching the
 per-set *calibrated* exemplar bank (91.9%) with zero calibration. Every
 training-free route was tested first and measured dead (~80% ceiling, all
@@ -16,7 +16,7 @@ estimator (see §5).
 
 Recognition = per-square 13-class classification (empty + 6 types × 2 colors)
 over crops cut from the photo (square base + 0.15 headroom). Reference points
-on the 5-photo / 320-square labeled eval of Felix's set:
+on the 5-photo / 320-square labeled eval of the operator's set:
 
 | Baseline | Accuracy |
 |---|---|
@@ -69,7 +69,7 @@ posterize/solarize, noise, AdaIN-style color-stat randomization, dim gamma),
 fp32 (see §6), class-balanced sampling, 565,888 crops across 5 training styles,
 early-stopped at epoch 6.
 
-**Results on Felix's set (never in training):**
+**Results on the operator's set (never in training):**
 
 | Metric | Frozen best | Calibrated bank | **Trained (zero-shot)** |
 |---|---|---|---|
@@ -85,7 +85,7 @@ still untried.
 **Validation caveat:** the chesscog-transfer holdout collapsed (50%) while
 real-photo performance soared — the holdout instrument itself is suspect
 (extreme top-down camera; investigation open). Tuning decisions were not made
-against Felix's photos (report-only).
+against the operator's photos (report-only).
 
 ## 4. App improvements shipped alongside (all tested, mobile-verified)
 
@@ -161,7 +161,7 @@ against Felix's photos (report-only).
 
 ## 8. Field session addendum (2026-07-18 afternoon)
 
-Felix photographed live games (same wooden set, steeper ~25–45° camera, warm
+The operator photographed live games (same wooden set, steeper ~25–45° camera, warm
 dim room light) and the deployed model disappointed. Root-caused and partly
 fixed the same day.
 
@@ -187,7 +187,7 @@ Two of today's shots are now labeled eval boards (`data/eval/ground_truth.json`,
 | Upload sidecars now record the predicted `placement` + `autorotated` | every field shot becomes eval data without forensics |
 
 **Second incident, same afternoon (bank corruption #3).** With autorotate live,
-Felix's 16:23 trial exposed a trap the fix itself created: auto-detected corners
+The 16:23 trial exposed a trap the fix itself created: auto-detected corners
 were 180° off, autorotate silently corrected the *reads* (so everything looked
 fine), but his **Calibrate** tap still trusted the corner orientation — pushing
 color-swapped exemplars into the persisted bank. Reads degraded to ~58/64 with
@@ -203,7 +203,7 @@ the decapitation class the tall-crop retrain targets). Meta-lesson recorded:
 an affordance that silently corrects an error (autorotate) masks that same
 error from every flow that still trusts it (calibrate).
 
-**Third trial, 17:00 — the operating envelope, and incident #4.** Felix's next
+**Third trial, 17:00 — the operating envelope, and incident #4.** The operator's next
 shot was taken seated across the table, phone barely raised: projected board
 aspect (quad short/long side) **0.56**, versus 0.73–0.88 in every previous
 photo. There the model's output goes near-random — pieces occlude whole ranks

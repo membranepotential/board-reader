@@ -91,7 +91,7 @@ Board corners are always `a8, h8, h1, a1` — the playing surface, in that order
 |---|---|---|
 | **Train** | ChessReD, ChessRender360, Blender synthetic styles | fit on it |
 | **Validation** | an unseen style held out by `--holdout` | tune against it |
-| **Final test** | Felix's own photos (`data/eval/`) + dim-light calibrate uploads | **report only, never tune** |
+| **Final test** | the operator's own photos (`data/eval/`) + dim-light calibrate uploads | **report only, never tune** |
 | **Auxiliary** | Zenodo piece crops — top-down framing, not the deployed oblique geometry | crop-level signal only |
 
 > [!success] `chesscog_transfer` — repaired 2026-08-07, usable again

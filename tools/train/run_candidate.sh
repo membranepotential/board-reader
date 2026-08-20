@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Run one candidate end-to-end and print the report table:
-#   train (val = holdout style) -> export ONNX -> evaluate (Felix photos, report-only).
+#   train (val = holdout style) -> export ONNX -> evaluate (operator photos, report-only).
 # Usage: PY=<venv python> ./run_candidate.sh configs/<cfg>.yaml [extra train.py args, e.g. --styles a b c]
 # Per-epoch val streams to <out_dir>/val.log.
 set -euo pipefail
@@ -21,7 +21,7 @@ echo ">>> TRAIN $CFG $*  (tail $OUT_DIR/val.log)"
 echo ">>> EXPORT"
 "$PY" export.py --ckpt "$OUT_DIR/best.pt"
 
-echo ">>> EVALUATE (Felix photos + uploads — REPORT ONLY; geometry $HEADROOM/$SIDE_PAD)"
+echo ">>> EVALUATE (operator photos + uploads — REPORT ONLY; geometry $HEADROOM/$SIDE_PAD)"
 "$PY" evaluate.py --onnx "$OUT_DIR/model.onnx" --headroom "$HEADROOM" --side-pad "$SIDE_PAD" \
   | tee "$OUT_DIR/eval.txt"
 

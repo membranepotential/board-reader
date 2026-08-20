@@ -1,16 +1,17 @@
 # Experiment (b): ResNet-50 initialised from Stylized-ImageNet weights
 # (rgeirhos/texture-vs-shape) — starts already shape-biased, then fine-tuned across
-# our styles. Same protocol as val_chesscog. The sin_weights path is in the SCRATCH
-# area (not the project models/ dir, which is for deployed artifacts).
+# our styles. Same protocol as val_chesscog. The sin_weights checkpoint is NOT
+# redistributed here — download it from the texture-vs-shape release and drop it
+# under scratch/weights/ (git-ignored), which is where this config expects it.
 styles: ["all"]
 require_mode: board
 holdout: chessr_vlab_wooden   # clean synthetic holdout (chesscog_transfer data is broken)
 
 model: resnet50
 init: sin
-# Absolute path into the session scratchpad; update the session id if you re-run
-# in a fresh session (or re-copy from ~/.cache/torch/hub/checkpoints/).
-sin_weights: "/tmp/claude-1000/-home-felix-Documents-chess-board-reader/7ac02737-862b-4a57-83fb-5ccdf74b0c31/scratchpad/weights/resnet50_train_45_epochs_combined_IN_SF-2a0d100e.pth.tar"
+# Repo-relative; scratch/ is git-ignored. Fetch the checkpoint from
+# https://github.com/rgeirhos/texture-vs-shape (Stylized-ImageNet ResNet-50).
+sin_weights: "scratch/weights/resnet50_train_45_epochs_combined_IN_SF-2a0d100e.pth.tar"
 shape_bias: true
 
 epochs: 16

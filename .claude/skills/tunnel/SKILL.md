@@ -92,26 +92,23 @@ a different one, so treat the URL as single-session and re-scrape it each time.
 
 ## What this does not do, and why
 
-**No custom domain.** `boardreader.peppert.de` cannot be pointed at a quick
-tunnel. Measured against a live tunnel, it fails at three independent layers:
+**No custom domain.** A quick tunnel cannot serve a hostname of your own, at
+any layer. Measured against a live tunnel with a custom domain pointed at it:
 
 | Attempt | Result |
 |---|---|
-| TLS with SNI `boardreader.peppert.de` | `handshake failure` — no cert is offered at all, so there is no warning to click through |
+| TLS with SNI for the custom hostname | `handshake failure` — no cert is offered at all, so unlike a self-signed LAN cert there is no interstitial to click through |
 | Same with certs ignored (`curl -k`) | identical failure; it breaks before certs are involved |
 | Plain HTTP on port 80 | `error code: 1001` |
-| Valid SNI, `Host: boardreader.peppert.de` | `403` — the edge routes quick tunnels strictly by their assigned hostname |
+| Valid quick-tunnel SNI, custom `Host:` header | `403` — the edge routes quick tunnels strictly by their assigned hostname |
 
 Cloudflare's edge only serves hostnames belonging to a zone in a Cloudflare
-account. `peppert.de` is authoritative at Hetzner (`hcloud zone list`), and the
-two ways to bridge that are both paid: partial (CNAME) setup is Business+, and
-delegating `boardreader.` as its own zone is Enterprise. `<uuid>.cfargotunnel.com`
-is not publicly resolvable, so a Hetzner-side CNAME to it resolves to nothing.
-
-The only free route to a stable `boardreader.peppert.de` is moving the whole
-`peppert.de` zone to Cloudflare — which the user has declined, and which would
-migrate 42 records including Proton MX. **Do not re-propose it, and do not write
-`hcloud zone` records against this.**
+account, and `<uuid>.cfargotunnel.com` is not publicly resolvable, so a CNAME to
+it from a third-party DNS provider resolves to nothing. Attaching a custom
+hostname needs a named tunnel plus the zone on Cloudflare; bridging a zone hosted
+elsewhere is a paid plan either way (partial/CNAME setup is Business+, delegating
+a subdomain as its own zone is Enterprise). **Do not re-propose a custom
+hostname for this skill — take the assigned quick-tunnel URL.**
 
 **No access control.** Anyone with the URL reaches the page, and through it the
 inference node's relayed API. The URL is unguessable and short-lived, which is
