@@ -42,8 +42,10 @@ from collections.abc import Iterable, Iterator, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
-# A cited SHA is 7-40 hex chars. Word-bounded so `abc1234` inside a longer
-# token (a base64 integrity hash, a filename) never matches.
+# A cited SHA is 7-40 hex chars. Word-bounded, so a hex run embedded in a longer
+# token (a base64 integrity hash, a filename) never matches. Note the absence of
+# a literal example here: this file is scanned like any other, and a plausible
+# one would report itself. That self-catch is the guard working.
 SHA_RE = re.compile(rb"\b[0-9a-f]{7,40}\b")
 
 # Files that contain hex-like noise and never cite a commit. Lockfiles are the
