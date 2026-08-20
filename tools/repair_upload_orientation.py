@@ -5,7 +5,7 @@ wrong point ``a8`` rotates every label 90/180/270 degrees while the geometry sti
 grid-aligns perfectly. Twenty of the non-user boards in ``data/uploads`` were stored
 that way, which floored every model's ``uploads_calibrate`` score at ~0.59 — a label
 bug wearing a model bug's clothes. Same failure and same fix as
-``data/external/chesscog_transfer/repair_orientation.py`` (commit ``f362f78``); this
+``data/external/chesscog_transfer/repair_orientation.py`` (commit ``90b706f``); this
 script is that method applied to the uploads sidecars, plus a second, independent
 opinion.
 

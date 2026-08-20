@@ -54,7 +54,7 @@ BR_SESSION_BANK ?= models/exemplars_session.npz
 BR_SAVE_UPLOADS ?= data/uploads
 # The cascade's second member, so the dev path reads boards the same way the
 # canonical `docker compose up` demo does. These two drifted once already: the
-# cascade landed in compose.yaml alone (3a55d41) and `make dev` went on quietly
+# cascade landed in compose.yaml alone (2b64ada) and `make dev` went on quietly
 # serving BR_MODEL by itself for two days. tests/test_deploy_parity.py is now
 # the guard, and aspects.yaml carries the Makefile as part of `deploy`.
 BR_MODEL_B      ?= models/run_f/model.onnx

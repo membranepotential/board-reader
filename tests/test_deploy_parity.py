@@ -7,7 +7,7 @@ model files load and how they combine — out of the environment, and that choic
 is the single biggest lever on how a board is read.
 
 They drifted once, silently. The confidence-gated cascade landed in compose.yaml
-alone (``3a55d41``); ``make dev`` went on serving ``BR_MODEL`` by itself, so
+alone (``2b64ada``); ``make dev`` went on serving ``BR_MODEL`` by itself, so
 every live phone test ran a measurably weaker reader than the demo it was
 supposed to be rehearsing, and nothing failed. These tests are the guard, and
 ``aspects.yaml`` carries the Makefile inside the ``deploy`` aspect so ``/drift``

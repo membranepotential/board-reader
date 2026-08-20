@@ -53,13 +53,13 @@ confidences**. No moves, no legality, no PGN — those are the downstream applic
   `/calibrate` batch took the VRAM X needed for the 4K monitor's reverse-PRIME surface, twice.
   Measured: 3-session peak ~1.6 GiB of the 4 GiB card; DINOv2 @batch 64 needs ≥896 MiB.
 
-- 08-11: **Calibration fine-tune ships** (`9fe975f`) — `tools/train/calibrate_finetune.py`
+- 08-11: **Calibration fine-tune ships** (`20b063a`) — `tools/train/calibrate_finetune.py`
   (≥3-session gate) + `AveragedEstimator` behind `BR_MODEL_TUNED`, 50/50 with base; live
   `/estimate` 63/64 vs base 58/64. Untested on unseen footage (same 5 `user_photos` throughout).
-- 08-11: **Two-model cascade deployed** (`34a4ae7`, `3a55d41`) — τ-gated `CascadeEstimator`
+- 08-11: **Two-model cascade deployed** (`364bea3`, `2b64ada`) — τ-gated `CascadeEstimator`
   behind `BR_MODEL_B` (0.95), each member on its own sidecar geometry; `run_f` promoted into
   `models/` + compose, so the canonical demo runs it.
-- 08-11: **`uploads_calibrate`'s 0.59 was a label bug** (`c4dd8b2`) — 19 rotated sidecars
+- 08-11: **`uploads_calibrate`'s 0.59 was a label bug** (`155704c`) — 19 rotated sidecars
   repaired, 0.59 → **0.75**, halluc 254 → 30. Quote the 17-real-photo subset (**0.919**); the
   13 pre-rectified 384px warps (0.63) are out-of-domain and drag the mean.
 - 08-11: **Session diversity is the fine-tune lever** (pre-registered confirm passed): 3 frames
@@ -68,7 +68,7 @@ confidences**. No moves, no legality, no PGN — those are the downstream applic
 - 08-11: **Ensemble beats both members** — user_photos 0.938 → **0.956**, OVERALL 0.696 →
   **0.718**. Decoupled routing answered-negative: combine evidence, don't route.
 - 08-11: **Central-column pooling answered-negative** — the bakeoff's +9 was an 80-board-bank
-  artifact; bank size was the real lever. Also: per-board display rotation (`bb7c2da`).
+  artifact; bank size was the real lever. Also: per-board display rotation (`3fc8831`).
 - 08-10: **run_f (pose-aware crops) does NOT deploy alone** — fixes cross-style type, pays
   occupancy. **+4.8pp of synthetic holdout transferred as 0.0pp on real photos**: the holdout
   does not predict deployment, and crops/epochs are exhausted as knobs.
@@ -89,7 +89,7 @@ confidences**. No moves, no legality, no PGN — those are the downstream applic
    argmax is invariant, DESIGN §9 says the downstream smoother wants them.
 7. **Crop attribution / occlusion** — the prism is a *bounding* volume: the c6 knight's lean
    hallucinated a b6 rook and corrupted b7 all trial. Base-weighted attribution over
-   bounding-prism membership. Plus detection follow-ups (`3f93e57`, non-blocking).
+   bounding-prism membership. Plus detection follow-ups (`73efd60`, non-blocking).
 
 ## Open questions
 

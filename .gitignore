@@ -41,6 +41,13 @@ client-logs/
 .claude/scheduled_tasks.lock
 .claude/settings.local.json
 
+# Local recovery artifacts from the 2026-08-20 author-email history rewrite.
+# The map translates any pre-rewrite SHA (an old note, a bookmark, a stale
+# checkout) to its replacement; the bundle is the complete pre-rewrite history.
+# Machine-local by design — the rewritten history is the only public one.
+docs/commit-rewrite-map.tsv
+docs/commit-rewrite-pre.bundle
+
 # OS / editor
 .DS_Store
 
