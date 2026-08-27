@@ -13,6 +13,9 @@ confidences**. No moves, no legality, no PGN — those are the downstream applic
   replay `FramePolicy` seam (burst-end + keepalive floor vs every-frame) and
   sweeping them over the four takes (owns GPU) — running — next: policy
   recommendation + accuracy-per-read table.
+- recorder-roll — agent making FrameRecorder roll a fresh session dir on seq
+  regression (the colliding-seq wart that forced filtered-copy scoring) —
+  running — next: land + verify eval-session/replay on rolled dirs.
 - framing-drift-experiment — analysis agent quantifying take 5's quad walk with
   `board_reader_core.boarddetect` on recorded frames; would periodic re-detect
   have caught it? — running — next: mechanism recommendation in
