@@ -15,6 +15,20 @@ confidences**. No moves, no legality, no PGN — those are the downstream applic
   Unverified. Optional: a CI workflow, CONTRIBUTING.md. Pre-rewrite SHAs recoverable
   from `docs/commit-rewrite-{map.tsv,pre.bundle}` (git-ignored); `tools/check_commit_refs.py`
   translates stale citations.
+- **Iteration is offline now** — recorded takes replace live phone takes (operator
+  decision 08-27 eve); a replay harness turns each recording into a rerunnable
+  benchmark. Dev stack stopped, GPU free.
+- score-takes — agent scoring the two unscored recordings (170333 aborted take,
+  181802 take 5): reconstruct truth from JPEGs + prior stream, run eval-session —
+  running — next: reports land in the recording dirs.
+- replay-harness — agent building `board-reader-inference replay` (frames.ndjson →
+  estimator → events, virtual clock from capture_ts, scoreable by eval-session) —
+  running — next: validate on the 08-13 recording.
+- rerank-experiment — agent testing evidence re-ranking on the three scored takes
+  (leave-one-out; can it kill the p/q->b residual without a retrain?) — running —
+  next: report in scratch/experiments/rerank_evidence/.
+- fixed-batches — agent implementing the arena-ratchet fix (pad every GPU batch to
+  batch_size in trained.py/embed.py, slice outputs) — running — next: GPU soak proof.
 - phone-live-test — FOUR takes recorded, three scored (control 99.0 %/58.3 %,
   hard 98.6 %/46.5 %, fast 98.1 %/58.1 % prior). Take 5 (18:18, unscored, no truth)
   proved the meter fix live — send rate 1 fps at rest with real bursts (was a flat
