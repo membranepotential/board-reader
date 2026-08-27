@@ -115,6 +115,33 @@ export class FakeViewerSocket {
 }
 
 /**
+ * The `/ws/ingest` socket, mocked, counting what the phone actually puts on the wire.
+ *
+ * The page's own "sent" counter is behind the settings sheet, and a spec about
+ * forwarding should not have to open a sheet to read one number. Each forwarded
+ * frame is two messages — a JSON header, then the JPEG — so counting the TEXT ones
+ * counts frames. Nothing is ever sent back: an ack is the node's business, and the
+ * client treats an unacked socket as a healthy one that is simply ahead.
+ */
+export class FakeIngestSocket {
+  #frames = 0;
+
+  static async install(page: Page): Promise<FakeIngestSocket> {
+    const socket = new FakeIngestSocket();
+    await page.routeWebSocket('**/ws/ingest', (route) => {
+      route.onMessage((message) => {
+        if (typeof message === 'string') socket.#frames++;
+      });
+    });
+    return socket;
+  }
+
+  get frames(): number {
+    return this.#frames;
+  }
+}
+
+/**
  * The endpoints every page asks for on load, answered so nothing is left pending.
  *
  * `retention: false` is a real answer from a node that keeps no photos, and it is the

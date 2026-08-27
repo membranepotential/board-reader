@@ -29,9 +29,19 @@
 
 import { expect, test, type Locator, type Page } from '@playwright/test';
 import { FakeViewerSocket, positionEvent, stubJson } from './helpers/node';
+import {
+  BOARD,
+  LANDSCAPE,
+  PORTRAIT,
+  SHIFT,
+  boardQuad,
+  drawnBoardCamera,
+  liveQuadX,
+  liveViewfinder,
+  scene,
+  seedFraming
+} from './helpers/camera';
 
-const LANDSCAPE = { width: 844, height: 390 };
-const PORTRAIT = { width: 390, height: 844 };
 /**
  * The shortest landscape stage a phone still presents — an SE-class device with no
  * home indicator to spend pixels on, and 70 fewer of them than the tall iPhones. It
@@ -70,116 +80,6 @@ async function openCamera(page: Page): Promise<FakeViewerSocket> {
   const socket = await FakeViewerSocket.install(page);
   await page.goto('/camera');
   return socket;
-}
-
-// ---- a camera whose scene this file decides -----------------------------------
-// Chromium's `--use-fake-device-for-media-stream` gives one rolling pattern and no
-// way to say what is in it. The corner-pairing test needs a board that moves and
-// blurs on cue, so it swaps `getUserMedia` for a canvas `captureStream` it draws.
-
-const FRAME = { width: 1280, height: 720 };
-/** Where the board is drawn, and what `/detect` is stubbed to return. */
-const BOARD = { x: 240, y: 150, w: 800, h: 448 };
-/** How far it slides, in frame pixels — enough to be unmistakable, small enough to track. */
-const SHIFT = 40;
-
-interface SceneWindow {
-  __scene: (change: { degrade?: boolean; shiftTo?: number }) => void;
-}
-
-async function drawnBoardCamera(page: Page): Promise<void> {
-  await page.addInitScript(
-    ({ FRAME, BOARD }) => {
-      const canvas = document.createElement('canvas');
-      canvas.width = FRAME.width;
-      canvas.height = FRAME.height;
-      const ctx = canvas.getContext('2d');
-      if (ctx === null) return;
-
-      let shift = 0;
-      let target = 0;
-      let degrade = 0;
-
-      // A bare checkerboard is periodic, and a translation of half a square is then
-      // indistinguishable from one of one and a half. These give the homography fit
-      // something unambiguous. Deterministic, so a failure is reproducible.
-      let seed = 7;
-      const rnd = () => ((seed = (seed * 1103515245 + 12345) % 2147483648) / 2147483648);
-      const marks = Array.from({ length: 24 }, () => ({ x: rnd(), y: rnd(), r: 4 + rnd() * 10 }));
-
-      const draw = () => {
-        ctx.save();
-        ctx.globalAlpha = 1;
-        // Mid grey is exactly the mean of the two square colours, so fading the board
-        // toward it changes CONTRAST while leaving the mean intensity alone — and the
-        // mean is what the sharpness score divides by. Fading toward black would
-        // cancel most of the drop and leave the candidates nearly tied.
-        ctx.fillStyle = 'rgb(128,128,128)';
-        ctx.fillRect(0, 0, canvas.width, canvas.height);
-        ctx.globalAlpha = 1 - 0.7 * degrade;
-
-        const bx = BOARD.x + shift;
-        const cw = BOARD.w / 8;
-        const ch = BOARD.h / 8;
-        for (let r = 0; r < 8; r++) {
-          for (let c = 0; c < 8; c++) {
-            ctx.fillStyle = (r + c) % 2 === 0 ? 'rgb(51,51,51)' : 'rgb(204,204,204)';
-            ctx.fillRect(bx + c * cw, BOARD.y + r * ch, cw + 1, ch + 1);
-          }
-        }
-        ctx.fillStyle = 'rgb(240,120,40)';
-        for (const mark of marks) {
-          ctx.beginPath();
-          ctx.arc(bx + mark.x * BOARD.w, BOARD.y + mark.y * BOARD.h, mark.r, 0, Math.PI * 2);
-          ctx.fill();
-        }
-        ctx.restore();
-      };
-
-      // The slide is gradual — 4 px a frame — because a 40 px jump in one frame is
-      // outside what Lucas-Kanade will follow, and the point is a tracker that KEEPS
-      // its lock while the board moves.
-      const towards = () => {
-        if (shift < target) shift = Math.min(target, shift + 4);
-        draw();
-        requestAnimationFrame(towards);
-      };
-      draw();
-      requestAnimationFrame(towards);
-
-      (window as unknown as SceneWindow).__scene = (change) => {
-        if (change.degrade !== undefined) degrade = change.degrade ? 1 : 0;
-        if (change.shiftTo !== undefined) target = change.shiftTo;
-      };
-
-      const stream = canvas.captureStream(30);
-      Object.defineProperty(navigator.mediaDevices, 'getUserMedia', {
-        configurable: true,
-        value: () => Promise.resolve(stream)
-      });
-      Object.defineProperty(navigator.mediaDevices, 'enumerateDevices', {
-        configurable: true,
-        value: () => Promise.resolve([])
-      });
-    },
-    { FRAME, BOARD }
-  );
-}
-
-function scene(
-  page: Page,
-  change: { degrade?: boolean; shiftTo?: number }
-): Promise<void> {
-  return page.evaluate(
-    (next) => (window as unknown as SceneWindow).__scene(next),
-    change
-  );
-}
-
-/** The live quad's top-left x in VIDEO pixels — the polygon's viewBox is the frame. */
-async function liveQuadX(page: Page): Promise<number> {
-  const points = (await page.locator('polygon.quad-line').getAttribute('points')) ?? '';
-  return Number(points.trim().split(/[\s,]+/)[0]);
 }
 
 /**
@@ -244,44 +144,47 @@ async function assertPillsFit(page: Page, labels: readonly string[]): Promise<vo
 }
 
 /**
- * Calibrate once against a reply that turns the labels, and return the six labels the
- * cluster then carries.
+ * Open the page into the FULLEST cluster it has, and return the six labels it carries.
  *
- * The two things that make the cluster widest arrive TOGETHER and cannot be separated:
- * a successful calibration lengthens `calibrate` to `calibrate · 1`, and a
- * `label_rotation` in the same reply is what puts the sixth pill on screen. So the
- * fullest cluster is also the one with the longest label in it.
+ * Two things make it widest and they have to be arranged separately, which is the
+ * part that changed: a successful calibration lengthens `calibrate` to
+ * `calibrate · 1`, and something else entirely puts the sixth pill on screen.
+ *
+ * It used to be a `label_rotation` in the calibration reply. It no longer can be —
+ * that reply is now ABSORBED (the node resolved the labelling off the pieces, so
+ * there is nothing left for anybody to press; see the absorption test below). What
+ * still raises the warning is the one case nobody can resolve for the operator: an
+ * automatic re-detection that MOVED a framing somebody else authored, since a
+ * detection replaces the quad but never the labelling (decision #15) and a8 may now
+ * be on a different physical corner. So this opens on last session's crop, 200 px
+ * off the board the camera is actually showing, and lets the page find that out.
  */
-async function calibrateIntoRotateWarning(page: Page): Promise<readonly string[]> {
+async function openWithRotateWarning(page: Page): Promise<readonly string[]> {
+  await FakeViewerSocket.install(page);
+  await drawnBoardCamera(page);
+  await seedFraming(page, boardQuad(200, 0), 0);
+  await stubJson(page, '**/api/detect**', { corners: boardQuad() });
+  // `label_rotation: 0`: the node had nothing to correct, so the warning the moved
+  // re-detection raised is still the operator's to answer when this returns.
   await stubJson(page, '**/api/calibrate**', {
     classes_calibrated: 13,
     backbone: 'resnet18',
     saved: null,
     exemplars: 64,
-    label_rotation: 1
+    label_rotation: 0
   });
+
+  await page.goto('/camera');
+  await liveViewfinder(page);
+  const rotate = page.locator('nav.cluster button', { hasText: 'rotate labels' });
+  await expect(rotate).toBeVisible({ timeout: 25_000 });
+
   page.on('dialog', (dialog) => void dialog.accept());
   await page.locator('nav.cluster button', { hasText: 'calibrate' }).click();
-  await expect(page.locator('nav.cluster button', { hasText: 'rotate labels' })).toBeVisible({
+  await expect(page.locator('nav.cluster button', { hasText: 'calibrate · 1' })).toBeVisible({
     timeout: 25_000
   });
   return ['more', 'position', 'detect board', 'rotate labels', 'calibrate · 1', 'start'];
-}
-
-/**
- * Wait for the fake camera to actually deliver a frame.
- *
- * `.picture` is sized from the video's own dimensions, so it has no box at all until
- * `loadedmetadata` has fired — measuring before that reads 0 and proves nothing.
- */
-async function liveViewfinder(page: Page): Promise<void> {
-  await expect
-    .poll(async () => (await page.locator('.picture').boundingBox())?.width ?? 0, {
-      // Generous on purpose: several specs now drive a camera at once, and a
-      // contended machine can take a while to hand out the first frame.
-      timeout: 20_000
-    })
-    .toBeGreaterThan(0);
 }
 
 test.describe('the viewfinder', () => {
@@ -441,15 +344,11 @@ test.describe('the viewfinder', () => {
   });
 
   test('rotate labels appears as a sixth pill when a reading may be turned', async ({ page }) => {
-    // The node corrects the labelling for its own use but cannot reach back and fix
-    // the corners this page keeps streaming, so until the operator turns them every
-    // reading on the wire is rotated. That case cannot wait for somebody to find a
-    // sheet — which is the whole reason this control has two homes.
-    await openCamera(page);
-    await liveViewfinder(page);
-
-    await expect(page.locator('nav.cluster button', { hasText: 'rotate labels' })).toHaveCount(0);
-    await calibrateIntoRotateWarning(page);
+    // A re-detection that moved the quad may have moved a8 with it, and until the
+    // operator turns the labels back every reading on the wire is rotated. That case
+    // cannot wait for somebody to find a sheet — which is the whole reason this
+    // control has two homes. (That it is absent otherwise is asserted above.)
+    await openWithRotateWarning(page);
 
     const rotate = page.locator('nav.cluster button', { hasText: 'rotate labels' });
     // Warn-ringed, not merely present: it has to be impossible to miss.
@@ -473,11 +372,8 @@ test.describe('the viewfinder', () => {
     ['a short landscape stage', SHORT_LANDSCAPE]
   ] as const) {
     test(`all six pills fit, labels and all, in ${name}`, async ({ page }) => {
-      await openCamera(page);
       await page.setViewportSize(viewport);
-      await liveViewfinder(page);
-
-      const labels = await calibrateIntoRotateWarning(page);
+      const labels = await openWithRotateWarning(page);
       await assertPillsFit(page, labels);
 
       // Said explicitly because it is the one that matters most and the one the
@@ -523,6 +419,40 @@ test.describe('the viewfinder', () => {
     expect(request.url()).toMatch(/[?&]corners=/);
     expect(request.postDataBuffer()?.byteLength ?? 0, 'no image was sent').toBeGreaterThan(2000);
     await expect(page.locator('.banner.ok')).toContainText('13/13');
+  });
+
+  test('a calibration that resolves the labelling absorbs it instead of asking', async ({
+    page
+  }) => {
+    // The node reads the true labelling off the PIECES — the one thing geometry
+    // cannot do — and reports the corner-label shift it had to undo. The page folds
+    // that straight into its own labels (a relabelling; no point moves), so the
+    // corners it goes on streaming already agree with the bank and nobody is asked
+    // for anything. The build before this raised the "check the labels" warning
+    // here, which handed the operator work the node had just finished.
+    await openCamera(page);
+    await liveViewfinder(page);
+    await expect(page.locator('.corner-handle').first()).toHaveText('a8');
+
+    await stubJson(page, '**/api/calibrate**', {
+      classes_calibrated: 13,
+      backbone: 'resnet18',
+      saved: null,
+      exemplars: 64,
+      label_rotation: 1
+    });
+    page.on('dialog', (dialog) => void dialog.accept());
+    await page.locator('nav.cluster button', { hasText: 'calibrate' }).click();
+
+    // One quarter turn, and the sign is the node's: `label_rotation` is the shift
+    // it had to undo, so the page adds it (`absorbCalibrateRotation`, pinned
+    // end-to-end by the node's own test).
+    await expect(page.locator('.banner.ok')).toContainText('labels aligned from the pieces', {
+      timeout: 25_000
+    });
+    await expect(page.locator('.corner-handle').first()).toHaveText('h8');
+    // And nothing is left to press.
+    await expect(page.locator('nav.cluster button', { hasText: 'rotate labels' })).toHaveCount(0);
   });
 
   test('the winning frame ships the corners from ITS OWN tick', async ({ page }) => {
