@@ -21,9 +21,6 @@ confidences**. No moves, no legality, no PGN — those are the downstream applic
 - replay-harness — agent building `board-reader-inference replay` (frames.ndjson →
   estimator → events, virtual clock from capture_ts, scoreable by eval-session) —
   running — next: validate on the 08-13 recording.
-- rerank-experiment — agent testing evidence re-ranking on the three scored takes
-  (leave-one-out; can it kill the p/q->b residual without a retrain?) — running —
-  next: report in scratch/experiments/rerank_evidence/.
 - phone-live-test — FOUR takes recorded, three scored (control 99.0 %/58.3 %,
   hard 98.6 %/46.5 %, fast 98.1 %/58.1 % prior). Take 5 (18:18, unscored, no truth)
   proved the meter fix live — send rate 1 fps at rest with real bursts (was a flat
@@ -50,6 +47,16 @@ confidences**. No moves, no legality, no PGN — those are the downstream applic
   Weigh a cheap re-rank/calibration pass against the retrain before training.
 
 ## Done (recent)
+
+- 08-27 (night): **re-rank study: GO on one rule, NO-GO wider**
+  ([report](docs/reports/2026-08-27-evidence-rerank.md), `f66f9a4`+`4d3c165`).
+  Demote a `b` argmax when top-2 margin < 0.20 (swap top two, keep runner-up
+  prob): 38 squares fixed / **0 broken** over all four takes; anchored-prior
+  perfect boards control 58.3→70.8, hard 46.5→65.1, fast 58.1→71.0 (take 5
+  drift-bound, unchanged). Captures only ~22 % of top-2-reachable errors, so the
+  tall-crop retrain argument stands; control's q→k is NOT re-rankable (half
+  outside top-2). Guardrail wanted: margin-gap assertion in the trial scorer
+  (tightest observed gap 0.210). → implement next (Next 0b).
 
 - 08-27 (night): **arena ratchet fixed** (`dcfcf28`) — every GPU batch padded to
   exactly batch_size (repeat-last-crop) and sliced back, in trained.py crop_dist
