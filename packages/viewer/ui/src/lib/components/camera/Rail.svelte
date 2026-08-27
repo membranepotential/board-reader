@@ -44,6 +44,8 @@
     /** Kept for a mouse; the hint line is what a phone can actually read. */
     calibrateTitle: string;
     streaming: boolean;
+    /** Starting is blocked (a portrait frame); STOPPING is never blocked. */
+    streamDisabled: boolean;
     onMore: () => void;
     onPosition: () => void;
     onDetect: () => void;
@@ -61,6 +63,7 @@
     calibrateCount,
     calibrateTitle,
     streaming,
+    streamDisabled,
     onMore,
     onPosition,
     onDetect,
@@ -98,7 +101,14 @@
     {calibrateCount ? `calibrate · ${calibrateCount}` : 'calibrate'}
   </button>
   <span class="spacer"></span>
-  <button class="pill primary" class:on={streaming} type="button" onclick={onStream}>
+  <button
+    class="pill primary"
+    class:on={streaming}
+    type="button"
+    disabled={streamDisabled && !streaming}
+    title={streamDisabled && !streaming ? 'turn the phone sideways to stream' : undefined}
+    onclick={onStream}
+  >
     {streaming ? 'stop' : 'start'}
   </button>
 </nav>

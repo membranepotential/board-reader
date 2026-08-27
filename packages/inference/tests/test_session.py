@@ -266,6 +266,22 @@ def test_calibrate_names_the_rotation_when_the_board_is_turned_in_frame():
     assert outcome.rotated_fit.piece_agree == 32  # turned back, the photo is exact
 
 
+def test_calibrate_label_rotation_equals_the_corner_label_shift():
+    """Pins the sign the /camera page relies on to absorb ``label_rotation``
+    automatically: a corner labelling shifted by ``c`` (the page's "a8" slot
+    holding physical corner ``c``) comes back as ``label_rotation == c``, so the
+    page corrects itself with ``rot' = rot + label_rotation``. That is the
+    OPPOSITE fold from the autorotate convention (``rot' = rot - k``, see
+    corners.ts ``absorbRotation``) — this test is what keeps the two straight."""
+    image, quad = _photo()
+    for c in (1, 2, 3):
+        session = EstimatorSession(_lite_bank(), occupancy=_lite_bank())
+        shifted = np.roll(quad, -c, axis=0)
+        outcome = session.calibrate_from(image, shifted, START_PLACEMENT)
+        assert isinstance(outcome, Calibration)
+        assert outcome.label_rotation == c
+
+
 def test_adopt_start_calibrates_piece_types_off_the_occupancy_bank():
     """The zero-setup path: an uncalibrated server that sees a start position
     calibrates from that very photo and starts answering with full positions."""

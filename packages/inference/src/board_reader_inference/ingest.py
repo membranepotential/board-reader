@@ -50,6 +50,31 @@ from board_reader_inference.stabilize import BoardStabilizer
 
 log = logging.getLogger(__name__)
 
+#: How much older than the incoming frame a sharper queued frame may be and still
+#: win the inbox (seconds of edge capture clock). One read period, roughly: any
+#: longer and the estimator would be reading a board state a move behind.
+SHARPNESS_WINDOW_S = 1.0
+
+
+def prefer_frame(
+    queued: tuple[Frame, float], incoming: tuple[Frame, float]
+) -> tuple[Frame, float]:
+    """The inbox entry worth keeping when the estimator is behind.
+
+    Latest-wins, EXCEPT that a measurably sharper queued frame within
+    :data:`SHARPNESS_WINDOW_S` beats a blurrier newcomer — motion blur is the one
+    thing tracking cannot compensate (the corners follow the board; the pixels
+    inside are still smeared), and the edge's per-frame ``sharpness`` says which
+    frames are worth a ~1 s read. Frames without the measurement fall back to
+    latest-wins, which is what a sharpness-less edge always did.
+    """
+    fq, fi = queued[0], incoming[0]
+    if fq.sharpness is None or fi.sharpness is None:
+        return incoming
+    if fi.capture_ts - fq.capture_ts > SHARPNESS_WINDOW_S:
+        return incoming  # the sharp frame has gone stale: freshness wins again
+    return queued if fq.sharpness > fi.sharpness else incoming
+
 
 def _read_with_prior(route: Route, stabilizer: BoardStabilizer) -> PositionEvent:
     """One estimate plus its hard-constraint repair, both off the event loop.
@@ -135,8 +160,11 @@ class FrameIngest:
         """Hand ``frame`` to its board's worker and return immediately.
 
         Called from the event-loop thread (the ``/ingest`` handler). If the board's
-        inbox already holds an un-estimated frame, that older frame is dropped —
-        the estimator is behind, and the freshest board state is the useful one.
+        inbox already holds an un-estimated frame, one of the two is dropped —
+        the estimator is behind, and (:func:`prefer_frame`) the SHARPEST recent
+        board state is the useful one, not blindly the freshest: a handheld phone
+        smears half its frames, and at ~1 read/s the read might as well spend
+        itself on the crisp one.
         """
         self.frames_received += 1
         worker = self._boards.get(frame.board_id)
@@ -150,9 +178,9 @@ class FrameIngest:
             worker.inbox.put_nowait(entry)
         except asyncio.QueueFull:
             # No await since the put, so the queue is still full and this cannot miss.
-            worker.inbox.get_nowait()
+            queued = worker.inbox.get_nowait()
             self.frames_dropped += 1
-            worker.inbox.put_nowait(entry)
+            worker.inbox.put_nowait(prefer_frame(queued, entry))
 
     async def drain(self, *board_ids: str) -> None:
         """Wait until the named boards (default: all) have nothing left to estimate.

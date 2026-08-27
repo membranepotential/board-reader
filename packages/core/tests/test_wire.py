@@ -37,6 +37,21 @@ def test_frame_header_is_json_safe_and_complete():
     assert "image" not in h  # the image never travels in the header
 
 
+def test_sharpness_rides_the_header_and_defaults_to_none():
+    """The edge's focus score is optional: edges that measure it send a float, the
+    synthetic feed sends nothing, and both survive the roundtrip unchanged."""
+    f = Frame(board_id="A1", seq=1, capture_ts=1.0, image=_img(), sharpness=712.5)
+    assert f.header()["sharpness"] == 712.5
+    assert Frame.from_header(f.header(), _img()).sharpness == 712.5
+    bare = Frame(board_id="A1", seq=2, capture_ts=2.0, image=_img())
+    assert bare.sharpness is None
+    assert bare.header()["sharpness"] is None
+    assert Frame.from_header(bare.header(), _img()).sharpness is None
+    # an edge that never heard of the field at all
+    legacy = {k: v for k, v in bare.header().items() if k != "sharpness"}
+    assert Frame.from_header(legacy, _img()).sharpness is None
+
+
 def test_frame_encode_decode_roundtrip():
     f = Frame(board_id="C3", seq=9, capture_ts=1.0, image=_img(1), stability=0.2, clock="black")
     header, jpeg = f.encode()

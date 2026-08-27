@@ -208,6 +208,8 @@ export interface IngestFrameHeader {
   /** Epoch SECONDS, stamped at capture on the edge (DESIGN D5) — not milliseconds. */
   readonly capture_ts: number;
   readonly stability: number;
+  /** Edge focus score (tenengrad) — comparable only between neighbouring frames. */
+  readonly sharpness?: number;
   readonly burst_id: string | null;
   readonly corners?: CornerCoords;
   readonly clock?: ClockRunning;

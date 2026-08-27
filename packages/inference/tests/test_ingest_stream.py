@@ -21,7 +21,7 @@ from board_reader_inference.centroid import build_exemplars
 from board_reader_inference.embed import LiteEmbedder
 from board_reader_inference.estimator import CentroidEstimator, StubEstimator
 from board_reader_inference.hub import PositionHub
-from board_reader_inference.ingest import FrameIngest
+from board_reader_inference.ingest import SHARPNESS_WINDOW_S, FrameIngest, prefer_frame
 from board_reader_inference.routing import Route, Uncalibrated, WholeFrameRead, route_for
 from board_reader_inference.server import create_app
 
@@ -371,3 +371,44 @@ def test_an_uncalibrated_route_skips_frames_and_the_stream_wakes_on_hot_swap():
         await ingest.close()
 
     asyncio.run(run())
+
+
+def _entry(seq: int, ts: float, sharpness: float | None) -> tuple[Frame, float]:
+    img = np.zeros((8, 8, 3), dtype=np.uint8)
+    return (
+        Frame(
+            board_id="T1", seq=seq, capture_ts=ts, image=img, sharpness=sharpness
+        ),
+        ts,
+    )
+
+
+def test_prefer_frame_keeps_the_sharper_recent_frame():
+    """A shaky hand smears half the frames; the ~1 s read should be spent on the
+    crisp one, not blindly on the newest."""
+    sharp = _entry(1, 10.0, 900.0)
+    blurry = _entry(2, 10.4, 120.0)
+    assert prefer_frame(sharp, blurry) is sharp
+
+
+def test_prefer_frame_lets_freshness_win_past_the_window():
+    """A sharp frame from a move ago describes the WRONG board — staleness caps
+    how long sharpness may hold the inbox."""
+    sharp = _entry(1, 10.0, 900.0)
+    late = _entry(9, 10.0 + SHARPNESS_WINDOW_S + 0.1, 120.0)
+    assert prefer_frame(sharp, late) is late
+
+
+def test_prefer_frame_without_the_measurement_is_latest_wins():
+    """A sharpness-less edge (the synthetic feed, an old page) behaves exactly as
+    before: the freshest board state wins."""
+    older = _entry(1, 10.0, None)
+    newer = _entry(2, 10.1, None)
+    assert prefer_frame(older, newer) is newer
+    assert prefer_frame(_entry(1, 10.0, 500.0), newer) is newer
+
+
+def test_prefer_frame_ties_go_to_the_newcomer():
+    a = _entry(1, 10.0, 500.0)
+    b = _entry(2, 10.1, 500.0)
+    assert prefer_frame(a, b) is b

@@ -720,8 +720,12 @@ uv run board-reader-viewer --host 0.0.0.0 --port 8443 --ssl
 #    http://localhost:8443/camera — localhost is a secure context, no cert.)
 ```
 
-Flow: open the page **in landscape** — it is landscape-first by design; portrait works
-too, as a media-query override, but landscape is the case the layout is built for.
+Flow: open the page **in landscape** — not just by design preference: a portrait
+frame is **hard-blocked** (an overlay says "turn the phone sideways"; detect,
+calibrate and start are disabled until the phone turns). The node's per-square
+crops extend toward the top of the image, so a board lying sideways in the frame
+reads garbage that looks like a position problem — it cost the 2026-08-27 field
+day, hence a block rather than a warning.
 Allow the camera and the preview fills the screen. **The board is found on its own**:
 once the picture holds still, after a short settle delay (~2.5 s, so autoexposure and
 autofocus have caught up) the page detects the board without being asked — no framing
@@ -729,9 +733,14 @@ step in the common case. Six controls sit on a rail (a right-hand column in land
 a 3×2 dock at the bottom in portrait): `more` · `position` · `detect board` ·
 `rotate labels` · `calibrate` · `start`/`stop`.
 
-**rotate labels** is still how the operator states which corner is a8 — geometry
-cannot know that (decision #15) — and it matters more now than with a manual flow,
-because detection can fire unattended and needs the same check every time. **detect
+**rotate labels** is still how the operator *overrides* which corner is a8 —
+geometry cannot know that (decision #15) — but a calibration now sets it without
+help: `/calibrate` resolves the true labelling from the pieces and the page folds
+the reply's `label_rotation` into its own corners (the banner says
+`labels aligned from the pieces (turned 90°)`), so nobody presses rotate after a
+calibrate any more. And when `/calibrate` refuses because the *photo* is rotated
+(the portrait failure reaching the node some other way), the banner says that one
+actionable sentence instead of the node's full paragraph. **detect
 board** re-runs detection on demand, for the cases automatic detection does not reach
 (a bad angle, nothing recognisable as a board); the four corner handles are always
 there to drag by hand too. **calibrate** grabs one full-resolution frame and posts it
@@ -772,8 +781,17 @@ What to check:
 - After a re-detection that follows losing the board (see Tracking below), the labels
   may have landed on a different physical corner: the warning banner does not
   auto-dismiss, and **rotate labels** is the fix — nothing else clears it.
-- Rotate the phone mid-session (landscape to portrait and back) — the quad stays on
-  the board throughout.
+- Rotate the phone mid-session (landscape to portrait and back) — the portrait
+  overlay appears at once, sending pauses (`stream paused` in the overlay), and on
+  turning back both clear by themselves: the quad is still on the board and frames
+  flow again, nothing pressed.
+- Shake the phone gently in its holder while streaming: readings should hold up
+  better than the shake suggests — every frame now carries an edge-measured
+  `sharpness` (tenengrad on the tracker's frame), and when the estimator is
+  behind, the node's inbox keeps the *sharpest* frame of the last second rather
+  than blindly the newest (`ingest.prefer_frame`). Verifiable after the fact in a
+  recording: `frames.ndjson` headers carry `sharpness`, `events.ndjson` carries
+  the chosen `frame_seq`.
 - Drag **position**'s header to move it and its corner grip to resize it; it survives
   a rotation without ending up off-screen.
 - After **calibrate**, a banner reports the class count and the bank size, and the

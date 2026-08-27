@@ -408,6 +408,8 @@ export function shouldAutoDetect({
 export function calibrateBlockReason(input: {
   readonly camera: CameraState;
   readonly activity: Activity;
+  /** The 2026-08-27 hard block: a portrait frame crops pieces along the wrong axis. */
+  readonly portrait?: boolean;
 }): string | null {
   if (input.activity.kind === 'calibrating') return 'calibrating…';
   if (input.activity.kind === 'detecting') return 'looking for the board…';
@@ -415,6 +417,10 @@ export function calibrateBlockReason(input: {
   // camera running, which is a weaker and more honest requirement than needing
   // the socket up.
   if (input.camera.kind !== 'live') return 'the camera is not running';
+  // Piece crops extend toward the top of the image, so a sideways board cannot
+  // be read — blocked rather than warned, because the failed reads look like a
+  // position problem and cost an afternoon (2026-08-27).
+  if (input.portrait) return 'the frame is portrait — turn the phone sideways';
   return null;
 }
 

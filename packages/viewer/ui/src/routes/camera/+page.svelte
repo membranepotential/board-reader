@@ -35,6 +35,7 @@
   import { gridToFen } from '$lib/board/fen';
   import {
     checkQuadShape,
+    absorbCalibrateRotation,
     cornersInCrop,
     cropBox,
     nextRotation,
@@ -148,6 +149,11 @@
   let lensId = $state<string | null>(null);
   let panel = $state.raw<PanelState>(PANEL_START);
   let video = $state<HTMLVideoElement | undefined>();
+  // The 2026-08-27 hard block: crops extend toward the top of the image, so a
+  // portrait frame reads every piece into its neighbour. Screen orientation is
+  // the early signal (before the camera even opens); the frame's own aspect is
+  // the ground truth for what would actually be sent.
+  let screenPortrait = $state(false);
   let port = $state('8080');
 
   // ---- the plumbing, deliberately NOT reactive ---------------------------------
@@ -194,6 +200,10 @@
   const MOTION_SIDE = MOTION_DEFAULTS.downscale;
 
   let stream: MediaStream | null = null;
+  // Focus score of the last tracked frame, measured on the tracker's own gray
+  // buffer (one extra pass, no extra readback). Rides each streamed frame so the
+  // node can spend its read on the crisp frame of a shaky second.
+  let lastSharpness: number | null = null;
   let tracker: PlaneTracker | null = null;
   let trackGray: Float32Array | null = null;
   let motionCanvas: HTMLCanvasElement | null = null;
@@ -217,11 +227,17 @@
 
   // ---- derived ------------------------------------------------------------------
 
-  const calibrateBlock = $derived(calibrateBlockReason({ camera, activity }));
+  const portrait = $derived(
+    screenPortrait || (camera.kind === 'live' && camera.frame.height > camera.frame.width)
+  );
+  const calibrateBlock = $derived(calibrateBlockReason({ camera, activity, portrait }));
   const hint = $derived(
     hintFor({ camera, activity, auto, tracking: trackingState, streaming, calibrateBlock })
   );
   const trackChip = $derived(trackingChip(trackingState));
+  $effect(() => {
+    trial.note('portrait', { blocked: portrait });
+  });
   const dragging = $derived(activity.kind === 'dragging' ? activity.corner : null);
   const connTone = $derived(
     connStatus === 'streaming' ? 'up' : connStatus === 'idle' ? '' : 'warn'
@@ -353,6 +369,7 @@
   function trackFrame(frame: FrameSize): void {
     if (!tracking) {
       trackingState = 'off';
+      lastSharpness = null; // nothing measures it with the tracker off
       return;
     }
     // A drag in progress is the operator moving the corners; the tracker must not
@@ -369,7 +386,9 @@
     // frame. Handing a pyramid a buffer the page then overwrites is the recorded
     // aliasing bug — every point measured itself, converged on zero displacement,
     // and the tracker reported a confident lock on a quad that never moved.
-    const report = active.update(toGray(data, trackGray));
+    const gray = toGray(data, trackGray);
+    lastSharpness = tenengrad({ data: gray, width: trackCanvas.width, height: trackCanvas.height });
+    const report = active.update(gray);
     trackingState = report.state;
 
     // Lost: the quad stays exactly where it last fitted. DESIGN §4.4.1 — a
@@ -416,9 +435,13 @@
     if (thumbnail === null) return;
     // The meter has to see EVERY sampled frame — dropping frames upstream would
     // make stability lie — so it is updated whether or not anything is streaming.
-    const decision = streaming
-      ? forwarder.decide(thumbnail, { boardId, captureTs })
-      : (meter.update(thumbnail), null);
+    // A portrait frame is metered but never forwarded — every crop the node
+    // would cut from it reaches into the neighbouring square. The overlay says
+    // why, and sending resumes by itself the moment the phone turns.
+    const decision =
+      streaming && !portrait
+        ? forwarder.decide(thumbnail, { boardId, captureTs })
+        : (meter.update(thumbnail), null);
     stability = meter.stability;
     bursting = forwarder.bursting;
 
@@ -474,6 +497,7 @@
       boardId,
       captureTs,
       stability: decision.stability,
+      ...(lastSharpness === null ? {} : { sharpness: lastSharpness }),
       burstId: decision.burstId,
       corners,
       jpeg
@@ -586,6 +610,7 @@
       trial.note('streaming-off', { sent: ingest.sent, acked: ingest.acked, dropped: ingest.dropped });
       return;
     }
+    if (portrait) return; // the start pill is disabled; this enforces it
     streaming = true;
     forwarder.reset();
     stamps = [];
@@ -809,8 +834,17 @@
       const result = await postCalibrate(jpeg, { corners: shot.corners });
       if (!result.ok) {
         trial.note('calibrate-refused', { status: result.error.status, message: result.error.message });
-        // The node refuses calibrations that would poison the bank (the frame not
-        // showing the claimed position); surface its reason verbatim.
+        // A named cause gets the one actionable sentence (the node's full
+        // paragraph is in the trial log); anything else is surfaced verbatim.
+        if (result.error.rotatedDeg !== undefined) {
+          setBanner(
+            'err',
+            'the board is rotated in the frame — turn the phone so the board sits ' +
+              'upright, then calibrate again.',
+            true
+          );
+          return;
+        }
         setBanner(
           'err',
           result.error.status === 0
@@ -830,21 +864,22 @@
       let text =
         `Calibrated ${reply.classes_calibrated}/13 classes — ` +
         `bank now holds ${reply.exemplars} exemplars`;
-      // The node corrects the labelling for its own use, but it cannot reach back
-      // and fix the corners this page keeps streaming — so say so rather than let
-      // the live position come out rotated.
-      if (reply.label_rotation) {
+      // The node resolved the true labelling from the pieces; fold it into the
+      // page's own (a relabelling — no point moves) so the streamed corners agree
+      // and nobody has to press anything. Sign pinned by the node's
+      // test_calibrate_label_rotation_equals_the_corner_label_shift.
+      if (reply.label_rotation && camera.kind === 'live') {
+        setFraming({
+          ...camera.framing,
+          rot: absorbCalibrateRotation(camera.framing.rot, reply.label_rotation)
+        });
+        saveFraming();
+        labelsNeedCheck = false;
         text +=
-          `\nThe node had to turn the corner labels by ${reply.label_rotation * 90} degrees ` +
-          'to read the board. Press rotate labels until they match, or the live stream ' +
-          'reads rotated.';
-        labelsNeedCheck = true;
+          `\nlabels aligned from the pieces (turned ${reply.label_rotation * 90}°) — ` +
+          'a8 is set; use rotate labels in settings if the board reads wrong.';
       }
-      setBanner(
-        reply.label_rotation ? 'warn' : 'ok',
-        text,
-        Boolean(reply.label_rotation)
-      );
+      setBanner('ok', text);
     } catch (cause) {
       setBanner('err', `${String(cause)}\nIs the inference node reachable from the viewer?`);
     } finally {
@@ -1162,6 +1197,9 @@
     sendCanvas = document.createElement('canvas');
     sendCtx = sendCanvas.getContext('2d');
 
+    readScreenOrientation();
+    screen.orientation?.addEventListener('change', readScreenOrientation);
+
     positions.start(TICK_MS);
     statusTimer = setInterval(paintStatus, TICK_MS);
     trial.start();
@@ -1169,6 +1207,7 @@
     void startCamera();
 
     return () => {
+      screen.orientation?.removeEventListener('change', readScreenOrientation);
       if (frameTimer !== null) clearInterval(frameTimer);
       if (statusTimer !== null) clearInterval(statusTimer);
       if (bannerTimer !== null) clearTimeout(bannerTimer);
@@ -1204,6 +1243,10 @@
     } else {
       void video?.play().catch(() => {});
     }
+  }
+
+  function readScreenOrientation(): void {
+    screenPortrait = screen.orientation?.type.startsWith('portrait') ?? false;
   }
 
   /** A bfcache restore resurrects the page with every stream in it dead. */
@@ -1256,12 +1299,24 @@
       <HintBar {hint} onLookAgain={() => void detectCorners()} />
     </div>
   </div>
+  {#if portrait}
+    <div class="portrait-block" role="alert">
+      <div class="glyph" aria-hidden="true">📱</div>
+      <div class="head">turn the phone sideways</div>
+      <div class="sub">
+        {streaming ? 'stream paused — ' : ''}pieces are read standing up, and a sideways
+        board cannot be. {streaming
+          ? 'sending resumes in landscape.'
+          : 'detect, calibrate and start unlock in landscape.'}
+      </div>
+    </div>
+  {/if}
 {/snippet}
 
 {#snippet controls()}
   <Rail
     positionShown={panel.shown}
-    detectDisabled={camera.kind !== 'live' || activity.kind !== 'idle'}
+    detectDisabled={camera.kind !== 'live' || activity.kind !== 'idle' || portrait}
     rotateDisabled={camera.kind !== 'live'}
     rotateAttention={labelsNeedCheck}
     calibrateDisabled={calibrateBlock !== null}
@@ -1269,6 +1324,7 @@
     calibrateTitle={calibrateBlock ??
       'rebuild the piece bank from the live camera (the board must show the starting position)'}
     {streaming}
+    streamDisabled={portrait}
     onMore={() => (sheetOpen = !sheetOpen)}
     onPosition={togglePanel}
     onDetect={() => void detectCorners()}
@@ -1343,6 +1399,33 @@
     -webkit-touch-callout: none;
     background: #000;
     -webkit-tap-highlight-color: transparent;
+  }
+
+  .portrait-block {
+    position: absolute;
+    inset: 0;
+    z-index: 30;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 0.45rem;
+    text-align: center;
+    padding: 1.5rem;
+    background: rgba(0, 0, 0, 0.84);
+    color: var(--fg);
+  }
+  .portrait-block .glyph {
+    font-size: 2.2rem;
+  }
+  .portrait-block .head {
+    font-weight: 600;
+    font-size: 1.05rem;
+  }
+  .portrait-block .sub {
+    color: var(--muted);
+    font-size: 0.85rem;
+    max-width: 34ch;
   }
 
   .camera {

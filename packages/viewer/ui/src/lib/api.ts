@@ -47,6 +47,12 @@ export interface ApiFailure {
   readonly status: number;
   /** The node's own wording where it gave one — operator-facing, shown verbatim. */
   readonly message: string;
+  /**
+   * `/calibrate`'s named cause, when it found one: the same photo passes once
+   * turned this many degrees — i.e. the board is rotated in the frame. Lets the
+   * page say the one actionable sentence instead of the node's full paragraph.
+   */
+  readonly rotatedDeg?: number;
 }
 
 export type ApiResult<T> = Result<T, ApiFailure>;
@@ -114,7 +120,10 @@ async function failureOf(response: Response): Promise<ApiFailure> {
     if (typeof parsed === 'object' && parsed !== null && 'error' in parsed) {
       const reason = (parsed as { error: unknown }).error;
       if (typeof reason === 'string' && reason !== '') {
-        return { status: response.status, message: reason };
+        const deg = (parsed as { rotated_deg?: unknown }).rotated_deg;
+        return typeof deg === 'number' && Number.isFinite(deg)
+          ? { status: response.status, message: reason, rotatedDeg: deg }
+          : { status: response.status, message: reason };
       }
     }
   } catch {

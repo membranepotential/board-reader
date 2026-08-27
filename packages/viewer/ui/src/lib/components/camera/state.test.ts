@@ -250,6 +250,10 @@ describe('calibrate guard', () => {
     // Live and idle is enough. Nothing about how still the phone is being held
     // reaches this function at all — that is what the missing input means.
     expect(calibrateBlockReason({ camera: live(), activity: IDLE })).toBeNull();
+    expect(calibrateBlockReason({ camera: live(), activity: IDLE, portrait: false })).toBeNull();
+    expect(calibrateBlockReason({ camera: live(), activity: IDLE, portrait: true })).toBe(
+      'the frame is portrait — turn the phone sideways'
+    );
   });
 
   it('blocks under a detection, which owns the quad and ends by clearing `activity`', () => {

@@ -58,6 +58,11 @@ class Frame:
     capture_ts: float  # epoch seconds, wall clock, stamped at capture on the edge
     image: np.ndarray  # BGR
     stability: float = 1.0
+    #: Edge-measured focus score (tenengrad on the tracked frame), unitless and
+    #: resolution-dependent — only comparable between neighbouring frames of the
+    #: same board, which is exactly how the ingest pre-filter uses it. ``None``
+    #: from edges that do not measure it.
+    sharpness: float | None = None
     clock: str = "none"
     burst_id: str | None = None
     corners: np.ndarray | None = None  # (4,2) float32 in ``image`` px: a8,h8,h1,a1
@@ -79,6 +84,7 @@ class Frame:
             "seq": self.seq,
             "capture_ts": self.capture_ts,
             "stability": self.stability,
+            "sharpness": self.sharpness,
             "clock": self.clock,
             "burst_id": self.burst_id,
         }
@@ -94,6 +100,11 @@ class Frame:
             capture_ts=float(header["capture_ts"]),
             image=image,
             stability=float(header.get("stability", 1.0)),
+            sharpness=(
+                float(header["sharpness"])
+                if header.get("sharpness") is not None
+                else None
+            ),
             clock=header.get("clock", "none"),
             burst_id=header.get("burst_id"),
             corners=header.get("corners"),

@@ -57,6 +57,12 @@ export interface OutgoingFrame {
   /** Epoch SECONDS at capture (DESIGN D5). */
   readonly captureTs: number;
   readonly stability: number;
+  /**
+   * Focus score of the tracked frame (tenengrad), unitless — the node compares it
+   * only between neighbouring frames, to spend its ~1 s read on a crisp one.
+   * Omitted when the tracker is off (nothing measured it).
+   */
+  readonly sharpness?: number;
   readonly burstId: string | null;
   /**
    * The quad **in the pixels of the JPEG being sent**. The node never sees the full
@@ -228,6 +234,7 @@ export class IngestClient {
       capture_ts: frame.captureTs,
       stability: frame.stability,
       burst_id: frame.burstId,
+      ...(frame.sharpness === undefined ? {} : { sharpness: frame.sharpness }),
       ...(frame.corners === undefined ? {} : { corners: flattenQuad(frame.corners) })
     };
     socket.send(JSON.stringify(header));

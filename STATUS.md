@@ -18,10 +18,17 @@ confidences**. No moves, no legality, no PGN — those are the downstream applic
 - phone-live-test — control trial scored (see Done); dev stack is **running** for the
   *hard* take (rank-8 pieces, different lighting — phone **landscape**). Then decide
   the tall-crop retrain's shape from the evidence margins.
-- camera-ux — calibrate gate now **names a board rotated in the frame** (`ec96b98`,
-  probes the 4 image rotations on rejection). Client-side portrait guard + automatic
-  label rotation are **mocked up for review**: `scratch/mockups/camera-ux.html`
-  (or http://localhost:8766/camera-ux.html while the ad-hoc server runs).
+- ui-mockups — full-system HTML mockups **ready for review** in `docs/mockups/`
+  (index/camera/viewer/snapshot; decided changes baked in, proposals labelled).
+- camera-ux — the three decided changes are **implemented and committed**: portrait
+  hard block, short named-cause refusal banner, automatic label-rotation absorb
+  (plus `ec96b98`, the gate naming a rotated board). **Not yet deployed** — needs
+  `make ui` + a stack restart after the current take; the running stack predates them.
+- phone-live-test(2) — first hard-take attempt **aborted**: GPU OOM stalled the
+  stream (inference node holds ~2.9 GiB of 4; the estimator loop survives, frames
+  fail while pressure lasts), and the operator had calibrated a non-start position
+  with k/q swapped. Bank set aside (`models/exemplars_session.npz.poisoned-20260827`),
+  stack restarted fresh with `BR_GPU_MEM_LIMIT_MB=1024`; retake pending.
 
 ## Done (recent)
 

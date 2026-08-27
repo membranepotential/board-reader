@@ -80,6 +80,21 @@ export function quarterTurnsOf(degrees: number): LabelRotation {
   return asRotation(degrees / 90);
 }
 
+/**
+ * Fold `/calibrate`'s `label_rotation` into the page's own labelling, so the
+ * operator never has to press "rotate labels" after a calibration — the node
+ * resolved the true orientation from the pieces, and this makes the page agree.
+ *
+ * NOTE the sign: `rot + k`, the OPPOSITE fold from `absorbRotation`'s `rot - k`.
+ * The two replies mean different things — autorotate reports the turn it applied
+ * to a READING, calibrate reports the corner-label shift it had to undo — and
+ * the sign here is pinned end-to-end by the node's own
+ * `test_calibrate_label_rotation_equals_the_corner_label_shift`.
+ */
+export function absorbCalibrateRotation(rot: LabelRotation, labelRotation: number): LabelRotation {
+  return asRotation(rot + labelRotation);
+}
+
 // ---- the crop that goes on the wire ------------------------------------------
 
 /** Margin on each side of the quad's bounding box, as a fraction of its size. */
