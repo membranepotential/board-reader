@@ -29,6 +29,8 @@ def cmd_serve(args: argparse.Namespace) -> int:
 
     import uvicorn
 
+    from board_reader_inference.schedule import DEFAULT_POLICY_SPEC
+
     if args.centroids:
         # Picked up by server._default_estimator() when the app is built.
         os.environ["BR_CENTROIDS"] = args.centroids
@@ -40,6 +42,21 @@ def cmd_serve(args: argparse.Namespace) -> int:
     # server always records, a test app never writes unless it asks to.
     if args.record_dir:
         os.environ["BR_RECORD_DIR"] = args.record_dir
+
+    # Every served run schedules its reads (D3/D4): the node estimates at the end
+    # of each move plus a 3 s keepalive floor, rather than every frame that
+    # survives the ingest inbox. ~12x fewer estimates on the swept takes for
+    # -0.9 pp prior per-square — see docs/reports/2026-08-27-move-trigger-sweep.md.
+    # `BR_SCHEDULE=every-frame` is the way back; any policy spec
+    # `replay --policy` accepts works here, so a sweep's finding and the node's
+    # behaviour are the same string.
+    #
+    # Set here rather than in `create_app` for the same reason as BR_RECORD_DIR
+    # above: a real server always schedules, while an injected test app reads
+    # whatever it is handed unless it asks otherwise.
+    if args.schedule:
+        os.environ["BR_SCHEDULE"] = args.schedule
+    os.environ.setdefault("BR_SCHEDULE", DEFAULT_POLICY_SPEC)
 
     # The app's own loggers (per-read trial lines, refused frames), which
     # uvicorn's config leaves unconfigured — without this they fall to
@@ -294,6 +311,13 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument(
         "--no-record", dest="record_dir", action="store_const", const=None,
         help="do not record ingested frames (runs are then not reproducible)",
+    )
+    s.add_argument(
+        "--schedule", default=None, metavar="POLICY",
+        help="which frames get an estimate, as a `replay --policy` spec "
+             "(env BR_SCHEDULE). Default: read at the end of each move plus a 3 s "
+             "keepalive floor. `every-frame` reads everything, as the node did "
+             "before scheduling — ~12x the GPU",
     )
     s.set_defaults(func=cmd_serve)
 

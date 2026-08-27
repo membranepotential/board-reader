@@ -10,27 +10,27 @@ Two layers, both required by the project's "user-testable from the start" princi
 
 ## 0. Read this first (the 60-second version)
 
-The suite is **fast — ~12 s for all 783 tests**. If testing is costing you more than
-that, you are doing one of the things in this section. Read it before you run
+The suite is **fast — ~20 s for all ~1035 tests**. If testing is costing you more
+than that, you are doing one of the things in this section. Read it before you run
 anything; do not read the remaining 600 lines unless you are adding a test.
 
 **The only two commands you normally need:**
 
 ```bash
-make test                                  # everything, ~12s. The gate before a commit.
+make test                                  # everything, ~20s. The gate before a commit.
 uv run pytest packages/inference/tests/test_server.py -q    # one file, while iterating
 ```
 
-| Want | Run | Cost (measured, idle machine) |
+| Want | Run | Cost (measured 2026-08-27, one suite at a time) |
 |---|---|---|
-| The gate (before committing) | `make test` | **12 s** — all 783 |
-| One file / one test | `uv run pytest <path>[::<test>] -q` | 2–7 s |
-| One package | `uv run pytest packages/<pkg> -q` | core 5 s · edge 2 s · viewer 6 s · **inference 20 s** |
+| The gate (before committing) | `make test` | **20 s** — all ~1035 |
+| One file / one test | `uv run pytest <path>[::<test>] -q` | 1–8 s |
+| One package | `uv run pytest packages/<pkg> -q` | core 8 s · edge 3 s · viewer 11 s · **inference 35 s** |
 | Recognition changes only | `make test-gpu` | 2 s, **needs an idle GPU** |
 
-Note the trap in row 3: `packages/inference` is 371 of the 783 tests and runs
-*serially*, so scoping to it (20 s) is **slower than running everything** with
-`make test` (12 s). Narrow to a file, or just run the gate.
+Note the trap in row 3: `packages/inference` is 614 of the ~1035 tests and runs
+*serially*, so scoping to it (35 s) is **slower than running everything** with
+`make test` (20 s). Narrow to a file, or just run the gate.
 
 **Rules that save the most time:**
 
@@ -40,7 +40,7 @@ Note the trap in row 3: `packages/inference` is 371 of the 783 tests and runs
   you selected; `make test` already parallelises the full suite. Plain `uv run
   pytest <path>` is the fast path for one file.
 - **Don't run `uv run pytest` bare to check your work** — that is the whole suite
-  *serially*, ~23 s, and it re-enables the GPU tests. `make test` is strictly better.
+  *serially*, ~60 s, and it re-enables the GPU tests. `make test` is strictly better.
 - **Never run two suites at once**, or a suite alongside a training run. The tests
   are CPU-saturating by design (`-n auto`); two at once is how the flakes below get
   triggered, and it makes both runs slower than running them in sequence.
@@ -89,10 +89,10 @@ reasoning.
 
 ```bash
 uv sync                # once, to set up the workspace venv
-make test              # the suite across all cores, minus GPU tests (green), ~12s
+make test              # the suite across all cores, minus GPU tests (green), ~20s
 make test-gpu          # the 2 GPU tests alone — an idle GPU, or they flake
 make test-all          # everything, GPU included
-uv run pytest          # the whole suite, serially (~23s)
+uv run pytest          # the whole suite, serially (~60s)
 uv run pytest -q       # quiet
 uv run pytest packages/inference          # just one package
 uv run pytest tests/test_end_to_end.py    # the real-network walking-skeleton test
@@ -127,6 +127,8 @@ What's covered today (M0 + M1 rectification):
 | **Position stream consumer** | `packages/inference/tests/test_positions.py` | **transitions of a real move, first-sighting ≠ unchanged, per-board diffing, NDJSON capture rebuilds the identical event, `--changes-only` drops keepalives** |
 | Hub | `packages/inference/tests/test_hub.py` | retained-latest, fan-out, overflow |
 | Gateway | `packages/inference/tests/test_server.py` | ingest → viewer over WS (in-process) |
+| **Read scheduling** | `packages/inference/tests/test_schedule.py` | **burst detection matches the forwarder's hysteresis; the keepalive floor survives a dead, stuck, absent or NaN meter and a backwards clock; no config spelling switches it off; a new move cancels the last one's owed reads; spec strings round-trip** |
+| **Scheduling, live** | `packages/inference/tests/test_ingest_schedule.py` | **the policy is observed on every arriving frame and asked at the drain, so a burst-end read gets `prefer_frame`'s sharper contender; per-board isolation; a frozen `capture_ts` falls back to the node's own keepalive; `BR_SCHEDULE` reaches the socket and `every-frame` restores the old gateway** |
 | Viewer | `packages/viewer/tests/test_viewer.py` | UI served, WS URL injected |
 | **Layer split** | `tests/test_layer_separation.py` | edge/inference never import each other |
 | **End-to-end** | `tests/test_end_to_end.py` | real uvicorn + edge client + viewer WS |
@@ -931,8 +933,11 @@ Three more places to look after a phone trial:
   which kind of quiet it was — `jq -c 'select(.kind=="heartbeat") | .detail'
   client-logs/*.ndjson`.
 - `curl -s localhost:8000/healthz | jq .ingest` — `received/estimated/dropped/
-  failed/skipped/refused` counters; all zeros while the phone claims to stream
-  means the frames never arrived.
+  failed/skipped/refused/unscheduled/backstopped` counters; all zeros while the
+  phone claims to stream means the frames never arrived. `unscheduled` far above
+  `estimated` is the **read scheduler working** (`BR_SCHEDULE`, ~12x fewer reads),
+  not a stall; `backstopped` above zero means that edge's `capture_ts` stopped
+  advancing and the node is reading on its own clock to keep the board alive.
 
 ### Option L — Watch or capture the position stream
 
@@ -1013,6 +1018,35 @@ label is only as good as the estimator that produced it):
   "guard_seqs": 12
 }
 ```
+
+> [!important] Live event streams are SPARSE — pick `guard_seqs` for the schedule,
+> not for the camera
+> Since the move-trigger milestone the node does **not** publish one event per
+> frame. `BR_SCHEDULE` defaults to `burst-end:burst_end_reads=3`: three reads a
+> beat apart when a move finishes, then roughly one every 3 s while the board
+> rests, ~12× fewer events than the frames that arrived
+> ([the sweep](reports/2026-08-27-move-trigger-sweep.md)). `frames.ndjson` is
+> unchanged — every arriving frame is still recorded, because recording happens in
+> the `/ingest` handler ahead of the scheduler — so **`from_seq` still means a
+> frame seq and is unaffected**, but `events.ndjson` now has holes in it.
+>
+> Two consequences when authoring truth:
+>
+> - `guard_seqs` counts *frames*, and it is there to drop the events captured
+>   while the hand was still over the board. A burst-end policy already declines
+>   those, so a big guard on a scheduled recording mostly throws away good
+>   evidence: at ~0.5 reads/s, `guard_seqs=12` can be the entire segment. The
+>   sweep's own replays used **`guard_seqs=3`** for exactly this reason; start
+>   there for a scheduled take and only raise it if the excluded-count line shows
+>   post-boundary events still landing mid-move.
+> - a segment can legitimately contain **one** event, or none. `eval-session`
+>   scores what is there; a segment with no events is not a bug, it is a move that
+>   the keepalive had not yet come round to. Compare `events:` against the read
+>   count in `/healthz` (`estimated` vs `unscheduled`) before concluding the node
+>   was broken during the take.
+>
+> `BR_SCHEDULE=every-frame` restores the old per-frame stream if a take is being
+> recorded specifically to be scored densely.
 
 ```bash
 # 2. Score it (no model, no GPU — it reads events.ndjson, ~0.1 s):

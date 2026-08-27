@@ -9,10 +9,21 @@ meters motion and stamps every frame with a ``stability`` in [0,1]
 (:mod:`board_reader_edge.motion`, mirrored in the browser edge's
 ``lib/edge/motion.ts``). Nothing downstream had ever used it.
 
-A **policy** here is the thing that does: fed the recorded header of each frame in
-order, it answers "spend an estimate on this one?". :class:`BurstTriggered` is the
-shape this milestone is about — estimate at the **end of a burst**, the
-move-complete moment, skip the burst itself, and read a slow **keepalive** at rest.
+A **policy** here is the thing that does: fed the header of each frame in order, it
+answers "spend an estimate on this one?". :class:`BurstTriggered` is the shape this
+milestone is about — estimate at the **end of a burst**, the move-complete moment,
+skip the burst itself, and read a slow **keepalive** at rest. It is what the live
+gateway schedules with (:data:`DEFAULT_POLICY_SPEC`, ``BR_SCHEDULE`` to override),
+and what :mod:`board_reader_inference.replay` sweeps offline — one implementation,
+because a scheduler measured on recordings and a different one in production is a
+sweep that proved nothing.
+
+Live, the two halves of the question come apart: the policy must see **every**
+arriving frame (:meth:`FramePolicy.observe`, on the ``/ingest`` handler) or it
+segments bursts nobody sent, while the decision (:meth:`FramePolicy.due`) belongs
+at the moment the worker picks a frame out of the latest-wins inbox — which is how
+a burst-end read lands on the *sharpest* frame of the moment rather than on
+whichever one arrived at the instant the burst ended. See :class:`FramePolicy`.
 
 **The keepalive is a floor, not a nicety** (DESIGN D3: stability is a *hint*, never
 a gate). The meter that shipped before 2026-08-27 measured an absolute pixel
@@ -30,6 +41,13 @@ all a scheduler needs. And **only ``capture_ts``**, never the wall clock: a poli
 is replayed offline at whatever speed the GPU manages, so a decision that consults
 ``time.time()`` would answer differently on every run and take the replay
 harness's determinism down with it.
+
+That purity has a live cost, and the live path pays it rather than this module:
+a camera whose ``capture_ts`` freezes or steps backwards stalls a capture-time
+floor, so the ingest worker carries a **wall-clock backstop** on top of the
+policy's own. In here, both clock pathologies are made to converge on the floor
+rather than on either extreme — a backwards step re-anchors without becoming due,
+and an unreadable interval reads as "not yet".
 
 **The interplay with the debounce is the whole design.**
 :class:`~board_reader_inference.stabilize.BoardStabilizer` adopts a changed square
@@ -49,8 +67,9 @@ edge that forwarded them would be reasoning about a stream nobody sent.
 
 from __future__ import annotations
 
+import math
 import re
-from collections.abc import Mapping, Sequence
+from collections.abc import Mapping
 from dataclasses import dataclass, field, fields
 from typing import ClassVar, Protocol, runtime_checkable
 
@@ -90,25 +109,118 @@ DEFAULT_KEEPALIVE_S = 3.0
 
 @runtime_checkable
 class FramePolicy(Protocol):
-    """Which recorded frames are worth an estimate.
+    """Which frames are worth an estimate.
 
     Stateful by design: burst end is only recognisable from the *run* of frames —
     a burst's last frame looks exactly like its first until the ones after it
-    stay calm — so a policy is asked frame by frame, in order, exactly once each.
+    stay calm — so the policy must see every frame's header, in order.
+
+    That is why the seam is **two** calls rather than one, and the split is what
+    lets the same policy drive the offline replay and the live gateway:
+
+    :meth:`observe`
+        Fold one arriving frame's header into the burst state. Called for
+        **every** frame, in capture order, exactly once each — including frames
+        that are never estimated and frames the ingest inbox goes on to drop. A
+        policy blinded to part of the stream segments bursts that nobody sent.
+
+    :meth:`due`
+        Decide whether *this* frame is the one to spend an estimate on, and
+        record the read if so. Called at most once per frame, and only for a
+        frame the caller is actually able to estimate right now.
+
+    Offline (:mod:`board_reader_inference.replay`) the two collapse into
+    :meth:`should_estimate`: frames are read one at a time, in order, so the frame
+    just observed is always the frame being decided. Live
+    (:class:`~board_reader_inference.ingest.FrameIngest`) they come apart —
+    :meth:`observe` runs on the ``/ingest`` handler for every frame that lands,
+    while :meth:`due` runs on the board's worker for whichever frame survived the
+    latest-wins inbox. Deciding at the *drain* rather than at arrival is the
+    point: :func:`~board_reader_inference.ingest.prefer_frame` keeps the sharper
+    of two contenders within its window, so a burst-end read spends itself on the
+    crispest view of the moment instead of on whichever frame happened to arrive
+    at the instant the burst ended.
 
     :attr:`name` is the policy's canonical spec string: it round-trips through
     :func:`parse_policy`, so the ``policy`` field of a replay manifest is literally
-    the ``--policy`` argument that reproduces that run.
+    the ``--policy`` argument that reproduces that run, and ``BR_SCHEDULE`` is the
+    same string again.
     """
 
     #: Canonical, re-parseable spec — ``"burst-end:keepalive_s=5"`` and friends.
     name: str
+    #: The floor, in seconds of capture time (D3). Part of the seam because the
+    #: live worker backstops it against the *wall* clock, and needs the number
+    #: from whatever policy it was handed.
+    keepalive_s: float
+
+    def observe(self, capture_ts: float, stability: float) -> None:
+        """Fold one arriving frame's header in. Every frame, in capture order."""
+
+    def due(self, capture_ts: float, stability: float) -> bool:
+        """Whether to spend an estimate on this frame — and, if so, record it.
+
+        Not a pure query: answering ``True`` consumes the read (the keepalive
+        clock restarts, a burst end's owed read is struck off), so it must be
+        asked exactly once per frame the caller can estimate, and never for a
+        frame the caller then declines to read for its own reasons.
+        """
 
     def should_estimate(self, entry: FrameEntry) -> bool:
-        """Whether ``entry`` gets estimated. Called once per frame, in seq order."""
+        """:meth:`observe` then :meth:`due` for a recorded frame — the replay path.
+
+        Called once per frame, in seq order.
+        """
 
 
-def _spec(policy: object, name: str, keys: Sequence[str]) -> str:
+def stability_of(raw: object) -> float:
+    """The stability a policy reads, from whatever a header actually carried.
+
+    The one coercion boundary, shared by the recorded path (:func:`_signal`) and
+    the live one (``ingest._schedule_signal``), because a scheduler that reasons
+    about ``None`` or a NaN is a scheduler with two behaviours depending on which
+    edge connected. :meth:`FramePolicy.observe` and :meth:`FramePolicy.due` are
+    entitled to a finite number.
+
+    Anything not a finite number reads as **1.0, fully at rest** — the D3 default.
+    A JSON ``null`` from a hand-rolled edge, a missing field, and a NaN from a
+    meter that divided by zero all mean "this stream does not tell me about
+    motion", and the honest answer to that is the keepalive floor, not an
+    exception in the ``/ingest`` handler and not a burst that ends spuriously
+    (NaN loses every comparison, so it would slip through the hysteresis' calm
+    branch and declare a move complete in the middle of a hand).
+    """
+    try:
+        value = float(raw)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return 1.0
+    return value if math.isfinite(value) else 1.0
+
+
+def _signal(entry: FrameEntry) -> tuple[float, float]:
+    """The two header fields a policy reads: capture time and stability."""
+    return entry.capture_ts, stability_of(entry.header.get("stability"))
+
+
+def _number(value: float, kind: type) -> str:
+    """A parameter value rendered so that :func:`parse_policy` reads it back exactly.
+
+    ``%g`` — what this used to use — is a *display* format and loses on both
+    sides: it renders ``burst_end_reads=1000000`` as ``1e+06``, which the int
+    coercion in :func:`parse_policy` then refuses outright, and it rounds floats
+    to six significant digits, so two policies differing past that share one name
+    and one replay directory. Ints print as ints; floats print at ``repr``'s
+    shortest round-tripping precision, with a bare ``.0`` trimmed because
+    ``keepalive_s=5`` is how anyone would write it and ``float("5")`` is the same
+    number.
+    """
+    if kind is int:
+        return str(int(value))
+    text = repr(float(value))
+    return text[:-2] if text.endswith(".0") else text
+
+
+def _spec(policy: object, name: str, params: Mapping[str, type]) -> str:
     """``name:key=value,…`` for the parameters that differ from the defaults.
 
     Only the differences, so the common case reads as the bare policy name and a
@@ -118,11 +230,57 @@ def _spec(policy: object, name: str, keys: Sequence[str]) -> str:
     """
     defaults = {f.name: f.default for f in fields(policy) if f.init}  # type: ignore[arg-type]
     parts = [
-        f"{key}={getattr(policy, key):g}"
-        for key in keys
+        f"{key}={_number(getattr(policy, key), kind)}"
+        for key, kind in params.items()
         if getattr(policy, key) != defaults[key]
     ]
     return f"{name}:{','.join(parts)}" if parts else name
+
+
+def _finite_positive(name: str, value: float, because: str) -> None:
+    """Reject the two spellings of "no limit" that would switch a floor off.
+
+    ``inf`` passes a bare ``> 0`` check and turns a keepalive into "never" — one
+    read in the 60 recorded seconds of the dead-meter incident. NaN passes it too
+    and is worse: every comparison against NaN is ``False``, so the rate limit
+    inverts and the policy reads *every* frame. Both are the incident this module
+    exists to prevent, arriving through a config string instead of a broken
+    sensor, so an interval is a finite positive number of seconds and nothing else.
+    """
+    if not math.isfinite(value) or value <= 0:
+        raise ValueError(f"{name} must be > 0 and finite, got {value!r}: {because}")
+
+
+#: Why ``keepalive_s`` has no "off" spelling.
+_FLOOR_REASON = (
+    "the keepalive is a floor under the read rate (D3), and a policy without one "
+    "goes blind the moment the motion meter does"
+)
+#: Why a spacing of zero is not a thing either.
+_SPACING_REASON = (
+    "it is the interval between two reads, and an interval of zero (or of none at "
+    "all) is a burst of estimates at stream rate, which is what the floor exists "
+    "to bound"
+)
+
+
+def _under_the_floor(name: str, spacing_s: float, keepalive_s: float) -> None:
+    """A tighter interval may govern over the floor; a looser one may not.
+
+    ``spacing_s`` is the *tight* interval — the beat of a burst-end run, or the
+    calm-frame rate — and the whole promise of D3 is that no configuration makes
+    the node read more slowly than ``keepalive_s``. A spacing above the floor
+    quietly breaks that promise (``when-still`` with ``keepalive_s=3,
+    spacing_s=10`` leaves 10 s gaps under a claimed 3 s floor), and it does so in
+    the one direction nobody watches: fewer reads, which looks like a quiet board.
+    """
+    if spacing_s > keepalive_s:
+        raise ValueError(
+            f"{name}={spacing_s!r} is looser than keepalive_s={keepalive_s!r}: the "
+            "spacing is the tight interval and may only ever read MORE often than "
+            "the floor, never less (D3). Raise keepalive_s if longer gaps are "
+            "really what you want."
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -140,6 +298,23 @@ class EveryFrame:
     @property
     def name(self) -> str:
         return "every-frame"
+
+    @property
+    def keepalive_s(self) -> float:
+        """Nominal — this policy reads everything, so its floor never binds.
+
+        It exists because the live worker's wall-clock backstop
+        (:class:`~board_reader_inference.ingest.FrameIngest`) reads one number off
+        whatever policy it was given, and a seam with a hole in it is a seam that
+        gets an ``isinstance`` check bolted onto it later.
+        """
+        return DEFAULT_KEEPALIVE_S
+
+    def observe(self, capture_ts: float, stability: float) -> None:
+        return None
+
+    def due(self, capture_ts: float, stability: float) -> bool:
+        return True
 
     def should_estimate(self, entry: FrameEntry) -> bool:
         return True
@@ -206,18 +381,15 @@ class BurstTriggered:
     _last_read_ts: float | None = field(default=None, init=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:
-        if self.keepalive_s <= 0:
-            raise ValueError(
-                f"keepalive_s must be > 0, got {self.keepalive_s}: the keepalive is a "
-                "floor under the read rate (D3), and a policy without one goes blind "
-                "the moment the motion meter does"
-            )
+        _finite_positive("keepalive_s", self.keepalive_s, _FLOOR_REASON)
         if self.burst_end_reads < 1:
             raise ValueError(f"burst_end_reads must be >= 1, got {self.burst_end_reads}")
-        if self.spacing_s < 0:
-            raise ValueError(f"spacing_s must be >= 0, got {self.spacing_s}")
-        if self.exit_hold_s < 0:
-            raise ValueError(f"exit_hold_s must be >= 0, got {self.exit_hold_s}")
+        _finite_positive("spacing_s", self.spacing_s, _SPACING_REASON)
+        _under_the_floor("spacing_s", self.spacing_s, self.keepalive_s)
+        if not math.isfinite(self.exit_hold_s) or self.exit_hold_s < 0:
+            raise ValueError(
+                f"exit_hold_s must be >= 0 and finite, got {self.exit_hold_s!r}"
+            )
         if not 0.0 <= self.enter <= self.exit <= 1.0:
             raise ValueError(
                 f"need 0 <= enter <= exit <= 1, got enter={self.enter} exit={self.exit}; "
@@ -227,30 +399,45 @@ class BurstTriggered:
 
     @property
     def name(self) -> str:
-        return _spec(self, "burst-end", list(self.PARAMS))
+        return _spec(self, "burst-end", self.PARAMS)
 
     @property
     def bursting(self) -> bool:
         """Whether the policy currently believes a move is in progress."""
         return self._bursting
 
-    def should_estimate(self, entry: FrameEntry) -> bool:
-        ts = entry.capture_ts
-        self._track_burst(float(entry.header.get("stability", 1.0)), ts)
-        if self._last_read_ts is not None and ts < self._last_read_ts:
-            # The clock stepped backwards — a spliced session, or a recorder wart.
-            # Re-anchor rather than stall: a policy must never stop reading because
-            # a timestamp surprised it.
-            self._last_read_ts = None
-        # While a burst end is still owed reads the interval is the tight one; at
-        # rest it is the floor. Either way the read that fires satisfies one owed
-        # read, so a keepalive that happens to land first is not wasted.
-        interval = self.spacing_s if self._owed else self.keepalive_s
-        if self._last_read_ts is not None and ts - self._last_read_ts < interval - DUE_EPS:
-            return False
+    def observe(self, capture_ts: float, stability: float) -> None:
+        self._track_burst(stability, capture_ts)
+
+    def due(self, capture_ts: float, stability: float) -> bool:
+        ts = capture_ts
+        if self._last_read_ts is not None:
+            if ts < self._last_read_ts:
+                # The clock stepped backwards — an NTP correction, a spliced
+                # session, or two devices sharing one board_id. Re-anchor HERE
+                # rather than clearing the anchor: clearing it would make this
+                # frame due, and a monotonically *decreasing* clock would then be
+                # read every frame — a rate limit that a broken clock switches
+                # off is the dead-meter incident again. Anchoring means elapsed
+                # clamps to zero and the stream degrades to the floor rate.
+                self._last_read_ts = ts
+            # While a burst end is still owed reads the interval is the tight one;
+            # at rest it is the floor. Either way the read that fires satisfies one
+            # owed read, so a keepalive that happens to land first is not wasted.
+            interval = self.spacing_s if self._owed else self.keepalive_s
+            # Phrased as "is the interval satisfied?" rather than "is it too soon?"
+            # so a non-finite capture_ts answers NO and falls back to the floor,
+            # instead of losing every comparison and reading every frame.
+            if not ts - self._last_read_ts >= interval - DUE_EPS:
+                return False
         self._owed = max(self._owed - 1, 0)
         self._last_read_ts = ts
         return True
+
+    def should_estimate(self, entry: FrameEntry) -> bool:
+        ts, stability = _signal(entry)
+        self.observe(ts, stability)
+        return self.due(ts, stability)
 
     def _track_burst(self, stability: float, ts: float) -> None:
         """The forwarder's own ``trackBurst``, on the receiving side of the wire."""
@@ -258,6 +445,15 @@ class BurstTriggered:
             if stability < self.enter:
                 self._bursting = True
                 self._calm_since = None
+                # A new move CANCELS whatever the last burst end still owed. Those
+                # reads were evidence for a position that no longer exists, and
+                # while owed the interval is the tight one — so on two moves closer
+                # together than the run is long (the dim take over-segments to 26
+                # bursts across 10 moves) the leftovers fire at spacing_s *inside*
+                # the next move, feeding the debounce a quorum of hand-over-board
+                # frames that disagree by construction. The new burst end will owe
+                # a fresh set, timed from its own move-complete moment.
+                self._owed = 0
             return
         if stability <= self.exit:
             self._calm_since = None
@@ -302,27 +498,36 @@ class WhenStill:
     _last_read_ts: float | None = field(default=None, init=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:
-        if self.keepalive_s <= 0:
-            raise ValueError(f"keepalive_s must be > 0, got {self.keepalive_s} (D3 floor)")
+        _finite_positive("keepalive_s", self.keepalive_s, _FLOOR_REASON)
         if not 0.0 <= self.theta <= 1.0:
             raise ValueError(f"theta must be in [0, 1], got {self.theta}")
-        if self.spacing_s < 0:
-            raise ValueError(f"spacing_s must be >= 0, got {self.spacing_s}")
+        _finite_positive("spacing_s", self.spacing_s, _SPACING_REASON)
+        _under_the_floor("spacing_s", self.spacing_s, self.keepalive_s)
 
     @property
     def name(self) -> str:
-        return _spec(self, "when-still", list(self.PARAMS))
+        return _spec(self, "when-still", self.PARAMS)
 
-    def should_estimate(self, entry: FrameEntry) -> bool:
-        ts = entry.capture_ts
-        if self._last_read_ts is not None and ts < self._last_read_ts:
-            self._last_read_ts = None
-        calm = float(entry.header.get("stability", 1.0)) >= self.theta
-        interval = self.spacing_s if calm else self.keepalive_s
-        if self._last_read_ts is not None and ts - self._last_read_ts < interval - DUE_EPS:
-            return False
+    def observe(self, capture_ts: float, stability: float) -> None:
+        """Nothing to track: this policy has no notion of a transition, which is
+        exactly the weakness it exists to measure."""
+        return None
+
+    def due(self, capture_ts: float, stability: float) -> bool:
+        ts = capture_ts
+        if self._last_read_ts is not None:
+            if ts < self._last_read_ts:
+                self._last_read_ts = ts  # see BurstTriggered.due
+            interval = self.spacing_s if stability >= self.theta else self.keepalive_s
+            if not ts - self._last_read_ts >= interval - DUE_EPS:
+                return False
         self._last_read_ts = ts
         return True
+
+    def should_estimate(self, entry: FrameEntry) -> bool:
+        ts, stability = _signal(entry)
+        self.observe(ts, stability)
+        return self.due(ts, stability)
 
 
 # --------------------------------------------------------------------------- #
@@ -335,6 +540,18 @@ POLICIES: Mapping[str, type] = {
     "burst-end": BurstTriggered,
     "when-still": WhenStill,
 }
+
+#: What the live gateway schedules with unless ``BR_SCHEDULE`` says otherwise —
+#: ``BurstTriggered(keepalive_s=3.0, burst_end_reads=3, spacing_s=1.3)``, the
+#: recommendation of ``docs/reports/2026-08-27-move-trigger-sweep.md`` §8. Only
+#: ``burst_end_reads`` appears because the other two are already the defaults, and
+#: a spec states what was *asked for* (see :func:`_spec`).
+#:
+#: ``burst_end_reads=3`` at ``spacing_s=1.3`` is the one setting where a burst end
+#: spans ``SETTLE_SECONDS=2.5`` on its own evidence, so a completed move can settle
+#: without waiting on the keepalive. ``BR_SCHEDULE=every-frame`` is the way back to
+#: reading everything.
+DEFAULT_POLICY_SPEC = "burst-end:burst_end_reads=3"
 
 
 def parse_policy(spec: str) -> FramePolicy:

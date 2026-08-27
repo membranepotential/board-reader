@@ -25,6 +25,7 @@ import json
 import logging
 import os
 import time
+from collections.abc import Callable
 from pathlib import Path
 
 import numpy as np
@@ -47,6 +48,7 @@ from board_reader_inference.estimator import CentroidEstimator, Estimator, StubE
 from board_reader_inference.hub import PositionHub
 from board_reader_inference.ingest import FrameIngest
 from board_reader_inference.routing import PhotoRead, ReadView, Uncalibrated
+from board_reader_inference.schedule import EveryFrame, FramePolicy, parse_policy
 from board_reader_inference.session import (
     CalibrationRejected,
     EstimatorSession,
@@ -181,6 +183,33 @@ def _estimator_from_bank(
             headroom=classifier.box_headroom, side_pad=classifier.box_side_pad
         ),
     )
+
+
+def _frame_policy() -> Callable[[], FramePolicy]:
+    """``BR_SCHEDULE`` -> a factory for each board's read scheduler.
+
+    The value is a policy spec string (``burst-end:burst_end_reads=3``,
+    ``every-frame``, ``when-still:theta=0.9``) — the same grammar
+    ``board-reader-inference replay --policy`` takes and the same string a replay
+    manifest records, so what a sweep measured and what the node runs cannot drift
+    into being two different things.
+
+    **Unset means every frame here**, which is what the gateway did before
+    scheduling existed and what an injected test app should keep doing. The
+    shipped default is set by ``serve`` (:data:`~.schedule.DEFAULT_POLICY_SPEC`) —
+    the same asymmetry ``BR_RECORD_DIR`` has, and for the same reason: a real
+    server always schedules, a ``create_app()`` in a test does exactly what it was
+    asked to.
+
+    A factory rather than an instance: a policy is stateful, and each board's
+    burst tracking is its own.
+    """
+    spec = os.environ.get("BR_SCHEDULE")
+    if not spec:
+        return EveryFrame
+    policy = parse_policy(spec)  # a typo fails at startup, not on the first frame
+    print(f"scheduling reads with {policy.name}")
+    return lambda: parse_policy(spec)
 
 
 def _cascade_tau() -> float:
@@ -394,7 +423,9 @@ def create_app(
         if not recorder.record_event(event_line(event, frame, published_ts=time.time())):
             print(f"frame recording stopped: {recorder.stopped_reason}")
 
-    ingest_ = FrameIngest(session.route, hub_, on_event=_record_published)
+    ingest_ = FrameIngest(
+        session.route, hub_, on_event=_record_published, policy=_frame_policy()
+    )
     # Latest-wins raw-frame retention, one entry per board, in-memory only (no
     # disk write, unbounded board count — mirrors the hub's own retention). This
     # is what ``GET /boards/{id}/frame`` serves for the live video-like preview;
@@ -467,6 +498,14 @@ def create_app(
                 "failed": ingest_.frames_failed,
                 "skipped": ingest_.frames_skipped,
                 "refused": ingest_.frames_refused,
+                # The scheduler's two counters. "unscheduled" is the saving —
+                # at the shipped burst-end policy it is most of the stream, and
+                # "estimated barely moves while received climbs" is the expected
+                # picture, not a stall. "backstopped" should be 0: anything else
+                # says an edge's capture_ts stopped advancing and the node is
+                # reading on its own clock to stay alive.
+                "unscheduled": ingest_.frames_unscheduled,
+                "backstopped": ingest_.frames_backstopped,
             },
         }
         if recorder is not None:

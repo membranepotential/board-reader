@@ -17,6 +17,16 @@ stall, and the ingest socket backs up behind the model.
   event loop free to ack, serve viewers and answer HTTP. One worker per board also
   keeps published events in submission order per board (monotone ``seq``) without
   any extra bookkeeping.
+* **The read scheduler (D3/D4).** Not every frame the worker picks is worth ~1.3
+  GPU-seconds. A :class:`~board_reader_inference.schedule.FramePolicy` — by default
+  "read at the end of a move, plus a keepalive floor at rest" — decides, and the
+  declined frames cost nothing beyond the decode that already happened. It is
+  *observed* on every arriving frame in :meth:`FrameIngest.submit` and *asked* in
+  the worker, so a burst-end read lands on whichever contender the inbox kept
+  rather than on whichever frame happened to arrive at that instant. The event
+  stream is therefore SPARSE by design: consumers already tolerate that (nothing
+  downstream assumes a per-frame cadence), but tests that count published events
+  must not.
 
 Acks are decoupled from estimation: the gateway acks every frame it *receives*,
 including frames the pre-filter later drops. An ack means "received", not
@@ -46,6 +56,7 @@ from board_reader_core.wire import Frame
 from board_reader_inference.hub import PositionHub
 from board_reader_inference.prior import decode
 from board_reader_inference.routing import Route, Uncalibrated
+from board_reader_inference.schedule import DUE_EPS, EveryFrame, FramePolicy, stability_of
 from board_reader_inference.stabilize import BoardStabilizer
 
 log = logging.getLogger(__name__)
@@ -54,6 +65,39 @@ log = logging.getLogger(__name__)
 #: win the inbox (seconds of edge capture clock). One read period, roughly: any
 #: longer and the estimator would be reading a board state a move behind.
 SHARPNESS_WINDOW_S = 1.0
+
+#: The wall-clock backstop under the scheduler's own keepalive, as a multiple of
+#: it (:data:`~.schedule.DEFAULT_KEEPALIVE_S` -> 6 s at the shipped policy).
+#:
+#: A policy's floor is measured in the EDGE's ``capture_ts``, on purpose: that is
+#: what makes an offline replay deterministic (a scheduler that consulted
+#: ``time.time()`` would pick different frames on every run). Live, that clock
+#: belongs to a phone, and a floor built on a stopped clock is not a floor — a
+#: stalled camera pipeline restamping its last timestamp, or a clock stepping
+#: backwards, would leave the board unread forever. So the worker keeps the same
+#: promise one layer down, on the node's own monotonic clock.
+#:
+#: The 2x is what keeps this a *diagnostic*. Wall time and capture time run at the
+#: same rate on a healthy stream, so a backstop at exactly ``keepalive_s`` would
+#: also fire whenever ingest latency grew a little between two reads — and
+#: ``frames_backstopped`` would stop meaning "this edge's clock is broken". At 2x
+#: only a genuinely stalled clock trips it, and the worst case is still a bounded
+#: gap of two keepalives rather than silence.
+BACKSTOP_SLACK = 2.0
+
+
+def _schedule_signal(frame: Frame) -> tuple[float, float]:
+    """The two numbers a :class:`~.schedule.FramePolicy` reads, off a live frame.
+
+    An explicit adapter, not a duck-type. The policies were written against a
+    recorded :class:`~board_reader_core.recording.FrameEntry`, whose ``header`` is
+    a *dict*; a live :class:`~board_reader_core.wire.Frame`'s ``header`` is a
+    *method*, and its ``stability`` is an ordinary attribute that a hand-rolled
+    edge can leave as ``None`` or a NaN. Converting here — through the same
+    :func:`~.schedule.stability_of` coercion the recorded path uses — is what
+    makes "one policy, two callers" true rather than approximately true.
+    """
+    return frame.capture_ts, stability_of(frame.stability)
 
 
 def prefer_frame(
@@ -114,6 +158,10 @@ class _BoardWorker:
     #: worker so a restarted board starts settling afresh rather than holding a
     #: board from before the gap.
     stabilizer: BoardStabilizer
+    #: The board's read scheduler. Per board and per worker for the same reason as
+    #: the stabilizer: burst state describes *this* camera's stream, and a stream
+    #: that went away and came back is a new camera, not a continuation.
+    policy: FramePolicy
 
 
 class FrameIngest:
@@ -137,19 +185,36 @@ class FrameIngest:
         hub: PositionHub,
         *,
         on_event: Callable[[PositionEvent, Frame], None] | None = None,
+        policy: Callable[[], FramePolicy] = EveryFrame,
     ) -> None:
         self._route = route
         self._hub = hub
+        #: Builds this board's read scheduler — a *factory*, because a policy is
+        #: stateful and each board owns its own (and gets a fresh one when its
+        #: worker restarts). Defaults to reading everything, which is what the
+        #: gateway did before scheduling existed; ``serve`` supplies the shipped
+        #: burst-end policy through ``BR_SCHEDULE`` (see
+        #: :data:`~.schedule.DEFAULT_POLICY_SPEC`).
+        self._policy = policy
         #: Called (on the event loop) for every published event, with the frame it
         #: was estimated from — the gateway hangs its trial log off this.
         self._on_event = on_event
         self._boards: dict[str, _BoardWorker] = {}
         self._warned_unready = False
+        self._warned_backstop: set[str] = set()
         self.frames_received = 0
         self.frames_estimated = 0
         self.frames_dropped = 0
         self.frames_failed = 0
         self.frames_skipped = 0  # arrived while no estimator was ready
+        #: Reached a worker but were not worth an estimate (the scheduler declined
+        #: them). At the shipped policy this is the *majority* of a live stream and
+        #: is the whole point: ~12x fewer reads than every-frame on the swept takes.
+        self.frames_unscheduled = 0
+        #: Read because the wall-clock backstop fired, not because the policy asked
+        #: — i.e. the edge's ``capture_ts`` stopped telling the truth. Nonzero here
+        #: is a clock problem on the edge, and it is the only place it shows.
+        self.frames_backstopped = 0
         #: Incremented by the gateway's ``/ingest`` handler for frames refused at
         #: the wire (malformed header, truncated JPEG) — they never reach
         #: :meth:`submit`, but a stream that is *all* refusals must not be
@@ -165,6 +230,14 @@ class FrameIngest:
         board state is the useful one, not blindly the freshest: a handheld phone
         smears half its frames, and at ~1 read/s the read might as well spend
         itself on the crisp one.
+
+        The read scheduler is *observed* here and *asked* in the worker. Every
+        frame that lands must reach :meth:`~.schedule.FramePolicy.observe` — burst
+        end is only visible from the whole run of frames, and the latest-wins inbox
+        would otherwise hide most of them — while the decision belongs where the
+        frame is picked, so that a burst-end read spends itself on whichever
+        contender :func:`prefer_frame` kept. Header-only and synchronous: it costs
+        two float comparisons, nothing that could hold up an ack.
         """
         self.frames_received += 1
         worker = self._boards.get(frame.board_id)
@@ -172,6 +245,7 @@ class FrameIngest:
             # No worker yet, or a stopped one (post-shutdown): start a fresh board.
             worker = self._spawn(frame.board_id)
             self._boards[frame.board_id] = worker
+        worker.policy.observe(*_schedule_signal(frame))
         worker.idle.clear()
         entry = (frame, time.time())
         try:
@@ -219,10 +293,14 @@ class FrameIngest:
         idle = asyncio.Event()
         idle.set()
         stabilizer = BoardStabilizer()
+        policy = self._policy()
         task = asyncio.create_task(
-            self._run(board_id, inbox, idle, stabilizer), name=f"ingest:{board_id}"
+            self._run(board_id, inbox, idle, stabilizer, policy),
+            name=f"ingest:{board_id}",
         )
-        return _BoardWorker(inbox=inbox, idle=idle, task=task, stabilizer=stabilizer)
+        return _BoardWorker(
+            inbox=inbox, idle=idle, task=task, stabilizer=stabilizer, policy=policy
+        )
 
     async def _run(
         self,
@@ -230,14 +308,21 @@ class FrameIngest:
         inbox: asyncio.Queue[tuple[Frame, float]],
         idle: asyncio.Event,
         stabilizer: BoardStabilizer,
+        policy: FramePolicy,
     ) -> None:
         """Estimate whatever is in the inbox, forever, one frame at a time."""
+        backstop_s = BACKSTOP_SLACK * policy.keepalive_s
+        last_read = time.monotonic()
         try:
             while True:
                 frame, received = await inbox.get()
                 try:
                     route = self._route(frame)
                     if isinstance(route, Uncalibrated):
+                        # Ahead of the policy deliberately: a frame nothing could
+                        # have read must not spend the board's read budget, or a
+                        # stream that calibrates mid-flight starts a keepalive
+                        # behind.
                         self.frames_skipped += 1
                         if not self._warned_unready:
                             self._warned_unready = True
@@ -246,6 +331,23 @@ class FrameIngest:
                                 " skipping until a calibration lands", board_id,
                             )
                         continue
+                    now = time.monotonic()
+                    if not policy.due(*_schedule_signal(frame)):
+                        if now - last_read < backstop_s - DUE_EPS:
+                            self.frames_unscheduled += 1
+                            continue
+                        self.frames_backstopped += 1
+                        if board_id not in self._warned_backstop:
+                            self._warned_backstop.add(board_id)
+                            log.warning(
+                                "board %s: %.1fs with no read while frames keep "
+                                "arriving — this edge's capture_ts is stalled or "
+                                "stepping backwards, so the scheduler's own floor "
+                                "cannot fire. Reading on the node's clock instead;"
+                                " see /healthz ingest.backstopped for the count.",
+                                board_id, now - last_read,
+                            )
+                    last_read = now
                     event = await asyncio.to_thread(_read_with_prior, route, stabilizer)
                 except asyncio.CancelledError:
                     raise

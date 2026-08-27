@@ -30,6 +30,7 @@ from board_reader_core.recording import FrameEntry
 from board_reader_inference import schedule as schedule_mod
 from board_reader_inference.schedule import (
     DEFAULT_KEEPALIVE_S,
+    DEFAULT_POLICY_SPEC,
     ENTER_BURST,
     EXIT_BURST,
     EXIT_HOLD_S,
@@ -125,6 +126,90 @@ def test_the_keepalive_floor_cannot_be_switched_off():
         WhenStill(keepalive_s=-1.0)
 
 
+@pytest.mark.parametrize("spelling", ["inf", "-inf", "nan"])
+def test_an_interval_of_infinity_or_nan_is_not_a_configuration(spelling):
+    """The two ways ``> 0`` lets the floor be switched off after all.
+
+    ``keepalive_s=inf`` passes it and means *never* — one read in the 60 recorded
+    seconds of the dead-meter incident. ``nan`` passes it and is the opposite
+    disaster: NaN loses every comparison, so the rate limit inverts and the policy
+    reads every frame the stream can deliver. Both arrive through a config string
+    rather than a broken sensor, and both are refused where the string is parsed.
+    """
+    value = float(spelling)
+    for build in (
+        lambda: BurstTriggered(keepalive_s=value),
+        lambda: BurstTriggered(spacing_s=value),
+        lambda: WhenStill(keepalive_s=value),
+        lambda: WhenStill(spacing_s=value),
+    ):
+        with pytest.raises(ValueError, match="> 0 and finite"):
+            build()
+    with pytest.raises(ValueError, match="> 0 and finite"):
+        parse_policy(f"burst-end:keepalive_s={spelling}")
+
+
+def test_a_backwards_clock_degrades_to_the_floor_not_to_every_frame():
+    """An NTP step, a spliced session, or two phones on one ``board_id``.
+
+    The rate limit must survive it: re-anchoring to the surprising timestamp
+    clamps the elapsed time to zero, so the next read is still a floor away. The
+    old code cleared the anchor instead, which made the surprising frame due — and
+    a monotonically DECREASING clock then read every single frame, i.e. a broken
+    clock switched the rate limit off entirely.
+    """
+    index = entries([1.0] * 50, dt=-FLAT_DT, first_ts=10_000.0)
+    assert len(read_seqs(BurstTriggered(keepalive_s=3.0), index)) == 1
+    assert len(read_seqs(WhenStill(keepalive_s=3.0), index)) == 1
+
+    # A single backwards STEP is not a stall either: reads resume a floor later.
+    stepped = entries([1.0] * 20) + entries([1.0] * 40, first_ts=500.0)
+    times = read_times(BurstTriggered(keepalive_s=3.0), stepped)
+    assert len(times) >= 2
+
+
+def test_an_unreadable_capture_ts_is_declined_rather_than_read():
+    """``capture_ts`` is a number off the wire, so it can be NaN. Phrasing the
+    check as "is the interval satisfied?" makes that answer NO — the frame is
+    skipped and the stream falls back to the floor. Phrased the other way round
+    (``elapsed < interval``) NaN wins, and one malformed edge reads every frame
+    it sends at ~1.3 GPU-seconds each. The live worker's wall-clock backstop is
+    what keeps such a stream from going silent (``test_ingest_schedule.py``)."""
+    index = entries([1.0] * 6)
+    broken = [
+        FrameEntry(
+            header={**e.header, "capture_ts": float("nan")},
+            jpeg_rel=e.jpeg_rel,
+            received_ts=e.received_ts,
+        )
+        for e in index[1:]
+    ]
+    assert read_seqs(BurstTriggered(keepalive_s=3.0), [index[0], *broken]) == [0]
+
+
+@pytest.mark.parametrize("bad", [None, float("nan"), "quite still", float("inf")])
+def test_a_stability_that_is_not_a_number_reads_as_at_rest(bad):
+    """D3: stability is a hint. An edge that sends ``null``, a NaN from a meter
+    that divided by zero, or nothing at all is an edge saying "I don't measure
+    motion" — which must degrade to the keepalive floor, not raise ``TypeError``
+    inside the ``/ingest`` handler and not slip through the hysteresis' calm
+    branch (NaN loses every comparison) to declare a move complete mid-hand.
+
+    1.0 is the D3-consistent coercion, so such a frame reads as calm: it can end a
+    burst only by the ordinary ``EXIT_HOLD_S`` rule, exactly as a genuinely calm
+    frame would.
+    """
+    index = entries([0.3] * 6)
+    index[3] = FrameEntry(
+        header={**index[3].header, "stability": bad},
+        jpeg_rel=index[3].jpeg_rel,
+        received_ts=index[3].received_ts,
+    )
+    policy = BurstTriggered(keepalive_s=30.0)
+    assert read_seqs(policy, index) == [0]  # no spurious burst end, no exception
+    assert policy.bursting
+
+
 def test_the_first_frame_of_a_stream_is_always_read():
     """A reader that waits out a keepalive before its first read shows nothing for
     three seconds after connecting, which is the one moment a viewer is watching."""
@@ -209,12 +294,55 @@ def test_while_a_burst_end_is_owed_reads_the_spacing_governs_not_the_floor():
     over. A keepalive that lands inside the run satisfies one of the owed reads
     rather than being spent twice on the same board."""
     index = entries(_one_move(rest_frames=60))
-    policy = BurstTriggered(keepalive_s=1.0, burst_end_reads=3, spacing_s=1.3)
+    policy = BurstTriggered(keepalive_s=30.0, burst_end_reads=3, spacing_s=1.3)
     ended = index[80].capture_ts + EXIT_HOLD_S
     owed = [t for t in read_times(policy, index) if t >= ended][:3]
 
     assert len(owed) == 3
-    assert np.diff(owed).min() >= 1.3 - FLAT_DT, "the tighter floor did not win"
+    assert np.diff(owed).max() <= 1.3 + FLAT_DT, "the far floor did not slow the run"
+    assert np.diff(owed).min() >= 1.3 - FLAT_DT, "nor did the run outrun its spacing"
+
+
+def test_the_spacing_may_never_be_looser_than_the_floor():
+    """The floor is a floor. ``spacing_s`` is the tight interval a burst end (or a
+    calm frame) reads at, so a spacing ABOVE the keepalive would leave gaps longer
+    than the floor a policy claims to guarantee — D3 broken by configuration, in
+    the one direction nobody notices, because fewer reads just look like a quiet
+    board. Refused at construction rather than measured later."""
+    with pytest.raises(ValueError, match="looser than keepalive_s"):
+        BurstTriggered(keepalive_s=1.0, burst_end_reads=3, spacing_s=1.3)
+    with pytest.raises(ValueError, match="looser than keepalive_s"):
+        WhenStill(keepalive_s=3.0, spacing_s=10.0)
+    # Equal is fine: the spacing then simply never governs.
+    assert WhenStill(keepalive_s=3.0, spacing_s=3.0).spacing_s == 3.0
+
+
+def test_a_new_move_cancels_the_reads_the_last_one_still_owed():
+    """Two moves closer together than a burst-end run is long.
+
+    The run's leftover owed reads must not carry into the next move: while owed,
+    the interval is the TIGHT one, so leftovers fire at ``spacing_s`` in the
+    middle of the following move — hand-over-board frames, handed to the debounce
+    as two thirds of a "quorum" that disagrees by construction. Entering a burst
+    cancels them; the new burst end will owe a fresh set.
+
+    The sequence is the reviewer's: at 8.3 fps it read seqs 47 and 58, both inside
+    the second move (frames 40-64).
+    """
+    second_move = range(40, 65)
+    index = entries([0.97] * 20 + [0.3] * 10 + [0.97] * 10 + [0.3] * 25 + [0.97] * 30)
+    policy = BurstTriggered(keepalive_s=3.0, burst_end_reads=3, spacing_s=1.3)
+    seqs = read_seqs(policy, index)
+
+    # Was [0, 25, 36, 47, 58, 71, 82, 93]: 47 and 58 are the leftovers, a beat
+    # apart, in the middle of the hand.
+    assert seqs == [0, 25, 36, 61, 71, 82, 93]
+    # Whatever still lands inside a move is the FLOOR, never the burst-end beat:
+    # D3 keeps reading through a hand, it just does not spend a quorum on one.
+    inside = [s for s in seqs if s in second_move]
+    assert inside == [61]
+    times = [index[s].capture_ts for s in [36, *inside]]
+    assert np.diff(times).min() >= 3.0 - FLAT_DT
 
 
 def test_one_read_per_move_is_the_default_and_stays_sparse():
@@ -318,6 +446,35 @@ def test_a_name_states_only_what_was_asked_for():
     assert BurstTriggered().name == "burst-end"
     assert BurstTriggered(keepalive_s=5.0).name == "burst-end:keepalive_s=5"
     assert EveryFrame().name == "every-frame"
+
+
+def test_a_name_survives_the_values_display_formatting_would_have_mangled():
+    """``%g`` is a *display* format and this is an identity.
+
+    It rendered a large int in exponent form — which the int coercion in
+    ``parse_policy`` then refused outright, so the policy's own name no longer
+    rebuilt it — and it rounded floats to six significant digits, collapsing two
+    genuinely different policies onto one name and therefore one replay directory.
+    """
+    big = BurstTriggered(burst_end_reads=1_000_000)
+    assert big.name == "burst-end:burst_end_reads=1000000"
+    assert parse_policy(big.name) == big
+
+    fine = BurstTriggered(spacing_s=1.2500001)
+    assert parse_policy(fine.name) == fine
+    assert fine.name != BurstTriggered(spacing_s=1.25).name
+    assert policy_slug(fine) != policy_slug(BurstTriggered(spacing_s=1.25))
+
+
+def test_the_shipped_default_is_the_policy_the_sweep_recommended():
+    """``BR_SCHEDULE``'s default is a spec string like any other, so it is checked
+    like one: it must name exactly the constants of the sweep's §8 recommendation
+    (``docs/reports/2026-08-27-move-trigger-sweep.md``)."""
+    assert parse_policy(DEFAULT_POLICY_SPEC) == BurstTriggered(
+        keepalive_s=3.0, burst_end_reads=3, spacing_s=1.3
+    )
+    # ...and it is canonical, so a manifest and the env var read the same.
+    assert parse_policy(DEFAULT_POLICY_SPEC).name == DEFAULT_POLICY_SPEC
 
 
 def test_an_unknown_policy_or_parameter_is_refused_by_name():

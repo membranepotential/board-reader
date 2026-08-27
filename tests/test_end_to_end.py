@@ -8,6 +8,7 @@ real WebSocket viewer connection. It proves the end-to-end pipe the user runs.
 from __future__ import annotations
 
 import asyncio
+import json
 import socket
 import threading
 import time
@@ -22,6 +23,7 @@ from board_reader_core.sim import render_frames
 from board_reader_edge.adapter import FileEdgeAdapter
 from board_reader_edge.client import stream_to_gateway
 from board_reader_edge.source import SyntheticSource
+from board_reader_inference.schedule import DEFAULT_POLICY_SPEC
 from board_reader_inference.server import create_app
 
 
@@ -32,9 +34,9 @@ def _free_port() -> int:
 
 
 class _ServerThread:
-    def __init__(self, port: int):
+    def __init__(self, port: int, app=None):
         config = uvicorn.Config(
-            create_app(),
+            create_app() if app is None else app,
             host="127.0.0.1",
             port=port,
             log_level="warning",
@@ -87,9 +89,48 @@ def test_walking_skeleton_edge_to_viewer():
         sent, msg = asyncio.run(run())
 
     assert sent == 5
-    import json
-
     event = json.loads(msg)
     assert event["board_id"] == "A1"
     assert event["placement"] == START_PLACEMENT
     assert event["status"] == "ok"
+
+
+def test_the_pipe_still_publishes_under_the_shipped_read_schedule(monkeypatch):
+    """The same pipe, with the scheduler `serve` turns on (``BR_SCHEDULE``).
+
+    Scheduling is the one change that can make an end-to-end run look *broken by
+    working*: a policy that declines every frame publishes nothing, the viewer
+    stays empty, and every layer below is green. So the walking skeleton is run
+    once more under the shipped policy, and the claim is the minimal one that
+    matters — frames still become a position.
+
+    The synthetic feed is the adversarial case for it, not the friendly one. Its
+    frames are stamped ``stability=1.0`` (``SyntheticSource`` has no motion meter),
+    so there is never a burst and never a burst *end* — every read on this stream
+    has to come from the D3 keepalive floor. Five frames arrive inside a few
+    milliseconds of capture time, so exactly one of them is worth an estimate.
+    """
+    monkeypatch.setenv("BR_SCHEDULE", DEFAULT_POLICY_SPEC)
+    port = _free_port()
+    with _ServerThread(port, app=create_app()):
+        _wait_healthy(port)
+
+        source = SyntheticSource(render_frames(5 * [START_PLACEMENT]), board_id="A1")
+        adapter = FileEdgeAdapter(source)
+
+        async def run():
+            async with websockets.connect(f"ws://127.0.0.1:{port}/viewer") as viewer:
+                sent = await stream_to_gateway(adapter, f"ws://127.0.0.1:{port}/ingest")
+                msg = await asyncio.wait_for(viewer.recv(), timeout=5.0)
+                return sent, msg
+
+        sent, msg = asyncio.run(run())
+        stats = httpx.get(f"http://127.0.0.1:{port}/healthz", timeout=5.0).json()
+
+    assert sent == 5, "every frame is still forwarded and acked; only reads are sparse"
+    assert json.loads(msg)["placement"] == START_PLACEMENT
+    ingest = stats["ingest"]
+    assert ingest["received"] == 5
+    assert ingest["estimated"] == 1
+    assert ingest["estimated"] + ingest["dropped"] + ingest["unscheduled"] == 5
+    assert ingest["backstopped"] == 0, "the edge's capture clock is sound"
