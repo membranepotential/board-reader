@@ -983,16 +983,29 @@ export const AUTO_CALIBRATE_COOLDOWN_MS = 30_000;
  * hand hovering near the board must not seed the bank. */
 export const AUTO_CALIBRATE_MIN_STABILITY = 0.9;
 
+/** Which squares hold a piece — row 0 is rank 8, column 0 is file a. */
+export type Occupancy = readonly (readonly boolean[])[];
+
 /**
  * Occupancy says "two opposite full bands, middle empty" — the start position in
  * any of the four label rotations, robust to the piece-TYPE misreads an
  * uncalibrated reader makes (occupancy transfers across styles; types do not).
+ *
+ * Booleans, never class names. An empty square is `'empty'` on the wire
+ * (`protocol.CLASSES`) and `''` in the board the page actually renders
+ * (`$lib/board/fen`'s `Cell`), both of which are `string` — so a predicate that
+ * named one of the two vocabularies type-checked against the other and read every
+ * square of it as OCCUPIED. That shipped: the page hands over `fen` cells, so this
+ * returned false on every board there has ever been and the zero-tap calibration
+ * was unreachable in the browser while its unit tests passed (found by
+ * `tests/camera-auto.spec.ts`, 2026-08-27). The caller now does the one conversion
+ * that only the caller knows how to do.
  */
-export function looksLikeStartOccupancy(grid: readonly (readonly string[])[]): boolean {
-  if (grid.length !== 8 || grid.some((row) => row.length !== 8)) return false;
-  const rows = grid.map((row) => row.filter((c) => c !== 'empty').length);
+export function looksLikeStartOccupancy(occupancy: Occupancy): boolean {
+  if (occupancy.length !== 8 || occupancy.some((row) => row.length !== 8)) return false;
+  const rows = occupancy.map((row) => row.filter(Boolean).length);
   const cols = [0, 1, 2, 3, 4, 5, 6, 7].map(
-    (c) => grid.filter((row) => row[c] !== 'empty').length
+    (c) => occupancy.filter((row) => row[c] === true).length
   );
   const banded = (counts: number[]): boolean =>
     counts[0] === 8 && counts[1] === 8 && counts[6] === 8 && counts[7] === 8 &&
@@ -1012,8 +1025,10 @@ export interface AutoCalibrateGate {
   readonly bursting: boolean;
   /** Automation covers the FIRST calibration only; extra angles stay deliberate. */
   readonly calibrations: number;
-  /** The node's current reading for this board, or null before any arrived. */
-  readonly grid: readonly (readonly string[])[] | null;
+  /** Which squares the node's current reading has a piece on, or null before any
+   *  arrived. Occupancy rather than the reading itself — see
+   *  `looksLikeStartOccupancy`. */
+  readonly occupancy: Occupancy | null;
 }
 
 export function shouldAutoCalibrate(gate: AutoCalibrateGate): boolean {
@@ -1023,7 +1038,7 @@ export function shouldAutoCalibrate(gate: AutoCalibrateGate): boolean {
   if (gate.camera.kind !== 'live' || !isFramed(gate.camera.framing)) return false;
   if (gate.activity.kind !== 'idle') return false;
   if (gate.stability < AUTO_CALIBRATE_MIN_STABILITY) return false;
-  return gate.grid !== null && looksLikeStartOccupancy(gate.grid);
+  return gate.occupancy !== null && looksLikeStartOccupancy(gate.occupancy);
 }
 
 // ---- the hint line -----------------------------------------------------------

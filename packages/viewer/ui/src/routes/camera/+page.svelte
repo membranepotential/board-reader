@@ -669,7 +669,10 @@
       stability,
       bursting,
       calibrations,
-      grid: board?.grid ?? null
+      // Occupancy, not the reading: `board.grid` is spelled in `fen.ts`'s
+      // vocabulary (an empty square is `''`), and the gate must not have to know
+      // which of the two vocabularies it was handed.
+      occupancy: board === undefined ? null : board.grid.map((row) => row.map((cell) => cell !== ''))
     };
     if (!shouldAutoCalibrate(gate)) return;
     autoCalib = { nextAt: gate.now + AUTO_CALIBRATE_COOLDOWN_MS, attempts: autoCalib.attempts + 1 };

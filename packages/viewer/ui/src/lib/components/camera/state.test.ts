@@ -499,10 +499,8 @@ describe('camera stall watchdog', () => {
 });
 
 describe('automatic calibration', () => {
-  const occupied = (rows: number[]): string[][] =>
-    Array.from({ length: 8 }, (_, r) =>
-      Array.from({ length: 8 }, () => (rows.includes(r) ? 'P' : 'empty'))
-    );
+  const occupied = (rows: number[]): boolean[][] =>
+    Array.from({ length: 8 }, (_, r) => Array.from({ length: 8 }, () => rows.includes(r)));
   const startish = occupied([0, 1, 6, 7]);
 
   it('recognises start occupancy in rows, columns, and nothing else', () => {
@@ -513,7 +511,7 @@ describe('automatic calibration', () => {
     expect(looksLikeStartOccupancy(occupied([0, 1, 6]))).toBe(false); // a rank gone
     expect(looksLikeStartOccupancy(occupied([]))).toBe(false); // empty board
     const midgame = occupied([0, 1, 6, 7]).map((row) => [...row]);
-    midgame[3]![4] = 'P'; // a pawn out in the middle
+    midgame[3]![4] = true; // a pawn out in the middle
     expect(looksLikeStartOccupancy(midgame)).toBe(false);
     expect(looksLikeStartOccupancy([])).toBe(false);
   });
@@ -529,7 +527,7 @@ describe('automatic calibration', () => {
       stability: 0.97,
       bursting: false,
       calibrations: 0,
-      grid: startish
+      occupancy: startish
     };
     expect(shouldAutoCalibrate(gate)).toBe(true);
     expect(shouldAutoCalibrate({ ...gate, calibrations: 1 })).toBe(false);
@@ -538,8 +536,8 @@ describe('automatic calibration', () => {
     expect(shouldAutoCalibrate({ ...gate, bursting: true })).toBe(false);
     expect(shouldAutoCalibrate({ ...gate, stability: 0.5 })).toBe(false);
     expect(shouldAutoCalibrate({ ...gate, activity: { kind: 'calibrating' } })).toBe(false);
-    expect(shouldAutoCalibrate({ ...gate, grid: null })).toBe(false);
-    expect(shouldAutoCalibrate({ ...gate, grid: occupied([0, 1]) })).toBe(false);
+    expect(shouldAutoCalibrate({ ...gate, occupancy: null })).toBe(false);
+    expect(shouldAutoCalibrate({ ...gate, occupancy: occupied([0, 1]) })).toBe(false);
     // cooldown after an attempt
     expect(shouldAutoCalibrate({ ...gate, auto: { nextAt: 2000, attempts: 1 } })).toBe(false);
     expect(shouldAutoCalibrate({ ...gate, now: 2001, auto: { nextAt: 2000, attempts: 1 } })).toBe(true);
