@@ -817,12 +817,31 @@
         stability,
         bursting,
         portrait,
-        hidden: document.hidden
+        hidden: document.hidden,
+        tracking
       })
     ) {
       return;
     }
     void verifyFraming();
+  }
+
+  /**
+   * Has the framing this reading was measured against been replaced while the
+   * request was in flight?
+   *
+   * Every deliberate re-framing — a board switch, a reset, a drag, a rotation,
+   * the camera coming back — puts `redetect` back to `REDETECT_START`, and a
+   * lens switch re-expresses every corner in a new frame's pixels. A reply that
+   * lands afterwards describes a quad nobody is using any more: folding it in
+   * would put a sample measured against the OLD framing into the new session's
+   * permanent R0. Object identity is the whole test, because every one of those
+   * paths assigns a fresh `Redetect`.
+   */
+  function redetectStale(baseline: Redetect, frame: FrameSize): boolean {
+    if (redetect !== baseline) return true;
+    if (camera.kind !== 'live') return true;
+    return camera.frame.width !== frame.width || camera.frame.height !== frame.height;
   }
 
   async function verifyFraming(): Promise<void> {
@@ -833,15 +852,22 @@
     // answer with a quad from several hundred ms later would measure the wait as
     // well as the drift.
     const tracked = camera.framing.quad;
+    const baseline = redetect;
     activity = { kind: 'verifying' };
     try {
       const outcome = await detectQuad(frame);
+      if (redetectStale(baseline, frame)) {
+        trial.note('framing-redetect', { outcome: 'stale' });
+        return;
+      }
       if (outcome.kind === 'none') {
-        // A miss is NEUTRAL — see `noteRedetectMiss`. It is also silent: nobody
-        // asked for this check, and the framing it could not confirm is still the
-        // best one anybody has.
+        // A miss is NEUTRAL to the drift signal — see `noteRedetectMiss` — but it
+        // does spend the failure budget, so a detector that never answers is left
+        // alone instead of being asked every ten seconds for the whole session.
+        // Silent either way: nobody asked for this check, and the framing it could
+        // not confirm is still the best one anybody has.
         redetect = noteRedetectMiss(redetect, performance.now());
-        trial.note('framing-redetect', { outcome: 'miss' });
+        trial.note('framing-redetect', { outcome: 'miss', fails: redetect.fails });
         return;
       }
       const step = noteRedetection({
@@ -856,11 +882,12 @@
         outcome: verdict.kind,
         adopted: verdict.kind === 'adopt',
         ...('shift' in verdict ? { shift: Number(verdict.shift.toFixed(3)) } : {}),
+        ...(verdict.kind === 'suspect' ? { repeats: verdict.repeats } : {}),
         ...(verdict.kind === 'ambiguous' ? { margin: Number(verdict.margin.toFixed(2)) } : {})
       });
       if (verdict.kind === 'adopt') {
         adoptFraming(verdict.quad, frame);
-      } else if (verdict.kind === 'suspect' && verdict.repeats === 1) {
+      } else if (verdict.kind === 'suspect' && verdict.warn) {
         // Too far to be drift: the phone or the board moved (DESIGN §4.4.1(b)).
         // Never acted on — a reposition is the operator's to resolve — and said
         // once per episode rather than every ten seconds.
@@ -871,8 +898,14 @@
         );
       }
     } catch (cause) {
-      redetect = noteRedetectMiss(redetect, performance.now());
+      // `detectQuad` returns its misses rather than throwing, so this is the
+      // unexpected kind — but it must still hand the activity back (the `finally`)
+      // and still spend the budget, or one thrown request would leave the page
+      // asking again in ten seconds for ever.
       trial.note('framing-redetect', { outcome: 'error', error: String(cause) });
+      if (!redetectStale(baseline, frame)) {
+        redetect = noteRedetectMiss(redetect, performance.now());
+      }
     } finally {
       activity = { kind: 'idle' };
     }

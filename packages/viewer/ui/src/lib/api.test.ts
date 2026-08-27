@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   API_PREFIX,
   apiPath,
+  DETECT_TIMEOUT_MS,
   boardFrameUrl,
   calibrate,
   cornersOf,
@@ -168,5 +169,33 @@ describe('failures carry the node own wording', () => {
     expect(url).toBe('/api/calibrate?corners=0,0,100,0,100,100,0,100');
     expect(init.method).toBe('POST');
     expect(init.headers).toEqual({ 'Content-Type': 'image/jpeg' });
+  });
+});
+
+describe('a request that never answers', () => {
+  it('gives /detect its own clock, so a wedged node cannot hold the camera page', async () => {
+    // The camera page hands the camera and the quad to exactly one activity at a
+    // time; a fetch that hangs for ever would leave every idle-gated control
+    // disabled with nothing on screen to say why (review, 0ebbbd2).
+    const fetchSpy = vi.fn(async () => new Response(JSON.stringify({ corners: QUAD })));
+    vi.stubGlobal('fetch', fetchSpy);
+    await detect(new Blob(['jpeg']));
+    const [, init] = fetchSpy.mock.calls[0] as unknown as [string, RequestInit];
+    expect(init.signal).toBeInstanceOf(AbortSignal);
+    expect(DETECT_TIMEOUT_MS).toBeGreaterThan(4000); // a MISS costs the node 2-4 s
+  });
+
+  it('reads as an answer that never came, not as an unreachable viewer', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        throw new DOMException('signal timed out', 'TimeoutError');
+      })
+    );
+    const result = await detect(new Blob(['jpeg']));
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.status).toBe(0);
+    expect(result.error.message).toBe('the node did not answer in time');
   });
 });

@@ -114,6 +114,19 @@ export function isFramed(framing: Framing): boolean {
   return framing.origin !== 'placeholder';
 }
 
+/**
+ * Was this framing established in THIS session — by the detector or by a finger —
+ * as opposed to inherited from the last one?
+ *
+ * A `restored` quad is last session's crop over this session's world, and it can
+ * be a full rank out (2026-08-27); that is precisely why `shouldAutoDetect`
+ * verifies one. Anything that would BAKE IN a framing rather than check it must
+ * therefore wait until it has been re-origined.
+ */
+export function isLiveFraming(framing: Framing): boolean {
+  return framing.origin === 'operator' || framing.origin === 'detected';
+}
+
 /** Why the camera is not available. The page renders one explainer per variant. */
 export type BlockedReason =
   | { readonly kind: 'insecure' }
@@ -477,6 +490,16 @@ export const ADOPT_MAX_SHIFT_SQUARES = 2.0;
 export const ADOPT_RELABEL_MARGIN = 4.0;
 
 /**
+ * Consecutive-miss back-off, then silence. `/detect` answers in ~0.1 s on a hit
+ * but 2-4 s on a MISS, and a page pointed at a board the detector cannot see
+ * would otherwise post a full-frame JPEG every 10 s for the whole session, on a
+ * phone battery, forever. Same shape as `AUTO_BACKOFF_MS` for the same reason —
+ * and equally silent, because nobody asked for this check and the framing it
+ * could not confirm is still the best one anybody has.
+ */
+export const REDETECT_BACKOFF_MS: readonly number[] = [20_000, 40_000, 80_000];
+
+/**
  * A per-corner displacement in frame pixels: the same four slots as a quad, but
  * a difference rather than a place.
  */
@@ -505,6 +528,14 @@ export interface Redetect {
   readonly over: number;
   /** Consecutive readings past `ADOPT_MAX_SHIFT_SQUARES` — a reposition, not drift. */
   readonly suspects: number;
+  /**
+   * Whether the operator has already been told about the current reposition
+   * episode. Cleared only by a reading that is genuinely back in place, so a quad
+   * oscillating across the cap says it once rather than every twenty seconds.
+   */
+  readonly warned: boolean;
+  /** Consecutive detector misses. Any answer at all zeroes it; four is giving up. */
+  readonly fails: number;
 }
 
 export const REDETECT_START: Redetect = {
@@ -512,8 +543,20 @@ export const REDETECT_START: Redetect = {
   samples: [],
   residual: null,
   over: 0,
-  suspects: 0
+  suspects: 0,
+  warned: false,
+  fails: 0
 };
+
+export function redetectGaveUp(redetect: Redetect): boolean {
+  return redetect.fails >= REDETECT_BACKOFF_MS.length;
+}
+
+/** The gap after this many CONSECUTIVE misses: 20 s, then 40, then 80, then silence. */
+export function redetectBackoffFor(fails: number): number {
+  const i = Math.min(Math.max(fails - 1, 0), REDETECT_BACKOFF_MS.length - 1);
+  return REDETECT_BACKOFF_MS[i] as number;
+}
 
 export interface RedetectGate {
   readonly redetect: Redetect;
@@ -527,6 +570,8 @@ export interface RedetectGate {
   readonly bursting: boolean;
   readonly portrait: boolean;
   readonly hidden: boolean;
+  /** Tracking switched off freezes the quad deliberately; nothing may re-seed it. */
+  readonly tracking: boolean;
 }
 
 /**
@@ -553,15 +598,25 @@ export function shouldRedetect({
   stability,
   bursting,
   portrait,
-  hidden
+  hidden,
+  tracking
 }: RedetectGate): boolean {
   if (!streaming || portrait || bursting || hidden) return false;
+  // With tracking off the quad is frozen on purpose — the operator is holding a
+  // crop still — so there is no drift to correct and nothing may re-seed it.
+  if (!tracking) return false;
   // One thing owns the camera and the quad at a time: not a drag, not a
   // calibration, not another detection, and not a second check.
   if (activity.kind !== 'idle') return false;
-  // Nothing to correct until the board has actually been framed — the
-  // placeholder is a guess, and `shouldAutoDetect` owns replacing it.
-  if (camera.kind !== 'live' || !isFramed(camera.framing)) return false;
+  if (camera.kind !== 'live') return false;
+  // Only a framing THIS session established. A `restored` one may be a rank out
+  // (which is what `shouldAutoDetect` verifies it for), and R0 is permanent: were
+  // a stale quad allowed to baseline — as it would be if that verification had
+  // burned its own budget against a slow node — the rank-off framing becomes this
+  // session's definition of correct, and real drift then reads as zero for ever.
+  // The check starts the moment auto-detect or the operator re-origins it.
+  if (!isLiveFraming(camera.framing)) return false;
+  if (redetectGaveUp(redetect)) return false;
   if (now < redetect.nextAt) return false;
   return stability >= AUTO_STABILITY;
 }
@@ -745,8 +800,19 @@ export type RedetectOutcome =
   | { readonly kind: 'arming'; readonly shift: number }
   /** Walked. `quad` is the correction, in the operator's own corner convention. */
   | { readonly kind: 'adopt'; readonly shift: number; readonly quad: CornerQuad }
-  /** Too far to be drift — a reposition. `repeats` is 1 on the first of a run. */
-  | { readonly kind: 'suspect'; readonly shift: number; readonly repeats: number };
+  /**
+   * Too far to be drift — a reposition. `repeats` counts the episode; `warn` is
+   * true only on the reading that should actually tell the operator, which is not
+   * simply the first of a run: a quad oscillating across the cap produces
+   * suspect / arming / suspect, and only a reading genuinely back in place ends
+   * the episode.
+   */
+  | {
+      readonly kind: 'suspect';
+      readonly shift: number;
+      readonly repeats: number;
+      readonly warn: boolean;
+    };
 
 export interface RedetectResult {
   readonly redetect: Redetect;
@@ -762,7 +828,8 @@ export interface RedetectResult {
  * would be most likely to do so exactly when the mechanism was about to fire.
  */
 export function noteRedetectMiss(redetect: Redetect, now: number): Redetect {
-  return { ...redetect, nextAt: now + REDETECT_INTERVAL_MS };
+  const fails = redetect.fails + 1;
+  return { ...redetect, fails, nextAt: now + redetectBackoffFor(fails) };
 }
 
 /**
@@ -780,12 +847,15 @@ export function noteRedetection(input: {
   readonly tracked: CornerQuad;
 }): RedetectResult {
   const { redetect, now, detected, tracked } = input;
-  const next: Redetect = { ...redetect, nextAt: now + REDETECT_INTERVAL_MS };
+  // The detector answered, so the failure budget is whole again — whatever the
+  // answer turns out to mean.
+  const next: Redetect = { ...redetect, nextAt: now + REDETECT_INTERVAL_MS, fails: 0 };
 
   const match = matchCorners(detected, tracked);
   const matched = match.margin >= ADOPT_RELABEL_MARGIN;
+  const residual = redetect.residual;
 
-  if (redetect.residual === null) {
+  if (residual === null) {
     // A correspondence nobody can trust must not become the session's convention.
     if (!matched) return { redetect: next, outcome: { kind: 'ambiguous', margin: match.margin } };
     const samples = [...redetect.samples, cornerOffsets(match.aligned, tracked)];
@@ -800,36 +870,43 @@ export function noteRedetection(input: {
     };
   }
 
-  const shift = baselinedShift(match.aligned, tracked, redetect.residual);
+  const shift = baselinedShift(match.aligned, tracked, residual);
+
+  // The reposition cap is judged FIRST, and deliberately without the margin: the
+  // two are not independent. A quad displaced by most of a board makes every
+  // corner pairing nearly as good as every other, so a genuine reposition scores
+  // a poor margin BY CONSTRUCTION — check the margin first and every one of them
+  // comes back 'ambiguous' and the operator is never told (review, 0ebbbd2).
   if (shift > ADOPT_MAX_SHIFT_SQUARES) {
     const repeats = redetect.suspects + 1;
     return {
-      redetect: { ...next, over: 0, suspects: repeats },
-      outcome: { kind: 'suspect', shift, repeats }
+      redetect: { ...next, over: 0, suspects: repeats, warned: true },
+      outcome: { kind: 'suspect', shift, repeats, warn: !redetect.warned }
     };
   }
+
+  // Below the cap, corners that do not pair off decisively conclude NOTHING: a
+  // bad match is the one way this mechanism could put a8 on another corner. The
+  // counters are left exactly as they were, so such a reading can delay an
+  // adoption but never cause or cancel one.
+  if (!matched) return { redetect: next, outcome: { kind: 'ambiguous', margin: match.margin } };
+
   if (shift <= ADOPT_SHIFT_SQUARES) {
-    return { redetect: { ...next, over: 0, suspects: 0 }, outcome: { kind: 'steady', shift } };
+    // Back in place: this is the only thing that ends a reposition episode.
+    return {
+      redetect: { ...next, over: 0, suspects: 0, warned: false },
+      outcome: { kind: 'steady', shift }
+    };
   }
   const over = redetect.over + 1;
   if (over < ADOPT_CONSECUTIVE) {
-    return { redetect: { ...next, over, suspects: 0 }, outcome: { kind: 'arming', shift } };
-  }
-  // The last guard, and the only one that could put a8 on the wrong corner: a quad
-  // whose second-best correspondence is nearly as good as its best is not safely
-  // relabellable, so it is refused ADOPTION specifically. The count is kept, so the
-  // next unambiguous reading of the same drift acts immediately.
-  if (!matched) {
-    return {
-      redetect: { ...next, over, suspects: 0 },
-      outcome: { kind: 'ambiguous', margin: match.margin }
-    };
+    return { redetect: { ...next, over }, outcome: { kind: 'arming', shift } };
   }
   // Adopted: the counter starts again, but R0 is KEPT — the correction is
   // expressed in the operator's convention, so the convention has not changed.
   return {
-    redetect: { ...next, over: 0, suspects: 0 },
-    outcome: { kind: 'adopt', shift, quad: correctedQuad(match.aligned, redetect.residual) }
+    redetect: { ...next, over: 0, suspects: 0, warned: false },
+    outcome: { kind: 'adopt', shift, quad: correctedQuad(match.aligned, residual) }
   };
 }
 

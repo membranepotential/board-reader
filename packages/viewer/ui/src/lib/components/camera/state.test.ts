@@ -37,8 +37,11 @@ import {
   type RedetectGate,
   noteRedetectMiss,
   noteRedetection,
+  REDETECT_BACKOFF_MS,
   REDETECT_INTERVAL_MS,
   REDETECT_START,
+  redetectBackoffFor,
+  redetectGaveUp,
   shouldRedetect,
   squareWidth,
   toQuad,
@@ -603,7 +606,8 @@ describe('periodic re-detection', () => {
     stability: 1,
     bursting: false,
     portrait: false,
-    hidden: false
+    hidden: false,
+    tracking: true
   };
 
   describe('the gate', () => {
@@ -618,8 +622,10 @@ describe('periodic re-detection', () => {
         ['mid-burst', { bursting: true }],
         ['hidden', { hidden: true }],
         ['moving', { stability: AUTO_STABILITY - 0.01 }],
+        ['tracking switched off', { tracking: false }],
         ['no camera', { camera: { kind: 'requesting' } }],
         ['never framed', { camera: live('placeholder') }],
+        ['spent its failure budget', { redetect: { ...REDETECT_START, fails: 3 } }],
         ['dragging', { activity: { kind: 'dragging', corner: 0 } }],
         ['detecting', { activity: { kind: 'detecting', auto: true } }],
         ['already checking', { activity: { kind: 'verifying' } }],
@@ -631,20 +637,68 @@ describe('periodic re-detection', () => {
       }
     });
 
-    it('checks a board that was framed by hand as readily as a detected one', () => {
+    it('checks a board framed by hand as readily as a detected one', () => {
       // The convention offset is exactly what the baseline is for, so a
       // finger-dragged framing is not excluded from being checked.
       expect(shouldRedetect({ ...gate, camera: live('operator') })).toBe(true);
-      expect(shouldRedetect({ ...gate, camera: live('restored') })).toBe(true);
     });
 
-    it('spaces the checks by the interval', () => {
-      const after = noteRedetectMiss(REDETECT_START, gate.now);
+    it('never baselines from a RESTORED framing (review, 0ebbbd2)', () => {
+      // Last session's quad over this session's world can be a full rank out —
+      // that is what `shouldAutoDetect` verifies one for — and R0 is permanent.
+      // Were a stale quad allowed to baseline (as it would be if that
+      // verification had burned its budget against a slow node), the rank-off
+      // framing becomes this session's definition of correct and genuine drift
+      // reads as zero for ever. The check starts once it is re-origined.
+      expect(shouldRedetect({ ...gate, camera: live('restored') })).toBe(false);
+      expect(shouldRedetect({ ...gate, camera: live('detected') })).toBe(true);
+    });
+
+    it('spaces successful checks by the interval', () => {
+      const after = noteRedetection({
+        redetect: REDETECT_START,
+        now: gate.now,
+        detected: TRACKED,
+        tracked: TRACKED
+      }).redetect;
       expect(after.nextAt).toBe(gate.now + REDETECT_INTERVAL_MS);
       expect(shouldRedetect({ ...gate, redetect: after })).toBe(false);
       expect(
         shouldRedetect({ ...gate, redetect: after, now: gate.now + REDETECT_INTERVAL_MS })
       ).toBe(true);
+    });
+
+    it('backs off on consecutive misses and then stops asking', () => {
+      // A page pointed at a board the detector cannot see would otherwise post a
+      // full-frame JPEG every ten seconds for the whole session.
+      let state = REDETECT_START;
+      const gaps: number[] = [];
+      let now = 0;
+      for (let i = 0; i < REDETECT_BACKOFF_MS.length; i++) {
+        state = noteRedetectMiss(state, now);
+        gaps.push(state.nextAt - now);
+        now = state.nextAt;
+      }
+      expect(gaps).toEqual([...REDETECT_BACKOFF_MS]);
+      expect(state.fails).toBe(REDETECT_BACKOFF_MS.length);
+      expect(redetectGaveUp(state)).toBe(true);
+      expect(shouldRedetect({ ...gate, redetect: state, now })).toBe(false);
+      expect(redetectBackoffFor(99)).toBe(REDETECT_BACKOFF_MS.at(-1));
+    });
+
+    it('gives the budget back the moment the detector answers at all', () => {
+      const spent: Redetect = { ...REDETECT_START, fails: 2 };
+      const { redetect } = noteRedetection({
+        redetect: spent,
+        now: 0,
+        detected: TRACKED,
+        tracked: TRACKED
+      });
+      expect(redetect.fails).toBe(0);
+      expect(redetectGaveUp(redetect)).toBe(false);
+      // And a deliberate re-framing starts the whole thing over — the page puts
+      // `REDETECT_START` back on every one of those paths.
+      expect(redetectGaveUp(REDETECT_START)).toBe(false);
     });
   });
 
@@ -847,31 +901,47 @@ describe('periodic re-detection', () => {
       ]);
     });
 
-    it('refuses to ADOPT a quad it cannot relabel, and keeps the count for the next one', () => {
-      // The last guard before a8 could move. It needs a detection whose corners
-      // do NOT pair off decisively while the baselined signal still looks like
-      // ordinary drift, which takes a pathological convention offset to build:
-      // with a realistic R0 (17-33 px) the reposition cap fires first, because a
-      // quad has to be displaced by most of a board before its second-best
-      // corner pairing gets close to its best.
+    it('refuses to conclude ANYTHING from a quad it cannot relabel — it only delays', () => {
+      // The last guard before a8 could move. It needs a detection whose corners do
+      // NOT pair off decisively while the baselined signal still looks like
+      // ordinary drift, which takes an outsized convention offset to build: the
+      // margin is not scale-free (for a translation d of a board of side S the
+      // runner-up costs S + d), so with a realistic R0 of 17-33 px the reposition
+      // cap always fires first.
       const offset: CornerOffsets = [
-        [250, 0],
-        [250, 0],
-        [250, 0],
-        [250, 0]
+        [120, 0],
+        [120, 0],
+        [120, 0],
+        [120, 0]
       ];
+      const armed: Redetect = {
+        ...REDETECT_START,
+        residual: offset,
+        over: ADOPT_CONSECUTIVE - 1
+      };
       const { redetect, outcome } = noteRedetection({
-        redetect: { ...REDETECT_START, residual: offset, over: ADOPT_CONSECUTIVE - 1 },
+        redetect: armed,
         now: 0,
-        detected: moved(330), // 0.8 square past the convention offset
+        detected: moved(280), // 1.6 squares past the offset; margin 3.9, not decisive
         tracked: TRACKED
       });
       expect(outcome.kind).toBe('ambiguous');
       if (outcome.kind === 'ambiguous') {
         expect(outcome.margin).toBeLessThan(ADOPT_RELABEL_MARGIN);
       }
-      // Not disarmed: the drift is real, so the next unambiguous reading acts.
-      expect(redetect.over).toBe(ADOPT_CONSECUTIVE);
+      // Every counter untouched: such a reading can delay an adoption, never
+      // cause one and never cancel one (review, 0ebbbd2).
+      expect(redetect.over).toBe(armed.over);
+      expect(redetect.residual).toEqual(offset);
+      expect(redetect.suspects).toBe(0);
+      // The next decisive reading of the same drift is the one that acts.
+      const decisive = noteRedetection({
+        redetect,
+        now: REDETECT_INTERVAL_MS,
+        detected: moved(120 + 0.8 * SQUARE), // 0.8 square of drift, margin 5.0
+        tracked: TRACKED
+      });
+      expect(decisive.outcome.kind).toBe('adopt');
     });
 
     it('refuses to adopt a reposition, and says so once per episode', () => {
@@ -879,11 +949,45 @@ describe('periodic re-detection', () => {
       // moved. Adopting would quietly re-crop around a board nobody framed.
       const far = moved(30 + (ADOPT_MAX_SHIFT_SQUARES + 0.5) * SQUARE);
       const { state, outcomes } = replay([moved(30), moved(30), moved(30), far, far, far]);
-      expect(outcomes.slice(3).map((o) => o.kind)).toEqual(['suspect', 'suspect', 'suspect']);
-      expect(outcomes.slice(3).map((o) => (o.kind === 'suspect' ? o.repeats : 0))).toEqual([
-        1, 2, 3
+      const suspects = outcomes.slice(3);
+      expect(suspects.map((o) => o.kind)).toEqual(['suspect', 'suspect', 'suspect']);
+      expect(suspects.map((o) => (o.kind === 'suspect' ? o.repeats : 0))).toEqual([1, 2, 3]);
+      // Said once, not three times: `warn` is what the page shows a banner for.
+      expect(suspects.map((o) => (o.kind === 'suspect' ? o.warn : true))).toEqual([
+        true,
+        false,
+        false
       ]);
       expect(state.over).toBe(0);
+    });
+
+    it('does not say it again while a quad oscillates across the cap', () => {
+      // suspect / arming / suspect is one episode, not two: only a reading that
+      // is genuinely back in place ends it (review, 0ebbbd2).
+      const far = moved(30 + (ADOPT_MAX_SHIFT_SQUARES + 0.5) * SQUARE);
+      const near = moved(30 + 0.5 * SQUARE); // over the adopt threshold, under the cap
+      const settled = moved(30);
+      const { outcomes } = replay([
+        moved(30),
+        moved(30),
+        moved(30),
+        far,
+        near,
+        far,
+        settled,
+        far
+      ]);
+      const said = outcomes.map((o) => (o.kind === 'suspect' ? o.warn : null));
+      expect(outcomes.slice(3).map((o) => o.kind)).toEqual([
+        'suspect',
+        'arming',
+        'suspect',
+        'steady',
+        'suspect'
+      ]);
+      // Warned, silent through the oscillation, then warned again for the NEW
+      // episode that follows a genuinely steady reading.
+      expect(said.slice(3)).toEqual([true, null, false, null, true]);
     });
 
     it('does not let a reposition run bleed into the adoption count', () => {

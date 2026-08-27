@@ -106,6 +106,29 @@ export function wsUrl(path: string, pageHref?: string): string {
 
 const JPEG_HEADERS = { 'Content-Type': 'image/jpeg' } as const;
 
+/**
+ * How long `/detect` may take before the page stops waiting for it.
+ *
+ * A request that never answers is worse than a refusal: the camera page hands the
+ * camera and the quad to exactly one activity at a time, so a `fetch` that hangs
+ * for ever leaves every idle-gated control — drag, detect, calibrate, both
+ * automatic flows — disabled with nothing on screen to say why. Detection costs
+ * ~0.1 s on a hit and 2-4 s on a miss (worst recorded 1.7 s), so 15 s is far
+ * outside the working distribution and only ever fires on something genuinely
+ * stuck.
+ */
+export const DETECT_TIMEOUT_MS = 15_000;
+
+/** A `fetch` that gave up on its own clock, rather than one that failed. */
+function timedOut(cause: unknown): boolean {
+  return (
+    typeof cause === 'object' &&
+    cause !== null &&
+    'name' in cause &&
+    (cause as { readonly name?: unknown }).name === 'TimeoutError'
+  );
+}
+
 /** The node states its refusals as `{"error": "..."}`; anything else, keep the body. */
 async function failureOf(response: Response): Promise<ApiFailure> {
   const fallback = `${response.status} ${response.statusText}`.trim();
@@ -141,6 +164,10 @@ async function requestJson<T>(
   try {
     response = await fetch(url, init);
   } catch (cause) {
+    // A timeout is not an unreachable viewer — it is an answer that never came,
+    // and saying so is the difference between "check the network" and "the node
+    // is wedged".
+    if (timedOut(cause)) return err({ status: 0, message: 'the node did not answer in time' });
     // The relay answers 502 with the node's address when the NODE is down, so a
     // thrown fetch means this page could not reach its own viewer.
     return err({ status: 0, message: `${String(cause)} (is the viewer still reachable?)` });
@@ -209,7 +236,15 @@ export function calibrate(
 export function detect(photo: Blob): Promise<ApiResult<DetectResponse>> {
   return requestJson(
     apiPath('/detect'),
-    { method: 'POST', body: photo, headers: JPEG_HEADERS },
+    {
+      method: 'POST',
+      body: photo,
+      headers: JPEG_HEADERS,
+      // Bounded here rather than at each caller: all three of them (look again,
+      // the automatic first framing, the periodic drift check) claim the page's
+      // single activity slot for the duration, so all three need the guarantee.
+      signal: AbortSignal.timeout(DETECT_TIMEOUT_MS)
+    },
     parseDetectResponse
   );
 }
