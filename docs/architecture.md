@@ -311,8 +311,9 @@ stateless estimator emits, and precisely the argument for the layer above it.
 
 One narrow exception ships since 08-13: the gateway attaches an advisory `settled` block
 to *streamed* events (DESIGN §5) — a per-square display debounce (an unbroken ~2.5 s of
-consistent reads, `board_reader_inference.stabilize`, never composing a board the hard
-constraints reject) over the repaired placements, born from the first
+consistent reads, `board_reader_inference.stabilize`, never composing a board *less*
+possible than the one it already holds, and never stale by more than ~3 settle windows)
+over the repaired placements, born from the first
 phone trial where a hand mid-move and a coin-flip two-kings repair made the live board
 flicker at burst rate. It is a debounce, not the missing layer: no move model, no
 legality, no use of `stability`, and it holds whatever the reads converge to — the trial's

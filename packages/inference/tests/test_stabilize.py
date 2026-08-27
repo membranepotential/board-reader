@@ -238,22 +238,195 @@ def test_two_identical_streams_settle_identically():
     assert runs[0] == runs[1]
 
 
-def test_the_excess_never_rises_over_a_random_stream():
-    """Property: whatever it is fed, the settled board only ever becomes *more*
-    possible. Seeded, so a failure is reproducible; random boards are wildly
-    impossible, which is the point — the first read is adopted wholesale and
-    every commit after it has to pay its way down."""
+def _noisy_stream(rng, reads: int, *, classes: str, churn: int):
+    """A stream that actually ripens things: a board that drifts a few squares at
+    a time out of a small alphabet, so runs form and commits happen."""
+    grid = [list(row) for row in parse_placement(START_PLACEMENT)]
+    for i in range(reads):
+        for _ in range(rng.randrange(churn + 1)):
+            r, c = rng.randrange(8), rng.randrange(8)
+            grid[r][c] = rng.choice(classes)
+        yield encode_placement(grid), i * 1.0
+
+
+class _UnguardedStabilizer(BoardStabilizer):
+    """The pre-fix rule: commit every ripe square, coherence be damned."""
+
+    def _commit(self, grid, ripe, contested, ts):
+        return ripe
+
+
+def _stabilizer(window: float) -> BoardStabilizer:
+    return BoardStabilizer(settle_seconds=window)
+
+
+#: Two windows, because they exercise different commit paths: 1.0 s reaches the
+#: deadline fall-through, 1.5 s completes drags. Both do partial and empty commits.
+_PROPERTY_WINDOWS = (1.0, 1.5)
+
+
+#: Seeds for the property sweep — enough streams that every commit path fires.
+_PROPERTY_SEEDS = 40
+
+
+def _excess_rises(build) -> bool:
+    """Does any seeded stream ever make the settled board less possible?"""
     import random
 
     from board_reader_inference.stabilize import _excess
 
-    rng = random.Random(7)
-    for _ in range(20):
-        stab = BoardStabilizer()
-        previous = None
-        for i in range(30):
-            grid = [[rng.choice(CLASSES) for _ in range(8)] for _ in range(8)]
-            settled = stab.observe(encode_placement(grid), i * 0.4)
-            excess = _excess(parse_placement(settled.placement))
-            assert previous is None or excess <= previous
-            previous = excess
+    for window in _PROPERTY_WINDOWS:
+        for seed in range(_PROPERTY_SEEDS):
+            rng = random.Random(seed)
+            stab = build(window)
+            previous = None
+            for placement, ts in _noisy_stream(rng, 60, classes="pqkPQK1", churn=3):
+                excess = _excess(parse_placement(stab.observe(placement, ts).placement))
+                if previous is not None and excess > previous:
+                    return True
+                previous = excess
+    return False
+
+
+def test_the_excess_never_rises_over_a_noisy_stream():
+    """The invariant, over streams that really do commit — the earlier version of
+    this test drew from all 13 classes at 0.4 s spacing, so nothing ever ripened
+    and it passed against a stabilizer with no coherence check at all."""
+    assert not _excess_rises(_stabilizer)
+
+
+def test_that_property_test_can_actually_fail():
+    """The mutation: strip the coherence guard and the invariant must break, or
+    the test above is measuring nothing."""
+    assert _excess_rises(lambda w: _UnguardedStabilizer(settle_seconds=w))
+
+
+def test_the_property_stream_exercises_every_commit_path():
+    """Guard the guard: if the generator stops ripening squares the invariant
+    test goes quiet without failing, which is how the first version of it came
+    to pass against no coherence check at all."""
+    import random
+
+    seen: set[str] = set()
+    original = BoardStabilizer._commit
+
+    def spy(self, grid, ripe, contested, ts):
+        taken = original(self, grid, ripe, contested, ts)
+        if ripe:
+            if taken == ripe:
+                seen.add("uncontested")
+            elif set(taken) == set(contested) and len(contested) > len(ripe):
+                seen.add("deadline")
+            elif len(taken) > len(ripe):
+                seen.add("drag")
+            elif taken:
+                seen.add("partial")
+            else:
+                seen.add("empty")
+        return taken
+
+    BoardStabilizer._commit = spy
+    try:
+        for window in _PROPERTY_WINDOWS:
+            for seed in range(_PROPERTY_SEEDS):
+                stab = BoardStabilizer(settle_seconds=window)
+                for p, t in _noisy_stream(random.Random(seed), 60,
+                                          classes="pqkPQK1", churn=3):
+                    stab.observe(p, t)
+    finally:
+        BoardStabilizer._commit = original
+    assert seen == {"uncontested", "drag", "deadline", "partial", "empty"}
+
+
+# --------------------------------------------------------------------------- #
+# Bounded staleness, and the order the drag picks partners in
+# --------------------------------------------------------------------------- #
+
+#: d8 q, e8 empty — the partner square flickering below the quorum.
+E8_EMPTY = "rnbq1bnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR"
+
+
+def test_a_blocked_square_is_not_starved_forever():
+    """Coherence alone starves: settled holds `k` on d8, every read says `q`, and
+    committing d8 alone would compose two black queens while e8 flickers below
+    the quorum and can never be dragged. Before the deadline this held `k` for
+    200 reads / 260 s. It must now land within one window to ripen plus
+    STALE_WINDOWS to time out."""
+    from board_reader_inference.stabilize import STALE_WINDOWS
+
+    window = 2.5
+    stab = BoardStabilizer(settle_seconds=window)
+    stab.observe(SWAP, 0.0)
+    first_disagreement = 1.0
+    landed = None
+    for i in range(200):
+        ts = first_disagreement + i * 1.3
+        settled = stab.observe(START_PLACEMENT if i % 2 else E8_EMPTY, ts)
+        if parse_placement(settled.placement)[0][3] == "q":  # d8
+            landed = ts
+            break
+    assert landed is not None, "d8 never landed: the debounce starved"
+    bound = window * (1 + STALE_WINDOWS) + 1.3  # + one read interval to notice
+    assert landed - first_disagreement <= bound
+
+
+def test_the_deadline_still_refuses_a_less_possible_read():
+    """The escape is a fall-through to the read, not a surrender: a read that is
+    itself less possible than the settled board never lands, deadline or not."""
+    stab = BoardStabilizer(settle_seconds=0.5)
+    stab.observe(START_PLACEMENT, 0.0)
+    for i in range(30):
+        settled = stab.observe(PHANTOM_B6, 1.0 + i)
+    assert settled.placement == START_PLACEMENT
+    assert settled.pending == ("b6",)
+
+
+def test_the_drag_takes_the_best_evidenced_partner():
+    """Two partners could each relieve the same blocked commit; the one with more
+    consistent reads is taken. Board order would pick b7, evidence order picks
+    g7 — this is the only test that tells those two apart."""
+    # a6 grows a black rook (17 black pieces, 9 promotions): blocked. Removing a
+    # black *pawn* is what relieves both counts, so b7/g7 are the two partners.
+    def board(a6: str, b7: str, g7: str) -> str:
+        grid = [list(row) for row in parse_placement(START_PLACEMENT)]
+        grid[2][0] = a6  # a6
+        grid[1][1] = b7  # b7
+        grid[1][6] = g7  # g7
+        return encode_placement(grid)
+
+    stab = BoardStabilizer(settle_seconds=2.5)
+    stab.observe(START_PLACEMENT, 0.0)
+    stab.observe(board("r", "p", "p"), 1.0)  # a6 rook: run starts
+    stab.observe(board("r", "p", "empty"), 2.0)  # g7 goes: 1 read
+    stab.observe(board("r", "p", "empty"), 2.5)  # g7: 2 reads
+    stab.observe(board("r", "empty", "empty"), 3.0)  # g7: 3, b7 joins: 1
+    settled = stab.observe(board("r", "empty", "empty"), 3.6)  # a6 ripe; g7 4, b7 2
+    grid = parse_placement(settled.placement)
+    assert grid[2][0] == "r"  # the blocked square landed
+    assert grid[1][6] == "empty"  # dragged: g7, the better-evidenced partner
+    assert grid[1][1] == "p"  # b7 was not touched, though it also would have done
+
+
+def test_the_deadline_takes_only_what_it_needs():
+    """The escape waives the quorum, not the debounce: it adds partners in
+    evidence order and stops as soon as the board is no worse, so a square that
+    merely happens to be in flux at that moment is not swept up with it."""
+    def board(e8: str, h2: str) -> str:
+        grid = [list(row) for row in parse_placement(SWAP)]
+        grid[0][3], grid[0][4], grid[6][7] = "q", e8, h2
+        return encode_placement(grid)
+
+    stab = BoardStabilizer(settle_seconds=2.5)
+    stab.observe(SWAP, 0.0)  # settled: d8 k, e8 q
+    settled = None
+    for i in range(9):
+        # d8 reads q on every read and goes ripe at 3.5 s, but committing it
+        # alone composes two black queens; e8 flickers below the quorum, so only
+        # the 9.0 s deadline can land it. h2 goes into flux on that very read.
+        settled = stab.observe(
+            board("k" if i % 2 == 0 else "q", "empty" if i == 8 else "P"), 1.0 + i
+        )
+    grid = parse_placement(settled.placement)
+    assert grid[0][3] == "q"  # the blocked square landed, on the deadline
+    assert grid[0][4] == "k"  # with the one partner that unblocked it
+    assert grid[6][7] == "P"  # h2 was in flux on the same read, and left alone

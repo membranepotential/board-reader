@@ -745,16 +745,22 @@ Field notes:
   a display that draws this block. The window is time, not a read count: the
   read rate varies an order of magnitude with estimator load, and a count tuned
   at one rate is wrong at the other. Squares settle independently, but **the
-  board they compose is always a possible board** — a settlement is committed
-  only if it does not raise the hard-constraint excess above what the settled
-  board already carries, and when it would, the squares this same read disagrees
-  on (those already holding ≥2 consistent reads) are adopted with it until it
-  does not. Without that, two squares settling on halves of two incompatible
-  readings publish a board no read ever claimed: measured on the 08-27 control
-  take, two black kings on 69 % of settled events, which is what put settled
-  per-square (96.1 %) *below* its own prior input (97.2 %) with 0/253 perfect
-  boards. It is the same necessary condition on the piece multiset `prior`
-  enforces per read, and it is not legality. This is deliberately **not** the downstream smoother
+  board they compose only ever becomes more possible** — a settlement is
+  committed only if it does not raise the hard-constraint excess above what the
+  settled board already carries, and when it would, the squares this same read
+  disagrees on (those already holding ≥2 consistent reads) are adopted with it
+  until it does not. The invariant is monotone, not absolute: the *first* read is
+  adopted wholesale and sets the ceiling, so it is feeding the debounce the
+  repaired placement (which the gateway does) that makes that ceiling zero.
+  Without it, two squares settling on halves of two incompatible readings publish
+  a board no read ever claimed: measured on the 08-27 control take, two black
+  kings on 69 % of settled events, which is what put settled per-square (96.1 %)
+  *below* its own prior input (97.2 %) with 0/253 perfect boards. It is the same
+  necessary condition on the piece multiset `prior` enforces per read, and it is
+  not legality. A blocked settlement can leave `pending` non-empty for as long as
+  it takes — but not forever: after ~2 windows a blocked square gives up on its
+  partners and the whole contested set falls through to the current (repaired)
+  read, capping staleness at ~3 × the settle window. This is deliberately **not** the downstream smoother
   (D3): it consults no move model and no legality, holds whatever the reads
   converge to (right or wrong), and one-shot `/estimate` reads never carry it.
   Estimation stays memoryless (D1) — the debounce is gateway state over
