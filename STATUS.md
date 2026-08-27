@@ -15,8 +15,10 @@ confidences**. No moves, no legality, no PGN — those are the downstream applic
   Unverified. Optional: a CI workflow, CONTRIBUTING.md. Pre-rewrite SHAs recoverable
   from `docs/commit-rewrite-{map.tsv,pre.bundle}` (git-ignored); `tools/check_commit_refs.py`
   translates stale citations.
-- phone-live-test — control AND hard take **scored** (see Done). Next trial should
-  exercise the deployed zero-tap flow (aim → start → play) and confirm the OOM fix; the planned 6.d3 Qe7 7.Nc3 Qd8 tail is still unplayed.
+- phone-live-test — three takes scored (control, hard, **fast** — see Done); the
+  OOM fix is confirmed under fast play. Next trial exercises the now-deployed
+  zero-tap flow end-to-end: aim → start → auto-calibrate announces itself → play.
+  The adaptive meter makes its triggers reachable for the first time.
 - ui-mockups — full-system mockups **awaiting user review** in `docs/mockups/`
   (also http://localhost:8766/ while the ad-hoc server runs).
 - tall-crop-retrain — decision input now in from BOTH trials: the dim-light residual
@@ -25,6 +27,30 @@ confidences**. No moves, no legality, no PGN — those are the downstream applic
   Weigh a cheap re-rank/calibration pass against the retrain before training.
 
 ## Done (recent)
+
+- 08-27 (late): **The motion meter was dead on the deployment phone — root-caused
+  and rebuilt** (`5af963d`). Resting inter-frame difference measures ~6× the old
+  fixed noise floor on this rig, so stability lived under 0.35 all day: auto-detect
+  never fired (every detect was a tap), the forwarder sat in permanent burst (the
+  flat 8.2 fps), and the zero-tap trigger could never open. The meter (TS+Python,
+  mirrored) now learns each rig's own resting floor (asymmetric chase, gated so
+  sustained motion is not adopted as rest) and scores the ratio to it — tuned by
+  replaying all three takes (rest ≥0.9 on 56–62 % of frames, moves <0.7 on 27–35 %).
+  The page also samples motion from the board's crop box, not the full frame. Plus:
+  a **restored framing is auto-verified** by one detection at page open — a stale
+  saved quad after a perspective change read the board a full rank off and starved
+  the zero-tap gate (which correctly refused to calibrate from it).
+- 08-27 (late): **Fast take scored — realistic pace costs almost nothing.**
+  `recordings/20260827-175539` (report kept there; scored on a capture_ts-filtered
+  copy): the full Italian incl. the 6.d3 Qe7 7.Nc3 Qd8 tail in ~45 s (~3 s/move,
+  hands near the board throughout): prior **98.1 % per-square, 58.1 % perfect** —
+  the same perfect rate as the slow control. Settled drops to 32 % (settle lag ≫
+  segment length at this pace, by design). Latency median 1.60 s / max 2.56 s,
+  0.89 reads/s, **zero OOM failures** (batch-16 held). New residual at the shifted
+  perspective: `B->b` colour flips (18×, near-ties) and `empty->p` hallucinations
+  (24×, runner-up 23/24 — re-rankable). Eval gotcha: ingest seq resets per
+  streaming session but the recorder appends ONE dir per server run, so sessions'
+  seqs collide — the recorder should roll a dir per session.
 
 - 08-27 (evening): **Hard take run and scored** (`recordings/20260827-172736`,
   1.e4–5...Re8 with both castlings, fresh one-photo bank; lighting NOT dimmed,
