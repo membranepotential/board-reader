@@ -1147,16 +1147,33 @@ What to check:
   either, or `eval-session` would report a run that read one frame in 249;
 - `--board <id>` picks one board out of a recording that holds several.
 
-> [!note] Which frames get estimated
-> The loop asks a *frame policy* per frame, and the only one today is
-> `EveryFrame` — offline there is no reason to leave a recorded frame unread. It
-> is the seam the move-triggered estimation milestone plugs into (estimate at
-> burst end, slow keepalive, skip mid-burst): the policy sees the recorded header
-> (`seq`, `capture_ts`, `stability`, `sharpness`, `burst_id`) and not the pixels,
-> so a declined frame costs not even a JPEG read. Deciding from the header means
-> "estimate this one" is a request, not a guarantee — the frame may still have no
-> JPEG behind it or route `Uncalibrated` — so those land in their own counters and
-> are not charged to the policy.
+> [!note] Which frames get estimated — `--policy`
+> The loop asks a *frame policy* per frame (`board_reader_inference.schedule`).
+> `--policy every-frame` is the default and the control; `burst-end` is the
+> scheduler under test — estimate when a move finishes, skip mid-burst, and read a
+> keepalive floor at rest. Spec strings are `name[:key=value,...]`
+> (`--policy burst-end:keepalive_s=5,burst_end_reads=3`), and a policy's name
+> round-trips, so the manifest's `policy` field is literally the argument that
+> reproduces the run. A policy sees the recorded header (`seq`, `capture_ts`,
+> `stability`, `sharpness`, `burst_id`) and not the pixels, so a declined frame
+> costs not even a JPEG read — and "estimate this one" is a request, not a
+> guarantee (the frame may have no JPEG behind it or route `Uncalibrated`; those
+> land in their own counters and are not charged to the policy).
+>
+> **`--restamp-stability` is mandatory when scheduling the older takes.** Anything
+> recorded before the 2026-08-27 evening meter fix carries the old absolute-scale
+> meter's `stability`, which read <0.35 on every frame on the deployment phone; a
+> policy scheduled against it measures the bug. The flag re-runs today's meter over
+> the recording's own JPEGs in seq order and overrides the field before the policy
+> sees it (deterministic; marked `stability_restamped` in the replay's
+> `frames.ndjson`). It costs one JPEG decode per frame *including declined ones* —
+> the meter must see every frame — and must be applied uniformly across a sweep or
+> not at all. Nothing but the policy reads the field, so a restamped every-frame
+> replay publishes the same boards as an unrestamped one; only the advisory
+> `stability` on the event differs (pinned by
+> `test_replay.py::test_restamping_changes_the_schedule_and_nothing_else`).
+> Sparse policies and restamps join the default replay directory name, so a sweep's
+> rows never land on top of each other.
 
 ---
 

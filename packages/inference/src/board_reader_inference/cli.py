@@ -218,13 +218,24 @@ def cmd_replay(args: argparse.Namespace) -> int:
     from board_reader_core.recording import Recording
 
     from board_reader_inference.replay import render, run
+    from board_reader_inference.schedule import parse_policy
     from board_reader_inference.trial import TRUTH_NAME, TruthError
 
+    try:
+        # Parsed before anything expensive: a typo in --policy must cost a line of
+        # stderr, not the twenty GPU minutes it takes to notice the sweep measured
+        # the defaults under another policy's name.
+        policy = parse_policy(args.policy)
+    except ValueError as e:
+        print(f"cannot replay: {e}", file=sys.stderr)
+        return 2
     try:
         result = run(
             args.recording,
             name=args.name,
             board_id=args.board,
+            policy=policy,
+            restamp=args.restamp_stability,
             all_sessions=args.all_sessions,
             limit=args.limit,
         )
@@ -390,6 +401,13 @@ def build_parser() -> argparse.ArgumentParser:
     e.set_defaults(func=cmd_eval)
 
     from board_reader_inference.replay import REPLAYS_DIR
+    from board_reader_inference.schedule import POLICIES
+
+    POLICY_DEFAULT = "every-frame"
+    POLICY_HELP = "Known: " + "; ".join(
+        name + (f" ({', '.join(cls.PARAMS)})" if cls.PARAMS else " (no parameters)")
+        for name, cls in POLICIES.items()
+    ) + "."
 
     r = sub.add_parser(
         "replay",
@@ -409,6 +427,24 @@ def build_parser() -> argparse.ArgumentParser:
         "changes would replay into one directory and overwrite each other",
     )
     r.add_argument("--board", help="replay this board_id (default: the first recorded)")
+    r.add_argument(
+        "--policy",
+        default=POLICY_DEFAULT,
+        metavar="SPEC",
+        help="which frames get an estimate: <name>[:key=value,...]. "
+        f"{POLICY_HELP} Default: {POLICY_DEFAULT} (every recorded frame — the "
+        "control every sparse policy is measured against)",
+    )
+    r.add_argument(
+        "--restamp-stability",
+        dest="restamp_stability",
+        action="store_true",
+        help="re-meter each frame's `stability` from its JPEG with today's motion "
+        "meter, overriding the recorded value before the policy sees it. Required "
+        "for any take recorded before 2026-08-27 evening: those carry the old "
+        "absolute-scale meter's output, which read <0.35 on every frame of every "
+        "session. Restamp uniformly across a sweep or not at all",
+    )
     r.add_argument(
         "--score",
         action="store_true",

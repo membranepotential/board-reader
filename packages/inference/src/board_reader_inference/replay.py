@@ -91,15 +91,15 @@ Sessions are therefore detected (``seq`` or ``capture_ts`` going backwards withi
 one board) and only the **longest** is replayed, with a warning naming the rest;
 ``--all-sessions`` replays them all into one file for the caller who knows better.
 
-**The frame-selection seam.** The next milestone estimates on move events rather
-than on every frame (estimate at burst end, slow keepalive, skip mid-burst).
-Replay is where that will be measured, so the loop asks a :class:`FramePolicy`
-which frames to spend an estimate on. The only policy here is
-:class:`EveryFrame` — the scheduler is not this change's job. The policy sees the
-recorded header (:class:`~board_reader_core.recording.FrameEntry`: ``seq``,
-``capture_ts``, ``stability``, ``sharpness``, ``burst_id``) and not the pixels,
-which is both what such a scheduler needs and what lets a declined frame cost
-nothing at all — its JPEG is never even read off disk.
+**The frame-selection seam.** The node does not have to read every frame that
+reaches it, and should not: :mod:`.schedule` holds the policies that decide
+(estimate at burst end, slow keepalive, skip mid-burst), and ``--policy`` picks
+one. The loop asks it per frame, in order; :class:`~.schedule.EveryFrame` is the
+default and the control. A policy sees the recorded header
+(:class:`~board_reader_core.recording.FrameEntry`: ``seq``, ``capture_ts``,
+``stability``, ``sharpness``, ``burst_id``) and not the pixels, which is both what
+such a scheduler needs and what lets a declined frame cost nothing at all — its
+JPEG is never even read off disk.
 
 A policy decides from the header alone, so "estimate this one" is a *request*,
 not a guarantee: the frame it picked may still turn out to have no JPEG behind it
@@ -108,6 +108,22 @@ not a guarantee: the frame it picked may still turn out to have no JPEG behind i
 piece types yet). Those land in their own counters rather than being charged to
 the policy — a scheduler is judged on the frames it declined, not on the ones the
 disk or the estimator could not honour.
+
+**``--restamp-stability``, and why a scheduling sweep needs it.** Those policies
+read the header's ``stability``, and on every take recorded before 2026-08-27
+evening that field is a *broken sensor's* output: the old motion meter scored an
+absolute pixel difference, the deployment phone's resting difference measured
+about six times the constant it assumed, and the field sat under 0.35 from the
+first frame to the last. Scheduling against it would measure the bug.
+``--restamp-stability`` runs today's meter (:class:`~.schedule.MotionMeter`, the
+edge's algorithm ported — see there for why it is not imported) over the
+recording's own JPEGs in seq order and overwrites the field before any policy
+sees it. Deterministic, and it is exactly what a phone streaming that scene today
+would have sent. It costs one JPEG decode per frame *including the declined ones*
+— the meter must see every frame or its floor is learned from a subsample — so a
+sparse policy still pays for the pixels it does not read. Restamp uniformly
+across a sweep or not at all: recorded and recomputed values are different
+scales, and a table mixing them compares nothing.
 """
 
 from __future__ import annotations
@@ -118,10 +134,12 @@ import os
 import subprocess
 import sys
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Protocol, TextIO, runtime_checkable
+from typing import TextIO
+
+import numpy as np
 
 from board_reader_core.recording import (
     EVENTS_NAME,
@@ -133,9 +151,17 @@ from board_reader_core.recording import (
     RecordedFrame,
     Recording,
 )
+from board_reader_core.wire import decode_jpeg
 
 from board_reader_inference.ingest import _read_with_prior
 from board_reader_inference.routing import Uncalibrated
+from board_reader_inference.schedule import (
+    EveryFrame,
+    FramePolicy,
+    MotionMeter,
+    policy_slug,
+    restamped,
+)
 from board_reader_inference.server import event_line
 from board_reader_inference.session import EstimatorSession
 from board_reader_inference.stabilize import (
@@ -165,43 +191,6 @@ CONFIG_ENV = (
 #: Frames between progress lines on stderr. A real replay is minutes of GPU work
 #: and silence for minutes is indistinguishable from a hang.
 PROGRESS_EVERY = 25
-
-
-# --------------------------------------------------------------------------- #
-# The frame-selection seam
-# --------------------------------------------------------------------------- #
-
-
-@runtime_checkable
-class FramePolicy(Protocol):
-    """Which recorded frames are worth an estimate.
-
-    Stateful by design: the policy that is coming (burst end + keepalive) decides
-    from the *run* of frames — a burst's last frame is only recognisable once the
-    next one belongs to another burst — so it is asked frame by frame, in order,
-    exactly once each.
-    """
-
-    #: Short name for the manifest, so a replay says how its frames were chosen.
-    name: str
-
-    def should_estimate(self, entry: FrameEntry) -> bool:
-        """Whether ``entry`` gets estimated. Called once per frame, in seq order."""
-
-
-@dataclass(frozen=True, slots=True)
-class EveryFrame:
-    """Estimate every recorded frame — the default, and the densest benchmark.
-
-    Not what the live gateway does (its latest-wins inbox drops frames whenever
-    the estimator falls behind), and deliberately so: offline there is no reason
-    to leave a recorded frame unread.
-    """
-
-    name: str = "every-frame"
-
-    def should_estimate(self, entry: FrameEntry) -> bool:
-        return True
 
 
 # --------------------------------------------------------------------------- #
@@ -341,7 +330,12 @@ def config_digest(env: dict[str, dict]) -> str:
     return hashlib.sha256(payload.encode()).hexdigest()[:8]
 
 
-def default_name(env: dict[str, dict] | None = None) -> str:
+def default_name(
+    env: dict[str, dict] | None = None,
+    *,
+    policy: FramePolicy | None = None,
+    restamp: bool = False,
+) -> str:
     """The replay directory name for the current code and model environment.
 
     Reproducible on purpose: the same code against the same models replays into
@@ -355,6 +349,10 @@ def default_name(env: dict[str, dict] | None = None) -> str:
     to protect. A dirty (or unversioned) tree raises, naming ``--name``; the
     caller then says what they are measuring, which is better provenance than a
     hash could have been anyway.
+
+    ``policy`` and ``restamp`` join the name when they are not the defaults, for
+    the same reason the model stat does: they change what the run measures, and a
+    sweep whose rows all land in one directory has measured its last row only.
     """
     described = git_describe()
     if described == "unversioned" or described.endswith("-dirty"):
@@ -365,7 +363,15 @@ def default_name(env: dict[str, dict] | None = None) -> str:
             "overwrite each other's score. Pass --name <what you are measuring> "
             "(or commit first)"
         )
-    return f"{described}-{config_digest(env if env is not None else config_env())}"
+    name = f"{described}-{config_digest(env if env is not None else config_env())}"
+    # How the frames were CHOSEN is part of what a replay measures, so it is part
+    # of the identity: without this a policy sweep on a clean tree would replay
+    # every row into one directory and keep only the last.
+    if policy is not None and not isinstance(policy, EveryFrame):
+        name += f"-{policy_slug(policy)}"
+    if restamp:
+        name += "-restamped"
+    return name
 
 
 def check_name(name: str) -> str:
@@ -404,6 +410,10 @@ class ReplayStats:
     frames_skipped_unready: int = 0  # routed Uncalibrated (§4.6): nothing to publish
     frames_failed: int = 0  # the estimator raised; the stream goes on, as it does live
     frames_missing: int = 0  # index line points at a JPEG that is gone
+    #: Frames the motion meter re-scored under ``--restamp-stability``. Counted
+    #: over the whole session, not over the reads: the meter has to see every
+    #: frame or the floor it learns is a floor of a subsample.
+    frames_restamped: int = 0
     wall_seconds: float = 0.0
 
     def to_dict(self) -> dict:
@@ -415,6 +425,7 @@ class ReplayStats:
             "frames_skipped_unready": self.frames_skipped_unready,
             "frames_failed": self.frames_failed,
             "frames_missing": self.frames_missing,
+            "frames_restamped": self.frames_restamped,
             "wall_seconds": round(self.wall_seconds, 2),
         }
 
@@ -429,6 +440,8 @@ class ReplayResult:
     stats: ReplayStats
     sessions: list[StreamSession]
     replayed: list[int] = field(default_factory=list)  # indices into ``sessions``
+    #: The policy's spec string — what chose these frames, in ``--policy`` form.
+    policy: str = EveryFrame().name
 
 
 def build_session() -> EstimatorSession:
@@ -455,6 +468,7 @@ def replay(
     session: EstimatorSession,
     board_id: str | None = None,
     policy: FramePolicy | None = None,
+    restamp: bool = False,
     all_sessions: bool = False,
     limit: int | None = None,
     log: TextIO | None = sys.stderr,
@@ -466,6 +480,14 @@ def replay(
     ``capture_ts``, so the settle window is recorded time. One stabilizer for the
     whole replay: it is one board's stream, in order, which is exactly the stream
     a debounce needs.
+
+    With ``restamp``, each replayed session's headers get their ``stability``
+    rewritten by a fresh :class:`~.schedule.MotionMeter` before the policy is
+    asked — one meter per session, because a reconnect is a new camera and a
+    learned resting floor does not carry across one. Nothing but the policy reads
+    the field (the estimators only copy it onto the published event), so a
+    restamped every-frame replay reads the same pixels in the same order as an
+    unrestamped one; it is the control a scheduling sweep is diffed against.
     """
     policy = policy or EveryFrame()
     board = board_id or _default_board(recording)
@@ -491,6 +513,7 @@ def replay(
     out.mkdir(parents=True, exist_ok=True)
     stabilizer = BoardStabilizer()
     stats = ReplayStats()
+    decode = _decoder(recording)
     total = sum(sessions[i].frames for i in chosen)
     if limit is not None:
         total = min(total, limit)
@@ -503,6 +526,9 @@ def replay(
         frames_path.open("w", encoding="utf-8") as frames,
     ):
         for i in chosen:
+            # One meter per streaming session: a reconnect is a new camera, and a
+            # resting floor learned before it says nothing about the one after.
+            meter = MotionMeter()
             for entry in index[sessions[i].start : sessions[i].stop]:
                 if limit is not None and stats.frames_estimated >= limit:
                     # Truncation, not selection: the replay stops looking at the
@@ -513,6 +539,15 @@ def replay(
                     stats.truncated = True
                     break
                 stats.frames_total += 1
+                if restamp:
+                    # Before the policy, and for EVERY frame including the ones it
+                    # will decline: the meter's floor is learned from the run of
+                    # frames, and a floor learned from a subsample is a different
+                    # meter. This is the whole cost of --restamp-stability.
+                    image = decode(entry)
+                    if image is not None:
+                        entry = restamped(entry, meter, image)
+                        stats.frames_restamped += 1
                 # Indexed before the policy is asked, and whatever it answers: a
                 # frame the policy declined was still input the camera delivered,
                 # and hiding it would make a sparse policy look like a slow camera.
@@ -562,10 +597,28 @@ def replay(
         stats=stats,
         sessions=sessions,
         replayed=chosen,
+        policy=policy.name,
     )
     _link_source(out, recording)
     _write_manifest(result, recording, policy, type(session.estimator).__name__)
     return result
+
+
+def _decoder(recording: Recording) -> Callable[[FrameEntry], np.ndarray | None]:
+    """Pixels for one indexed frame, or ``None`` when its JPEG is gone.
+
+    The gap case is not an error here: the recorder writes the JPEG before the
+    line that names it, but a half-copied tree happens, and one missing frame
+    should cost the meter a slightly noisy reading rather than the whole replay.
+    """
+
+    def decode(entry: FrameEntry) -> np.ndarray | None:
+        try:
+            return decode_jpeg((recording.path / entry.jpeg_rel).read_bytes())
+        except (OSError, ValueError):
+            return None
+
+    return decode
 
 
 def _default_board(recording: Recording) -> str:
@@ -662,7 +715,10 @@ def _write_manifest(
                     "env": env,
                     "config_digest": config_digest(env),
                     "estimator": estimator,
+                    # The spec string, so this field is literally the --policy
+                    # argument that reproduces the run.
                     "policy": policy.name,
+                    "restamp_stability": result.stats.frames_restamped > 0,
                     "settle_seconds": SETTLE_SECONDS,
                     "settle_min_reads": SETTLE_MIN_READS,
                     "sessions": [s.to_dict() for s in sessions],
@@ -701,6 +757,14 @@ def render(result: ReplayResult) -> str:
     detail = ", ".join(f"{n} {what}" for n, what in skipped if n)
     if detail:
         lines.append(f"skipped:   {detail}")
+    if result.policy != EveryFrame().name or s.frames_restamped:
+        note = result.policy
+        if s.frames_restamped:
+            note += (
+                f" · stability re-metered on {s.frames_restamped} frame(s) "
+                "(recorded values overridden)"
+            )
+        lines.append(f"policy:    {note}")
     if s.truncated:
         lines.append("stopped:   --limit reached — a truncated take, not a full one")
     if len(result.sessions) > 1:
@@ -723,6 +787,7 @@ def run(
     all_sessions: bool = False,
     limit: int | None = None,
     policy: FramePolicy | None = None,
+    restamp: bool = False,
     log: TextIO | None = sys.stderr,
 ) -> ReplayResult:
     """Open ``source``, build the environment's estimator, and replay into it.
@@ -732,13 +797,18 @@ def run(
     :attr:`ReplayResult.path`, which is a recording directory like any other).
     """
     recording = Recording.open(source)
-    out = recording.path / REPLAYS_DIR / (check_name(name) if name else default_name())
+    chosen_name = (
+        check_name(name)
+        if name
+        else default_name(policy=policy or EveryFrame(), restamp=restamp)
+    )
     return replay(
         recording,
-        out,
+        recording.path / REPLAYS_DIR / chosen_name,
         session=build_session(),
         board_id=board_id,
         policy=policy,
+        restamp=restamp,
         all_sessions=all_sessions,
         limit=limit,
         log=log,

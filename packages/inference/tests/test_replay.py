@@ -38,7 +38,6 @@ from board_reader_inference.cli import main
 from board_reader_inference.hub import PositionHub
 from board_reader_inference.ingest import FrameIngest
 from board_reader_inference.replay import (
-    EveryFrame,
     ReplayResult,
     build_session,
     check_name,
@@ -47,6 +46,14 @@ from board_reader_inference.replay import (
     replay,
 )
 from board_reader_inference.routing import Uncalibrated
+from board_reader_inference.schedule import (
+    ENTER_BURST,
+    EXIT_BURST,
+    RESTAMPED_KEY,
+    BurstTriggered,
+    EveryFrame,
+    parse_policy,
+)
 from board_reader_inference.server import event_line
 from board_reader_inference.session import EstimatorSession
 from board_reader_inference.stabilize import SETTLE_SECONDS
@@ -548,3 +555,168 @@ def test_cli_replay_and_score(tmp_path, monkeypatch, capsys):
     report = capsys.readouterr().out
     assert "stream       per-square" in report
     assert (replayed / REPORT_NAME).exists()
+
+
+# --------------------------------------------------------------------------- #
+# Scheduling: the policy seam and --restamp-stability
+# --------------------------------------------------------------------------- #
+
+
+def _write_metered_recording(
+    root, *, moving: range, frames: int = 80, stability: float = 0.29
+) -> None:
+    """A recording of a still scene interrupted by motion, stamped by a DEAD meter.
+
+    The three older 08-27 takes look exactly like this: the field says "moving"
+    on every frame, of a board that spends most of its time untouched.
+    """
+    rng = np.random.default_rng(7)
+    scene = rng.integers(0, 255, (48, 48, 3), dtype=np.uint8)
+    recorder = FrameRecorder(root, session_id="metered", writer="test")
+    for i in range(frames):
+        image = scene.astype(np.int16) + rng.integers(-2, 3, scene.shape)
+        if i in moving:
+            image[:, (i * 4) % 40 : (i * 4) % 40 + 8] = 0
+        image = np.clip(image, 0, 255).astype(np.uint8)
+        frame = Frame(
+            board_id="phone",
+            seq=i,
+            capture_ts=1_700_000_000.0 + i * FRAME_DT,
+            image=image,
+            stability=stability,
+        )
+        recorder.record(frame.header(), encode_jpeg(image))
+    recorder.stop()
+
+
+@pytest.fixture
+def metered(tmp_path):
+    # The move sits deep into the take on purpose: the meter starts from the bare
+    # sensor-noise floor and needs a second or two of frames to learn this rig's
+    # real resting difference, so the opening of any restamped session reads as
+    # one long burst. Real takes have the same shape; it costs a spurious
+    # burst-end read at the top and nothing after.
+    _write_metered_recording(tmp_path / "recordings", moving=range(40, 50))
+    return Recording(tmp_path / "recordings" / "metered")
+
+
+def _index(result: ReplayResult) -> list[dict]:
+    text = (result.path / INDEX_NAME).read_text(encoding="utf-8")
+    return [json.loads(line) for line in text.splitlines() if line.strip()]
+
+
+def test_restamp_overrides_the_recorded_stability_and_marks_it(metered):
+    """The recorded field is a broken sensor's; the replayed index says so rather
+    than quietly serving a number no camera ever sent."""
+    result = _run(metered, "restamped", restamp=True)
+    lines = _index(result)
+
+    assert result.stats.frames_restamped == 80
+    assert all(line[RESTAMPED_KEY] for line in lines)
+    assert lines[0]["stability"] == 1.0  # the meter's first-frame invariant
+    assert lines[35]["stability"] > EXIT_BURST, "a still scene reads as still"
+    assert min(line["stability"] for line in lines[40:50]) < ENTER_BURST
+    # ...and the source is untouched: its own index still carries the old values.
+    recorded = [e.header["stability"] for e in metered.frame_index()]
+    assert recorded == [pytest.approx(0.29)] * 80
+
+
+def test_restamping_changes_the_schedule_and_nothing_else(metered):
+    """The claim a restamped control run rests on.
+
+    ``stability`` is a header field the estimators copy onto the published event
+    and nothing else ever reads — it does not enter recognition, the prior, or the
+    debounce. So an every-frame replay of a restamped take reads the same pixels
+    in the same order as an unrestamped one and must publish the same boards; only
+    the advisory field differs. If that ever stops being true, a scheduling sweep
+    stops being a comparison of schedulers.
+    """
+    plain = _events(_run(metered, "plain"))
+    fresh = _events(_run(metered, "fresh", restamp=True))
+
+    assert len(plain) == len(fresh) == 80
+    assert [e["stability"] for e in fresh] != [e["stability"] for e in plain]
+    for a, b in zip(plain, fresh, strict=True):
+        assert {k: v for k, v in a.items() if k != "stability"} == {
+            k: v for k, v in b.items() if k != "stability"
+        }
+
+
+def test_a_burst_policy_reads_the_move_and_skips_the_rest_of_the_stream(metered):
+    """End to end on real pixels: re-meter, then schedule off what the meter says.
+
+    The whole point in one number — sixty frames in, a handful of reads out, and
+    the reads land after the motion rather than inside it.
+    """
+    result = _run(
+        metered,
+        "burst",
+        # The floor is pushed out past the take so this test sees the burst
+        # decision alone; that it also reads mid-move at 3 s is the D3 floor
+        # working, and is pinned in test_schedule.py.
+        policy=BurstTriggered(keepalive_s=30.0, burst_end_reads=2),
+        restamp=True,
+    )
+    read = [e["frame_seq"] for e in _events(result)]
+
+    assert result.stats.frames_total == 80  # every frame was offered
+    assert len(_index(result)) == 80  # ...and indexed, declined or not
+    assert result.stats.frames_estimated == len(read) < 10
+    assert not set(read) & set(range(41, 50)), "nothing read mid-move"
+    assert any(s > 50 for s in read), "the move-complete moment was read"
+
+
+def test_the_replay_name_separates_policies_and_restamps(monkeypatch):
+    """A sweep's rows must not land in one directory: the last one would be the
+    only survivor, which is the exact failure ``default_name`` exists to prevent.
+    """
+    monkeypatch.setattr(replay_mod, "git_describe", lambda: "v1")
+    monkeypatch.setattr(replay_mod, "config_digest", lambda env: "dead")
+
+    assert default_name({}) == "v1-dead"
+    assert default_name({}, policy=EveryFrame()) == "v1-dead"
+    assert default_name({}, restamp=True) == "v1-dead-restamped"
+    assert (
+        default_name({}, policy=BurstTriggered(keepalive_s=5.0), restamp=True)
+        == "v1-dead-burst-end-keepalive_s5-restamped"
+    )
+
+
+def test_the_manifest_records_the_policy_as_the_argument_that_rebuilds_it(metered):
+    policy = BurstTriggered(keepalive_s=5.0, burst_end_reads=2)
+    result = _run(metered, "provenance", policy=policy, restamp=True)
+    block = json.loads((result.path / "manifest.json").read_text())["replay"]
+
+    assert block["restamp_stability"] is True
+    assert parse_policy(block["policy"]) == policy
+
+
+def test_cli_policy_and_restamp_flags(tmp_path, monkeypatch, capsys):
+    for name in (
+        "BR_MODEL", "BR_MODEL_B", "BR_MODEL_TUNED", "BR_CENTROIDS",
+        "BR_SESSION_BANK", "BR_OCCUPANCY_BANK",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.chdir(tmp_path)
+    _write_metered_recording(tmp_path / "recordings", moving=range(40, 50))
+    recording = tmp_path / "recordings" / "metered"
+
+    assert main(
+        [
+            "replay", str(recording), "--name", "cli-policy",
+            "--policy", "burst-end:keepalive_s=5,burst_end_reads=2",
+            "--restamp-stability",
+        ]
+    ) == 0
+    out = capsys.readouterr().out
+    assert "burst-end:keepalive_s=5,burst_end_reads=2" in out
+    assert "re-metered on 80 frame(s)" in out
+    block = json.loads(
+        (recording / "replays" / "cli-policy" / "manifest.json").read_text()
+    )["replay"]
+    assert block["policy"] == "burst-end:keepalive_s=5,burst_end_reads=2"
+
+    # A typo must cost a line of stderr, not a GPU sweep measuring the defaults.
+    assert main(["replay", str(recording), "--name", "x", "--policy", "burst"]) == 2
+    assert "unknown policy 'burst'" in capsys.readouterr().err
+    assert not (recording / "replays" / "x").exists()
