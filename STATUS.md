@@ -15,10 +15,24 @@ confidences**. No moves, no legality, no PGN — those are the downstream applic
   Unverified. Optional: a CI workflow, CONTRIBUTING.md. Pre-rewrite SHAs recoverable
   from `docs/commit-rewrite-{map.tsv,pre.bundle}` (git-ignored); `tools/check_commit_refs.py`
   translates stale citations.
-- phone-live-test — three takes scored (control, hard, **fast** — see Done); the
-  OOM fix is confirmed under fast play. Next trial exercises the now-deployed
-  zero-tap flow end-to-end: aim → start → auto-calibrate announces itself → play.
-  The adaptive meter makes its triggers reachable for the first time.
+- phone-live-test — FOUR takes recorded, three scored (control 99.0 %/58.3 %,
+  hard 98.6 %/46.5 %, fast 98.1 %/58.1 % prior). Take 5 (18:18, unscored, no truth)
+  proved the meter fix live — send rate 1 fps at rest with real bursts (was a flat
+  8.2), and the restored-quad verify fired (`framing-verified, moved: false`) —
+  but hit the arena OOM again and exposed **the ratchet** (next item).
+- **GPU arena ratchet — the top fix before the next take.** Batch-16 bounds the
+  peak but the cascade secondary's batches still VARY in size (unsure-count tail,
+  1..16), every distinct shape reserves its own BFC chunks, and an arena never
+  shrinks — so over a session the secondary's arena creeps to its 1 GiB cap and
+  every big read fails from then on (91 failures in take 5; node idles at 2.2 GiB
+  after). Fix: **fixed-shape batches** — pad every batch (trained.py crop_dist,
+  embed.py) to exactly batch_size, slice the outputs; one working set, reused
+  forever. Consider ORT `arena_extend_strategy=kSameAsRequested` on top.
+- **Zero-tap calibrate still unproven live** — the operator calibrates manually
+  before pressing start (habit), and the trigger needs the position stream, which
+  only flows while streaming. Decide: teach the flow (calibrate pill only after
+  start?) or let the idle page probe /estimate itself so the trigger works
+  pre-stream.
 - ui-mockups — full-system mockups **awaiting user review** in `docs/mockups/`
   (also http://localhost:8766/ while the ad-hoc server runs).
 - tall-crop-retrain — decision input now in from BOTH trials: the dim-light residual
