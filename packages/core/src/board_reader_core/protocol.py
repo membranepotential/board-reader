@@ -161,6 +161,44 @@ def position_confidence(square_dist: np.ndarray, reduce: str = "mean") -> float:
     raise ValueError("reduce must be 'mean' or 'min'")
 
 
+#: How many classes per square a recording keeps as evidence. Two is the whole
+#: point of the digest: the winner and its nearest rival are what say whether a
+#: misread was a coin-flip or a conviction.
+EVIDENCE_TOP_K = 2
+
+
+def square_evidence(
+    square_dist: np.ndarray, *, top_k: int = EVIDENCE_TOP_K, ndigits: int = 4
+) -> list[list[tuple[str, float]]]:
+    """The ``top_k`` likeliest classes per square, board order, as (class, prob).
+
+    A deliberately lossy digest of ``square_dist``, for the recorder: it keeps the
+    margin the argmax throws away, so a wrong square can be read afterwards as
+    "0.51 k against 0.49 q" rather than only "k". 64 pairs cost ~1.8 kB a line
+    against ~25 kB for the full distribution, which is why the recording carries
+    this and not the array (see ``_record_published``).
+
+    Squares run rank 8 -> rank 1, files a -> h — the same order as ``placement``,
+    so entry ``i`` belongs to ``square_name_at(i)``.
+    """
+    arr = np.asarray(square_dist, dtype=np.float64)
+    if arr.shape != (GRID, GRID, NUM_CLASSES):
+        raise ValueError(f"square_dist must be {GRID}x{GRID}x{NUM_CLASSES}, got {arr.shape}")
+    if not 1 <= top_k <= NUM_CLASSES:
+        raise ValueError(f"top_k must be in 1..{NUM_CLASSES}, got {top_k}")
+    # Descending by probability; ties break on class index so the digest is
+    # reproducible across runs and platforms.
+    order = np.argsort(-arr, axis=-1, kind="stable")[..., :top_k]
+    return [
+        [
+            (CLASSES[int(order[r, c, k])], round(float(arr[r, c, order[r, c, k]]), ndigits))
+            for k in range(top_k)
+        ]
+        for r in range(GRID)
+        for c in range(GRID)
+    ]
+
+
 @dataclass
 class ClockState:
     """Which side's clock is running (DESIGN.md D7). ``none`` = neither/unknown."""

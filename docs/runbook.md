@@ -91,6 +91,12 @@ curl -s localhost:8000/healthz | jq .recording    # is it recording, and where?
 uv run board-reader-edge feed --recording recordings/ --throttle   # re-run it
 ```
 
+Every published event is recorded beside the frames with an `evidence` digest —
+the top-2 classes and their probabilities for all 64 squares — so a post-mortem
+can ask how close a wrong square came without putting the model back in the loop.
+Scoring a session (`eval-session`) writes `<recording>/report.json` every time, so
+no number from a run exists without the artifact behind it.
+
 `--recording` re-sends the stored bytes verbatim, so the replayed run sees the same
 pixels the original did. Prefer `--throttle`: the gateway's latest-wins pre-filter
 drops frames as a function of *arrival rate*, so a flat-out replay makes it drop

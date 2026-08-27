@@ -341,7 +341,7 @@ def build_parser() -> argparse.ArgumentParser:
     e.add_argument("--json", help="also write the full report as JSON here")
     e.set_defaults(func=cmd_eval)
 
-    from board_reader_inference.trial import DEFAULT_EVERY, TRUTH_NAME
+    from board_reader_inference.trial import DEFAULT_EVERY, REPORT_NAME, TRUTH_NAME
 
     t = sub.add_parser(
         "eval-session",
@@ -353,7 +353,10 @@ def build_parser() -> argparse.ArgumentParser:
         help=f"a recording session directory (or a root — the newest is taken); "
         f"its ground truth is read from <dir>/{TRUTH_NAME}",
     )
-    t.add_argument("--json", help="also write the full report as JSON here")
+    t.add_argument(
+        "--json",
+        help=f"write the full report JSON here instead of <recording>/{REPORT_NAME}",
+    )
     t.add_argument(
         "--export-crops",
         dest="export_crops",

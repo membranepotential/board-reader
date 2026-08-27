@@ -34,7 +34,7 @@ from fastapi.responses import JSONResponse, Response
 
 from board_reader_core.boarddetect import LOW_ANGLE_ASPECT, quad_aspect
 from board_reader_core.corners import parse_corners
-from board_reader_core.protocol import GRID, START_PLACEMENT
+from board_reader_core.protocol import GRID, START_PLACEMENT, square_evidence
 from board_reader_core.recording import FrameRecorder
 from board_reader_core.wire import Frame, decode_jpeg
 
@@ -350,14 +350,22 @@ def create_app(
         """One compact line per published event into the session's events.ndjson.
 
         ``square_dist`` is stripped — replaying ``frames.ndjson`` through the same
-        estimator reproduces it, and at burst rate it is ~25 kB per line. The
-        frame's own ``seq`` and ``capture_ts`` ride along so an event can be
-        joined back to the exact recorded frame it was estimated from.
+        estimator reproduces it, and at burst rate it is ~25 kB per line. What
+        replay cannot cheaply give back is *why* a square read the way it did, so
+        the top-2 digest (:func:`square_evidence`, ~1.8 kB) rides along instead:
+        it is what turns "d8 read k" into "d8 read k at 0.51 over q at 0.49", and
+        it is the whole evidence base for the trial report's margin section.
+        The digest is of the estimator's own distribution — the ``prior`` repair
+        never rewrites it — so it stays comparable across the three streams.
+
+        The frame's own ``seq`` and ``capture_ts`` ride along too, so an event can
+        be joined back to the exact recorded frame it was estimated from.
         """
         if recorder is None or not recorder.active:
             return
         line = event.to_dict()
         line.pop("square_dist", None)
+        line["evidence"] = square_evidence(event.square_dist)
         line["frame_seq"] = frame.seq
         line["capture_ts"] = frame.capture_ts
         line["published_ts"] = time.time()

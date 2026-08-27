@@ -6,7 +6,9 @@ import numpy as np
 import pytest
 
 from board_reader_core.protocol import (
+    CLASS_INDEX,
     CLASSES,
+    EVIDENCE_TOP_K,
     GRID,
     NUM_CLASSES,
     START_PLACEMENT,
@@ -18,6 +20,8 @@ from board_reader_core.protocol import (
     parse_placement,
     placement_from_dist,
     position_confidence,
+    square_evidence,
+    square_name_at,
 )
 
 
@@ -259,3 +263,53 @@ def test_validate_rejects_a_malformed_settled_placement():
     ev.settled = SettledBoard(placement="not/a/board")
     with pytest.raises(ValueError):
         ev.validate()
+
+
+# --------------------------------------------------------------------------- #
+# The evidence digest — what the recorder keeps of a distribution it drops
+# --------------------------------------------------------------------------- #
+
+
+def test_evidence_names_the_winner_and_its_nearest_rival():
+    dist = dist_from_placement(START_PLACEMENT, confidence=0.6)
+    # Make a1's runner-up unambiguous: the rook wins, the queen is second.
+    dist[7, 0, CLASS_INDEX["Q"]] = 0.3
+    evidence = square_evidence(dist)
+
+    assert len(evidence) == GRID * GRID
+    a1 = evidence[next(i for i in range(GRID * GRID) if square_name_at(i) == "a1")]
+    assert [c for c, _ in a1] == ["R", "Q"]
+    assert a1[0][1] == pytest.approx(0.6, abs=1e-3)
+    assert a1[1][1] == pytest.approx(0.3, abs=1e-3)
+
+
+def test_evidence_agrees_with_the_placement_it_ships_beside():
+    """The digest's top class per square IS the argmax — the same read, digested."""
+    dist = dist_from_placement(START_PLACEMENT)
+    tops = [c for square in square_evidence(dist) for c, _ in square[:1]]
+    grid = parse_placement(placement_from_dist(dist))
+    assert tops == [grid[r][c] for r in range(GRID) for c in range(GRID)]
+
+
+def test_evidence_keeps_as_many_classes_as_asked():
+    dist = dist_from_placement(START_PLACEMENT)
+    assert all(len(square) == 5 for square in square_evidence(dist, top_k=5))
+    assert all(len(square) == 1 for square in square_evidence(dist, top_k=1))
+
+
+def test_evidence_rejects_a_shape_or_a_depth_it_cannot_honour():
+    dist = dist_from_placement(START_PLACEMENT)
+    with pytest.raises(ValueError, match="square_dist must be"):
+        square_evidence(dist[:4])
+    with pytest.raises(ValueError, match="top_k must be"):
+        square_evidence(dist, top_k=0)
+    with pytest.raises(ValueError, match="top_k must be"):
+        square_evidence(dist, top_k=NUM_CLASSES + 1)
+
+
+def test_evidence_ties_break_the_same_way_every_run():
+    """A flat square is the worst case for a digest: it must still be stable."""
+    flat = np.full((GRID, GRID, NUM_CLASSES), 1.0 / NUM_CLASSES, dtype=np.float32)
+    once = square_evidence(flat)
+    assert once == square_evidence(flat)
+    assert [c for c, _ in once[0]] == list(CLASSES[:EVIDENCE_TOP_K])

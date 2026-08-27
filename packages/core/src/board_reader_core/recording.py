@@ -61,6 +61,32 @@ def _shard_path(index: int) -> str:
 
 
 @dataclass(frozen=True, slots=True)
+class FrameEntry:
+    """One ``frames.ndjson`` line: the wire header and arrival time, no pixels.
+
+    The cheap half of :class:`RecordedFrame`. A session's index is a few hundred
+    kB where its JPEGs are hundreds of MB, so anything that only needs timing,
+    rates or board ids reads this and never touches the disk again.
+    """
+
+    header: dict
+    jpeg_rel: str
+    received_ts: float
+
+    @property
+    def board_id(self) -> str:
+        return self.header["board_id"]
+
+    @property
+    def seq(self) -> int:
+        return int(self.header["seq"])
+
+    @property
+    def capture_ts(self) -> float:
+        return float(self.header["capture_ts"])
+
+
+@dataclass(frozen=True, slots=True)
 class RecordedFrame:
     """One frame as it was recorded: the wire header, the bytes, the arrival time.
 
@@ -283,12 +309,12 @@ class Recording:
         except (OSError, json.JSONDecodeError):
             return {}
 
-    def frames(self, *, board_id: str | None = None) -> Iterator[RecordedFrame]:
-        """Yield recorded frames in arrival order, optionally for one board only.
+    def frame_index(self, *, board_id: str | None = None) -> Iterator[FrameEntry]:
+        """Yield the index entries in arrival order, without reading any JPEG.
 
-        Entries that cannot be honoured — an unparseable line (a session killed
-        mid-write), a JPEG that is gone — are skipped rather than raised: a
-        partial recording is still a usable one.
+        Unparseable lines are skipped — a session killed mid-write is still worth
+        reading. This is the pass to take for timing, rates and board ids; take
+        :meth:`frames` only when you actually want the bytes.
         """
         with (self.path / INDEX_NAME).open(encoding="utf-8") as fh:
             for line in fh:
@@ -296,25 +322,37 @@ class Recording:
                 if not line:
                     continue
                 try:
-                    entry = json.loads(line)
-                    rel = entry.pop("jpeg")
-                    received_ts = float(entry.pop("received_ts", entry["capture_ts"]))
-                    entry.pop("bytes", None)
+                    header = json.loads(line)
+                    rel = header.pop("jpeg")
+                    received_ts = float(header.pop("received_ts", header["capture_ts"]))
+                    header.pop("bytes", None)
                 except (json.JSONDecodeError, KeyError, TypeError, ValueError):
                     continue
-                if board_id is not None and entry.get("board_id") != board_id:
+                if board_id is not None and header.get("board_id") != board_id:
                     continue
-                try:
-                    jpeg = (self.path / rel).read_bytes()
-                except OSError:
-                    continue
-                yield RecordedFrame(header=entry, jpeg=jpeg, received_ts=received_ts)
+                yield FrameEntry(header=header, jpeg_rel=rel, received_ts=received_ts)
+
+    def frames(self, *, board_id: str | None = None) -> Iterator[RecordedFrame]:
+        """Yield recorded frames in arrival order, optionally for one board only.
+
+        Entries that cannot be honoured — an unparseable line (a session killed
+        mid-write), a JPEG that is gone — are skipped rather than raised: a
+        partial recording is still a usable one.
+        """
+        for entry in self.frame_index(board_id=board_id):
+            try:
+                jpeg = (self.path / entry.jpeg_rel).read_bytes()
+            except OSError:
+                continue
+            yield RecordedFrame(
+                header=entry.header, jpeg=jpeg, received_ts=entry.received_ts
+            )
 
     def board_ids(self) -> list[str]:
         """Every board that appears in the recording, in first-seen order."""
         seen: dict[str, None] = {}
-        for rec in self.frames():
-            seen.setdefault(rec.board_id, None)
+        for entry in self.frame_index():
+            seen.setdefault(entry.board_id, None)
         return list(seen)
 
     def __iter__(self) -> Iterator[RecordedFrame]:

@@ -14,7 +14,7 @@ import json
 import numpy as np
 import pytest
 
-from board_reader_core.protocol import START_PLACEMENT
+from board_reader_core.protocol import GRID, START_PLACEMENT, parse_placement
 from board_reader_core.recording import FrameRecorder, Recording
 from board_reader_core.sim import render_board, simulate_angled_view
 from board_reader_core.wire import Frame
@@ -22,6 +22,8 @@ from board_reader_core.wire import Frame
 from board_reader_inference.cli import main
 from board_reader_inference.trial import (
     DEFAULT_GUARD_SEQS,
+    REPORT_NAME,
+    SQUARE_INDEX,
     TRUTH_NAME,
     SessionTruth,
     Stream,
@@ -30,6 +32,7 @@ from board_reader_inference.trial import (
     export_crops,
     load_truth,
     read_events,
+    run,
     score_session,
 )
 
@@ -54,6 +57,7 @@ def _event(
     prior: str | None = None,
     settled: str | None = None,
     board_id: str = "phone",
+    evidence: list | None = None,
 ) -> dict:
     """One events.ndjson line, in the shape ``server._record_published`` writes."""
     line: dict = {
@@ -71,7 +75,28 @@ def _event(
         line["prior"] = {"placement": prior, "flips": [], "residual": {}}
     if settled is not None:
         line["settled"] = {"placement": settled, "pending": []}
+    if evidence is not None:
+        line["evidence"] = evidence
     return line
+
+
+def _digest(placement: str, **rivals: tuple[str, float, float]) -> list:
+    """A top-2 digest agreeing with ``placement``, board order.
+
+    Each keyword names a square whose read was close: ``d8=("q", 0.51, 0.47)``
+    means the winner (whatever ``placement`` says) took 0.51 and ``q`` 0.47.
+    Every other square is a confident, uncontested read.
+    """
+    grid = parse_placement(placement)
+    squares = [
+        [[grid[r][c], 0.99], ["empty" if grid[r][c] != "empty" else "P", 0.005]]
+        for r in range(GRID)
+        for c in range(GRID)
+    ]
+    for name, (runner_up, won, lost) in rivals.items():
+        i = SQUARE_INDEX[name]
+        squares[i] = [[squares[i][0][0], won], [runner_up, lost]]
+    return squares
 
 
 def _session(tmp_path, events: list[dict], frames: list[tuple[dict, bytes]] = ()) -> Recording:
@@ -436,3 +461,152 @@ def test_cli_reports_a_bad_truth_file_in_one_line(tmp_path, capsys):
 def test_cli_reports_a_directory_that_is_not_a_recording(tmp_path, capsys):
     assert main(["eval-session", str(tmp_path)]) == 2
     assert "cannot score" in capsys.readouterr().err
+
+
+# --------------------------------------------------------------------------- #
+# Evidence — how close the estimator came on the squares it got wrong
+# --------------------------------------------------------------------------- #
+
+
+def test_evidence_separates_a_coin_flip_from_a_conviction(tmp_path):
+    """The distinction the whole digest exists for: d8 read k over q by 0.04 (the
+    crop carries the answer, the model nearly found it), while b6 hallucinated a
+    rook with truth nowhere in the top 2 (the evidence is simply not there)."""
+    events = [
+        _event(
+            0,
+            TWO_KINGS,
+            prior=TWO_KINGS,
+            evidence=_digest(TWO_KINGS, d8=("q", 0.51, 0.47)),
+        ),
+        _event(
+            10,
+            TWO_KINGS,
+            prior=TWO_KINGS,
+            evidence=_digest(TWO_KINGS, d8=("n", 0.90, 0.05)),
+        ),
+    ]
+    report = score_session(_session(tmp_path, events), _truth())
+    e = report.evidence
+
+    assert e.recorded and e.events == 2 and e.events_total == 2
+    assert e.wrong == 2  # d8 in both events
+    assert e.truth_runner_up == 1  # only the first had q second
+    assert e.truth_ranked == 1
+    assert e.margins == [pytest.approx(0.04, abs=1e-6)]
+    assert [(c.pair, c.n, c.truth_ranked) for c in e.by_confusion] == [("q->k", 2, 1)]
+
+
+def test_evidence_is_absent_not_zero_for_a_session_that_recorded_none(tmp_path):
+    """Old recordings predate the digest. They score exactly as before, and the
+    report says the evidence is missing rather than implying it was empty."""
+    report = score_session(_session(tmp_path, FLIPFLOP_EVENTS), _truth())
+
+    assert not report.evidence.recorded
+    assert report.evidence.wrong == 0
+    assert report.evidence.to_dict()["margin_median"] is None
+    assert "predates the top-2 digest" in report.render()
+
+
+def test_evidence_survives_a_malformed_digest(tmp_path):
+    """A digest is diagnostic, never load-bearing: garbage there must not cost a
+    session its score."""
+    events = [
+        _event(0, TWO_KINGS, prior=TWO_KINGS, evidence=[["k", 0.5]]),  # wrong shape
+        _event(
+            10, TWO_KINGS, prior=TWO_KINGS, evidence=_digest(TWO_KINGS, d8=("q", 0.6, 0.3))
+        ),
+    ]
+    report = score_session(_session(tmp_path, events), _truth())
+
+    assert report.events_scored == 2  # both scored
+    assert report.evidence.events == 1  # only one carried a readable digest
+    assert report.evidence.wrong == 1
+
+
+def test_evidence_renders_its_margins(tmp_path):
+    events = [
+        _event(
+            0, TWO_KINGS, prior=TWO_KINGS, evidence=_digest(TWO_KINGS, d8=("q", 0.51, 0.47))
+        )
+    ]
+    text = score_session(_session(tmp_path, events), _truth()).render()
+
+    assert "truth was the runner-up" in text
+    assert "margin p(read)-p(truth)" in text
+    assert "q->k" in text
+
+
+# --------------------------------------------------------------------------- #
+# Timing — the rates a placement score cannot show
+# --------------------------------------------------------------------------- #
+
+
+def test_timing_measures_input_rate_against_read_rate(tmp_path):
+    """The 08-13 finding in miniature: frames arrive far faster than reads are
+    published, and the report says so in one line instead of by hand."""
+    frames = _photo_frames(8)
+    recording = _session(tmp_path, FLIPFLOP_EVENTS, frames)
+    t = score_session(recording, _truth()).timing
+
+    assert t.frames == 8
+    assert t.events == 8  # every event on this board, guard-excluded ones included
+    assert t.frames_per_read == pytest.approx(1.0)
+    assert t.latencies and all(lat == pytest.approx(2.0) for lat in t.latencies)
+    assert t.to_dict()["latency"]["median"] == pytest.approx(2.0)
+
+
+def test_timing_says_nothing_rather_than_zero_when_a_session_has_one_frame(tmp_path):
+    recording = _session(tmp_path, [_event(0, START_PLACEMENT, prior=START_PLACEMENT)])
+    t = score_session(recording, _truth()).timing
+
+    assert t.fps == 0.0 and t.reads_per_s == 0.0  # no span to divide by
+    assert "timing" in score_session(recording, _truth()).render()
+
+
+def test_timing_counts_only_the_scored_board(tmp_path):
+    frames = _photo_frames(2)
+    events = [
+        _event(0, START_PLACEMENT, prior=START_PLACEMENT),
+        _event(1, START_PLACEMENT, prior=START_PLACEMENT, board_id="other"),
+    ]
+    t = score_session(_session(tmp_path, events, frames), _truth()).timing
+
+    assert t.events == 1
+
+
+# --------------------------------------------------------------------------- #
+# The report artifact
+# --------------------------------------------------------------------------- #
+
+
+def test_scoring_always_leaves_an_artifact_beside_the_recording(tmp_path):
+    """A number quoted from a run that left no artifact cannot be checked later —
+    this project has already lost two headline figures that way."""
+    recording = _session(tmp_path, FLIPFLOP_EVENTS)
+    report = run(recording, truth=_truth())
+
+    written = recording.path / REPORT_NAME
+    assert report.written_to == written
+    assert json.loads(written.read_text())["events"]["scored"] == 6
+    assert str(written) in report.render()
+
+
+def test_an_explicit_json_path_wins_over_the_default(tmp_path):
+    recording = _session(tmp_path / "rec", FLIPFLOP_EVENTS)
+    out = tmp_path / "elsewhere.json"
+    report = run(recording, truth=_truth(), json_out=str(out))
+
+    assert report.written_to == out
+    assert out.exists()
+    assert not (recording.path / REPORT_NAME).exists()
+
+
+def test_an_unwritable_report_does_not_cost_the_score(tmp_path):
+    recording = _session(tmp_path / "rec", FLIPFLOP_EVENTS)
+    report = run(
+        recording, truth=_truth(), json_out=str(tmp_path / "no" / "such" / "dir.json")
+    )
+
+    assert report.written_to is None
+    assert report.events_scored == 6

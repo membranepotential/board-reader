@@ -233,3 +233,38 @@ def test_a_refused_frame_is_counted_and_the_socket_survives():
         health = client.get("/healthz").json()
         assert health["ingest"]["refused"] == 1
         assert health["ingest"]["received"] == 1
+
+
+def test_a_published_event_records_why_each_square_read_that_way(recorded):
+    """``square_dist`` is too big to keep and replaying it needs the model back.
+    The top-2 digest is the compromise: 64 squares of (class, probability), which
+    is what turns "d8 read k" into "d8 read k at 0.51 over q at 0.49"."""
+    from board_reader_core.protocol import CLASSES, EVIDENCE_TOP_K, GRID, parse_placement
+    from board_reader_core.recording import EVENTS_NAME
+
+    client, root = recorded
+    _send(client, _frame(0))
+    _await_position(client)
+
+    session = next(p for p in root.iterdir() if p.is_dir())
+    deadline = time.monotonic() + 5.0
+    lines: list[dict] = []
+    while time.monotonic() < deadline and not lines:
+        events = session / EVENTS_NAME
+        if events.exists():
+            lines = [json.loads(line) for line in events.read_text().splitlines()]
+        time.sleep(0.01)
+
+    assert lines, "no published event reached events.ndjson"
+    evidence = lines[0]["evidence"]
+    assert len(evidence) == GRID * GRID
+    assert all(len(square) == EVIDENCE_TOP_K for square in evidence)
+    assert all(
+        cls in CLASSES and 0.0 <= p <= 1.0 for square in evidence for cls, p in square
+    )
+    # The digest is of the same read the line's placement came from: the top class
+    # per square IS that placement, square for square.
+    grid = parse_placement(lines[0]["placement"])
+    assert [square[0][0] for square in evidence] == [
+        grid[r][c] for r in range(GRID) for c in range(GRID)
+    ]

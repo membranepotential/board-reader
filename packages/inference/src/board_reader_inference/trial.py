@@ -52,8 +52,14 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from itertools import pairwise
 from pathlib import Path
+from statistics import median
 
-from board_reader_core.protocol import GRID, parse_placement, square_name
+from board_reader_core.protocol import (
+    EVIDENCE_TOP_K,
+    GRID,
+    parse_placement,
+    square_name,
+)
 from board_reader_core.recording import EVENTS_NAME, Recording
 
 from board_reader_inference.evaluate import square_errors
@@ -71,6 +77,12 @@ from board_reader_inference.stabilize import (
 #: Where a session's ground truth lives, inside the recording it describes.
 TRUTH_NAME = "truth.json"
 TRUTH_FORMAT = 1
+
+#: Where a session's score lands by default — beside the recording that produced
+#: it. Scoring writes it every time on purpose: a number quoted from a run that
+#: left no artifact cannot be checked later, and this project has already lost
+#: two headline figures that way.
+REPORT_NAME = "report.json"
 
 #: Frames after a segment boundary that are not scored — the hand-over-the-board
 #: window. ~1.5 s at the 08-13 trial's 7.5 fps.
@@ -272,18 +284,31 @@ class Stream(StrEnum):
 class RecordedEvent:
     """One line of ``events.ndjson``, parsed down to what scoring needs.
 
-    ``square_dist`` is stripped by the writer, so there is no distribution here
-    and no per-square confidence — only the boards themselves.
+    ``square_dist`` is stripped by the writer; what survives it is ``evidence``,
+    the top-2-per-square digest (:func:`~board_reader_core.protocol.square_evidence`).
+    Sessions recorded before that digest existed carry ``None`` there and are
+    scored exactly as before — the boards alone.
     """
 
     board_id: str
     seq: int
     frame_seq: int
     capture_ts: float
+    published_ts: float
     confidence: float
     placement: str
     prior_placement: str | None
     settled_placement: str | None
+    #: 64 squares in board order, each a tuple of (class, probability) pairs
+    #: ordered most-likely first. ``None`` when the session recorded no digest.
+    evidence: tuple[tuple[tuple[str, float], ...], ...] | None = None
+
+    @property
+    def latency(self) -> float | None:
+        """Capture-to-publish seconds, or ``None`` if the session did not stamp both."""
+        if self.capture_ts <= 0.0 or self.published_ts <= 0.0:
+            return None
+        return self.published_ts - self.capture_ts
 
 
 def read_events(recording: Recording, *, board_id: str | None = None) -> list[RecordedEvent]:
@@ -308,10 +333,12 @@ def read_events(recording: Recording, *, board_id: str | None = None) -> list[Re
                     seq=int(d["seq"]),
                     frame_seq=int(d["frame_seq"]),
                     capture_ts=float(d.get("capture_ts", 0.0)),
+                    published_ts=float(d.get("published_ts", 0.0)),
                     confidence=float(d.get("confidence", 0.0)),
                     placement=str(d["placement"]),
                     prior_placement=_block_placement(d.get("prior")),
                     settled_placement=_block_placement(d.get("settled")),
+                    evidence=_parse_evidence(d.get("evidence")),
                 )
             except (json.JSONDecodeError, KeyError, TypeError, ValueError):
                 continue
@@ -319,6 +346,30 @@ def read_events(recording: Recording, *, board_id: str | None = None) -> list[Re
                 continue
             out.append(event)
     return out
+
+
+def _parse_evidence(block: object) -> tuple[tuple[tuple[str, float], ...], ...] | None:
+    """The recorded top-k digest, or ``None`` if this line has none worth reading.
+
+    Anything malformed is treated as absent rather than raised: the digest is
+    diagnostic, and a session is still fully scoreable without it.
+    """
+    if not isinstance(block, list) or len(block) != SQUARES:
+        return None
+    squares: list[tuple[tuple[str, float], ...]] = []
+    for entry in block:
+        if not isinstance(entry, list) or not entry:
+            return None
+        pairs: list[tuple[str, float]] = []
+        for pair in entry:
+            if not isinstance(pair, list) or len(pair) != 2:
+                return None
+            try:
+                pairs.append((str(pair[0]), float(pair[1])))
+            except (TypeError, ValueError):
+                return None
+        squares.append(tuple(pairs))
+    return tuple(squares)
 
 
 def _block_placement(block: object) -> str | None:
@@ -481,6 +532,186 @@ def _score_stream(
 
 
 # --------------------------------------------------------------------------- #
+# Evidence and timing — the two things a placement alone cannot tell you
+# --------------------------------------------------------------------------- #
+
+#: Board-order index of every algebraic square, matching the evidence digest.
+SQUARE_INDEX: dict[str, int] = {
+    square_name(r, c): r * GRID + c for r in range(GRID) for c in range(GRID)
+}
+
+
+def _quantile(values: list[float], q: float) -> float:
+    """The ``q``-quantile by nearest rank. Small samples, no numpy, no interpolation."""
+    if not values:
+        return 0.0
+    ordered = sorted(values)
+    i = min(len(ordered) - 1, max(0, round(q * (len(ordered) - 1))))
+    return ordered[i]
+
+
+@dataclass
+class ConfusionEvidence:
+    """One truth->predicted pair, seen through the estimator's own distribution."""
+
+    pair: str
+    n: int = 0
+    truth_ranked: int = 0  # truth appeared anywhere in the digest
+    margins: list[float] = field(default_factory=list)
+
+    @property
+    def median_margin(self) -> float:
+        return median(self.margins) if self.margins else 0.0
+
+    def to_dict(self) -> dict:
+        return {
+            "pair": self.pair,
+            "n": self.n,
+            "truth_ranked": self.truth_ranked,
+            "median_margin": round(self.median_margin, 4),
+        }
+
+
+@dataclass
+class EvidenceScore:
+    """How close the estimator came on the squares it got wrong.
+
+    Scored against the **raw** board on purpose: raw is the per-square argmax of
+    the very distribution the digest summarises, so ``margin`` is exactly
+    "how much more probability the wrong answer had than the right one". The
+    prior and settled boards are repairs *of* these reads, so the same evidence
+    is what they had to work with.
+
+    A small margin with truth as the runner-up is a fixable error — the crop
+    carries the answer and the model nearly found it. Truth outside the top
+    ``EVIDENCE_TOP_K`` is a different animal: the evidence is not there at all.
+    """
+
+    events: int  # scored events that carried a digest
+    events_total: int  # scored events, digest or not
+    wrong: int  # wrong squares over the events that carried one
+    truth_runner_up: int
+    truth_ranked: int
+    margins: list[float] = field(default_factory=list)
+    by_confusion: list[ConfusionEvidence] = field(default_factory=list)
+
+    @property
+    def recorded(self) -> bool:
+        return self.events > 0
+
+    def to_dict(self) -> dict:
+        return {
+            "events": self.events,
+            "events_total": self.events_total,
+            "wrong": self.wrong,
+            "truth_runner_up": self.truth_runner_up,
+            "truth_ranked": self.truth_ranked,
+            "margin_median": round(median(self.margins), 4) if self.margins else None,
+            "margin_p90": round(_quantile(self.margins, 0.9), 4) if self.margins else None,
+            "margin_max": round(max(self.margins), 4) if self.margins else None,
+            "by_confusion": [c.to_dict() for c in self.by_confusion],
+        }
+
+
+def score_evidence(reads: list[ScoredRead], truth: SessionTruth) -> EvidenceScore:
+    """Read every wrong raw square back against the digest that produced it."""
+    with_digest = [r for r in reads if r.event.evidence is not None]
+    score = EvidenceScore(
+        events=len(with_digest), events_total=len(reads), wrong=0,
+        truth_runner_up=0, truth_ranked=0,
+    )
+    per_pair: dict[str, ConfusionEvidence] = {}
+    for read in with_digest:
+        digest = read.event.evidence
+        assert digest is not None  # filtered above; narrows for the type checker
+        for miss in square_errors(truth.segments[read.segment].placement, read.raw):
+            square = digest[SQUARE_INDEX[miss.square]]
+            probs = dict(square)
+            pair = per_pair.setdefault(
+                f"{miss.truth}->{miss.predicted}", ConfusionEvidence(pair=f"{miss.truth}->{miss.predicted}")
+            )
+            score.wrong += 1
+            pair.n += 1
+            if miss.truth not in probs:
+                continue
+            score.truth_ranked += 1
+            pair.truth_ranked += 1
+            if len(square) > 1 and square[1][0] == miss.truth:
+                score.truth_runner_up += 1
+            margin = probs[miss.predicted] - probs[miss.truth]
+            score.margins.append(margin)
+            pair.margins.append(margin)
+    score.by_confusion = sorted(per_pair.values(), key=lambda c: -c.n)
+    return score
+
+
+@dataclass
+class Timing:
+    """What the session cost in time — the rates a placement score cannot show.
+
+    Two clocks, deliberately kept apart: frames *arriving* (what the phone sent)
+    and events *published* (what the estimator kept up with). Their ratio is the
+    read-rate story, and ``latencies`` is the capture-to-publish lag a live
+    display actually feels.
+    """
+
+    frames: int
+    frames_span: float
+    events: int
+    events_span: float
+    latencies: list[float] = field(default_factory=list)
+
+    @property
+    def fps(self) -> float:
+        return self.frames / self.frames_span if self.frames_span > 0 else 0.0
+
+    @property
+    def reads_per_s(self) -> float:
+        return self.events / self.events_span if self.events_span > 0 else 0.0
+
+    @property
+    def frames_per_read(self) -> float:
+        return self.frames / self.events if self.events else 0.0
+
+    def to_dict(self) -> dict:
+        return {
+            "frames": self.frames,
+            "frames_span": round(self.frames_span, 3),
+            "fps": round(self.fps, 3),
+            "events": self.events,
+            "events_span": round(self.events_span, 3),
+            "reads_per_s": round(self.reads_per_s, 3),
+            "frames_per_read": round(self.frames_per_read, 2),
+            "latency": {
+                "n": len(self.latencies),
+                "median": round(median(self.latencies), 3) if self.latencies else None,
+                "p90": round(_quantile(self.latencies, 0.9), 3) if self.latencies else None,
+                "max": round(max(self.latencies), 3) if self.latencies else None,
+            },
+        }
+
+
+def measure_timing(
+    recording: Recording, board_id: str, events: list[RecordedEvent]
+) -> Timing:
+    """Rates and latencies for one board, from the index and the event stamps.
+
+    Reads the frame *index* only — a session's JPEGs are hundreds of MB and none
+    of them are needed to count arrivals.
+    """
+    arrivals = [e.received_ts for e in recording.frame_index(board_id=board_id)]
+    captures = [e.capture_ts for e in events if e.capture_ts > 0.0]
+    latencies = [lat for lat in (e.latency for e in events) if lat is not None]
+    return Timing(
+        frames=len(arrivals),
+        frames_span=(arrivals[-1] - arrivals[0]) if len(arrivals) > 1 else 0.0,
+        events=len(events),
+        events_span=(captures[-1] - captures[0]) if len(captures) > 1 else 0.0,
+        latencies=latencies,
+    )
+
+
+# --------------------------------------------------------------------------- #
 # Report
 # --------------------------------------------------------------------------- #
 
@@ -526,7 +757,11 @@ class SessionReport:
     excluded_other_board: int
     prior_missing: int
     settled_derived: bool
+    evidence: EvidenceScore
+    timing: Timing
     export: CropExport | None = None
+    #: Where :func:`run` wrote the JSON, once it has.
+    written_to: Path | None = None
 
     @property
     def events_scored(self) -> int:
@@ -550,6 +785,8 @@ class SessionReport:
             },
             "settled_derived": self.settled_derived,
             "streams": [s.to_dict() for s in self.streams],
+            "evidence": self.evidence.to_dict(),
+            "timing": self.timing.to_dict(),
             "export": self.export.to_dict() if self.export else None,
         }
 
@@ -604,6 +841,59 @@ class SessionReport:
             lines += [f"  {pair:<14}{n:>5}" for pair, n in s.confusions.most_common(6)]
         return lines
 
+    def _render_evidence(self) -> list[str]:
+        e = self.evidence
+        if not e.recorded:
+            return [
+                "",
+                "evidence:  none recorded — this session predates the top-"
+                f"{EVIDENCE_TOP_K} digest. Re-run the trial to capture why each "
+                "square read the way it did.",
+            ]
+        covered = f"{e.events}/{e.events_total} scored events carried a digest"
+        lines = ["", f"raw · evidence on the {e.wrong} wrong squares ({covered})"]
+        if not e.wrong:
+            return lines
+        lines += [
+            f"  truth was the runner-up   {e.truth_runner_up:>5}/{e.wrong}"
+            f"{100.0 * e.truth_runner_up / e.wrong:>7.1f}%",
+            f"  truth outside the top {EVIDENCE_TOP_K}   {e.wrong - e.truth_ranked:>5}/{e.wrong}"
+            f"{100.0 * (e.wrong - e.truth_ranked) / e.wrong:>7.1f}%",
+        ]
+        if e.margins:
+            lines.append(
+                f"  margin p(read)-p(truth)   median {median(e.margins):.3f} · "
+                f"p90 {_quantile(e.margins, 0.9):.3f} · max {max(e.margins):.3f}"
+            )
+        lines.append("  by confusion          n   truth ranked   median margin")
+        for c in e.by_confusion[:6]:
+            margin = f"{c.median_margin:.3f}" if c.margins else "     —"
+            lines.append(f"    {c.pair:<14}{c.n:>5}{c.truth_ranked:>13}{margin:>15}")
+        return lines
+
+    def _render_timing(self) -> list[str]:
+        t = self.timing
+        lines = ["", "timing"]
+        if t.frames:
+            lines.append(
+                f"  input      {t.frames} frame(s) over {t.frames_span:.1f}s · "
+                f"{t.fps:.2f} fps"
+            )
+        if t.events:
+            lines.append(
+                f"  reads      {t.events} published over {t.events_span:.1f}s · "
+                f"{t.reads_per_s:.2f} reads/s"
+                + (f" · 1 read per {t.frames_per_read:.1f} frames" if t.frames else "")
+            )
+        if t.latencies:
+            lines.append(
+                f"  latency    capture->publish  median {median(t.latencies):.2f}s · "
+                f"p90 {_quantile(t.latencies, 0.9):.2f}s · max {max(t.latencies):.2f}s"
+            )
+        else:
+            lines.append("  latency    not stamped in this session")
+        return lines
+
     def _render_segments(self) -> list[str]:
         lines = [
             "",
@@ -632,6 +922,8 @@ class SessionReport:
         lines = self._render_header()
         lines += self._render_streams()
         lines += self._render_errors()
+        lines += self._render_evidence()
+        lines += self._render_timing()
         lines += self._render_segments()
         if self.export is not None:
             e = self.export
@@ -646,6 +938,8 @@ class SessionReport:
                     else ""
                 ),
             ]
+        if self.written_to is not None:
+            lines += ["", f"report:    {self.written_to}"]
         return "\n".join(lines)
 
 
@@ -718,6 +1012,10 @@ def score_session(recording: Recording, truth: SessionTruth) -> SessionReport:
         excluded_other_board=len(all_events) - len(mine),
         prior_missing=prior_missing,
         settled_derived=settled_derived,
+        evidence=score_evidence(reads, truth),
+        # Timed over every event this board published, not just the scored ones:
+        # a guard-excluded read still cost the estimator the same work.
+        timing=measure_timing(recording, truth.board_id, mine),
     )
 
 
@@ -822,12 +1120,23 @@ def run(
     export_dir: str | None = None,
     every: int = DEFAULT_EVERY,
 ) -> SessionReport:
-    """Score ``recording`` against its ``truth.json``, optionally exporting crops."""
+    """Score ``recording`` against its ``truth.json``, optionally exporting crops.
+
+    The full report is always written as JSON — to ``json_out`` when given, else
+    to :data:`REPORT_NAME` inside the recording. Failing to write it is not
+    failing to score: the rendered report still returns.
+    """
     report = score_session(recording, truth or load_truth(recording.path / TRUTH_NAME))
     if export_dir and report.reads:
         report.export = export_crops(
             recording, report.truth, report.reads, export_dir, every=every
         )
-    if json_out:
-        Path(json_out).write_text(json.dumps(report.to_dict(), indent=2), encoding="utf-8")
+    report.written_to = Path(json_out) if json_out else recording.path / REPORT_NAME
+    try:
+        report.written_to.write_text(
+            json.dumps(report.to_dict(), indent=2), encoding="utf-8"
+        )
+    except OSError as e:
+        report.written_to = None
+        print(f"could not write the report JSON: {e}")
     return report

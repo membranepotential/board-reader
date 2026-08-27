@@ -67,10 +67,10 @@ must wait for that worker. Use the fixtures in
 
 ```python
 def test_something(gateway, drain_ingest):
-    client = gateway(create_app(...))      # NOT a bare TestClient(...)
+    client = gateway(create_app(...))  # NOT a bare TestClient(...)
     with client.websocket_connect("/ingest") as ws:
-        ...                                 # send frames, read acks
-    drain_ingest(client)                    # deterministic; no sleep, no polling
+        ...  # send frames, read acks
+    drain_ingest(client)  # deterministic; no sleep, no polling
     assert client.get("/boards/A1").status_code == 200
 ```
 
@@ -873,6 +873,21 @@ the hard-constraint decoder repaired):
 tail -f recordings/*/events.ndjson | jq -c '{seq, placement, prior: .prior.flips}'
 ```
 
+Each line also carries `evidence`: the **top-2 digest**, 64 squares in board
+order, each `[[class, p], [runner-up, p]]`. It is what survives dropping
+`square_dist`, and it is the difference between "d8 read `k`" and "d8 read `k` at
+0.51 over `q` at 0.49" — a near-miss the crop nearly answered, or a conviction the
+evidence never contained. Read one square straight off the file:
+
+```bash
+# d8 is index 3 (rank 8 -> rank 1, files a -> h), i.e. square_name_at(3)
+jq -c '[.frame_seq, .evidence[3]]' recordings/<session>/events.ndjson | tail -5
+```
+
+> [!note] Sessions recorded before 2026-08-27 carry no digest
+> They score exactly as they always did; the report says the evidence is missing
+> rather than implying it was empty.
+
 Three more places to look after a phone trial:
 
 - the serve terminal — one INFO line per *changed* read
@@ -883,7 +898,10 @@ Three more places to look after a phone trial:
   attempts, calibrate/detect outcomes, `pagehide`. This is the file that says
   *why the node heard silence* — a page that never connected, a camera that
   froze, or a stream whose every frame was refused all look identical from the
-  node's side.
+  node's side. While streaming it also beats every 10 s (`kind: "heartbeat"`,
+  with `sentPerSec`/`droppedPerSec`/`unacked`/`behind`), so a quiet stretch says
+  which kind of quiet it was — `jq -c 'select(.kind=="heartbeat") | .detail'
+  client-logs/*.ndjson`.
 - `curl -s localhost:8000/healthz | jq .ingest` — `received/estimated/dropped/
   failed/skipped/refused` counters; all zeros while the phone claims to stream
   means the frames never arrived.
@@ -977,6 +995,11 @@ uv run board-reader-inference eval-session recordings/20260813-193308 \
     --export-crops data/external/trial_20260813 --every 5 --json trial.json
 ```
 
+Scoring **always** writes the full report as JSON — `<recording>/report.json`
+unless `--json` names somewhere else, and the rendered report names the file it
+wrote. That is deliberate: this project has twice quoted a headline accuracy from
+a run that left no artifact, and neither number could be reproduced afterwards.
+
 What to check:
 
 - the three streams are scored apart — raw `placement`, the hard-constraint repair
@@ -989,6 +1012,14 @@ What to check:
 - excluded counts are on the `events:` line. `guard_seqs` drops the events within
   that many frames *after* a segment boundary (the hand is over the board); if it
   is swallowing most of the session, the boundaries are wrong, not the guard;
+- **`raw · evidence on the N wrong squares`** answers "is this fixable?" without
+  putting the model back in the loop: how often truth was the runner-up, the
+  median `p(read) - p(truth)` margin, and the same split per confusion pair.
+  Small margins with truth ranked second mean the crop carries the answer;
+  truth outside the top 2 means the evidence is not there at all;
+- **`timing`** is the rate story a placement score cannot show — frames in (fps),
+  reads out (reads/s), frames per read, and the capture→publish latency a live
+  display actually feels. It reads the frame *index* only, never the JPEGs;
 - the export writes a `labels_normalized.json` crop-level style plus an
   `export.json` naming the geometry that cut it. `uv run --directory tools/train
   python styles.py` should then list it, and `python cropcache.py <style>` shard it.

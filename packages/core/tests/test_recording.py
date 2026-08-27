@@ -252,3 +252,50 @@ def test_an_event_before_any_frame_still_opens_the_session(tmp_path):
     assert (tmp_path / "s" / MANIFEST_NAME).exists()
     assert (tmp_path / "s" / EVENTS_NAME).exists()
     rec.close()
+
+
+# --------------------------------------------------------------------------- #
+# The index pass — everything a reader can learn without the pixels
+# --------------------------------------------------------------------------- #
+
+
+def test_the_index_reads_without_touching_a_single_jpeg(tmp_path):
+    """A session's JPEGs are hundreds of MB; its index is a few hundred kB. A
+    reader after timing or board ids must pay only the second."""
+    rec = FrameRecorder(tmp_path, session_id="s1")
+    _record(rec, _frame(0), _frame(1), _frame(2))
+    rec.close()
+    for jpeg in (tmp_path / "s1").rglob("*.jpg"):
+        jpeg.unlink()
+
+    entries = list(Recording.open(tmp_path / "s1").frame_index())
+
+    assert [e.seq for e in entries] == [0, 1, 2]
+    assert [e.capture_ts for e in entries] == [100.0, 101.0, 102.0]
+    assert all(e.board_id == "A1" for e in entries)
+    assert all(e.received_ts > 0 for e in entries)
+    # The pixel pass over the same session now yields nothing, which is the point:
+    # the two differ exactly by the bytes.
+    assert list(Recording.open(tmp_path / "s1").frames()) == []
+
+
+def test_the_index_filters_by_board_like_the_frames_do(tmp_path):
+    rec = FrameRecorder(tmp_path, session_id="s1")
+    _record(
+        rec, _frame(0, board_id="A1"), _frame(1, board_id="B2"), _frame(2, board_id="A1")
+    )
+    rec.close()
+    recording = Recording.open(tmp_path / "s1")
+
+    assert [e.seq for e in recording.frame_index(board_id="A1")] == [0, 2]
+    assert recording.board_ids() == ["A1", "B2"]
+
+
+def test_the_index_skips_a_junk_line_like_the_frames_do(tmp_path):
+    rec = FrameRecorder(tmp_path, session_id="s1")
+    _record(rec, _frame(0), _frame(1))
+    rec.close()
+    index = tmp_path / "s1" / INDEX_NAME
+    index.write_text(index.read_text() + "{not json\n")
+
+    assert [e.seq for e in Recording.open(tmp_path / "s1").frame_index()] == [0, 1]

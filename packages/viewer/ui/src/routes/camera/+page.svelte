@@ -53,6 +53,7 @@
   import { IngestClient, type IngestStatus } from '$lib/edge/ingest';
   import { tenengrad } from '$lib/edge/sharpness';
   import { TrialLog } from '$lib/edge/triallog';
+  import { Heartbeat } from '$lib/edge/heartbeat';
   import { EMPTY_PLACEMENT, type CornerQuad, type Point } from '$lib/protocol';
   import { PositionStream } from '$lib/stores/positions.svelte';
   import { pendingShapes } from '$lib/components/live/shapes';
@@ -159,6 +160,16 @@
   // The phone's half of a trial's story — every lifecycle event worth a
   // post-mortem goes through `trial.note`, batched to the viewer's log sink.
   const trial = new TrialLog();
+  // A quiet stretch in an event-driven log is ambiguous — a phone sending happily
+  // and a phone sending nothing both look like silence. The heartbeat samples the
+  // ingest counters on a timer while streaming, so the log always says which.
+  const heartbeat = new Heartbeat(trial, () => ({
+    sent: ingest.sent,
+    dropped: ingest.dropped,
+    acked: ingest.acked,
+    connected: ingest.connected,
+    behind: ingest.behind
+  }));
   let lastRefusal: string | null = null;
   const ingest = new IngestClient({
     onStatus: (status, detail) => {
@@ -570,6 +581,7 @@
     if (streaming) {
       streaming = false;
       ingest.stop();
+      heartbeat.stop();
       releaseWakeLock();
       trial.note('streaming-off', { sent: ingest.sent, acked: ingest.acked, dropped: ingest.dropped });
       return;
@@ -578,6 +590,7 @@
     forwarder.reset();
     stamps = [];
     ingest.start();
+    heartbeat.start();
     void acquireWakeLock();
     trial.note('streaming-on');
   }
@@ -1161,6 +1174,7 @@
       if (bannerTimer !== null) clearTimeout(bannerTimer);
       positions.stop();
       ingest.stop();
+      heartbeat.stop();
       releaseWakeLock();
       stopTracks();
       trial.stop();
