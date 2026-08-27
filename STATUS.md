@@ -9,10 +9,6 @@ confidences**. No moves, no legality, no PGN — those are the downstream applic
 
 ## Now
 
-- e2e-coverage — svelte agent auditing the Playwright suite against the shipped
-  camera flows (portrait block, auto-detect/verify/calibrate, re-detect) and
-  filling the gaps with node-stand-in specs (operator ask: full
-  unit/integration/e2e cascade for everything) — running.
 
 - move-trigger-experiment — agent building estimation-scheduling policies on the
   replay `FramePolicy` seam (burst-end + keepalive floor vs every-frame) and
@@ -41,11 +37,11 @@ confidences**. No moves, no legality, no PGN — those are the downstream applic
   after). Fix: **fixed-shape batches** — pad every batch (trained.py crop_dist,
   embed.py) to exactly batch_size, slice the outputs; one working set, reused
   forever. Consider ORT `arena_extend_strategy=kSameAsRequested` on top.
-- **Zero-tap calibrate still unproven live** — the operator calibrates manually
-  before pressing start (habit), and the trigger needs the position stream, which
-  only flows while streaming. Decide: teach the flow (calibrate pill only after
-  start?) or let the idle page probe /estimate itself so the trigger works
-  pre-stream.
+- **Zero-tap calibrate: root cause found + fixed, one live confirmation wanted.**
+  It could never have fired: `looksLikeStartOccupancy` compared `''` grid cells
+  against the `'empty'` class name (`b9b886c` fixes it at the type level, e2e
+  pins it). The flow question (operator calibrates before start / trigger needs
+  the stream) still stands for UX, but the trigger itself now works.
 - ui-mockups — full-system mockups **awaiting user review** in `docs/mockups/`
   (also http://localhost:8766/ while the ad-hoc server runs).
 - tall-crop-retrain — decision input now in from BOTH trials: the dim-light residual
@@ -54,6 +50,14 @@ confidences**. No moves, no legality, no PGN — those are the downstream applic
   Weigh a cheap re-rank/calibration pass against the retrain before training.
 
 ## Done (recent)
+
+- 08-27 (night): **viewer e2e cascade filled** (`ba69cc1` + fix `b9b886c`) —
+  camera auto flows (auto-detect/verify, zero-tap calibrate, framing re-detect
+  incl. adoption/backoff/timeout, portrait block + mid-stream gating) now have
+  9 e2e specs; 4 specs red since `0b2857c` repaired; suite 50/50 green (was
+  45/4). The cascade caught two real bugs: zero-tap calibration never fired in
+  production (occupancy vs class-name grid), and the calibrate-reply
+  label-absorption had silently broken those 4 specs.
 
 - 08-27 (night): **recorder roll pinned through the live gateway** (`f0d121a`,
   4 integration tests, suite 996 green) — two WS sessions → two dirs, manifests
