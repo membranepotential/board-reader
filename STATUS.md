@@ -18,17 +18,12 @@ confidences**. No moves, no legality, no PGN — those are the downstream applic
 - **Iteration is offline now** — recorded takes replace live phone takes (operator
   decision 08-27 eve); a replay harness turns each recording into a rerunnable
   benchmark. Dev stack stopped, GPU free.
-- score-takes — agent scoring the two unscored recordings (170333 aborted take,
-  181802 take 5): reconstruct truth from JPEGs + prior stream, run eval-session —
-  running — next: reports land in the recording dirs.
 - replay-harness — agent building `board-reader-inference replay` (frames.ndjson →
   estimator → events, virtual clock from capture_ts, scoreable by eval-session) —
   running — next: validate on the 08-13 recording.
 - rerank-experiment — agent testing evidence re-ranking on the three scored takes
   (leave-one-out; can it kill the p/q->b residual without a retrain?) — running —
   next: report in scratch/experiments/rerank_evidence/.
-- fixed-batches — agent implementing the arena-ratchet fix (pad every GPU batch to
-  batch_size in trained.py/embed.py, slice outputs) — running — next: GPU soak proof.
 - phone-live-test — FOUR takes recorded, three scored (control 99.0 %/58.3 %,
   hard 98.6 %/46.5 %, fast 98.1 %/58.1 % prior). Take 5 (18:18, unscored, no truth)
   proved the meter fix live — send rate 1 fps at rest with real bursts (was a flat
@@ -55,6 +50,23 @@ confidences**. No moves, no legality, no PGN — those are the downstream applic
   Weigh a cheap re-rank/calibration pass against the retrain before training.
 
 ## Done (recent)
+
+- 08-27 (night): **arena ratchet fixed** (`dcfcf28`) — every GPU batch padded to
+  exactly batch_size (repeat-last-crop) and sliced back, in trained.py crop_dist
+  (covers the cascade secondary + tail) and embed.py (incl. the symbolic-width
+  probe, which now probes at full batch shape). Soak on the deployed config: flat
+  1142 MiB over 300 mixed-shape calls, 0 failures; a control with padding patched
+  out crept +774 MiB in 100 calls. Steady state 1142 MiB / 3 sessions.
+- 08-27 (night): **all five takes now scored** (`866653f`; truth+report in each
+  recording dir — recordings/ stays git-ignored). Take 5 prior 97.3 %/45.7 %
+  (guard_seqs=3, NOT guard-comparable — adaptive 1 fps rest); aborted 17:03 take
+  prior 98.3 %/23.5 %. Two new signals: (1) take 5's dominant residual is
+  **framing drift** — the a1 corner wandered ~79 px (≈1 square) over the session,
+  one coherent a-file shift, while drift-free segments score 100 % — the
+  restored-quad verify only runs at page open, nothing re-detects mid-session;
+  (2) the 17:03 raw stream shows the k/q-swap calibration plainly, and the
+  prior's kings constraint repaired **all 12** q/k errors — the constraint layer
+  earning its keep.
 
 - 08-27 (late): **The motion meter was dead on the deployment phone — root-caused
   and rebuilt** (`5af963d`). Resting inter-frame difference measures ~6× the old
