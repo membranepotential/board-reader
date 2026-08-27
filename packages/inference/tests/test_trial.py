@@ -610,3 +610,108 @@ def test_an_unwritable_report_does_not_cost_the_score(tmp_path):
 
     assert report.written_to is None
     assert report.events_scored == 6
+
+
+# --------------------------------------------------------------------------- #
+# The attractor guard
+# --------------------------------------------------------------------------- #
+#
+# The black-bishop demotion (estimator.demote_attractor) is safe because correct
+# 'b' reads sit ABOVE the margin it fires below. That gap is a property of the
+# takes it was fitted on, not a guarantee, so every scored session measures it.
+
+
+def _bishops(*margins: float) -> list:
+    """A digest for the start position with c8/f8 read 'b' at the given margins."""
+    rivals = {
+        name: ("r", round(0.30 + m, 4), 0.30)
+        for name, m in zip(("c8", "f8"), margins)
+    }
+    return _digest(START_PLACEMENT, **rivals)
+
+
+def test_attractor_guard_measures_how_close_the_correct_bishops_came(tmp_path):
+    """The stat: how much room this session's correctly-read black bishops kept
+    above the firing band, and how many squares were read that way."""
+    events = [
+        _event(0, START_PLACEMENT, prior=START_PLACEMENT, evidence=_bishops(0.31, 0.25)),
+        _event(10, START_PLACEMENT, prior=START_PLACEMENT, evidence=_bishops(0.40, 0.28)),
+    ]
+    guard = score_session(_session(tmp_path, events), _truth()).attractor
+
+    assert guard.correct == 4  # c8 and f8, twice
+    assert guard.lost_in_band == 0
+    assert guard.min_margin == pytest.approx(0.25, abs=1e-6)
+    assert guard.headroom == pytest.approx(0.05, abs=1e-6)
+    assert not guard.at_risk
+
+
+def test_attractor_guard_warns_when_the_gap_the_rule_rests_on_closes(tmp_path):
+    """The assertion the report asked for instead of a footnote: a correct 'b'
+    this close to the threshold means the next take may sit under it, and the
+    demotion would then eat correct squares with nothing to show for it."""
+    events = [
+        _event(0, START_PLACEMENT, prior=START_PLACEMENT, evidence=_bishops(0.30, 0.22)),
+    ]
+    report = score_session(_session(tmp_path, events), _truth())
+
+    assert report.attractor.min_margin == pytest.approx(0.22, abs=1e-6)
+    assert report.attractor.at_risk
+    assert report.to_dict()["attractor_guard"]["at_risk"] is True
+    assert report.to_dict()["attractor_guard"]["headroom"] == pytest.approx(0.02, abs=1e-4)
+    assert "WARNING" in report.render()
+    assert "eats correct squares" in report.render()
+
+
+def test_attractor_guard_is_quiet_when_the_bishops_are_clear(tmp_path):
+    events = [
+        _event(0, START_PLACEMENT, prior=START_PLACEMENT, evidence=_bishops(0.31, 0.30)),
+    ]
+    report = score_session(_session(tmp_path, events), _truth())
+
+    assert not report.attractor.at_risk
+    assert "WARNING" not in report.render()
+    assert "closest to the band 0.300" in report.render()
+
+
+def test_attractor_guard_bounds_what_the_rule_may_have_taken(tmp_path):
+    """A truth-'b' square read as its runner-up inside the band either WAS demoted
+    or was already wrong — the digest is post-rule and cannot separate the two, so
+    it is reported as an upper bound rather than a count."""
+    # c8 read 'r' with 'b' second, 0.10 apart: inside the band.
+    read = "rnrqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR"
+    events = [
+        _event(0, read, prior=read, evidence=_digest(read, c8=("b", 0.35, 0.25))),
+    ]
+    report = score_session(_session(tmp_path, events), _truth())
+
+    assert report.attractor.lost_in_band == 1
+    assert report.attractor.correct == 1  # f8 still read 'b'
+    assert "at most 1 correct square taken" in report.render()
+
+
+def test_attractor_guard_reads_only_the_squares_that_were_scored(tmp_path):
+    """Guard-window reads are excluded from the score, so they cannot raise a
+    warning either — a hand over the board is not evidence about bishops."""
+    events = [
+        _event(0, START_PLACEMENT, prior=START_PLACEMENT, evidence=_bishops(0.35, 0.35)),
+        # Inside the boundary guard after the seq-100 move: not scored at all.
+        _event(102, E4, prior=E4, evidence=_digest(E4, c8=("r", 0.31, 0.30))),
+    ]
+    report = score_session(_session(tmp_path, events), _truth())
+
+    assert report.excluded_guard == 1
+    assert report.attractor.correct == 2
+    assert report.attractor.min_margin == pytest.approx(0.35, abs=1e-6)
+    assert not report.attractor.at_risk
+
+
+def test_attractor_guard_says_nothing_without_a_digest(tmp_path):
+    """Old recordings carry no top-2 digest; the guard has nothing to read and
+    must not imply the gap was measured and found wide."""
+    report = score_session(_session(tmp_path, FLIPFLOP_EVENTS), _truth())
+
+    assert report.attractor.min_margin is None and report.attractor.correct == 0
+    assert report.attractor.headroom is None and not report.attractor.at_risk
+    assert report.to_dict()["attractor_guard"]["min_margin"] is None
+    assert "attractor:" not in report.render()

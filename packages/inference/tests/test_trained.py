@@ -12,6 +12,7 @@ from board_reader_core.protocol import (
     NUM_CLASSES,
     START_PLACEMENT,
     parse_placement,
+    placement_from_dist,
 )
 from board_reader_core.sim import render_board
 from board_reader_core.wire import Frame
@@ -245,3 +246,30 @@ def test_missing_sidecar_warns_loudly(tmp_path, monkeypatch, capsys):
     (tmp_path / "ok.onnx.meta.json").write_text(json.dumps({"headroom": 1.6}))
     TrainedEstimator(ok)
     assert capsys.readouterr().err == ""
+
+
+def test_photo_dist_is_raw_and_the_event_is_calibrated():
+    """The two halves of the read seam: composites blend ``photo_dist`` (raw, so
+    the black-bishop demotion cannot land on a member), and ``estimate_photo``
+    is where that calibration is applied — exactly once, on the way out."""
+    from board_reader_core.protocol import CLASS_INDEX
+
+    from board_reader_inference.estimator import demote_attractor
+
+    photo = render_board(START_PLACEMENT)
+    probs = np.full((64, NUM_CLASSES), 0.001, dtype=np.float64)
+    for i, cls in enumerate(c for row in parse_placement(START_PLACEMENT) for c in row):
+        probs[i, CLASS_INDEX[cls]] = 0.9
+    probs[2] = 0.001
+    probs[2, CLASS_INDEX["b"]] = 0.40  # c8: a narrow bishop win over the rook
+    probs[2, CLASS_INDEX["r"]] = 0.32
+    probs /= probs.sum(axis=-1, keepdims=True)
+
+    est = TrainedEstimator(lambda batch: np.log(probs[: batch.shape[0]]).astype(np.float32))
+    corners = full_frame_corners(photo)
+    raw = est.photo_dist(photo, corners)
+    event = est.estimate_photo(Frame(board_id="T1", seq=0, capture_ts=0.0, image=photo), corners)
+
+    assert placement_from_dist(raw).startswith("rnbqkbnr")  # untouched
+    assert event.placement.startswith("rnrqkbnr")  # c8 demoted to the runner-up
+    np.testing.assert_allclose(event.square_dist, demote_attractor(raw), atol=1e-7)

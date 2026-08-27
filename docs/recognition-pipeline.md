@@ -21,7 +21,8 @@ flowchart TD
   boxes --> crops["crop_squares_photo<br/>64 x 224² crops"]
   crops --> est[estimator]
   est --> dist["square_dist (8,8,13)"]
-  dist --> rot[autorotate?]
+  dist --> demote["demote_attractor<br/>black-bishop calibration"]
+  demote --> rot[autorotate?]
   rot --> event["PositionEvent.from_square_dist"]
   event --> out[hub + HTTP response]
 ```
@@ -136,6 +137,32 @@ The blend weight follows bank maturity: **≥1024 exemplars → 30/70 trained/ba
 50/50. A mature bank has earned the extra trust; a one-photo bootstrap has not. (At a flat
 50/50 a mature bank's correct read on backlit pawns was occasionally outvoted by the tall-crop
 model's colour flip.)
+
+### The black-bishop demotion
+
+One post-hoc calibration ships on top of the blend. The black bishop is an **attractor** for
+this stack: where it wins a square by less than **0.20** absolute probability, the runner-up
+(`p`/`q`/`k`) is the right answer. `estimator.demote_attractor` swaps the top two on those
+squares — a permutation, so the row still sums to one and the square's confidence is
+unchanged. Measured over four live takes (133 boards, 8512 squares): 55 firings, **38 squares
+fixed, 0 broken**, and +12–19 points of perfect-board rate on three of the four takes
+([[2026-08-27-evidence-rerank]]). White's `B` is *not* an attractor and is never touched.
+
+Where it applies is the whole trick:
+
+- **Once, inside the estimator** — in `estimator.read_event`, downstream of the cascade and
+  the blend, upstream of `placement`, `evidence`, `confidence` and `prior.decode`. Composites
+  therefore blend members' raw `photo_dist`, never their events, so no member can demote early
+  and nothing can demote twice.
+- **Only on the stack it was measured on**: the trained model, its cascade/average composites,
+  and the ensemble on top of one. A *bare* exemplar bank is left alone — 0.20 is an absolute
+  margin fitted to the trained stack's distribution, and a kNN bank's is flatter (on the test
+  fixture its own **correct** bishops read at margins 0.105 and 0.116, i.e. inside the band).
+
+What makes 0.20 safe is a **gap**, not a mean: the lowest margin at which a top-1 `b` was
+actually right is 0.210. If a future set closes that gap the rule starts eating correct
+squares silently, so `eval-session` measures it on every session and warns within 0.05 of the
+threshold — see [[measuring-accuracy]] and `trial.AttractorGuard`.
 
 ## Why piece type is the hard part
 

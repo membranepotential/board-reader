@@ -1045,6 +1045,13 @@ What to check:
   median `p(read) - p(truth)` margin, and the same split per confusion pair.
   Small margins with truth ranked second mean the crop carries the answer;
   truth outside the top 2 means the evidence is not there at all;
+- **`attractor: 'b' demoted below margin 0.20`** is the guard on the shipped
+  black-bishop demotion (see [[recognition-pipeline#The black-bishop demotion]]).
+  It reports how close this session's *correctly* read black bishops came to the
+  margin the rule fires below. A `! WARNING` there means the gap the rule's safety
+  rests on has narrowed to under 0.05 on this set — re-check the constant before
+  trusting the score, because below it the rule starts eating correct squares
+  silently. `report.json` carries the same under `attractor_guard`;
 - **`timing`** is the rate story a placement score cannot show — frames in (fps),
   reads out (reads/s), frames per read, and the capture→publish latency a live
   display actually feels. It reads the frame *index* only, never the JPEGs;

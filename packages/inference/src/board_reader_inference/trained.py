@@ -34,12 +34,11 @@ import numpy as np
 
 from board_reader_core.protocol import (
     NUM_CLASSES,
-    ClockState,
     PositionEvent,
-    iso_utc,
 )
 from board_reader_core.wire import Frame
 
+from board_reader_inference.estimator import read_event
 from board_reader_inference.onnxrt import cuda_providers
 from board_reader_inference.squares import (
     DEFAULT_GEOMETRY,
@@ -122,16 +121,19 @@ class _CropReader:
         """Rectified-crop path: treat the whole frame as the board."""
         return self.estimate_photo(frame, full_frame_corners(frame.image))
 
+    def photo_dist(self, image: np.ndarray, corners: np.ndarray) -> np.ndarray:
+        """This stack's RAW ``(8, 8, 13)`` distribution — cascade/average included.
+
+        The blend seam an :class:`~board_reader_inference.estimator.EnsembleEstimator`
+        composes on (:class:`~board_reader_inference.estimator.PhotoDistReader`):
+        raw, because the attractor calibration belongs to the outermost blend.
+        """
+        return self.square_dist(image, corners).reshape(8, 8, NUM_CLASSES)
+
     def estimate_photo(self, frame: Frame, corners: np.ndarray) -> PositionEvent:
-        dist = self.square_dist(frame.image, corners)
-        return PositionEvent.from_square_dist(
-            board_id=frame.board_id,
-            seq=frame.seq,
-            utc=iso_utc(frame.capture_ts),
-            square_dist=dist.reshape(8, 8, NUM_CLASSES),
-            stability=frame.stability,
-            clock=ClockState(frame.clock),
-            status="ok",
+        return read_event(
+            frame,
+            self.photo_dist(frame.image, corners),
             orientation=self.orientation,
         )
 

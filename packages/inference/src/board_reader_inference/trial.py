@@ -62,6 +62,7 @@ from board_reader_core.protocol import (
 )
 from board_reader_core.recording import EVENTS_NAME, Recording
 
+from board_reader_inference.estimator import ATTRACTOR, ATTRACTOR_MARGIN
 from board_reader_inference.evaluate import square_errors
 from board_reader_inference.squares import (
     DEFAULT_GEOMETRY,
@@ -645,6 +646,103 @@ def score_evidence(reads: list[ScoredRead], truth: SessionTruth) -> EvidenceScor
     return score
 
 
+#: How close the correct black bishops may come to the demotion's firing band
+#: before this scorer says so. 0.05 is a fifth of the gap the rule was shipped on
+#: (lowest correct-``b`` margin 0.210 vs a 0.20 threshold on the hardest of the
+#: four takes), so a session that trips it has closed most of that headroom.
+ATTRACTOR_GUARD_HEADROOM = 0.05
+
+
+@dataclass
+class AttractorGuard:
+    """Is the black-bishop demotion still eating only *wrong* squares?
+
+    The rule (:func:`board_reader_inference.estimator.demote_attractor`) is safe
+    because of a **gap**, not a mean: across the four takes it was fitted on, the
+    lowest margin at which a top-1 ``b`` was actually RIGHT is 0.210, and the rule
+    only fires below 0.20. Nothing enforces that gap. A new set, room or lighting
+    could close it, and then the rule starts eating correct squares *silently* —
+    so it is asserted on every scored session rather than left as a note in a
+    report (docs/reports/2026-08-27-evidence-rerank.md §9.1).
+
+    **What is observable.** The digest is recorded downstream of the rule, and a
+    demotion is a swap: the demoted ``b`` stays in the top two at the same margin,
+    just second. So a scored square still read ``b`` is exactly a square the rule
+    declined to fire on, and :attr:`min_margin` — the smallest margin over the
+    ``b`` squares read correctly — is how much room this session's correct black
+    bishops kept above the firing band. Post-rule that number cannot be below
+    :data:`~board_reader_inference.estimator.ATTRACTOR_MARGIN`; how far *above* is
+    the measurement.
+
+    :attr:`lost_in_band` is the other side, and it is an **upper bound**, not a
+    count: a truth-``b`` square read as something else with ``b`` the runner-up
+    inside the band either was demoted by the rule, or was already wrong with
+    ``b`` second. The digest cannot separate the two — pre-rule top-1 is not
+    recorded — so it is reported as "at most this many".
+    """
+
+    #: Scored squares whose truth is ``b`` and which were read ``b``.
+    correct: int
+    #: Truth-``b`` squares read as their runner-up's class, inside the firing band.
+    lost_in_band: int
+    #: The smallest margin among :attr:`correct` squares; ``None`` if there were none.
+    min_margin: float | None
+
+    @property
+    def headroom(self) -> float | None:
+        """How far the closest correct ``b`` sat above the firing threshold."""
+        return None if self.min_margin is None else self.min_margin - ATTRACTOR_MARGIN
+
+    @property
+    def at_risk(self) -> bool:
+        """True when this session has closed most of the gap the rule rests on."""
+        head = self.headroom
+        return head is not None and head < ATTRACTOR_GUARD_HEADROOM
+
+    def to_dict(self) -> dict:
+        return {
+            "attractor": ATTRACTOR,
+            "margin": ATTRACTOR_MARGIN,
+            "correct": self.correct,
+            "lost_in_band": self.lost_in_band,
+            "min_margin": None if self.min_margin is None else round(self.min_margin, 4),
+            "headroom": None if self.headroom is None else round(self.headroom, 4),
+            "at_risk": self.at_risk,
+        }
+
+
+def score_attractor_guard(reads: list[ScoredRead], truth: SessionTruth) -> AttractorGuard:
+    """Measure the margin gap the black-bishop demotion's safety rests on.
+
+    Over the guard-included scored squares whose truth is the attractor class,
+    read off the recorded (post-rule) digest. See :class:`AttractorGuard`.
+    """
+    grids = [parse_placement(s.placement) for s in truth.segments]
+    correct = lost = 0
+    margins: list[float] = []
+    for read in reads:
+        digest = read.event.evidence
+        if digest is None:
+            continue
+        grid = grids[read.segment]
+        for r in range(GRID):
+            for c in range(GRID):
+                if grid[r][c] != ATTRACTOR:
+                    continue
+                square = digest[r * GRID + c]
+                top, p1 = square[0]
+                runner, p2 = square[1] if len(square) > 1 else ("empty", 0.0)
+                margin = p1 - p2
+                if top == ATTRACTOR:
+                    correct += 1
+                    margins.append(margin)
+                elif runner == ATTRACTOR and margin < ATTRACTOR_MARGIN:
+                    lost += 1
+    return AttractorGuard(
+        correct=correct, lost_in_band=lost, min_margin=min(margins) if margins else None
+    )
+
+
 @dataclass
 class Timing:
     """What the session cost in time — the rates a placement score cannot show.
@@ -758,6 +856,7 @@ class SessionReport:
     prior_missing: int
     settled_derived: bool
     evidence: EvidenceScore
+    attractor: AttractorGuard
     timing: Timing
     export: CropExport | None = None
     #: Where :func:`run` wrote the JSON, once it has.
@@ -786,6 +885,7 @@ class SessionReport:
             "settled_derived": self.settled_derived,
             "streams": [s.to_dict() for s in self.streams],
             "evidence": self.evidence.to_dict(),
+            "attractor_guard": self.attractor.to_dict(),
             "timing": self.timing.to_dict(),
             "export": self.export.to_dict() if self.export else None,
         }
@@ -871,6 +971,37 @@ class SessionReport:
             lines.append(f"    {c.pair:<14}{c.n:>5}{c.truth_ranked:>13}{margin:>15}")
         return lines
 
+    def _render_attractor(self) -> list[str]:
+        g = self.attractor
+        if not self.evidence.recorded:
+            return []  # no digest, no margins — the guard has nothing to read
+        head = f"attractor: {ATTRACTOR!r} demoted below margin {ATTRACTOR_MARGIN:.2f}"
+        if g.min_margin is None:
+            return ["", f"{head} — no {ATTRACTOR!r} on the board this session"]
+        lines = [
+            "",
+            f"{head}"
+            + (
+                f", at most {g.lost_in_band} correct square"
+                f"{'s' if g.lost_in_band > 1 else ''} taken"
+                if g.lost_in_band
+                else ""
+            ),
+            f"  correct {ATTRACTOR!r} reads {g.correct:>7} · closest to the band "
+            f"{g.min_margin:.3f} (headroom {g.headroom:+.3f})",
+        ]
+        if g.at_risk:
+            lines += [
+                f"  ! WARNING the gap the demotion rests on is closing: a correct "
+                f"{ATTRACTOR!r} read at margin {g.min_margin:.3f} is within "
+                f"{ATTRACTOR_GUARD_HEADROOM:.2f} of the {ATTRACTOR_MARGIN:.2f} that "
+                "fires it.",
+                "            Below it the rule eats correct squares silently. Re-check "
+                "the constant against this set before trusting the score "
+                "(docs/reports/2026-08-27-evidence-rerank.md §9.1).",
+            ]
+        return lines
+
     def _render_timing(self) -> list[str]:
         t = self.timing
         lines = ["", "timing"]
@@ -923,6 +1054,7 @@ class SessionReport:
         lines += self._render_streams()
         lines += self._render_errors()
         lines += self._render_evidence()
+        lines += self._render_attractor()
         lines += self._render_timing()
         lines += self._render_segments()
         if self.export is not None:
@@ -1013,6 +1145,7 @@ def score_session(recording: Recording, truth: SessionTruth) -> SessionReport:
         prior_missing=prior_missing,
         settled_derived=settled_derived,
         evidence=score_evidence(reads, truth),
+        attractor=score_attractor_guard(reads, truth),
         # Timed over every event this board published, not just the scored ones:
         # a guard-excluded read still cost the estimator the same work.
         timing=measure_timing(recording, truth.board_id, mine),
