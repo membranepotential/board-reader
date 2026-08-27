@@ -39,6 +39,7 @@ from board_reader_inference.squares import (
     BboxGeometry,
     crop_squares_photo,
     full_frame_corners,
+    rot90_points,
 )
 from board_reader_inference.trained import TrainedEstimator
 
@@ -244,7 +245,25 @@ def test_calibrate_is_refused_when_the_photo_does_not_show_the_claimed_position(
     outcome = session.calibrate_from(image, quad, START_PLACEMENT)
     assert isinstance(outcome, CalibrationRejected)
     assert outcome.piece_agree < outcome.piece_squares
+    assert outcome.rotated_fit is None  # a true mismatch, not a turned board
     assert session.estimator is trained  # nothing swapped
+
+
+def test_calibrate_names_the_rotation_when_the_board_is_turned_in_frame():
+    """The 2026-08-27 field incident: a portrait-held phone failed every calibrate
+    all afternoon with the generic mismatch message, because a board rotated 90°
+    in the frame garbles every piece crop while occupancy holds. The rejection
+    must name that cause — it is the one the operator can fix at the tripod."""
+    session = EstimatorSession(_lite_bank(), occupancy=_lite_bank())
+    image, quad = _photo()
+    turned = np.rot90(image).copy()  # the board a quarter-turn over in the frame
+    turned_quad = rot90_points(quad, 1, image.shape)
+
+    outcome = session.calibrate_from(turned, turned_quad, START_PLACEMENT)
+    assert isinstance(outcome, CalibrationRejected)
+    assert outcome.rotated_fit is not None
+    assert outcome.rotated_fit.quarter_turns == 3  # three more turns undo the one
+    assert outcome.rotated_fit.piece_agree == 32  # turned back, the photo is exact
 
 
 def test_adopt_start_calibrates_piece_types_off_the_occupancy_bank():

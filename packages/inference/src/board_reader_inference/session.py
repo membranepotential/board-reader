@@ -66,7 +66,11 @@ from board_reader_inference.routing import (
     photo_estimator,
     route_for,
 )
-from board_reader_inference.squares import BboxGeometry, crop_squares_photo
+from board_reader_inference.squares import (
+    BboxGeometry,
+    crop_squares_photo,
+    rot90_points,
+)
 from board_reader_inference.trained import TrainedReader
 
 # /calibrate sanity floor: of the squares the claimed placement says hold a
@@ -147,11 +151,27 @@ class Calibration:
 
 
 @dataclass(frozen=True, slots=True)
+class RotatedFit:
+    """The same photo clears the calibrate gate once turned ``quarter_turns``×90°.
+
+    Evidence that the *board is rotated in the frame* (a portrait-held phone, a
+    sideways mount): per-square crops extend toward the top of the image
+    (``squares.photo_square_boxes``), so a sideways board puts every piece body in
+    a neighbouring square's crop — piece types collapse while occupancy holds.
+    No label rotation or corner nudge can rescue that; re-aiming the camera can.
+    """
+
+    quarter_turns: int  # np.rot90 turns that made the photo pass
+    piece_agree: int
+
+
+@dataclass(frozen=True, slots=True)
 class CalibrationRejected:
     """The photo does not show the claimed position — calibrating would poison the bank."""
 
     piece_agree: int
     piece_squares: int
+    rotated_fit: RotatedFit | None = None
 
 
 CalibrateOutcome = Calibration | CalibrationRejected
@@ -448,6 +468,12 @@ class EstimatorSession:
         color-swapped bank to disk. Resolve the label rotation against the trained
         member if present (it cannot have been poisoned) and only accept a rotation
         that clearly beats the as-given labels.
+
+        On rejection, the four *image* rotations are probed too (2026-08-27 field
+        incident: a portrait-held phone failed every calibrate all afternoon with
+        the generic mismatch message). A photo that passes once turned means the
+        board is rotated in the frame — a cause the operator can actually fix —
+        and the rejection names it as :class:`RotatedFit`.
         """
         probe_est = self.base_trained()
         probe: PhotoReader | None = (
@@ -455,17 +481,18 @@ class EstimatorSession:
         )
         if probe is None:
             return 0, placement
-        try:
+
+        def read_pred(img: np.ndarray, crn: np.ndarray) -> np.ndarray:
             read = probe.estimate_photo(
                 Frame(
                     board_id="calibrate-probe",
                     seq=0,
                     capture_ts=0.0,
-                    image=image,
+                    image=img,
                 ),
-                corners,
+                crn,
             )
-            pred = np.array(
+            return np.array(
                 [
                     CLASSES[i]
                     for i in np.asarray(read.square_dist)
@@ -473,20 +500,48 @@ class EstimatorSession:
                     .argmax(-1)
                 ]
             )
+
+        try:
+            pred = read_pred(image, corners)
             grid = np.array(parse_placement(placement), dtype="<U5")
         except ValueError:
             return 0, placement  # unparseable placement is rejected downstream as before
-        agrees = [int((np.rot90(grid, k).reshape(-1) == pred).sum()) for k in range(4)]
-        best = int(np.argmax(agrees))
-        claimed = np.rot90(grid, best).reshape(-1)
-        pieces = claimed != "empty"
-        piece_agree = int((claimed[pieces] == pred[pieces]).sum())
-        if piece_agree < CALIBRATE_MIN_PIECE_AGREE * int(pieces.sum()):
+
+        def best_label_fit(pred: np.ndarray) -> tuple[int, list[int], int]:
+            """(best k, all 4 totals, piece agreement at best k) against ``pred``."""
+            agrees = [
+                int((np.rot90(grid, k).reshape(-1) == pred).sum()) for k in range(4)
+            ]
+            k = int(np.argmax(agrees))
+            claimed = np.rot90(grid, k).reshape(-1)
+            mask = claimed != "empty"
+            return k, agrees, int((claimed[mask] == pred[mask]).sum())
+
+        n_pieces = int((grid.reshape(-1) != "empty").sum())
+        best, agrees, piece_agree = best_label_fit(pred)
+        if piece_agree < CALIBRATE_MIN_PIECE_AGREE * n_pieces:
             # The photo is not showing the claimed position (mid-game board sent
             # as "start", corners off the surface, unusably flat camera):
-            # calibrating would poison the bank.
+            # calibrating would poison the bank. Before refusing generically, ask
+            # whether the PHOTO would read once turned — a board rotated in the
+            # frame garbles every piece crop while occupancy holds, and only
+            # re-aiming the camera fixes it.
+            fit: RotatedFit | None = None
+            for k in (1, 2, 3):
+                try:
+                    turned = read_pred(
+                        np.rot90(image, k).copy(),
+                        rot90_points(corners, k, image.shape),
+                    )
+                except ValueError:
+                    continue
+                _, _, turned_agree = best_label_fit(turned)
+                if turned_agree >= CALIBRATE_MIN_PIECE_AGREE * n_pieces and (
+                    fit is None or turned_agree > fit.piece_agree
+                ):
+                    fit = RotatedFit(quarter_turns=k, piece_agree=turned_agree)
             return CalibrationRejected(
-                piece_agree=piece_agree, piece_squares=int(pieces.sum())
+                piece_agree=piece_agree, piece_squares=n_pieces, rotated_fit=fit
             )
         if best != 0 and agrees[best] >= agrees[0] + 8:
             return best, encode_placement(np.rot90(grid, best).tolist())

@@ -842,6 +842,26 @@ def create_app(
         except ValueError as e:
             return JSONResponse({"error": str(e)}, status_code=400)
         if isinstance(outcome, CalibrationRejected):
+            fit = outcome.rotated_fit
+            if fit is not None:
+                deg = 90 * fit.quarter_turns
+                return JSONResponse(
+                    {
+                        "error": (
+                            "calibration rejected: the board appears ROTATED in "
+                            f"the frame — the same photo passes once turned {deg}° "
+                            f"({fit.piece_agree}/{outcome.piece_squares} piece "
+                            "squares agree after the turn, "
+                            f"{outcome.piece_agree}/{outcome.piece_squares} as "
+                            "sent). Piece crops extend toward the top of the "
+                            "image, so a sideways board cannot be read: hold the "
+                            "phone so the board sits upright in the frame "
+                            "(usually landscape), then recalibrate."
+                        ),
+                        "rotated_deg": deg,
+                    },
+                    status_code=422,
+                )
             return JSONResponse(
                 {
                     "error": (

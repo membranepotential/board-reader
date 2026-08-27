@@ -21,6 +21,7 @@ from board_reader_inference.squares import (
     geometry_tag,
     photo_square_boxes,
     rectify_photo,
+    rot90_points,
     square_boxes,
 )
 
@@ -311,3 +312,30 @@ def test_geometry_rejects_impossible_values():
                 lambda: PoseGeometry(1.9, 0.5, 0.0)):
         with pytest.raises(ValueError):
             bad()
+
+
+def test_rot90_points_tracks_pixels_through_np_rot90():
+    """A marked pixel and its mapped coordinates land in the same place, every k."""
+    image = np.zeros((4, 6), dtype=np.uint8)
+    image[1, 2] = 255  # centre at continuous (2.5, 1.5)
+    for k in range(1, 5):
+        turned = np.rot90(image, k)
+        (x, y) = rot90_points(np.array([[2.5, 1.5]]), k, image.shape)[0]
+        r, c = int(np.argwhere(turned == 255)[0][0]), int(np.argwhere(turned == 255)[0][1])
+        assert (x, y) == (c + 0.5, r + 0.5)
+
+
+def test_rot90_points_full_turn_is_the_identity():
+    image = np.zeros((4, 6), dtype=np.uint8)
+    quad = full_frame_corners(image)
+    assert np.allclose(rot90_points(quad, 4, image.shape), quad)
+
+
+def test_rot90_points_keeps_labels_on_physical_corners():
+    """Full-frame corners follow the frame; a8 (old top-left) lands where the
+    counter-clockwise turn puts it — the bottom-left of the new frame."""
+    image = np.zeros((4, 6), dtype=np.uint8)
+    quad = full_frame_corners(image)
+    moved = rot90_points(quad, 1, image.shape)
+    assert np.allclose(moved[0], [0.0, 6.0])  # a8: old (0,0) -> new bottom-left
+    assert np.allclose(sorted(map(tuple, moved)), sorted(map(tuple, full_frame_corners(np.rot90(image)))))

@@ -221,6 +221,25 @@ def full_frame_corners(image: np.ndarray) -> np.ndarray:
     return np.array([[0, 0], [w, 0], [w, h], [0, h]], dtype=np.float32)
 
 
+def rot90_points(points: np.ndarray, k: int, image_shape: tuple[int, ...]) -> np.ndarray:
+    """Where ``points`` land after ``np.rot90(image, k)`` — labels ride along.
+
+    Continuous image coordinates ((0, 0) the top-left corner, ``(w, h)`` the
+    bottom-right), matching :func:`full_frame_corners`. Turning a photo and its
+    corner quad through this pair keeps every label attached to the same physical
+    point, which is what lets the calibrate gate ask "would this photo read once
+    turned?" without touching which corner is a8.
+    """
+    pts = np.asarray(points, dtype=np.float32).reshape(-1, 2).copy()
+    h, w = float(image_shape[0]), float(image_shape[1])
+    for _ in range(k % 4):
+        x = pts[:, 0].copy()
+        pts[:, 0] = pts[:, 1]
+        pts[:, 1] = w - x
+        h, w = w, h  # np.rot90 swaps the frame's sides
+    return pts
+
+
 def photo_square_boxes(
     corners: np.ndarray, *, headroom: float = 1.6, side_pad: float = 0.15
 ) -> np.ndarray:
