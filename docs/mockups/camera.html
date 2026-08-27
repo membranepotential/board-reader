@@ -1,0 +1,829 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>board-reader · /camera mockups</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root {
+    --bg: #0e1116; --panel: #161a21; --panel-2: #1b1f26; --panel-3: #232833; --line: #272b33;
+    --ink: #e6e9ee; --muted: #9aa3ad; --dim: #7d8590;
+    --accent: #2a6ef0; --accent-soft: #6aa8ff;
+    --ok: #97e0a6; --warn: #ffcf33; --amber: #e2a03f; --bad: #ff8f8f;
+  }
+  * { box-sizing: border-box; margin: 0; }
+  body { background: var(--bg); color: var(--ink);
+         font: 15px/1.55 system-ui, -apple-system, "Segoe UI", sans-serif;
+         padding: 2.5rem 1.25rem 6rem; }
+  main { max-width: 1180px; margin: 0 auto; }
+  a { color: var(--accent-soft); }
+  .crumb { font-size: .82rem; color: var(--dim); margin-bottom: .8rem; }
+  h1 { font-size: 1.45rem; font-weight: 650; letter-spacing: -0.01em; }
+  .lede { color: var(--muted); margin: .5rem 0 1.4rem; max-width: 76ch; }
+  code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .88em;
+         color: var(--accent-soft); }
+  h2 { font-size: 1.02rem; font-weight: 640; margin: 2.8rem 0 .3rem; }
+  h2 .n { color: var(--dim); font-weight: 500; margin-right: .4rem; }
+  .sub { color: var(--muted); max-width: 78ch; margin-bottom: 1.1rem; font-size: .93rem; }
+  .badge { font-size: .68rem; border-radius: 99px; padding: .12rem .55rem; white-space: nowrap;
+           border: 1px solid var(--line); color: var(--dim); background: #12161c;
+           vertical-align: 2px; margin-left: .45rem; font-weight: 600; }
+  .badge.decided { border-color: #3f5a86; color: var(--accent-soft); }
+  .badge.proposal { border-color: #5a4a20; color: var(--warn); }
+  .badge.shipped { border-color: #2c4a34; color: var(--ok); }
+
+  /* ---------- gallery ---------- */
+  .gallery { display: grid; grid-template-columns: repeat(auto-fit, minmax(420px, 1fr));
+             gap: 1.9rem 1.5rem; }
+  figure { min-width: 0; }
+  figcaption { font-size: .855rem; color: var(--muted); margin-top: .65rem; }
+  figcaption b { color: var(--ink); font-weight: 640; }
+  figcaption .why { display: block; margin-top: .3rem; color: var(--dim); }
+
+  /* ---------- the phone ---------- */
+  .phone { background: #000; border: 3px solid #2c343d; border-radius: 20px; padding: 9px;
+           aspect-ratio: 20 / 9.6; position: relative; overflow: hidden;
+           box-shadow: 0 10px 34px rgba(0,0,0,.55); }
+  .stage { position: absolute; inset: 9px; display: flex; }
+  .frame { flex: 1 1 auto; position: relative; min-width: 0; overflow: hidden; border-radius: 6px;
+           background: #000; }
+  .picture { position: absolute; inset: 0; overflow: hidden;
+             background: radial-gradient(120% 120% at 32% 8%, #4b4437 0%, #2b2a24 55%, #191b18 100%); }
+  /* the board, seen at a real camera angle */
+  .board3d { position: absolute; left: 15%; top: 20%; width: 58%; height: 66%;
+             transform: perspective(340px) rotateX(40deg);
+             background: repeating-conic-gradient(#cbb289 0% 25%, #7c5f3d 0% 50%) 0 0 / 25% 25%;
+             border: 2px solid rgba(255,255,255,.22); }
+  .picture.turned .board3d { transform: perspective(340px) rotateX(40deg) rotate(84deg); }
+  .picture.off .board3d { left: 44%; top: 34%; width: 44%; height: 50%; }
+  .men { position: absolute; inset: 0; display: grid; grid-template-columns: repeat(8, 1fr);
+         grid-template-rows: repeat(8, 1fr); }
+  .men span { display: flex; align-items: center; justify-content: center; }
+  .men i { width: 58%; aspect-ratio: 1; border-radius: 50% 50% 42% 42%; }
+  .men i.w { background: linear-gradient(#f3ece0, #cdc3b2); box-shadow: 0 1px 2px rgba(0,0,0,.5); }
+  .men i.b { background: linear-gradient(#3a3a3c, #17181a); box-shadow: 0 1px 2px rgba(0,0,0,.5); }
+  .mk { position: absolute; width: 1px; height: 1px; }
+  .quad { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+  .quad .quad-line { fill: none; stroke: #6aa8ff; stroke-width: .5; }
+  .quad .quad-line.lost { stroke: var(--warn); stroke-dasharray: 2.4 1.8; }
+  .quad .crop-line { fill: none; stroke: rgba(255,255,255,.42); stroke-width: .4;
+                     stroke-dasharray: 2 2; }
+  .handle { position: absolute; width: 26px; height: 26px; margin: -13px 0 0 -13px;
+            border-radius: 50%; background: rgba(255,207,51,.92); border: 2px solid var(--accent);
+            display: flex; align-items: center; justify-content: center; color: #14171c;
+            font-weight: 800; font-size: 10px; box-shadow: 0 2px 10px rgba(0,0,0,.5); }
+  .handle.grabbed { background: #ffcf33; box-shadow: 0 0 0 8px rgba(255,207,51,.18); }
+
+  /* ---------- the rail ---------- */
+  .rail { flex: 0 0 auto; display: flex; flex-direction: column; gap: 5px; padding: 6px 6px 6px 8px;
+          width: 96px; }
+  .pill { background: rgba(20,23,28,.78); border: 1px solid rgba(255,255,255,.10); color: var(--ink);
+          border-radius: 999px; font-size: 10.5px; font-weight: 650; line-height: 1.15;
+          padding: 7px 8px; text-align: center; white-space: nowrap;
+          box-shadow: 0 2px 12px rgba(0,0,0,.45); }
+  .pill.active { color: var(--accent-soft); border-color: rgba(106,168,255,.55);
+                 background: rgba(24,42,74,.82); }
+  .pill.primary { background: rgba(42,110,240,.9); border-color: rgba(106,168,255,.5);
+                  font-size: 11.5px; font-weight: 750; }
+  .pill.primary.on { background: rgba(150,42,42,.9); border-color: rgba(255,143,143,.5); }
+  .pill.attention { color: var(--warn); border-color: var(--warn);
+                    box-shadow: 0 0 0 2px rgba(255,207,51,.42), 0 2px 12px rgba(0,0,0,.45); }
+  .pill.disabled { opacity: .34; }
+  .pill.busy { color: var(--warn); }
+  .spacer { flex: 1 1 0; min-height: 0; }
+
+  /* ---------- bottom chrome (chips / banner / hint) ---------- */
+  .bottom-chrome { position: absolute; left: 0; right: 0; bottom: 0; padding: 6px;
+                   display: flex; flex-direction: column; gap: 5px; align-items: flex-start; }
+  .chips { display: flex; gap: 5px; flex-wrap: wrap; }
+  .chip { background: rgba(20,23,28,.85); border: 1px solid rgba(255,255,255,.10);
+          border-radius: 999px; font-size: 10px; padding: 3px 8px; color: var(--muted); }
+  .chip.up { color: var(--ok); border-color: rgba(151,224,166,.35); }
+  .chip.warn { color: var(--warn); border-color: rgba(255,207,51,.35); }
+  .chip.ok { color: var(--ok); border-color: rgba(151,224,166,.35); }
+  .chip.bad { color: var(--bad); border-color: rgba(255,143,143,.35); }
+  .messages { display: flex; flex-direction: column; gap: 5px; align-items: flex-start;
+              width: 100%; }
+  .banner { font-size: 11px; line-height: 1.35; padding: 7px 10px; border-radius: 8px;
+            max-width: 100%; white-space: pre-wrap; box-shadow: 0 6px 20px rgba(0,0,0,.55); }
+  .banner.ok { background: #1f3a24; color: var(--ok); }
+  .banner.warn { background: #3a2f18; color: var(--warn); }
+  .banner.err { background: #3a2020; color: var(--bad); }
+  .banner .link { color: var(--accent-soft); text-decoration: underline; font-weight: 650; }
+  .banner .verbatim { display: block; margin-top: 5px; padding-top: 5px;
+                      border-top: 1px solid rgba(255,143,143,.3); color: #e8b3b3;
+                      font-size: 10px; }
+  .hint { align-self: center; background: rgba(20,23,28,.85); color: var(--ink); font-size: 11px;
+          border-radius: 999px; padding: 6px 12px; }
+  .hint u { color: var(--accent-soft); font-weight: 650; }
+  /* the quiet statement of what the system decided for you */
+  .decided-chip { background: rgba(20,23,28,.9); border: 1px solid rgba(255,255,255,.12);
+                  border-radius: 999px; font-size: 10.5px; padding: 5px 10px; color: var(--muted); }
+  .decided-chip b { color: var(--ok); font-weight: 650; }
+  .decided-chip .link { color: var(--accent-soft); font-weight: 650; }
+
+  /* ---------- overlays ---------- */
+  .overlay { position: absolute; inset: 0; background: rgba(6,10,14,.86); display: flex;
+             flex-direction: column; align-items: center; justify-content: center; gap: .35rem;
+             text-align: center; padding: .9rem; }
+  .overlay .glyph { width: 22px; height: 34px; border: 2px solid var(--ink); border-radius: 4px;
+                    animation: tip 2.6s ease-in-out infinite; }
+  @keyframes tip { 0%, 22% { transform: rotate(0) } 58%, 100% { transform: rotate(90deg) } }
+  .overlay .head { font-weight: 650; font-size: 13px; margin-top: .3rem; }
+  .overlay .sub2 { color: var(--muted); font-size: 11px; max-width: 34ch; }
+  .overlay .paused { color: var(--warn); font-size: 10.5px; border: 1px solid rgba(255,207,51,.4);
+                     border-radius: 999px; padding: 2px 9px; margin-top: .2rem; }
+
+  /* ---------- floating position panel ---------- */
+  .pos-panel { position: absolute; left: 10px; top: 10px; width: 108px; background: #12151b;
+               border: 1px solid var(--line); border-radius: 8px; overflow: hidden;
+               box-shadow: 0 8px 22px rgba(0,0,0,.6); }
+  .pos-head { display: flex; gap: 4px; align-items: center; padding: 3px 6px; font-size: 8.5px;
+              color: var(--dim); background: #1a1f27; }
+  .pos-head .st { margin-left: auto; color: var(--muted); }
+
+  /* ---------- settings sheet ---------- */
+  .scrim { position: absolute; inset: 0; background: rgba(0,0,0,.5); }
+  .sheet { position: absolute; right: 0; top: 0; bottom: 0; width: 66%; background: var(--panel);
+           border-left: 1px solid var(--line); padding: 8px 10px; overflow-y: auto;
+           font-size: 10.5px; color: var(--muted); }
+  .sheet .grab { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; }
+  .sheet .grab h3 { font-size: 12px; color: var(--ink); font-weight: 650; }
+  .sheet h4 { font-size: 9px; text-transform: uppercase; letter-spacing: .08em; color: var(--dim);
+              margin: 8px 0 4px; font-weight: 650; }
+  .sheet .btn { background: var(--panel-3); border: 1px solid var(--line); border-radius: 7px;
+                padding: 4px 8px; color: var(--ink); font-size: 10px; font-weight: 600; }
+  .sheet .btn.push { margin-left: auto; }
+  .sheet .row { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+  .sheet input, .sheet select { background: #0f1319; border: 1px solid var(--line); border-radius: 6px;
+                 color: var(--ink); font: inherit; font-size: 10px; padding: 3px 6px; width: 84px; }
+  .sheet .stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
+  .sheet .stat { background: var(--panel-2); border: 1px solid var(--line); border-radius: 7px;
+                 padding: 5px 6px; }
+  .sheet .stat .k { font-size: 8.5px; color: var(--dim); }
+  .sheet .stat .v { font-size: 12px; color: var(--ink); font-weight: 650; }
+  .sheet .bar { height: 3px; background: #0f1319; border-radius: 3px; margin-top: 3px; overflow: hidden; }
+  .sheet .bar i { display: block; height: 100%; background: var(--ok); }
+  .sheet .fen { font-family: ui-monospace, Menlo, monospace; font-size: 8.5px; color: var(--accent-soft);
+                word-break: break-all; }
+  .sheet .disclosure { color: var(--accent-soft); margin-top: 6px; }
+
+  /* ---------- blocked notice ---------- */
+  .blocked { position: absolute; inset: 0; background: var(--bg); padding: 12px 14px;
+             font-size: 10.5px; color: var(--muted); overflow-y: auto; }
+  .blocked h3 { color: var(--ink); font-size: 12.5px; margin-bottom: 5px; font-weight: 650; }
+  .blocked ol { margin: 5px 0 0 14px; display: grid; gap: 4px; }
+
+  /* ---------- small boards (position panel) ---------- */
+  .board { position: relative; display: grid; grid-template-columns: repeat(8, 1fr);
+           aspect-ratio: 1; width: 100%; }
+  .board .sq { position: relative; display: flex; align-items: center; justify-content: center; }
+  .board .sq.light { background: #d8cbab; } .board .sq.dark { background: #6f8f5f; }
+  .board .pc { font-size: calc(var(--bs, 108px) / 9); line-height: 1; }
+  .board .pc.w { color: #f7f5f0; text-shadow: 0 0 1px #111, 0 1px 0 #111, 1px 0 0 #111,
+                 -1px 0 0 #111, 0 -1px 0 #111; }
+  .board .pc.b { color: #1b1d20; text-shadow: 0 0 1px rgba(255,255,255,.5); }
+  .board .ring { position: absolute; inset: 9%; border-radius: 50%; border: 2px solid transparent; }
+  .ring.low { border-color: #e8c33c; } .ring.rep { border-color: #e25555; }
+  .ring.pend { border-color: var(--amber); border-style: dashed; }
+  .ring.chg { border-color: #7ac77a; }
+
+  /* ---------- flow strip ---------- */
+  .flow { display: flex; gap: .4rem; flex-wrap: wrap; align-items: center; font-size: .82rem;
+          margin: .2rem 0 1.6rem; }
+  .flow .step { background: var(--panel-2); border: 1px solid var(--line); border-radius: 7px;
+                padding: .28rem .6rem; }
+  .flow .step.gone { border-color: #4a2c2c; color: #d79797; text-decoration: line-through; }
+  .flow .step.new { border-color: #2c4a34; color: var(--ok); }
+  .flow .arrow { color: var(--dim); }
+  .principle { border: 1px solid var(--line); border-left: 3px solid var(--accent);
+               background: var(--panel-2); border-radius: 0 10px 10px 0; padding: .8rem 1rem;
+               margin: 1.2rem 0 0; color: var(--muted); font-size: .9rem; max-width: 82ch; }
+  .principle b { color: var(--ink); }
+  .contradiction { border-left-color: var(--warn); }
+</style>
+</head>
+<body>
+<main>
+  <p class="crumb"><a href="index.html">← all mockups</a></p>
+  <h1>/camera — the phone at the board</h1>
+  <p class="lede">
+    Landscape frames are the phone as held. The layout mirrors the real page: the picture and the
+    pill rail are two flex tracks that never overlap, and everything the page <i>says</i> — chips,
+    banner, hint — lives in one stack along the bottom of the picture, because the top of the frame
+    is the part being aimed. Three already-decided changes are drawn here as the design, not as
+    options: the <b>portrait hard block</b>, the <b>named calibrate refusal</b>, and
+    <b>automatic label rotation</b>.
+  </p>
+
+  <div class="principle">
+    <b>Minimize button presses.</b> Where the system can resolve something itself it resolves it,
+    states what it decided in one quiet line, and leaves a one-tap escape hatch. The old
+    press-rotate-until-right loop is the thing this replaces.
+  </div>
+
+  <h2><span class="n">1</span>the happy path<span class="badge decided">flow change</span></h2>
+  <p class="sub">What a session costs the operator now, end to end.</p>
+  <div class="flow">
+    <span class="step">open /camera</span><span class="arrow">→</span>
+    <span class="step">hold phone landscape</span><span class="arrow">→</span>
+    <span class="step new">board found automatically</span><span class="arrow">→</span>
+    <span class="step">tap <b>calibrate</b></span><span class="arrow">→</span>
+    <span class="step gone">tap rotate labels ×0–3</span>
+    <span class="step new">labels set from the pieces</span><span class="arrow">→</span>
+    <span class="step">tap <b>start</b></span>
+  </div>
+
+  <div class="gallery">
+
+    <!-- ===== 1 aiming ===== -->
+    <figure>
+      <div class="phone"><div class="stage">
+        <div class="frame">
+          <div class="picture off" data-quad="placeholder" data-labels="a8,h8,h1,a1"></div>
+          <div class="bottom-chrome">
+            <div class="chips">
+              <span class="chip">idle</span>
+              <span class="chip warn">tracking — locking on</span>
+            </div>
+            <div class="messages">
+              <div class="hint">Looking for the board — hold the phone still and keep it in frame.</div>
+            </div>
+          </div>
+        </div>
+        <div class="rail">
+          <div class="pill">more</div>
+          <div class="pill">position</div>
+          <div class="pill">detect board</div>
+          <div class="pill">calibrate</div>
+          <span class="spacer"></span>
+          <div class="pill primary">start</div>
+        </div>
+      </div></div>
+      <figcaption><b>aiming.</b> The camera is live and the quad is still the placeholder — a box in
+        the middle of the frame — so automatic detection is running. No banner, one hint line.
+        <span class="why">shipped. The page is streamable from the first frame; framing is a
+        refinement, never a prerequisite.</span></figcaption>
+    </figure>
+
+    <!-- ===== 2 portrait block ===== -->
+    <figure>
+      <div class="phone"><div class="stage">
+        <div class="frame">
+          <div class="picture turned" data-quad="none"></div>
+          <div class="overlay">
+            <div class="glyph"></div>
+            <div class="head">turn the phone sideways</div>
+            <div class="sub2">pieces are read standing up in the picture — a sideways board can't be.
+              detect, calibrate and start unlock in landscape.</div>
+          </div>
+        </div>
+        <div class="rail">
+          <div class="pill">more</div>
+          <div class="pill">position</div>
+          <div class="pill disabled">detect board</div>
+          <div class="pill disabled">calibrate</div>
+          <span class="spacer"></span>
+          <div class="pill primary disabled">start</div>
+        </div>
+      </div></div>
+      <figcaption><b>portrait hard block.</b> While the frame is portrait the whole viewfinder is
+        covered and <code>detect</code> / <code>calibrate</code> / <code>start</code> are disabled.
+        The overlay clears itself the instant the phone turns — there is nothing to dismiss.
+        <span class="why">decided. Portrait is detectable client-side the moment the camera opens,
+        so a garbage session is made unreachable rather than merely warned about.</span></figcaption>
+    </figure>
+
+    <!-- ===== 3 board found ===== -->
+    <figure>
+      <div class="phone"><div class="stage">
+        <div class="frame">
+          <div class="picture" data-quad="on" data-labels="a8,h8,h1,a1"></div>
+          <div class="bottom-chrome">
+            <div class="chips">
+              <span class="chip">idle</span>
+              <span class="chip ok">tracking — locked</span>
+            </div>
+            <div class="messages">
+              <div class="banner ok">Board found — the corners follow it from here.</div>
+            </div>
+          </div>
+        </div>
+        <div class="rail">
+          <div class="pill">more</div>
+          <div class="pill">position</div>
+          <div class="pill">detect board</div>
+          <div class="pill">calibrate</div>
+          <span class="spacer"></span>
+          <div class="pill primary">start</div>
+        </div>
+      </div></div>
+      <figcaption><b>board detected.</b> Four 44 px handles carry the labels; the solid blue quad is
+        the playing surface, the dashed box is what actually goes on the wire — it keeps headroom
+        above the board so tall pieces are not decapitated.
+        <span class="why">shipped, with the copy trimmed: today this banner also says “check the
+        labels — use rotate labels if they sit wrong”. Under automatic label rotation the labels are
+        nobody's problem until calibrate has spoken, so the sentence goes.</span></figcaption>
+    </figure>
+
+    <!-- ===== 4 dragging a corner ===== -->
+    <figure>
+      <div class="phone"><div class="stage">
+        <div class="frame">
+          <div class="picture" data-quad="on" data-labels="a8,h8,h1,a1" data-grab="3"></div>
+          <div class="bottom-chrome">
+            <div class="chips">
+              <span class="chip">idle</span>
+              <span class="chip ok">tracking — locked</span>
+            </div>
+          </div>
+        </div>
+        <div class="rail">
+          <div class="pill">more</div>
+          <div class="pill">position</div>
+          <div class="pill disabled">detect board</div>
+          <div class="pill disabled">calibrate</div>
+          <span class="spacer"></span>
+          <div class="pill primary">start</div>
+        </div>
+      </div></div>
+      <figcaption><b>correcting a corner.</b> A drag owns the camera and the quad exclusively, so
+        detect and calibrate grey out for its duration. A quad the operator authored also stops
+        automatic re-detection from second-guessing it.
+        <span class="why">shipped.</span></figcaption>
+    </figure>
+
+    <!-- ===== 5 calibrating ===== -->
+    <figure>
+      <div class="phone"><div class="stage">
+        <div class="frame">
+          <div class="picture" data-quad="on" data-labels="a8,h8,h1,a1"></div>
+          <div class="bottom-chrome">
+            <div class="chips">
+              <span class="chip">idle</span>
+              <span class="chip ok">tracking — locked</span>
+            </div>
+            <div class="messages">
+              <div class="banner warn">Hold steady — capturing…</div>
+              <div class="hint">Calibrate is unavailable — calibrating…</div>
+            </div>
+          </div>
+        </div>
+        <div class="rail">
+          <div class="pill">more</div>
+          <div class="pill">position</div>
+          <div class="pill disabled">detect board</div>
+          <div class="pill busy disabled">calibrating…</div>
+          <span class="spacer"></span>
+          <div class="pill primary">start</div>
+        </div>
+      </div></div>
+      <figcaption><b>calibrating.</b> A burst of ten frames over ~1.5 s; the sharpest one becomes
+        the exemplar. The board must show the starting position, at rest.
+        <span class="why">shipped.</span></figcaption>
+    </figure>
+
+    <!-- ===== 6 refusal, short ===== -->
+    <figure>
+      <div class="phone"><div class="stage">
+        <div class="frame">
+          <div class="picture turned" data-quad="on" data-labels="a8,h8,h1,a1"></div>
+          <div class="bottom-chrome">
+            <div class="chips">
+              <span class="chip">idle</span>
+              <span class="chip ok">tracking — locked</span>
+            </div>
+            <div class="messages">
+              <div class="banner err">board is rotated in the frame — turn the phone so the board
+                sits upright, then calibrate again. <span class="link">details</span></div>
+            </div>
+          </div>
+        </div>
+        <div class="rail">
+          <div class="pill">more</div>
+          <div class="pill">position</div>
+          <div class="pill">detect board</div>
+          <div class="pill attention">calibrate</div>
+          <span class="spacer"></span>
+          <div class="pill primary">start</div>
+        </div>
+      </div></div>
+      <figcaption><b>calibrate refused — rotated board.</b> One actionable sentence naming the
+        cause, and the calibrate pill picks up the warn ring so the way back is obvious. Sticky
+        until the next calibrate attempt.
+        <span class="why">decided. The node already probes the four image rotations on rejection
+        and returns <code>rotated_deg</code>; this is that reply, said in a viewfinder's worth of
+        words.</span></figcaption>
+    </figure>
+
+    <!-- ===== 7 refusal, details ===== -->
+    <figure>
+      <div class="phone"><div class="stage">
+        <div class="frame">
+          <div class="picture turned" data-quad="on" data-labels="a8,h8,h1,a1"></div>
+          <div class="bottom-chrome">
+            <div class="chips">
+              <span class="chip">idle</span>
+              <span class="chip ok">tracking — locked</span>
+            </div>
+            <div class="messages">
+              <div class="banner err">board is rotated in the frame — turn the phone so the board
+                sits upright, then calibrate again. <span class="link">hide</span>
+                <span class="verbatim">calibration rejected: the board appears ROTATED in the frame
+                  — the same photo passes once turned 270° (32/32 piece squares agree after the
+                  turn, 11/32 as sent). piece crops extend toward the top of the image, so a
+                  sideways board cannot be read.</span></div>
+            </div>
+          </div>
+        </div>
+        <div class="rail">
+          <div class="pill">more</div>
+          <div class="pill">position</div>
+          <div class="pill">detect board</div>
+          <div class="pill attention">calibrate</div>
+          <span class="spacer"></span>
+          <div class="pill primary">start</div>
+        </div>
+      </div></div>
+      <figcaption><b>…with details expanded.</b> The server's full text is one tap away and never
+        in the way. The stack grows upward from the bottom edge, so the expanded text pushes the
+        chips up rather than covering the part of the picture being aimed.
+        <span class="why">decided. Verbatim server text as the default covered a third of the
+        viewfinder and buried the action.</span></figcaption>
+    </figure>
+
+    <!-- ===== 8 calibrated, labels automatic ===== -->
+    <figure>
+      <div class="phone"><div class="stage">
+        <div class="frame">
+          <div class="picture" data-quad="on" data-labels="a8,h8,h1,a1"></div>
+          <div class="bottom-chrome">
+            <div class="chips">
+              <span class="chip">idle</span>
+              <span class="chip ok">tracking — locked</span>
+              <span class="decided-chip">labels set from the pieces · <b>a8 ✓</b> ·
+                wrong? <span class="link">rotate</span></span>
+            </div>
+            <div class="messages">
+              <div class="banner ok">Calibrated 13/13 classes — bank now holds 208 exemplars.</div>
+            </div>
+          </div>
+        </div>
+        <div class="rail">
+          <div class="pill">more</div>
+          <div class="pill">position</div>
+          <div class="pill">detect board</div>
+          <div class="pill">calibrate · 1</div>
+          <span class="spacer"></span>
+          <div class="pill primary">start</div>
+        </div>
+      </div></div>
+      <figcaption><b>calibrated — labels resolved automatically.</b> The node knows which corner is
+        a8 the moment it recognizes a starting position, so it says so and the page adopts it. The
+        quiet chip is the whole ceremony: a statement of what was decided, plus one tap if it is
+        wrong.
+        <span class="why">decided. Replaces today's sticky warn banner “press rotate labels until
+        a8 is where you call a8” — which cost up to three presses and a judgement call per
+        session.</span></figcaption>
+    </figure>
+
+    <!-- ===== 9 streaming ===== -->
+    <figure>
+      <div class="phone"><div class="stage">
+        <div class="frame">
+          <div class="picture" data-quad="on" data-labels="a8,h8,h1,a1"></div>
+          <div class="pos-panel">
+            <div class="pos-head"><span>position</span><span class="st">ok · 0.94</span></div>
+            <div class="board" style="--bs:108px" data-fen="rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR"
+                 data-marks="e2:chg e4:chg"></div>
+          </div>
+          <div class="bottom-chrome">
+            <div class="chips">
+              <span class="chip up">streaming · 12.4 fps</span>
+              <span class="chip ok">tracking — locked</span>
+              <span class="decided-chip">labels set from the pieces · <b>a8 ✓</b></span>
+            </div>
+          </div>
+        </div>
+        <div class="rail">
+          <div class="pill">more</div>
+          <div class="pill active">position</div>
+          <div class="pill">detect board</div>
+          <div class="pill">calibrate · 1</div>
+          <span class="spacer"></span>
+          <div class="pill primary on">stop</div>
+        </div>
+      </div></div>
+      <figcaption><b>streaming, position panel open.</b> The primary pill turns red for
+        <code>stop</code>. The panel is a draggable, resizable second picture of the board and is
+        hidden until <code>position</code> asks for it — it covers the thing being aimed.
+        <span class="why">shipped.</span></figcaption>
+    </figure>
+
+    <!-- ===== 10 auto-pause on rotation ===== -->
+    <figure>
+      <div class="phone"><div class="stage">
+        <div class="frame">
+          <div class="picture turned" data-quad="none"></div>
+          <div class="overlay">
+            <div class="glyph"></div>
+            <div class="head">turn the phone sideways</div>
+            <div class="sub2">the stream is paused — it resumes by itself when the board sits
+              upright in the frame again.</div>
+            <div class="paused">stream paused · 0 frames sent since 14:02:11</div>
+          </div>
+        </div>
+        <div class="rail">
+          <div class="pill">more</div>
+          <div class="pill">position</div>
+          <div class="pill disabled">detect board</div>
+          <div class="pill disabled">calibrate · 1</div>
+          <span class="spacer"></span>
+          <div class="pill primary on disabled">stop</div>
+        </div>
+      </div></div>
+      <figcaption><b>turned mid-stream.</b> Same overlay, one extra line: the stream auto-pauses
+        rather than sending frames that cannot be read, and resumes on the turn back. No press
+        needed either way.
+        <span class="why">decided. Portrait frames are pure waste, and the tracker rebuilds on the
+        dimension swap regardless.</span></figcaption>
+    </figure>
+
+    <!-- ===== 11 tracking lost ===== -->
+    <figure>
+      <div class="phone"><div class="stage">
+        <div class="frame">
+          <div class="picture" data-quad="lost" data-labels="a8,h8,h1,a1"></div>
+          <div class="bottom-chrome">
+            <div class="chips">
+              <span class="chip up">streaming · 1.0 fps</span>
+              <span class="chip bad">tracking — lost, quad frozen</span>
+            </div>
+            <div class="messages">
+              <div class="hint">The board is lost — the quad is frozen where it last fitted.</div>
+            </div>
+          </div>
+        </div>
+        <div class="rail">
+          <div class="pill">more</div>
+          <div class="pill">position</div>
+          <div class="pill">detect board</div>
+          <div class="pill">calibrate · 1</div>
+          <span class="spacer"></span>
+          <div class="pill primary on">stop</div>
+        </div>
+      </div></div>
+      <figcaption><b>tracking lost.</b> The quad goes dashed amber and stops where it last fitted
+        rather than sending a wrong crop; the rate drops to the 1 fps keepalive. After six seconds
+        of sustained loss the page looks for the board again by itself.
+        <span class="why">shipped. A hand sweeping over the board hits this on essentially every
+        move, which is exactly why loss must be sustained before anything re-detects.</span></figcaption>
+    </figure>
+
+    <!-- ===== 12 gave up ===== -->
+    <figure>
+      <div class="phone"><div class="stage">
+        <div class="frame">
+          <div class="picture off" data-quad="placeholder" data-labels="a8,h8,h1,a1"></div>
+          <div class="bottom-chrome">
+            <div class="chips">
+              <span class="chip">idle</span>
+              <span class="chip">tracking off</span>
+            </div>
+            <div class="messages">
+              <div class="hint">No board found — drag the handles onto it, or <u>look again</u></div>
+            </div>
+          </div>
+        </div>
+        <div class="rail">
+          <div class="pill">more</div>
+          <div class="pill">position</div>
+          <div class="pill">detect board</div>
+          <div class="pill">calibrate</div>
+          <span class="spacer"></span>
+          <div class="pill primary">start</div>
+        </div>
+      </div></div>
+      <figcaption><b>automatic detection gave up.</b> Four attempts with back-off (~8.7 / 18.5 /
+        32.7 s), then silence and one recovery offer — a real 44 px target, not a text link. A page
+        pointed at a wall must never ask forever.
+        <span class="why">shipped.</span></figcaption>
+    </figure>
+
+    <!-- ===== 13 settings sheet ===== -->
+    <figure>
+      <div class="phone"><div class="stage">
+        <div class="frame">
+          <div class="picture" data-quad="on" data-labels="a8,h8,h1,a1"></div>
+          <div class="scrim"></div>
+          <div class="sheet">
+            <div class="grab"><h3>settings</h3><span class="btn push">close</span></div>
+            <h4>framing</h4>
+            <div class="row"><span class="btn">rotate labels</span>
+              <span style="color:var(--dim)">a8 currently top-left</span></div>
+            <h4>board</h4>
+            <div class="row">board <input value="main"> <span class="btn">tracking on</span>
+              <span class="btn">reset crop</span></div>
+            <h4>lens</h4>
+            <div class="row"><select><option>back ultra wide camera</option></select></div>
+            <h4>stream</h4>
+            <div class="stats">
+              <div class="stat"><div class="k">frames</div><div class="v">1 284</div>
+                <div class="k">acked 1 281 · 3 dropped</div></div>
+              <div class="stat"><div class="k">rate</div><div class="v">12.4 fps</div>
+                <div class="k">burst — a move is under way</div></div>
+              <div class="stat"><div class="k">stability</div><div class="v">0.82</div>
+                <div class="bar"><i style="width:82%"></i></div></div>
+            </div>
+            <h4>what the reader sees</h4>
+            <div class="fen">r1bqkbnr/pppp1ppp/2n5/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R</div>
+            <div class="disclosure">How framing works ›</div>
+          </div>
+        </div>
+        <div class="rail">
+          <div class="pill active">more</div>
+          <div class="pill">position</div>
+          <div class="pill">detect board</div>
+          <div class="pill">calibrate · 1</div>
+          <span class="spacer"></span>
+          <div class="pill primary on">stop</div>
+        </div>
+      </div></div>
+      <figcaption><b>settings sheet.</b> Everything that is not a viewfinder control: board id,
+        tracking, reset crop, the lens picker (hidden outright on a one-camera device), live stream
+        counters, the node's last reading verbatim, and <code>rotate labels</code> — a labelling is
+        set once per board, so it lives a sheet away.
+        <span class="why">The sheet scrolls on a landscape phone — its tail (calibrate advice,
+        “how framing works”) sits below the fold here. Shipped, plus one line: the sheet now states
+        which physical corner a8 currently is, so the escape hatch and the statement live together.
+        <span class="badge proposal">proposal</span></span></figcaption>
+    </figure>
+
+    <!-- ===== 14 blocked ===== -->
+    <figure>
+      <div class="phone"><div class="stage">
+        <div class="frame">
+          <div class="blocked">
+            <h3>The camera needs https</h3>
+            <p>This page is served over <code>http</code>, and browsers only hand out the camera in
+              a <b>secure context</b>. Nothing is wrong with your permissions — the camera was
+              never offered.</p>
+            <ol>
+              <li><b>Serve the viewer over https.</b> <code>board-reader-viewer --host 0.0.0.0
+                --ssl</code>, then open the <code>https://…/camera</code> address it prints.</li>
+              <li><b>Android over USB.</b> <code>adb reverse tcp:8080 tcp:8080</code>, then open
+                <code>http://localhost:8080/camera</code>.</li>
+            </ol>
+          </div>
+        </div>
+      </div></div>
+      <figcaption><b>camera blocked.</b> No stage, no rail — the explainer is the whole page, and
+        it names the fix rather than the error. Three variants: insecure origin, no
+        <code>getUserMedia</code>, permission refused.
+        <span class="why">shipped.</span></figcaption>
+    </figure>
+
+  </div>
+
+  <h2>notes against the real UI</h2>
+  <div class="principle contradiction">
+    <b>Where these mockups depart from today's build.</b>
+    The rail is <i>more · position · detect board · calibrate · start</i>, with
+    <code>rotate labels</code> appearing as a sixth, warn-ringed pill only when a re-detection may
+    have moved the labels. Automatic label rotation removes that pill's main reason to exist: the
+    node returns <code>label_rotation</code> after every calibration, and today the page turns that
+    into a sticky warning telling the operator to press <code>rotate labels</code> until a8 matches.
+    Here the page just applies it and says so. The warn-ringed pill is still worth keeping for the
+    one case the node cannot speak to — a re-detection after a sustained loss, with no calibration
+    in between.
+  </div>
+</main>
+
+<script>
+  // ---- fake camera view: pieces, then a quad measured off the real transformed box ----
+  const GLYPH = { k: '♚', q: '♛', r: '♜', b: '♝', n: '♞', p: '♟' };
+
+  for (const pic of document.querySelectorAll('.picture')) {
+    const board = document.createElement('div');
+    board.className = 'board3d';
+    const men = document.createElement('div');
+    men.className = 'men';
+    for (let r = 0; r < 8; r++) {
+      for (let c = 0; c < 8; c++) {
+        const cell = document.createElement('span');
+        if (r < 2 || r > 5) {
+          const i = document.createElement('i');
+          i.className = r < 2 ? 'b' : 'w';
+          cell.appendChild(i);
+        }
+        men.appendChild(cell);
+      }
+    }
+    board.appendChild(men);
+    for (const [x, y] of [[0, 0], [100, 0], [100, 100], [0, 100]]) {
+      const mk = document.createElement('span');
+      mk.className = 'mk';
+      mk.style.left = x + '%';
+      mk.style.top = y + '%';
+      board.appendChild(mk);
+    }
+    pic.prepend(board);
+  }
+
+  function layQuads() {
+    for (const pic of document.querySelectorAll('.picture')) {
+      const mode = pic.dataset.quad;
+      pic.querySelectorAll('.quad, .handle').forEach((el) => el.remove());
+      if (mode === 'none') continue;
+      const pr = pic.getBoundingClientRect();
+      if (pr.width === 0) continue;
+      let pts;
+      if (mode === 'placeholder') {
+        pts = [[18, 20], [82, 20], [82, 84], [18, 84]];
+      } else {
+        pts = [...pic.querySelectorAll('.board3d .mk')].map((mk) => {
+          const r = mk.getBoundingClientRect();
+          return [((r.left - pr.left) / pr.width) * 100, ((r.top - pr.top) / pr.height) * 100];
+        });
+      }
+      const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+      svg.setAttribute('class', 'quad');
+      svg.setAttribute('viewBox', '0 0 100 100');
+      svg.setAttribute('preserveAspectRatio', 'none');
+      const xs = pts.map((p) => p[0]), ys = pts.map((p) => p[1]);
+      const x0 = Math.min(...xs), x1 = Math.max(...xs);
+      const y0 = Math.min(...ys), y1 = Math.max(...ys);
+      // the crop keeps headroom ABOVE the board so tall pieces are not decapitated
+      const head = (y1 - y0) * 0.34;
+      const crop = document.createElementNS(svg.namespaceURI, 'rect');
+      crop.setAttribute('class', 'crop-line');
+      crop.setAttribute('x', (x0 - 2).toFixed(2));
+      crop.setAttribute('y', Math.max(0, y0 - head).toFixed(2));
+      crop.setAttribute('width', (x1 - x0 + 4).toFixed(2));
+      crop.setAttribute('height', (Math.min(100, y1 + 2) - Math.max(0, y0 - head)).toFixed(2));
+      const poly = document.createElementNS(svg.namespaceURI, 'polygon');
+      poly.setAttribute('class', 'quad-line' + (mode === 'lost' ? ' lost' : ''));
+      poly.setAttribute('points', pts.map((p) => p.map((v) => v.toFixed(2)).join(',')).join(' '));
+      svg.append(crop, poly);
+      pic.appendChild(svg);
+
+      const labels = (pic.dataset.labels || '').split(',').filter(Boolean);
+      const grabbed = pic.dataset.grab === undefined ? -1 : Number(pic.dataset.grab);
+      pts.forEach(([x, y], i) => {
+        if (labels.length !== 4) return;
+        const h = document.createElement('div');
+        h.className = 'handle' + (i === grabbed ? ' grabbed' : '');
+        h.style.left = x + '%';
+        h.style.top = y + '%';
+        h.textContent = labels[i];
+        pic.appendChild(h);
+      });
+    }
+  }
+
+  function renderBoards() {
+    for (const el of document.querySelectorAll('.board[data-fen]')) {
+      const marks = {};
+      for (const m of (el.dataset.marks || '').split(/\s+/).filter(Boolean)) {
+        const [sq, kind] = m.split(':');
+        marks[sq] = kind;
+      }
+      const files = 'abcdefgh';
+      el.innerHTML = '';
+      el.dataset.fen.split('/').forEach((row, r) => {
+        let c = 0;
+        for (const ch of row) {
+          if (/\d/.test(ch)) {
+            for (let i = 0; i < Number(ch); i++) el.appendChild(square(r, c++, null, marks, files));
+          } else {
+            el.appendChild(square(r, c++, ch, marks, files));
+          }
+        }
+      });
+    }
+  }
+
+  function square(r, c, piece, marks, files) {
+    const d = document.createElement('div');
+    d.className = 'sq ' + ((r + c) % 2 ? 'dark' : 'light');
+    if (piece) {
+      const s = document.createElement('span');
+      s.className = 'pc ' + (piece === piece.toUpperCase() ? 'w' : 'b');
+      s.textContent = GLYPH[piece.toLowerCase()];
+      d.appendChild(s);
+    }
+    const kind = marks[files[c] + (8 - r)];
+    if (kind) {
+      const i = document.createElement('i');
+      i.className = 'ring ' + kind;
+      d.appendChild(i);
+    }
+    return d;
+  }
+
+  renderBoards();
+  layQuads();
+  addEventListener('resize', layQuads);
+</script>
+</body>
+</html>
