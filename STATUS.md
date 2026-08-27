@@ -18,7 +18,17 @@ confidences**. No moves, no legality, no PGN — those are the downstream applic
   (settled BELOW its own prior on the control take at every read rate; d8 q->k
   locked 253/253) — running — next: replay-verify on all four takes, both
   every-frame and burst policies.
-- schedule-review — code-reviewer on the sweep commit `5f9212f` — running.
+- schedule-review — DONE, fix-first: owed reads spill into the next burst
+  (reads the hand mid-move), floor defeasible via inf/nan keepalive, frozen or
+  backwards capture_ts kills/floods reads, NaN stability ends bursts, lossy :g
+  names. All routed to the move-trigger-ship agent (owns schedule.py) with a
+  wall-clock backstop spec for live. THREE replay-side findings PARKED until
+  stabilize-tiebreak's replays finish (replay.py must not change under them):
+  policy state not reset per session under --all-sessions; a missing JPEG under
+  --restamp keeps old-scale stability (phantom burst) and loses its
+  stability_restamped mark; manifest restamp flag derived from stats, not the
+  flag (half-copied tree lies). None affect the current verification runs
+  (single-session takes, complete JPEGs).
 
 - public-release — repo is **push-ready** (Apache-2.0 + THIRD-PARTY.md, details
   scrubbed, history re-signed onto the current author email). Before pushing: add that
