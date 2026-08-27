@@ -288,3 +288,16 @@ uv run python scratch/experiments/move_trigger/check_restamp.py
 
 Replays land in `recordings/<take>/replays/mt-*`; each is a recording-shaped
 directory `eval-session` scores unchanged.
+
+---
+
+**Postscript (same night):** two parts of this report were superseded within
+hours. (1) The burst-end rows no longer reproduce exactly: the review of the
+policy code found and fixed scheduling defects (owed reads spilling into the
+next burst, among others — see `9035d58`), which changes frame selection at the
+same `--policy` string. The conclusions stand; re-run the sweep for exact rows.
+(2) The "settle lock-in / adopt-first-wholesale" diagnosis in §"Settle lock-in"
+was corrected by the stabilizer work (`ea91a39`, DESIGN §5): the stabilizer was
+already per-square — the defect was per-square incoherence (impossible
+two-kings settled boards), and 08-13's lock was the debounce faithfully
+reporting a 90 %-wrong prior, i.e. a recognition error upstream of any debounce.

@@ -10,10 +10,6 @@ confidences**. No moves, no legality, no PGN — those are the downstream applic
 ## Now
 
 
-- stabilize-tiebreak — fixing the adopt-first-wholesale defect the sweep proved
-  (settled BELOW its own prior on the control take at every read rate; d8 q->k
-  locked 253/253) — running — next: replay-verify on all four takes, both
-  every-frame and burst policies.
 - schedule-review — DONE, fix-first: owed reads spill into the next burst
   (reads the hand mid-move), floor defeasible via inf/nan keepalive, frozen or
   backwards capture_ts kills/floods reads, NaN stability ends bursts, lossy :g
@@ -62,6 +58,23 @@ confidences**. No moves, no legality, no PGN — those are the downstream applic
 
 ## Done (recent)
 
+- 08-27 (night): **settled stream made coherence-safe** (`ea91a39`+`9f3ca94`;
+  DESIGN §5 amended). Diagnosis CORRECTED: the stabilizer was already
+  per-square — the defect was per-square INCOHERENCE (d8 and e8 settling `k`
+  from opposite readings of one swap: 233/337 control boards carried two black
+  kings, a board no read ever claimed; up to 69 % of a run impossible). Shipped:
+  excess-monotone commits (a settle may not raise the board's hard-constraint
+  violation; incoherent commits drag their same-read quorum squares along,
+  best-evidence-first). Paired replays 4 takes × 2 policies: control every-frame
+  settled-perfect 0→28.1 %, segments 0/7→4/7, latency never→3.7 s; impossible
+  boards 0 on 8/8 runs; flicker ≤ old on 8/8; hard −0.13 pp bought with 106
+  impossible boards removed. Also re-read 08-13: settled was faithfully
+  reporting a 90 %-wrong PRIOR there — the d8 q->k is a RECOGNITION error no
+  debounce can fix (retrain-case input). Residual settled<prior rows are pure
+  settle lag vs the 12-frame guard, structural. Verified additionally by a
+  zero-GPU design loop: re-settling recorded prior streams reproduced all 24
+  recorded runs to the digit.
+
 - 08-27 (night): **burst-end scheduling is LIVE on ingest** (`9035d58`) — observe
   every frame at submit, decide at drain (so prefer_frame's sharper contender is
   what a burst-end read gets — pinned by test); default
@@ -84,9 +97,9 @@ confidences**. No moves, no legality, no PGN — those are the downstream applic
   pooled prior per-square / −5 pp perfect (inside the sampling-chance band on
   3/4 takes) and +2 s settle latency. PREMISE REFUTED: skipping mid-burst chaos
   does NOT buy accuracy — the guard window already excludes it from scoring and
-  the errors are persistent type confusions, not blur. PROVEN DEFECT: the
-  settled adopt-first-wholesale rule fails at every read rate (control: settled
-  below its own prior, q->k locked 253/253). CAVEAT: baseline-3452334 /
+  the errors are persistent type confusions, not blur. PROVEN DEFECT in the settled
+  stream (diagnosis later CORRECTED — see the stabilize entry: coherence, not
+  adoption). CAVEAT: baseline-3452334 /
   bdemotion-fe8a7bb replays ran cascade-only — cwd-relative DINOV2 path +
   silent bank fallback in a worktree (captured in the learnings store); the b-demotion
   before/after stands (same stack both sides) but its absolute numbers are not
