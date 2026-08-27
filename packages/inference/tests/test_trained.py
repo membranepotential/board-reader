@@ -265,11 +265,24 @@ def test_photo_dist_is_raw_and_the_event_is_calibrated():
     probs[2, CLASS_INDEX["r"]] = 0.32
     probs /= probs.sum(axis=-1, keepdims=True)
 
-    est = TrainedEstimator(lambda batch: np.log(probs[: batch.shape[0]]).astype(np.float32))
-    corners = full_frame_corners(photo)
-    raw = est.photo_dist(photo, corners)
-    event = est.estimate_photo(Frame(board_id="T1", seq=0, capture_ts=0.0, image=photo), corners)
+    def logits(batch: np.ndarray) -> np.ndarray:
+        # Board order across batches, clamped: a tail batch is padded up to
+        # batch_size with repeats of its last real crop and sliced back off by
+        # the caller, so the counter must advance by the REAL rows only. A fake
+        # that ignored this would answer rank 8 to every batch and "read" a board
+        # of four identical back ranks while the assertions still passed.
+        n = batch.shape[0]
+        rows = [probs[min(logits.i + j, 63)] for j in range(n)]
+        logits.i += min(n, 64 - logits.i)
+        return np.log(np.stack(rows)).astype(np.float32)
 
-    assert placement_from_dist(raw).startswith("rnbqkbnr")  # untouched
-    assert event.placement.startswith("rnrqkbnr")  # c8 demoted to the runner-up
+    logits.i = 0
+    est = TrainedEstimator(logits)  # default batch_size=16: four batches
+    corners = full_frame_corners(photo)
+    event = est.estimate_photo(Frame(board_id="T1", seq=0, capture_ts=0.0, image=photo), corners)
+    logits.i = 0
+    raw = est.photo_dist(photo, corners)
+
+    assert placement_from_dist(raw) == START_PLACEMENT  # the whole board, untouched
+    assert event.placement == "rnrqkbnr/" + START_PLACEMENT.split("/", 1)[1]
     np.testing.assert_allclose(event.square_dist, demote_attractor(raw), atol=1e-7)

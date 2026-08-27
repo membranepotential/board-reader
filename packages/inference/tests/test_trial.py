@@ -690,6 +690,71 @@ def test_attractor_guard_bounds_what_the_rule_may_have_taken(tmp_path):
     assert "at most 1 correct square taken" in report.render()
 
 
+def test_a_square_going_inside_the_band_is_a_warning_however_wide_the_survivors(tmp_path):
+    """min_margin is CENSORED at the threshold — a surviving 'b' is by definition
+    one the rule declined to fire on — so the squares that actually went can never
+    move it. Here one truth-'b' goes at 0.10 while the other survives by 0.60: a
+    headroom-only alarm would call that +0.400 of room and say nothing."""
+    read = "rnrqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR"
+    events = [
+        _event(
+            0,
+            read,
+            prior=read,
+            evidence=_digest(read, c8=("b", 0.35, 0.25), f8=("r", 0.70, 0.10)),
+        ),
+    ]
+    report = score_session(_session(tmp_path, events), _truth())
+    guard = report.attractor
+
+    assert guard.lost_in_band == 1
+    assert guard.min_margin == pytest.approx(0.60, abs=1e-6)  # wide, and irrelevant
+    assert guard.at_risk and report.to_dict()["attractor_guard"]["at_risk"] is True
+    assert "WARNING" in report.render()
+    assert "went to the runner-up inside the band" in report.render()
+
+
+def test_attractor_guard_is_loudest_when_no_correct_bishop_survives(tmp_path):
+    """Total collapse: every truth-'b' on the board went to its runner-up inside
+    the band, so there is no survivor to measure a headroom against. That is the
+    failure the guard exists to catch — it must never render as 'no b on the
+    board this session'."""
+    read = "rnrqkrnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR"
+    events = [
+        _event(
+            0,
+            read,
+            prior=read,
+            evidence=_digest(read, c8=("b", 0.35, 0.25), f8=("b", 0.33, 0.30)),
+        ),
+    ]
+    report = score_session(_session(tmp_path, events), _truth())
+    guard = report.attractor
+    rendered = report.render()
+
+    assert guard.correct == 0 and guard.min_margin is None
+    assert guard.lost_in_band == 2 and guard.at_risk
+    assert report.to_dict()["attractor_guard"]["at_risk"] is True
+    assert "WARNING" in rendered and "NONE survived" in rendered
+    assert "no 'b' on the board" not in rendered
+
+
+def test_attractor_guard_says_so_when_the_board_holds_no_black_bishop(tmp_path):
+    """The genuinely empty case, kept distinct from the collapse above: no
+    truth-'b' square was scored at all, so there is nothing to warn about."""
+    no_bishops = "rn1qk1nr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR"
+    truth = _truth(segments=(TruthSegment(0, no_bishops),))
+    events = [
+        _event(0, no_bishops, prior=no_bishops, evidence=_digest(no_bishops)),
+    ]
+    report = score_session(_session(tmp_path, events), truth)
+
+    assert report.attractor.correct == 0 and report.attractor.lost_in_band == 0
+    assert not report.attractor.at_risk
+    assert "no 'b' on the board this session" in report.render()
+    assert "WARNING" not in report.render()
+
+
 def test_attractor_guard_reads_only_the_squares_that_were_scored(tmp_path):
     """Guard-window reads are excluded from the score, so they cannot raise a
     warning either — a hand over the board is not evidence about bishops."""

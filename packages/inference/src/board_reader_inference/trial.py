@@ -678,7 +678,9 @@ class AttractorGuard:
     count: a truth-``b`` square read as something else with ``b`` the runner-up
     inside the band either was demoted by the rule, or was already wrong with
     ``b`` second. The digest cannot separate the two — pre-rule top-1 is not
-    recorded — so it is reported as "at most this many".
+    recorded — so it is reported as "at most this many". Upper bound or not, it is
+    the *direct* evidence that squares are going, and :attr:`min_margin` can never
+    show it: see :attr:`at_risk`.
     """
 
     #: Scored squares whose truth is ``b`` and which were read ``b``.
@@ -695,9 +697,21 @@ class AttractorGuard:
 
     @property
     def at_risk(self) -> bool:
-        """True when this session has closed most of the gap the rule rests on."""
+        """True when this session says the gap has narrowed — or that it is gone.
+
+        Two independent triggers, and the second is the load-bearing one:
+        :attr:`min_margin` is **censored at** :data:`ATTRACTOR_MARGIN` by
+        construction (a surviving ``b`` is by definition one the rule declined to
+        fire on), so no square the rule actually took can ever move it. It reports
+        narrowing among the survivors; :attr:`lost_in_band` is the direct evidence
+        that squares are already going, and it needs no survivor to exist at all —
+        a total collapse has ``correct == 0`` and ``min_margin is None``, and that
+        is the loudest case there is, not a quiet one.
+        """
         head = self.headroom
-        return head is not None and head < ATTRACTOR_GUARD_HEADROOM
+        return self.lost_in_band > 0 or (
+            head is not None and head < ATTRACTOR_GUARD_HEADROOM
+        )
 
     def to_dict(self) -> dict:
         return {
@@ -976,30 +990,52 @@ class SessionReport:
         if not self.evidence.recorded:
             return []  # no digest, no margins — the guard has nothing to read
         head = f"attractor: {ATTRACTOR!r} demoted below margin {ATTRACTOR_MARGIN:.2f}"
-        if g.min_margin is None:
+        if not g.correct and not g.lost_in_band:
             return ["", f"{head} — no {ATTRACTOR!r} on the board this session"]
-        lines = [
-            "",
-            f"{head}"
-            + (
-                f", at most {g.lost_in_band} correct square"
-                f"{'s' if g.lost_in_band > 1 else ''} taken"
-                if g.lost_in_band
-                else ""
-            ),
-            f"  correct {ATTRACTOR!r} reads {g.correct:>7} · closest to the band "
-            f"{g.min_margin:.3f} (headroom {g.headroom:+.3f})",
-        ]
-        if g.at_risk:
+
+        taken = (
+            f", at most {g.lost_in_band} correct square"
+            f"{'s' if g.lost_in_band > 1 else ''} taken"
+            if g.lost_in_band
+            else ""
+        )
+        lines = ["", head + taken]
+        if g.min_margin is None:
+            # Every truth-'b' square on the board went to its runner-up inside the
+            # band. There is no survivor left to measure a headroom against, which
+            # is the total-collapse case — never report it as nothing to see.
+            lines.append(
+                f"  correct {ATTRACTOR!r} reads       0 · NONE survived: every "
+                f"{ATTRACTOR!r} on the board went to its runner-up inside the band"
+            )
+        else:
+            lines.append(
+                f"  correct {ATTRACTOR!r} reads {g.correct:>7} · closest to the band "
+                f"{g.min_margin:.3f} (headroom {g.headroom:+.3f})"
+            )
+        if g.lost_in_band:
+            lines += [
+                f"  ! WARNING {g.lost_in_band} truth-{ATTRACTOR!r} square(s) went to "
+                f"the runner-up inside the band: either the demotion ate them or they "
+                "were already wrong with "
+                f"{ATTRACTOR!r} second.",
+                "            The digest is post-rule and cannot separate the two, so "
+                "that is an upper bound — but this set no longer shows the clean gap "
+                "the rule was shipped on.",
+            ]
+        if g.headroom is not None and g.headroom < ATTRACTOR_GUARD_HEADROOM:
             lines += [
                 f"  ! WARNING the gap the demotion rests on is closing: a correct "
                 f"{ATTRACTOR!r} read at margin {g.min_margin:.3f} is within "
                 f"{ATTRACTOR_GUARD_HEADROOM:.2f} of the {ATTRACTOR_MARGIN:.2f} that "
                 "fires it.",
-                "            Below it the rule eats correct squares silently. Re-check "
-                "the constant against this set before trusting the score "
-                "(docs/reports/2026-08-27-evidence-rerank.md §9.1).",
+                "            Below it the rule eats correct squares silently.",
             ]
+        if g.at_risk:
+            lines.append(
+                "            Re-check the constant against this set before trusting "
+                "the score (docs/reports/2026-08-27-evidence-rerank.md §9.1)."
+            )
         return lines
 
     def _render_timing(self) -> list[str]:
