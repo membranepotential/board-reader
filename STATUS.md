@@ -18,9 +18,11 @@ confidences**. No moves, no legality, no PGN — those are the downstream applic
 - **Iteration is offline now** — recorded takes replace live phone takes (operator
   decision 08-27 eve); a replay harness turns each recording into a rerunnable
   benchmark. Dev stack stopped, GPU free.
-- replay-harness — agent building `board-reader-inference replay` (frames.ndjson →
-  estimator → events, virtual clock from capture_ts, scoreable by eval-session) —
-  running — next: validate on the 08-13 recording.
+- baseline-replays — replaying all four 08-27 takes through today's fixed stack
+  (background, GPU) — running — next: scores become the offline benchmark baseline.
+- ship-b-demotion — implementer agent landing the re-rank rule (swap top-2 on
+  `b` argmax at margin < 0.20) + scorer guardrail — running — next: replay-verify.
+- replay-review — code-reviewer on the harness commit `e759631` — running.
 - phone-live-test — FOUR takes recorded, three scored (control 99.0 %/58.3 %,
   hard 98.6 %/46.5 %, fast 98.1 %/58.1 % prior). Take 5 (18:18, unscored, no truth)
   proved the meter fix live — send rate 1 fps at rest with real bursts (was a flat
@@ -47,6 +49,16 @@ confidences**. No moves, no legality, no PGN — those are the downstream applic
   Weigh a cheap re-rank/calibration pass against the retrain before training.
 
 ## Done (recent)
+
+- 08-27 (night): **replay harness shipped** (`e759631`) — `board-reader-inference
+  replay <recording>` re-runs recorded frames through the live route/prior/settle
+  path on the recorded capture_ts clock; output under `<src>/replays/<name>/` is
+  eval-session-scoreable; deterministic (byte-identical, proven on the real
+  cascade); `FramePolicy` seam ready for move-triggered estimation. First result:
+  replaying 08-13 at full 7.5 fps locks the settled stream onto a d8/e8 k/q swap
+  for the whole session (needs ~19 agreeing reads to displace vs ~3 at trial
+  rate) — the stabilizer's adopt-first rule wants a tiebreak, and read RATE is
+  now known to change settled behaviour, not just lag.
 
 - 08-27 (night): **re-rank study: GO on one rule, NO-GO wider**
   ([report](docs/reports/2026-08-27-evidence-rerank.md), `f66f9a4`+`4d3c165`).
