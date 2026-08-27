@@ -13,9 +13,6 @@ confidences**. No moves, no legality, no PGN — those are the downstream applic
   replay `FramePolicy` seam (burst-end + keepalive floor vs every-frame) and
   sweeping them over the four takes (owns GPU) — running — next: policy
   recommendation + accuracy-per-read table.
-- framing-redetect — **landed** (`0ebbbd2`: periodic baselined re-detect, adopt
-  at >0.45 sq ×2 consecutive, tracker re-seed; 22 new tests, 411 green) — code
-  review running — next: fold review findings, then it's live-take-provable.
 
 - public-release — repo is **push-ready** (Apache-2.0 + THIRD-PARTY.md, details
   scrubbed, history re-signed onto the current author email). Before pushing: add that
@@ -52,6 +49,17 @@ confidences**. No moves, no legality, no PGN — those are the downstream applic
   Weigh a cheap re-rank/calibration pass against the retrain before training.
 
 ## Done (recent)
+
+- 08-27 (night): **framing re-detect shipped** (`0ebbbd2` + review fixes
+  `857163b`; 417 UI tests green). Every 10 s on a resting frame the page
+  re-detects, baselines the convention offset (median of 3, live-origin
+  framings only — a restored quad can't poison the permanent R0), adopts at
+  >0.45 squares ×2 consecutive (≤2.0 cap; reposition warns once per episode),
+  re-seeds the tracker; 20/40/80 s backoff then give-up on detector misses;
+  /detect now has a 15 s timeout so a stall can't wedge the page's controls.
+  Study projects −58 % wrong squares on take-5-like drift, 0 false adoptions on
+  the controls. Live-take proof outstanding (page wiring has no unit-test seam —
+  e2e/live only).
 
 - 08-27 (night): **framing-drift study**
   ([report](docs/reports/2026-08-27-framing-drift.md)): take 5's residual is LK
