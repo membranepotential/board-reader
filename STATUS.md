@@ -159,6 +159,15 @@ confidences**. No moves, no legality, no PGN — those are the downstream applic
 
 ## Next
 
+0c. **Move-triggered estimation** (operator-endorsed direction): the node reads
+   continuously today, wasting reads on resting boards and on mid-burst chaos
+   frames (whose huge unsure batches are the OOM path). Frames already carry
+   `stability` + `burst_id`; estimate at BURST END (the move-complete moment) +
+   a slow keepalive at rest (~3-5 s), skip mid-burst. Hard floor rate is
+   non-negotiable (D3 hint-never-gate; the dead-meter incident is the cautionary
+   tale). Later, per-square motion masks feed the stabilizer for hovering hands;
+   shadows stay the classifier's problem — a false burst is cheap, keepalive
+   bounds a missed move.
 1. **Re-rank before retrain** — the hard take's residual (`p->b`/`q->b`, truth second
    25/25 at ~0.18 margin) should fall to a cheap logit-calibration / re-rank pass;
    the control's `q->k` (truth outside top-2 half the time) is the true crop case.
