@@ -58,16 +58,26 @@ class ScriptedModel:
         self._by_crop = {batch[i].tobytes(): logits[i] for i in range(len(crops))}
         assert len(self._by_crop) == 64, "crops must be distinguishable for this fake"
         self.geometry = geometry
-        self.seen: list[np.ndarray] = []
+        self._asked: set[bytes] = set()
+        self.runs: list[int] = []
 
     def __call__(self, batch: np.ndarray) -> np.ndarray:
-        out = np.stack([self._by_crop[row.tobytes()] for row in batch])
-        self.seen.append(out)
-        return out
+        rows = [row.tobytes() for row in batch]
+        self._asked.update(rows)
+        self.runs.append(len(rows))
+        return np.stack([self._by_crop[row] for row in rows])
 
     @property
     def crops_seen(self) -> int:
-        return sum(len(o) for o in self.seen)
+        """Distinct board squares this model was asked about.
+
+        Distinct, not rows fed: a partial batch is padded up to ``batch_size``
+        with repeats of its last crop (the fixed-shape fix in
+        ``TrainedEstimator.crop_dist`` that stops the CUDA arena ratcheting), and
+        a repeat is not a square the cascade deferred. The 64 crops are distinct
+        by construction, so de-duplicating recovers exactly the deferral count.
+        """
+        return len(self._asked)
 
 
 def _confident(cls: str, n: int = 64) -> np.ndarray:
@@ -119,8 +129,12 @@ def test_unsure_squares_average_5050_with_the_second_model():
     est, _, b = _cascade(image, corners, logits_a, logits_b)
     dist = est.square_dist(image, corners)
 
-    # Only the two unsure squares were re-read, and only they moved.
+    # Only the two unsure squares were re-read, and only they moved...
     assert b.crops_seen == 2
+    # ...in ONE fixed-shape batch, never a ragged 2-row run: a CUDA BFC arena
+    # reserves fresh chunks per distinct input shape and never frees them, so a
+    # secondary whose batch varies with the unsure count ratchets it to the cap.
+    assert b.runs == [16]
     assert est.metrics.deferred == 2 and est.metrics.squares == 64
     expected = 0.5 * _softmax(logits_a) + 0.5 * _softmax(logits_b)
     np.testing.assert_allclose(dist[unsure], expected[unsure], atol=1e-6)

@@ -143,11 +143,13 @@ class DinoV2Embedder:
             providers=providers,
         )
         self._input = self.session.get_inputs()[0].name
-        self._dim = self._resolve_dim()
         # Cap the per-run batch: a 64-crop board fits comfortably, but augmented
         # multi-photo calibration can hand us hundreds of crops at once, which
-        # OOMs the ONNX arena (especially on small GPUs).
+        # OOMs the ONNX arena (especially on small GPUs). Set before
+        # :meth:`_resolve_dim` so even the probe run uses the one batch shape
+        # this session will ever see (see :meth:`_preprocess`).
         self.batch_size = batch_size
+        self._dim = self._resolve_dim()
 
     def _resolve_dim(self) -> int:
         """Embedding width, from the graph if it is concrete, else by probing.
@@ -161,7 +163,11 @@ class DinoV2Embedder:
         declared = self.session.get_outputs()[0].shape[-1]
         if isinstance(declared, int):
             return declared
-        probe = np.zeros((1, 3, self.image_size, self.image_size), dtype=np.float32)
+        # A full-size probe, not a single row: a one-off (1, ...) run would
+        # reserve its own arena chunks forever (see :meth:`_preprocess`).
+        probe = np.zeros(
+            (self.batch_size, 3, self.image_size, self.image_size), dtype=np.float32
+        )
         return int(self.session.run(None, {self._input: probe})[0].shape[-1])
 
     @property
@@ -169,8 +175,21 @@ class DinoV2Embedder:
         return self._dim
 
     def _preprocess(self, crops: list[np.ndarray]) -> np.ndarray:
-        n = len(crops)
-        batch = np.empty((n, 3, self.image_size, self.image_size), dtype=np.float32)
+        """1..``batch_size`` crops -> a full ``(batch_size, 3, S, S)`` batch.
+
+        Always the full batch, with any tail rows filled by repeating the last
+        real crop. The CUDA BFC arena never frees and reserves a fresh chunk set
+        per distinct input shape, so a partial batch (a 47-crop calibration
+        remainder, a 3-square re-read) ratchets the arena up until it hits
+        BR_GPU_MEM_LIMIT_MB and every allocation after that fails (91 estimate
+        failures in take 5, 2026-08-27). One shape means one working set, reused
+        forever. Repeating the last row rather than zero-filling keeps every
+        padded row a legal, in-distribution input, and copying an already-
+        preprocessed row costs nothing; :meth:`embed` slices the extras off.
+        """
+        batch = np.empty(
+            (self.batch_size, 3, self.image_size, self.image_size), dtype=np.float32
+        )
         for i, crop in enumerate(crops):
             bgr = crop if crop.ndim == 3 else cv2.cvtColor(crop, cv2.COLOR_GRAY2BGR)
             img = cv2.resize(
@@ -179,17 +198,17 @@ class DinoV2Embedder:
             rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
             rgb = (rgb - _IMAGENET_MEAN) / _IMAGENET_STD
             batch[i] = np.transpose(rgb, (2, 0, 1))
+        batch[len(crops) :] = batch[len(crops) - 1]
         return batch
 
     def embed(self, crops: list[np.ndarray]) -> np.ndarray:
         if not crops:
             return np.zeros((0, self.dim), dtype=np.float32)
-        outs = [
-            self.session.run(
-                None, {self._input: self._preprocess(crops[i : i + self.batch_size])}
-            )[0]
-            for i in range(0, len(crops), self.batch_size)
-        ]
+        outs = []
+        for i in range(0, len(crops), self.batch_size):
+            chunk = crops[i : i + self.batch_size]
+            run = self.session.run(None, {self._input: self._preprocess(chunk)})[0]
+            outs.append(run[: len(chunk)])
         out = np.vstack(outs)
         return l2_normalize(np.asarray(out, dtype=np.float32), axis=1)
 

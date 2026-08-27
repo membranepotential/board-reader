@@ -225,7 +225,21 @@ class TrainedEstimator(_CropReader):
         """
         outs = []
         for i in range(0, len(crops), self.batch_size):
-            outs.append(self.logits_fn(preprocess(crops[i : i + self.batch_size])))
+            chunk = crops[i : i + self.batch_size]
+            take = len(chunk)
+            # Pad every run to EXACTLY self.batch_size rows, then slice the
+            # answer back to `take`. The CUDA BFC arena never frees and reserves
+            # a fresh chunk set per distinct input shape, so a tail batch of
+            # 1..15 — or a cascade secondary called with a varying "unsure"
+            # count — ratchets the arena up until it hits BR_GPU_MEM_LIMIT_MB and
+            # every subsequent allocation fails (91 estimate failures in take 5,
+            # 2026-08-27). One shape means one working set, reused forever.
+            # Repeating the last crop rather than zero-filling keeps every padded
+            # row a legal, in-distribution input (no BN/normalization surprises)
+            # and costs at most 15 extra crops per call, which is noise against
+            # a ~1 s read even on CPU.
+            chunk = chunk + [chunk[-1]] * (self.batch_size - take)
+            outs.append(self.logits_fn(preprocess(chunk))[:take])
         logits = np.concatenate(outs, axis=0)
         if logits.shape != (len(crops), NUM_CLASSES):
             raise ValueError(f"model returned {logits.shape}, expected ({len(crops)}, {NUM_CLASSES})")

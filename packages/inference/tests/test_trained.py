@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 
 import numpy as np
+import pytest
 
 from board_reader_core.protocol import (
     CLASSES,
@@ -38,10 +39,15 @@ def _oracle_logits_for(placement: str):
         assert batch.dtype == np.float32 and batch.shape[1:] == (3, 224, 224)
         n = batch.shape[0]
         calls["batches"].append(n)
+        # A tail batch is padded up to batch_size with repeats of its last real
+        # crop (the arena-ratchet fix), so only the first `real` rows of the
+        # final batch map onto labels; the padded ones are sliced off by the
+        # caller and can answer anything.
+        real = min(n, len(labels) - calls["i"])
         out = np.full((n, NUM_CLASSES), -5.0, dtype=np.float32)
         for j in range(n):
-            out[j, CLASSES.index(labels[calls["i"] + j])] = 5.0
-        calls["i"] += n
+            out[j, CLASSES.index(labels[min(calls["i"] + j, len(labels) - 1)])] = 5.0
+        calls["i"] += real
         return out
 
     fn.calls = calls
@@ -68,11 +74,53 @@ def test_estimate_photo_roundtrip_and_batching():
     event = est.estimate_photo(frame, full_frame_corners(photo))
     assert event.placement == mid
     assert event.status == "ok"
-    # Batching honored: 64 crops in ceil(64/48)=2 batches.
-    assert est.logits_fn.calls["batches"] == [48, 16]
+    # Batching honored: 64 crops in ceil(64/48)=2 batches — and BOTH runs see 48
+    # rows, the 16-crop tail padded up (see test_partial_batches_* below).
+    assert est.logits_fn.calls["batches"] == [48, 48]
     dist = np.asarray(event.square_dist)
     assert dist.shape == (8, 8, NUM_CLASSES)
     np.testing.assert_allclose(dist.sum(axis=-1), 1.0, atol=1e-5)
+
+
+def _content_logits_fn(seen: list[int]):
+    """Deterministic per-row logits from that row's own pixels.
+
+    Content-keyed rather than call-order-keyed, so a padded row cannot shift
+    another row's answer: any difference between a padded and an unpadded run is
+    a real slicing bug, not fake bookkeeping. ``seen`` records every batch's row
+    count.
+    """
+
+    def fn(batch: np.ndarray) -> np.ndarray:
+        seen.append(batch.shape[0])
+        flat = batch.reshape(batch.shape[0], -1)
+        return np.ascontiguousarray(flat[:, :NUM_CLASSES] * 4.0, dtype=np.float32)
+
+    return fn
+
+
+@pytest.mark.parametrize("n", [1, 15, 16, 17, 33])
+def test_partial_batches_are_padded_to_one_fixed_shape(n):
+    """Every session.run sees exactly ``batch_size`` rows — the arena-ratchet fix.
+
+    A CUDA BFC arena never frees and reserves a fresh chunk set per distinct
+    input shape, so a varying tail batch (or a cascade secondary's varying
+    "unsure" count) creeps the arena up to BR_GPU_MEM_LIMIT_MB, after which every
+    large request fails. Padding to one shape must be invisible in the answer.
+    """
+    rng = np.random.default_rng(7)
+    crops = [rng.integers(0, 256, (8, 8, 3), dtype=np.uint8) for _ in range(n)]
+
+    seen: list[int] = []
+    out = TrainedEstimator(_content_logits_fn(seen), batch_size=16).crop_dist(crops)
+    assert out.shape == (n, NUM_CLASSES)
+    assert seen == [16] * ((n + 15) // 16)
+
+    # batch_size=1 never pads, so it is the unpadded reference. Bit-for-bit.
+    ref_seen: list[int] = []
+    ref = TrainedEstimator(_content_logits_fn(ref_seen), batch_size=1).crop_dist(crops)
+    assert ref_seen == [1] * n
+    np.testing.assert_array_equal(out, ref)
 
 
 def test_estimate_uses_full_frame():

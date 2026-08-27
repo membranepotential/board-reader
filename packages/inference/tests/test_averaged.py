@@ -51,11 +51,26 @@ class CountingModel:
         batch = preprocess(crop_squares_photo(image, corners, geometry=GEO, size=224))
         self._by_crop = {batch[i].tobytes(): logits[i] for i in range(len(batch))}
         assert len(self._by_crop) == 64, "crops must be distinguishable for this fake"
-        self.crops_seen = 0
+        self._asked: set[bytes] = set()
+        self.runs: list[int] = []
 
     def __call__(self, batch: np.ndarray) -> np.ndarray:
-        self.crops_seen += len(batch)
-        return np.stack([self._by_crop[row.tobytes()] for row in batch])
+        rows = [row.tobytes() for row in batch]
+        self._asked.update(rows)
+        self.runs.append(len(rows))
+        return np.stack([self._by_crop[row] for row in rows])
+
+    @property
+    def crops_seen(self) -> int:
+        """Distinct board squares this model was asked about.
+
+        Distinct, not rows fed: a partial batch is padded up to ``batch_size``
+        with repeats of its last crop (the fixed-shape fix in
+        ``TrainedEstimator.crop_dist`` that stops the CUDA arena ratcheting), and
+        a repeat is not a square anyone asked about. The 64 crops are distinct by
+        construction, so de-duplicating recovers exactly the squares read.
+        """
+        return len(self._asked)
 
 
 def _photo() -> tuple[np.ndarray, np.ndarray]:
@@ -145,6 +160,9 @@ def test_a_subset_of_squares_costs_that_subset_only():
     dist = est.square_dist(image, corners, squares=[0, 7, 63])
     assert dist.shape == (3, NUM_CLASSES)
     assert base_fn.crops_seen == 3 and tuned_fn.crops_seen == 3
+    # Three squares, cut once each — but fed as ONE fixed-shape batch per model,
+    # never a ragged 3-row run (the GPU arena reserves per input shape).
+    assert base_fn.runs == [16] and tuned_fn.runs == [16]
 
 
 def test_mismatched_geometry_is_refused():

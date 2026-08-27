@@ -136,3 +136,66 @@ def test_embedder_resolves_a_symbolic_output_width_by_probing(monkeypatch, tmp_p
     emb = embed_mod.DinoV2Embedder(model, providers=["CPUExecutionProvider"])
     assert emb.dim == 384
     assert emb.embed([np.zeros((8, 8, 3), dtype=np.uint8)] * 3).shape == (3, 384)
+
+
+def test_dinov2_pads_every_run_to_one_fixed_batch_shape(monkeypatch, tmp_path):
+    """Every session.run sees exactly ``batch_size`` rows — the arena-ratchet fix.
+
+    A CUDA BFC arena never frees and reserves a fresh chunk set per distinct
+    input shape, so a partial batch (a calibration remainder, a handful of
+    re-read squares) creeps the arena up to BR_GPU_MEM_LIMIT_MB, after which
+    every large allocation fails. Padding to one shape must be invisible in the
+    embeddings, so this fake answers from each row's OWN pixels: a padded row
+    cannot shift a real row's answer, and a slicing bug shows up as a mismatch
+    against the never-padded ``batch_size=1`` reference.
+    """
+    from board_reader_inference import embed as embed_mod
+
+    class _FakeInput:
+        name = "pixel_values"
+
+    class _FakeOutput:
+        shape: ClassVar[list[object]] = ["batch", 4]
+
+    class _FakeSession:
+        def __init__(self, *a, **kw):
+            self.seen: list[int] = []
+
+        def get_inputs(self):
+            return [_FakeInput()]
+
+        def get_outputs(self):
+            return [_FakeOutput()]
+
+        def run(self, _names, feed):
+            batch = feed["pixel_values"]
+            self.seen.append(batch.shape[0])
+            return [batch.reshape(batch.shape[0], -1)[:, :4].astype(np.float32)]
+
+    sessions: list[_FakeSession] = []
+
+    def _make(*a, **kw):
+        sessions.append(_FakeSession())
+        return sessions[-1]
+
+    model = tmp_path / "fake.onnx"
+    model.write_bytes(b"stub")
+    monkeypatch.setitem(
+        sys.modules, "onnxruntime", types.SimpleNamespace(InferenceSession=_make)
+    )
+
+    rng = np.random.default_rng(11)
+    for n in (1, 15, 16, 17, 33):
+        crops = [rng.integers(0, 256, (8, 8, 3), dtype=np.uint8) for _ in range(n)]
+        emb = embed_mod.DinoV2Embedder(
+            model, image_size=8, providers=["CPUExecutionProvider"]
+        )
+        out = emb.embed(crops)
+        assert out.shape == (n, 4)
+        assert sessions[-1].seen == [16] * ((n + 15) // 16)
+
+        ref = embed_mod.DinoV2Embedder(
+            model, image_size=8, providers=["CPUExecutionProvider"], batch_size=1
+        )
+        np.testing.assert_array_equal(out, ref.embed(crops))
+        assert sessions[-1].seen == [1] * n
