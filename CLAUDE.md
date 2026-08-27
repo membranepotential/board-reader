@@ -17,7 +17,7 @@ must stay in sync with which.
    We never land a milestone that can't be demoed live. New behaviour ships with
    both automated tests **and** a path in [docs/TESTING.md](docs/TESTING.md). The
    walking skeleton (M0) exists precisely to make this true from day one.
-2. **Everything is tested.** No feature merges without tests. `make test` (~12 s) is
+2. **Everything is tested.** No feature merges without tests. `make test` (~20 s) is
    green before any commit **that changes something the suite covers**. Don't run
    it when nothing testable changed — a docs, comment, `Makefile` or `STATUS.md`
    edit is not a reason to spend a suite run. Logic-heavy code gets unit tests;
@@ -59,7 +59,7 @@ verified — a fix landed with its tests, a feature demoed green, a subagent's w
 validated — commit it right then (conventional message, one concern per commit).
 Never let several finished workstreams pile up uncommitted in the tree.
 
-**Testing costs ~12 s. If it is costing you more, read
+**Testing costs ~20 s. If it is costing you more, read
 [docs/TESTING.md §0](docs/TESTING.md#0-read-this-first-the-60-second-version)** —
 it is the 60-second agent briefing: which command to run when, the four habits that
 waste the most time, what a hang means, and the one `/ingest` gotcha

@@ -10,10 +10,6 @@ confidences**. No moves, no legality, no PGN — those are the downstream applic
 ## Now
 
 
-- move-trigger-ship — wiring `BurstTriggered(keepalive 3.0 s, 3 burst-end reads
-  @1.3 s)` into live ingest per the sweep's recommendation (policy picks from the
-  inbox so prefer_frame's sharper contender is what a burst-end read gets) —
-  running — next: full unit/integration cascade + TESTING.md sparse-events note.
 - stabilize-tiebreak — fixing the adopt-first-wholesale defect the sweep proved
   (settled BELOW its own prior on the control take at every read rate; d8 q->k
   locked 253/253) — running — next: replay-verify on all four takes, both
@@ -66,6 +62,19 @@ confidences**. No moves, no legality, no PGN — those are the downstream applic
 
 ## Done (recent)
 
+- 08-27 (night): **burst-end scheduling is LIVE on ingest** (`9035d58`) — observe
+  every frame at submit, decide at drain (so prefer_frame's sharper contender is
+  what a burst-end read gets — pinned by test); default
+  `burst-end:burst_end_reads=3`, `BR_SCHEDULE` env / `serve --schedule` escape
+  hatch (`every-frame`); wall-clock backstop at 2×keepalive catches a frozen
+  edge clock (`/healthz` ingest.unscheduled/backstopped). All 8 review findings
+  fixed with adversarial tests (owed reads cancelled on burst entry; floor
+  finite-positive-validated; spacing ≤ floor; backwards clock degrades to floor;
+  NaN stability = at rest; repr-faithful names; typed Frame adapter). Cascade:
+  45 policy unit + 18 ingest integration + pipe e2e; suite 1035 green;
+  TESTING.md re-measured (~20 s / ~1035) + sparse-events guard_seqs=3 note.
+  Live event streams are now SPARSE BY DESIGN.
+
 - 08-27 (night): **move-trigger sweep decided the scheduler**
   ([report](docs/reports/2026-08-27-move-trigger-sweep.md), code `5f9212f` —
   schedule.py policies, --restamp-stability, meter ported with a parity test).
@@ -79,7 +88,7 @@ confidences**. No moves, no legality, no PGN — those are the downstream applic
   settled adopt-first-wholesale rule fails at every read rate (control: settled
   below its own prior, q->k locked 253/253). CAVEAT: baseline-3452334 /
   bdemotion-fe8a7bb replays ran cascade-only — cwd-relative DINOV2 path +
-  silent bank fallback in a worktree (learning d318c366); the b-demotion
+  silent bank fallback in a worktree (captured in the learnings store); the b-demotion
   before/after stands (same stack both sides) but its absolute numbers are not
   the ensemble's.
 
