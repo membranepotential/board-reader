@@ -119,7 +119,12 @@ class DinoV2Embedder:
         *,
         image_size: int = 224,
         providers: list[Provider] | None = None,
-        batch_size: int = 64,
+        # 16, not 64: peak CUDA arena scales with the batch (a full-board
+        # ResNet batch peaks near the 1 GiB per-session cap and OOM'd two live
+        # trials on the shared 4 GiB card, 2026-08-27 — and a BFC arena never
+        # shrinks, so one giant batch poisons every read after it). Four
+        # launches instead of one cost milliseconds against a ~1 s read.
+        batch_size: int = 16,
     ) -> None:
         import onnxruntime as ort
 

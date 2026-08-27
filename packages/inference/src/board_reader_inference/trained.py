@@ -150,7 +150,12 @@ class TrainedEstimator(_CropReader):
         geometry: CropGeometry | None = None,
         square_size: int | None = None,
         orientation: str = "a1_bottom_left",
-        batch_size: int = 64,
+        # 16, not 64: peak CUDA arena scales with the batch (a full-board
+        # ResNet batch peaks near the 1 GiB per-session cap and OOM'd two live
+        # trials on the shared 4 GiB card, 2026-08-27 — and a BFC arena never
+        # shrinks, so one giant batch poisons every read after it). Four
+        # launches instead of one cost milliseconds against a ~1 s read.
+        batch_size: int = 16,
     ) -> None:
         # Crop geometry SHIPS WITH the model: a `<model>.meta.json` sidecar
         # written at export time carries the geometry and size the network
