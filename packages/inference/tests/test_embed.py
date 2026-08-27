@@ -124,7 +124,10 @@ def test_embedder_resolves_a_symbolic_output_width_by_probing(monkeypatch, tmp_p
         def get_outputs(self):
             return [_FakeOutput()]
 
+        fed_shapes: ClassVar[list[tuple[int, ...]]] = []
+
         def run(self, _names, feed):
+            self.fed_shapes.append(feed["pixel_values"].shape)
             n = feed["pixel_values"].shape[0]
             return [np.ones((n, 384), dtype=np.float32)]
 
@@ -135,7 +138,53 @@ def test_embedder_resolves_a_symbolic_output_width_by_probing(monkeypatch, tmp_p
 
     emb = embed_mod.DinoV2Embedder(model, providers=["CPUExecutionProvider"])
     assert emb.dim == 384
+    # The probe itself must use the one fixed batch shape: a one-off (1, ...)
+    # probe would reserve its own arena chunk set forever (the ratchet).
+    assert _FakeSession.fed_shapes == [
+        (emb.batch_size, 3, emb.image_size, emb.image_size)
+    ]
     assert emb.embed([np.zeros((8, 8, 3), dtype=np.uint8)] * 3).shape == (3, 384)
+    assert set(_FakeSession.fed_shapes) == {
+        (emb.batch_size, 3, emb.image_size, emb.image_size)
+    }
+
+
+def test_preprocess_rejects_an_empty_or_oversize_crop_list(monkeypatch, tmp_path):
+    # An empty list would broadcast an uninitialized row across the whole padded
+    # batch and hand ORT garbage silently; the contract is enforced instead.
+    from board_reader_inference import embed as embed_mod
+
+    class _FakeOutput:
+        shape: ClassVar[list[object]] = ["batch", 4]
+
+    class _FakeInput:
+        name = "pixel_values"
+
+    class _FakeSession:
+        def __init__(self, *a, **kw):
+            pass
+
+        def get_inputs(self):
+            return [_FakeInput()]
+
+        def get_outputs(self):
+            return [_FakeOutput()]
+
+        def run(self, _names, feed):
+            return [np.ones((feed["pixel_values"].shape[0], 4), dtype=np.float32)]
+
+    model = tmp_path / "stub.onnx"
+    model.write_bytes(b"stub")
+    monkeypatch.setitem(
+        sys.modules, "onnxruntime", types.SimpleNamespace(InferenceSession=_FakeSession)
+    )
+    emb = embed_mod.DinoV2Embedder(model, providers=["CPUExecutionProvider"])
+    with pytest.raises(ValueError, match="crops"):
+        emb._preprocess([])
+    with pytest.raises(ValueError, match="crops"):
+        emb._preprocess([np.zeros((8, 8, 3), dtype=np.uint8)] * (emb.batch_size + 1))
+    # embed() still short-circuits an empty list before _preprocess.
+    assert emb.embed([]).shape == (0, 4)
 
 
 def test_dinov2_pads_every_run_to_one_fixed_batch_shape(monkeypatch, tmp_path):

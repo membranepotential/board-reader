@@ -186,7 +186,15 @@ class DinoV2Embedder:
         forever. Repeating the last row rather than zero-filling keeps every
         padded row a legal, in-distribution input, and copying an already-
         preprocessed row costs nothing; :meth:`embed` slices the extras off.
+
+        The 1..``batch_size`` contract is enforced: on an empty list the
+        repeat-last fill would broadcast an uninitialized row over the whole
+        buffer and hand ORT garbage without a sound.
         """
+        if not 1 <= len(crops) <= self.batch_size:
+            raise ValueError(
+                f"_preprocess needs 1..{self.batch_size} crops, got {len(crops)}"
+            )
         batch = np.empty(
             (self.batch_size, 3, self.image_size, self.image_size), dtype=np.float32
         )
