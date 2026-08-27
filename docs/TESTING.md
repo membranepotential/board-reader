@@ -745,9 +745,15 @@ board** re-runs detection on demand, for the cases automatic detection does not 
 (a bad angle, nothing recognisable as a board); the four corner handles are always
 there to drag by hand too. **calibrate** grabs one full-resolution frame and posts it
 through the guarded `/calibrate` (board must show the starting position, pieces at
-rest); because `/calibrate` is additive, tapping it again from a second or third angle
-grows the same bank rather than replacing it, and the button's own label carries the
-running count (`calibrate · 3`). **position** shows or hides a floating live-position
+rest) — and the FIRST one fires by itself: once streaming is on and the live
+reading looks like a start position sitting still (`shouldAutoCalibrate`,
+occupancy-banded in any rotation, stability ≥ 0.9), the page runs the same
+full-res sharpest-frame burst unprompted, so the whole session flow is aim →
+start → play. The node's agreement gate stays the authority — a false trigger is
+refused quietly and retried after a 30 s cooldown. Because `/calibrate` is
+additive, tapping the pill from a second or third angle still grows the same bank
+rather than replacing it, and the button's own label carries the running count
+(`calibrate · 3`). **position** shows or hides a floating live-position
 board that can be dragged by its header and resized from a corner grip. **more** opens
 a slide-up sheet holding the board id, the lens picker, tracking on/off, reset crop,
 the stats strip (frames/rate/stability), a **what the reader sees** section carrying the
@@ -796,6 +802,10 @@ What to check:
   a rotation without ending up off-screen.
 - After **calibrate**, a banner reports the class count and the bank size, and the
   button's own count goes up.
+- Zero-tap: on a fresh bank, set up the start position, press only **start** —
+  within a few seconds of the board sitting still the banner reads `Calibrated
+  automatically from the start position, …` with no calibrate tap. Set up a
+  mid-game position instead and it never fires.
 
 **Tracking (DESIGN §4.4.1(a)).** Once the corners are set they follow the board: pick
 the phone up, move it, put it down somewhere else and the quad — with its `a8`

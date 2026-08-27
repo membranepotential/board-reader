@@ -424,6 +424,74 @@ export function calibrateBlockReason(input: {
   return null;
 }
 
+// ---- automatic calibration ----------------------------------------------------
+
+/**
+ * "detect board -> calibrate should be fully automatic" (operator, 2026-08-27).
+ * Detection already is; this is calibration's half: once positions are flowing
+ * and the reading LOOKS like a start position sitting still, the page fires the
+ * calibrate itself — full-res burst, sharpest frame, exactly the manual path
+ * minus the tap and the confirm. The node's agreement gate stays the authority:
+ * a false trigger is refused server-side and costs one quiet attempt.
+ */
+export interface AutoCalibrate {
+  /** `performance.now()` before which no attempt is made (cooldown after one). */
+  readonly nextAt: number;
+  readonly attempts: number;
+}
+
+export const AUTO_CALIBRATE_START: AutoCalibrate = { nextAt: 0, attempts: 0 };
+/** A refusal is not retried before this — the board state that caused it rarely
+ * changes within seconds, and every attempt costs a full-res burst. */
+export const AUTO_CALIBRATE_COOLDOWN_MS = 30_000;
+/** Stricter than `MOVING_BELOW`: calibration wants a board at REST, not merely
+ * "not obviously moving" — the burst picks the sharpest frame either way, but a
+ * hand hovering near the board must not seed the bank. */
+export const AUTO_CALIBRATE_MIN_STABILITY = 0.9;
+
+/**
+ * Occupancy says "two opposite full bands, middle empty" — the start position in
+ * any of the four label rotations, robust to the piece-TYPE misreads an
+ * uncalibrated reader makes (occupancy transfers across styles; types do not).
+ */
+export function looksLikeStartOccupancy(grid: readonly (readonly string[])[]): boolean {
+  if (grid.length !== 8 || grid.some((row) => row.length !== 8)) return false;
+  const rows = grid.map((row) => row.filter((c) => c !== 'empty').length);
+  const cols = [0, 1, 2, 3, 4, 5, 6, 7].map(
+    (c) => grid.filter((row) => row[c] !== 'empty').length
+  );
+  const banded = (counts: number[]): boolean =>
+    counts[0] === 8 && counts[1] === 8 && counts[6] === 8 && counts[7] === 8 &&
+    counts[2] === 0 && counts[3] === 0 && counts[4] === 0 && counts[5] === 0;
+  return banded(rows) || banded(cols);
+}
+
+export interface AutoCalibrateGate {
+  readonly auto: AutoCalibrate;
+  readonly now: number;
+  readonly camera: CameraState;
+  readonly activity: Activity;
+  readonly portrait: boolean;
+  /** Positions only flow while streaming — and the reading is the trigger. */
+  readonly streaming: boolean;
+  readonly stability: number;
+  readonly bursting: boolean;
+  /** Automation covers the FIRST calibration only; extra angles stay deliberate. */
+  readonly calibrations: number;
+  /** The node's current reading for this board, or null before any arrived. */
+  readonly grid: readonly (readonly string[])[] | null;
+}
+
+export function shouldAutoCalibrate(gate: AutoCalibrateGate): boolean {
+  if (gate.calibrations > 0) return false;
+  if (!gate.streaming || gate.portrait || gate.bursting) return false;
+  if (gate.now < gate.auto.nextAt) return false;
+  if (gate.camera.kind !== 'live' || !isFramed(gate.camera.framing)) return false;
+  if (gate.activity.kind !== 'idle') return false;
+  if (gate.stability < AUTO_CALIBRATE_MIN_STABILITY) return false;
+  return gate.grid !== null && looksLikeStartOccupancy(gate.grid);
+}
+
 // ---- the hint line -----------------------------------------------------------
 
 /** The one action a hint may offer. A tag, not a callback, so this stays pure. */

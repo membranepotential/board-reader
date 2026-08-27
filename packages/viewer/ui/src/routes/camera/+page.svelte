@@ -87,6 +87,8 @@
     TRACK_SAVE_MS,
     TRACK_SUBDIVISIONS,
     backoffFor,
+    AUTO_CALIBRATE_COOLDOWN_MS,
+    AUTO_CALIBRATE_START,
     calibrateBlockReason,
     cornerKey,
     denormaliseQuad,
@@ -102,11 +104,13 @@
     ratePerSecond,
     rebaseQuad,
     serialiseFraming,
+    shouldAutoCalibrate,
     shouldAutoDetect,
     toQuad,
     trackingChip,
     withinRateWindow,
     type Activity,
+    type AutoCalibrate,
     type AutoDetect,
     type BannerKind,
     type BannerMessage,
@@ -126,6 +130,7 @@
   let camera = $state.raw<CameraState>({ kind: 'idle' });
   let activity = $state.raw<Activity>({ kind: 'idle' });
   let auto = $state.raw<AutoDetect>(AUTO_DETECT_START);
+  let autoCalib = $state.raw<AutoCalibrate>(AUTO_CALIBRATE_START);
 
   let tracking = $state(true);
   let trackingState = $state<TrackingState>('off');
@@ -446,6 +451,7 @@
     bursting = forwarder.bursting;
 
     autoDetectTick();
+    autoCalibTick();
 
     if (decision === null) return;
     // Calibration is reading the live camera and rebuilding the node's bank from
@@ -631,6 +637,26 @@
     void detectCorners(true);
   }
 
+  /** The zero-tap flow's second half: see `shouldAutoCalibrate` in state.ts. */
+  function autoCalibTick(): void {
+    const gate = {
+      auto: autoCalib,
+      now: performance.now(),
+      camera,
+      activity,
+      portrait,
+      streaming,
+      stability,
+      bursting,
+      calibrations,
+      grid: board?.grid ?? null
+    };
+    if (!shouldAutoCalibrate(gate)) return;
+    autoCalib = { nextAt: gate.now + AUTO_CALIBRATE_COOLDOWN_MS, attempts: autoCalib.attempts + 1 };
+    trial.note('auto-calibrate', { attempt: autoCalib.attempts });
+    void runCalibrate(true);
+  }
+
   /**
    * Geometry cannot know which corner is a8 (DESIGN decision #15), so a detection
    * replaces the quad but never the labelling — that stays the operator's, via
@@ -800,7 +826,7 @@
     return winner === null ? null : { canvas: best, ...winner };
   }
 
-  async function runCalibrate(): Promise<void> {
+  async function runCalibrate(isAuto = false): Promise<void> {
     if (camera.kind !== 'live' || video === undefined) return;
     // Exactly one thing owns the camera and the quad (`Activity`), and the pill being
     // enabled is not proof: an automatic detection can start between the paint and
@@ -808,7 +834,11 @@
     // calibration begun underneath one would have that fire mid-burst — resuming the
     // forwarder into a half-rebuilt bank. The disabled state says why; this enforces it.
     if (activity.kind !== 'idle') return;
+    if (portrait) return;
+    // The automatic path earned its trigger (the reading looks like a start
+    // position at rest) — a confirm() there would put the tap back in.
     if (
+      !isAuto &&
       !confirm(
         'Calibrate from the live camera?\n\n' +
           'The board must CURRENTLY show the STARTING position, with the pieces at rest. ' +
@@ -845,6 +875,9 @@
           );
           return;
         }
+        // Nobody asked for an automatic attempt, so its refusal does not shout —
+        // the trial log has it, and the cooldown schedules the retry.
+        if (isAuto) return;
         setBanner(
           'err',
           result.error.status === 0
@@ -862,8 +895,8 @@
         label_rotation: reply.label_rotation
       });
       let text =
-        `Calibrated ${reply.classes_calibrated}/13 classes — ` +
-        `bank now holds ${reply.exemplars} exemplars`;
+        `${isAuto ? 'Calibrated automatically from the start position, ' : 'Calibrated '}` +
+        `${reply.classes_calibrated}/13 classes — bank now holds ${reply.exemplars} exemplars`;
       // The node resolved the true labelling from the pieces; fold it into the
       // page's own (a relabelling — no point moves) so the streamed corners agree
       // and nobody has to press anything. Sign pinned by the node's

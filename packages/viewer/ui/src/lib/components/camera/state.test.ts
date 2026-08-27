@@ -7,7 +7,10 @@ import {
   AUTO_SETTLE_MS,
   autoGaveUp,
   backoffFor,
+  AUTO_CALIBRATE_START,
   calibrateBlockReason,
+  looksLikeStartOccupancy,
+  shouldAutoCalibrate,
   denormaliseQuad,
   hintFor,
   isFramed,
@@ -471,5 +474,53 @@ describe('camera stall watchdog', () => {
     expect(step.action).toBe('none');
     expect(step.clock.reopens).toBe(0);
     expect(step.clock.nextReopenAt).toBe(0);
+  });
+});
+
+describe('automatic calibration', () => {
+  const occupied = (rows: number[]): string[][] =>
+    Array.from({ length: 8 }, (_, r) =>
+      Array.from({ length: 8 }, () => (rows.includes(r) ? 'P' : 'empty'))
+    );
+  const startish = occupied([0, 1, 6, 7]);
+
+  it('recognises start occupancy in rows, columns, and nothing else', () => {
+    expect(looksLikeStartOccupancy(startish)).toBe(true);
+    // the same bands as columns — a start position under a quarter-turned labelling
+    const cols = startish[0]!.map((_, c) => startish.map((row) => row[c]!));
+    expect(looksLikeStartOccupancy(cols)).toBe(true);
+    expect(looksLikeStartOccupancy(occupied([0, 1, 6]))).toBe(false); // a rank gone
+    expect(looksLikeStartOccupancy(occupied([]))).toBe(false); // empty board
+    const midgame = occupied([0, 1, 6, 7]).map((row) => [...row]);
+    midgame[3]![4] = 'P'; // a pawn out in the middle
+    expect(looksLikeStartOccupancy(midgame)).toBe(false);
+    expect(looksLikeStartOccupancy([])).toBe(false);
+  });
+
+  it('fires exactly when streaming, framed, at rest, uncalibrated, reading start', () => {
+    const gate = {
+      auto: AUTO_CALIBRATE_START,
+      now: 1000,
+      camera: live(),
+      activity: IDLE,
+      portrait: false,
+      streaming: true,
+      stability: 0.97,
+      bursting: false,
+      calibrations: 0,
+      grid: startish
+    };
+    expect(shouldAutoCalibrate(gate)).toBe(true);
+    expect(shouldAutoCalibrate({ ...gate, calibrations: 1 })).toBe(false);
+    expect(shouldAutoCalibrate({ ...gate, streaming: false })).toBe(false);
+    expect(shouldAutoCalibrate({ ...gate, portrait: true })).toBe(false);
+    expect(shouldAutoCalibrate({ ...gate, bursting: true })).toBe(false);
+    expect(shouldAutoCalibrate({ ...gate, stability: 0.5 })).toBe(false);
+    expect(shouldAutoCalibrate({ ...gate, activity: { kind: 'calibrating' } })).toBe(false);
+    expect(shouldAutoCalibrate({ ...gate, grid: null })).toBe(false);
+    expect(shouldAutoCalibrate({ ...gate, grid: occupied([0, 1]) })).toBe(false);
+    // cooldown after an attempt
+    expect(shouldAutoCalibrate({ ...gate, auto: { nextAt: 2000, attempts: 1 } })).toBe(false);
+    expect(shouldAutoCalibrate({ ...gate, now: 2001, auto: { nextAt: 2000, attempts: 1 } })).toBe(true);
   });
 });
