@@ -201,11 +201,17 @@ confidences**. No moves, no legality, no PGN — those are the downstream applic
    tale). Later, per-square motion masks feed the stabilizer for hovering hands;
    shadows stay the classifier's problem — a false burst is cheap, keepalive
    bounds a missed move.
-1. **Re-rank before retrain** — the hard take's residual (`p->b`/`q->b`, truth second
-   25/25 at ~0.18 margin) should fall to a cheap logit-calibration / re-rank pass;
-   the control's `q->k` (truth outside top-2 half the time) is the true crop case.
-   Score any candidate on BOTH 08-27 truths + 08-13. A pose-derived crop axis
-   belongs with whatever retrain survives this.
+0b. **Ship the `b` demotion** (study said GO — see Done): swap top-2 in
+   `square_dist` when argmax is `b` and margin < 0.20, upstream of
+   placement/evidence/prior; plus the margin-gap guardrail assertion in the trial
+   scorer. Then re-verify via replay on all four takes.
+0d. **Mid-session framing drift** (take 5's dominant residual, ~79 px a1 wander):
+   nothing re-detects/verifies the quad after streaming starts. Cheap candidates:
+   periodic restored-quad-style verify off keepalive frames, or corner tracking.
+1. **Retrain case, post-re-rank** — what the `b` rule leaves: control's `q->k`
+   (truth outside top-2 half the time) is the true crop case; ~78 % of residual
+   errors are outside the top-2 ceiling. A pose-derived crop axis belongs with
+   whatever retrain survives.
 2. **Estimator throughput / latency** — 0.89 reads/s (control) collapsing to 0.48
    under the (now fixed) OOM; profile the cascade+ensemble read at batch 16 and
    attack the biggest term (bank embed batching?). Faster reads shrink settle lag
