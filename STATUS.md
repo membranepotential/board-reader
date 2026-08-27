@@ -13,11 +13,9 @@ confidences**. No moves, no legality, no PGN — those are the downstream applic
   replay `FramePolicy` seam (burst-end + keepalive floor vs every-frame) and
   sweeping them over the four takes (owns GPU) — running — next: policy
   recommendation + accuracy-per-read table.
-- framing-redetect — svelte agent implementing the drift fix from the study
-  ([report](docs/reports/2026-08-27-framing-drift.md)): client-side periodic
-  re-detect on resting frames, per-session baseline R0, adopt at >0.45 squares
-  for 2 consecutive detections, re-seed the tracker — running — next: vitest
-  green + constants pinned.
+- framing-redetect — **landed** (`0ebbbd2`: periodic baselined re-detect, adopt
+  at >0.45 sq ×2 consecutive, tracker re-seed; 22 new tests, 411 green) — code
+  review running — next: fold review findings, then it's live-take-provable.
 
 - public-release — repo is **push-ready** (Apache-2.0 + THIRD-PARTY.md, details
   scrubbed, history re-signed onto the current author email). Before pushing: add that
