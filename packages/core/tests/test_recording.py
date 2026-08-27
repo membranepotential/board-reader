@@ -27,11 +27,13 @@ def _img(seed: int = 0) -> np.ndarray:
     return (rng.random((32, 32, 3)) * 255).astype(np.uint8)
 
 
-def _frame(seq: int, *, board_id: str = "A1", corners=None) -> Frame:
+def _frame(
+    seq: int, *, board_id: str = "A1", corners=None, ts: float | None = None
+) -> Frame:
     return Frame(
         board_id=board_id,
         seq=seq,
-        capture_ts=100.0 + seq,
+        capture_ts=100.0 + seq if ts is None else ts,
         image=_img(seq),
         stability=0.5,
         corners=corners,
@@ -216,9 +218,9 @@ def test_stats_report_what_landed(tmp_path):
 def test_jpegs_are_sharded_so_a_long_session_stays_navigable(tmp_path):
     """A three-hour session is O(100k) frames; one flat directory is not usable."""
     rec = FrameRecorder(tmp_path, session_id="s1")
-    header, jpeg = _frame(0).encode()
-    for _ in range(3):
-        rec.record(header, jpeg)
+    # Advancing seqs: a repeated one would (correctly) be read as a reconnect.
+    for seq in range(3):
+        rec.record(*_frame(seq).encode())
     rec.close()
 
     index = (tmp_path / "s1" / INDEX_NAME).read_text().splitlines()
@@ -299,3 +301,225 @@ def test_the_index_skips_a_junk_line_like_the_frames_do(tmp_path):
     index.write_text(index.read_text() + "{not json\n")
 
     assert [e.seq for e in Recording.open(tmp_path / "s1").frame_index()] == [0, 1]
+
+
+# --------------------------------------------------------------------------- #
+# Rolling — one session directory per streaming session
+# --------------------------------------------------------------------------- #
+
+
+class _Clock:
+    """A fake wall clock: ``step`` seconds per read, frozen when it is 0."""
+
+    def __init__(self, start: float = 1_785_000_000.0, step: float = 0.0) -> None:
+        self.t = start
+        self.step = step
+
+    def __call__(self) -> float:
+        t = self.t
+        self.t += self.step
+        return t
+
+
+def _session_dirs(root) -> list:
+    return sorted(d.name for d in root.iterdir() if d.is_dir())
+
+
+def test_a_seq_restart_rolls_onto_a_fresh_session_directory(tmp_path):
+    """Two streaming sessions are two directories, each internally consistent.
+
+    The wart this fixes: one directory holding both, with `seq` 0..n twice over,
+    which no consumer can split (a trial had to be scored on a filtered copy).
+    """
+    rec = FrameRecorder(tmp_path, session_id="s1", now=_Clock(step=1.0))
+    _record(rec, _frame(0), _frame(1), _frame(2))
+    first = rec.path
+    _record(rec, _frame(0, ts=200), _frame(1, ts=201))  # the edge reconnected
+    second = rec.path
+    rec.close()
+
+    assert first != second
+    assert first.parent == second.parent == tmp_path
+    assert [r.seq for r in Recording.open(first)] == [0, 1, 2]
+    assert [r.seq for r in Recording.open(second)] == [0, 1]
+    assert [r.capture_ts for r in Recording.open(second)] == [200.0, 201.0]
+    assert rec.stats()["sessions"] == 2
+    assert rec.stats()["frames"] == 5  # run totals, not per directory
+
+
+def test_each_rolled_session_shards_its_jpegs_from_zero(tmp_path):
+    """The new directory is a session in its own right, not a continuation."""
+    rec = FrameRecorder(tmp_path, session_id="s1", now=_Clock(step=1.0))
+    _record(rec, _frame(0), _frame(1))
+    _record(rec, _frame(0, ts=200))
+    rec.close()
+
+    index = (rec.path / INDEX_NAME).read_text().splitlines()
+    assert [json.loads(line)["jpeg"] for line in index] == ["jpeg/0000/000000.jpg"]
+    assert (rec.path / "jpeg" / "0000" / "000000.jpg").exists()
+
+
+def test_a_rolled_manifest_says_why_the_directory_ended(tmp_path):
+    """A directory that stops mid-stream must not read as a crash."""
+    rec = FrameRecorder(tmp_path, session_id="s1", now=_Clock(step=1.0))
+    _record(rec, _frame(0))
+    _record(rec, _frame(0, ts=200))
+    rolled = rec.path
+    rec.close()
+
+    closed = Recording.open(tmp_path / "s1").manifest
+    assert closed["closed_reason"] == "rolled: new streaming session"
+    assert closed["closed_ts"] > 0
+    opened = Recording.open(rolled).manifest
+    assert opened["session_id"] == rolled.name
+    assert opened["rolled_from"] == "s1"
+    assert opened["closed_reason"] == "closed"  # stop() stamps its reason too
+
+
+def test_rolled_sessions_in_the_same_second_get_distinct_names(tmp_path):
+    """A frozen clock is the worst case: the ids must still be unique and sorted."""
+    rec = FrameRecorder(tmp_path, now=_Clock())  # no explicit id, no clock movement
+    _record(rec, _frame(0))
+    _record(rec, _frame(0, ts=200))
+    _record(rec, _frame(0, ts=300))
+    rec.close()
+
+    names = _session_dirs(tmp_path)
+    assert len(names) == len(set(names)) == 3
+    assert names == sorted(names)  # chronological order survives the suffix
+    assert all(Recording.open(tmp_path / name) for name in names)
+
+
+def test_a_monotonic_stream_never_rolls(tmp_path):
+    """Gaps are dropped frames, not a new session — one take, one directory."""
+    rec = FrameRecorder(tmp_path, session_id="s1", now=_Clock(step=1.0))
+    _record(rec, _frame(0), _frame(1), _frame(5), _frame(9))
+    rec.close()
+
+    assert _session_dirs(tmp_path) == ["s1"]
+    assert [r.seq for r in Recording.open(tmp_path / "s1")] == [0, 1, 5, 9]
+
+
+def test_a_second_board_starting_at_zero_is_not_a_new_session(tmp_path):
+    """`seq` is per board; two boards on one recorder both count from 0."""
+    rec = FrameRecorder(tmp_path, session_id="s1", now=_Clock(step=1.0))
+    _record(
+        rec,
+        _frame(0, board_id="A1"),
+        _frame(1, board_id="A1"),
+        _frame(0, board_id="B2"),
+        _frame(2, board_id="A1"),
+    )
+    rec.close()
+
+    assert _session_dirs(tmp_path) == ["s1"]
+    assert Recording.open(tmp_path / "s1").board_ids() == ["A1", "B2"]
+
+
+def test_a_late_event_lands_in_the_session_it_was_estimated_from(tmp_path):
+    """THE race: an estimate that started before the roll publishes after it.
+
+    `seq`/`frame_seq` cannot tell the sessions apart (both start at 0), so the
+    line is routed by `capture_ts` against the roll boundary.
+    """
+    from board_reader_core.recording import EVENTS_NAME
+
+    rec = FrameRecorder(tmp_path, session_id="s1", now=_Clock(step=1.0))
+    _record(rec, _frame(0), _frame(1))
+    _record(rec, _frame(0, ts=200))  # rolls: boundary is capture_ts 200
+    rolled = rec.path
+
+    assert rec.record_event({"frame_seq": 1, "capture_ts": 101.0, "tag": "late"})
+    assert rec.record_event({"frame_seq": 0, "capture_ts": 200.0, "tag": "new"})
+    rec.close()
+
+    old_lines = (tmp_path / "s1" / EVENTS_NAME).read_text().splitlines()
+    new_lines = (rolled / EVENTS_NAME).read_text().splitlines()
+    assert [json.loads(line)["tag"] for line in old_lines] == ["late"]
+    assert [json.loads(line)["tag"] for line in new_lines] == ["new"]
+    assert rec.stats()["events"] == 2
+
+
+def test_events_before_and_after_a_roll_split_by_capture_time(tmp_path):
+    """The pre-roll events stay put; the recorder appends to that same file."""
+    from board_reader_core.recording import EVENTS_NAME
+
+    rec = FrameRecorder(tmp_path, session_id="s1", now=_Clock(step=1.0))
+    _record(rec, _frame(0), _frame(1))
+    assert rec.record_event({"frame_seq": 0, "capture_ts": 100.0})
+    _record(rec, _frame(0, ts=200), _frame(1, ts=201))
+    rolled = rec.path
+    assert rec.record_event({"frame_seq": 1, "capture_ts": 101.0})  # late
+    assert rec.record_event({"frame_seq": 1, "capture_ts": 201.0})
+    rec.close()
+
+    old = [json.loads(x) for x in (tmp_path / "s1" / EVENTS_NAME).read_text().splitlines()]
+    new = [json.loads(x) for x in (rolled / EVENTS_NAME).read_text().splitlines()]
+    assert [e["capture_ts"] for e in old] == [100.0, 101.0]
+    assert [e["capture_ts"] for e in new] == [201.0]
+
+
+def test_an_event_without_a_capture_ts_goes_to_the_current_session(tmp_path):
+    """Nothing to route on — the current directory is the only honest guess."""
+    from board_reader_core.recording import EVENTS_NAME
+
+    rec = FrameRecorder(tmp_path, session_id="s1", now=_Clock(step=1.0))
+    _record(rec, _frame(0))
+    _record(rec, _frame(0, ts=200))
+    rolled = rec.path
+    assert rec.record_event({"frame_seq": 0})
+    rec.close()
+
+    assert not (tmp_path / "s1" / EVENTS_NAME).exists()
+    assert len((rolled / EVENTS_NAME).read_text().splitlines()) == 1
+
+
+def test_routing_reaches_exactly_one_session_back(tmp_path):
+    """The documented limit: an event older than the current session goes to the
+    previous directory, and nothing tracks further back than that.
+
+    A read takes a second or two where sessions are minutes apart, so an event
+    that outlives two rolls does not happen; this pins what would become of it
+    rather than pretending the recorder can place it."""
+    from board_reader_core.recording import EVENTS_NAME
+
+    rec = FrameRecorder(tmp_path, session_id="s1", now=_Clock(step=1.0))
+    _record(rec, _frame(0))
+    _record(rec, _frame(0, ts=200))
+    middle = rec.path
+    _record(rec, _frame(0, ts=300))
+    rolled = rec.path
+    assert rec.record_event({"frame_seq": 0, "capture_ts": 100.0})  # from session 1
+    rec.close()
+
+    assert not (tmp_path / "s1" / EVENTS_NAME).exists()
+    assert not (rolled / EVENTS_NAME).exists()
+    assert len((middle / EVENTS_NAME).read_text().splitlines()) == 1
+
+
+def test_max_bytes_is_the_budget_for_the_whole_run_not_for_each_session(tmp_path):
+    """A rolling recorder must not turn a disk-fill cap into a cap per reconnect."""
+    jpeg = encode_jpeg(_img())
+    rec = FrameRecorder(
+        tmp_path, session_id="s1", max_bytes=3 * len(jpeg), now=_Clock(step=1.0)
+    )
+    assert rec.record(_frame(0).header(), jpeg)
+    assert rec.record(_frame(1).header(), jpeg)
+    assert rec.record(_frame(0, ts=200).header(), jpeg)  # rolls, and spends the budget
+    rolled = rec.path
+
+    assert not rec.active
+    assert "max_bytes" in rec.stopped_reason
+    assert not rec.record(_frame(1, ts=201).header(), jpeg)
+    assert [r.seq for r in Recording.open(tmp_path / "s1")] == [0, 1]
+    assert [r.seq for r in Recording.open(rolled)] == [0]
+
+
+def test_open_on_the_root_finds_the_newest_rolled_session(tmp_path):
+    """`--recording recordings/` still means "the run that just happened"."""
+    rec = FrameRecorder(tmp_path, now=_Clock(step=1.0))
+    _record(rec, _frame(0))
+    _record(rec, _frame(0, ts=200))
+    rec.close()
+
+    assert Recording.open(tmp_path).path == rec.path
