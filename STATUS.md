@@ -1,6 +1,6 @@
 # STATUS — board-reader
 
-_reconciled: 2026-08-27 evening @ `b1032ec`_ · decisions live in [docs/DESIGN.md](docs/DESIGN.md), detail in `git log` + `scratch/experiments/*/report.md`; this is state.
+_reconciled: 2026-08-28 (post night-wave) @ `9167dfd`_ · decisions live in [docs/DESIGN.md](docs/DESIGN.md), detail in `git log` + `scratch/experiments/*/report.md`; this is state.
 
 ## Goal
 
@@ -9,354 +9,86 @@ confidences**. No moves, no legality, no PGN — those are the downstream applic
 
 ## Now
 
-
-- stabilize-review — code-reviewer on the coherence fix `ea91a39` (drag
-  termination/determinism, excess function, partial-commit liveness) — running,
-  the last open workstream of the wave.
-
+- **The 08-27 night wave is COMPLETE** (see Done). Estimator, scheduler,
+  stabilizer, framing, recorder, harness all landed, reviewed, and
+  replay-verified; suite 1048 Python + 417 vitest + 50 e2e, all green.
+- **Next live take = the proof session.** It should demonstrate, zero-tap:
+  auto-detect → auto-verify → start → auto-calibrate ("Calibrated
+  automatically…", trigger bug fixed in `b9b886c`), burst-end reads (~5× fewer
+  GPU calls, watch `/healthz` ingest.unscheduled, backstopped==0), drift
+  re-lock ("The frame had drifted — re-locked"), no OOM at any length, coherent
+  settled stream. Author truth with `guard_seqs=3` (sparse events by design).
 - public-release — repo is **push-ready** (Apache-2.0 + THIRD-PARTY.md, details
-  scrubbed, history re-signed onto the current author email). Before pushing: add that
-  address as a UID on the signing key and re-upload it, or every commit lands
-  Unverified. Optional: a CI workflow, CONTRIBUTING.md. Pre-rewrite SHAs recoverable
-  from `docs/commit-rewrite-{map.tsv,pre.bundle}` (git-ignored); `tools/check_commit_refs.py`
-  translates stale citations.
-- **Iteration is offline now** — recorded takes replace live phone takes (operator
-  decision 08-27 eve); a replay harness turns each recording into a rerunnable
-  benchmark. Dev stack stopped, GPU free.
-- phone-live-test — FOUR takes recorded, three scored (control 99.0 %/58.3 %,
-  hard 98.6 %/46.5 %, fast 98.1 %/58.1 % prior). Take 5 (18:18, unscored, no truth)
-  proved the meter fix live — send rate 1 fps at rest with real bursts (was a flat
-  8.2), and the restored-quad verify fired (`framing-verified, moved: false`) —
-  but hit the arena OOM again and exposed **the ratchet** (next item).
-- **GPU arena ratchet — the top fix before the next take.** Batch-16 bounds the
-  peak but the cascade secondary's batches still VARY in size (unsure-count tail,
-  1..16), every distinct shape reserves its own BFC chunks, and an arena never
-  shrinks — so over a session the secondary's arena creeps to its 1 GiB cap and
-  every big read fails from then on (91 failures in take 5; node idles at 2.2 GiB
-  after). Fix: **fixed-shape batches** — pad every batch (trained.py crop_dist,
-  embed.py) to exactly batch_size, slice the outputs; one working set, reused
-  forever. Consider ORT `arena_extend_strategy=kSameAsRequested` on top.
-- **Zero-tap calibrate: root cause found + fixed, one live confirmation wanted.**
-  It could never have fired: `looksLikeStartOccupancy` compared `''` grid cells
-  against the `'empty'` class name (`b9b886c` fixes it at the type level, e2e
-  pins it). The flow question (operator calibrates before start / trigger needs
-  the stream) still stands for UX, but the trigger itself now works.
-- ui-mockups — full-system mockups **awaiting user review** in `docs/mockups/`
-  (also http://localhost:8766/ while the ad-hoc server runs).
-- tall-crop-retrain — decision input now in from BOTH trials: the dim-light residual
-  (`p->b` 17×, `q->b` 8×) is 25/25 truth-ranked-second, i.e. re-rankable WITHOUT a
-  retrain; the control's `q->k` (truth outside top-2 11/22) still argues for one.
-  Weigh a cheap re-rank/calibration pass against the retrain before training.
+  scrubbed, history re-signed onto the current author email). Before pushing: add
+  that address as a UID on the signing key and re-upload it, or every commit
+  lands Unverified. Optional: a CI workflow, CONTRIBUTING.md. Pre-rewrite SHAs
+  recoverable from `docs/commit-rewrite-{map.tsv,pre.bundle}` (git-ignored);
+  `tools/check_commit_refs.py` translates stale citations.
+- ui-mockups — awaiting user review in `docs/mockups/` (user: redo later as
+  clickable simulations, not storyboards).
+- OPEN (user decision): rescued b-demotion squares report ~0.34–0.47, above the
+  viewer's 0.5 low-confidence marker — flag them visually or leave as-is?
 
 ## Done (recent)
 
-- 08-27 (night): **settled stream made coherence-safe** (`ea91a39`+`9f3ca94`;
-  DESIGN §5 amended). Diagnosis CORRECTED: the stabilizer was already
-  per-square — the defect was per-square INCOHERENCE (d8 and e8 settling `k`
-  from opposite readings of one swap: 233/337 control boards carried two black
-  kings, a board no read ever claimed; up to 69 % of a run impossible). Shipped:
-  excess-monotone commits (a settle may not raise the board's hard-constraint
-  violation; incoherent commits drag their same-read quorum squares along,
-  best-evidence-first). Paired replays 4 takes × 2 policies: control every-frame
-  settled-perfect 0→28.1 %, segments 0/7→4/7, latency never→3.7 s; impossible
-  boards 0 on 8/8 runs; flicker ≤ old on 8/8; hard −0.13 pp bought with 106
-  impossible boards removed. Also re-read 08-13: settled was faithfully
-  reporting a 90 %-wrong PRIOR there — the d8 q->k is a RECOGNITION error no
-  debounce can fix (retrain-case input). Residual settled<prior rows are pure
-  settle lag vs the 12-frame guard, structural. Verified additionally by a
-  zero-GPU design loop: re-settling recorded prior streams reproduced all 24
-  recorded runs to the digit.
-
-- 08-27 (night): **burst-end scheduling is LIVE on ingest** (`9035d58`) — observe
-  every frame at submit, decide at drain (so prefer_frame's sharper contender is
-  what a burst-end read gets — pinned by test); default
-  `burst-end:burst_end_reads=3`, `BR_SCHEDULE` env / `serve --schedule` escape
-  hatch (`every-frame`); wall-clock backstop at 2×keepalive catches a frozen
-  edge clock (`/healthz` ingest.unscheduled/backstopped). All 8 review findings
-  fixed with adversarial tests (owed reads cancelled on burst entry; floor
-  finite-positive-validated; spacing ≤ floor; backwards clock degrades to floor;
-  NaN stability = at rest; repr-faithful names; typed Frame adapter). Cascade:
-  45 policy unit + 18 ingest integration + pipe e2e; suite 1035 green;
-  TESTING.md re-measured (~20 s / ~1035) + sparse-events guard_seqs=3 note.
-  Live event streams are now SPARSE BY DESIGN.
-
-- 08-27 (night): **move-trigger sweep decided the scheduler**
-  ([report](docs/reports/2026-08-27-move-trigger-sweep.md), code `5f9212f` —
-  schedule.py policies, --restamp-stability, meter ported with a parity test).
-  SHIP: BurstTriggered(keepalive 3.0 s, 3 burst-end reads @1.3 s spacing,
-  forwarder hysteresis 0.7/0.85). Buys ~12× fewer GPU reads on flat-8fps takes
-  (~5× on an adaptive-forwarder stream — the honest live number); costs −0.9 pp
-  pooled prior per-square / −5 pp perfect (inside the sampling-chance band on
-  3/4 takes) and +2 s settle latency. PREMISE REFUTED: skipping mid-burst chaos
-  does NOT buy accuracy — the guard window already excludes it from scoring and
-  the errors are persistent type confusions, not blur. PROVEN DEFECT in the settled
-  stream (diagnosis later CORRECTED — see the stabilize entry: coherence, not
-  adoption). CAVEAT: baseline-3452334 /
-  bdemotion-fe8a7bb replays ran cascade-only — cwd-relative DINOV2 path +
-  silent bank fallback in a worktree (captured in the learnings store); the b-demotion
-  before/after stands (same stack both sides) but its absolute numbers are not
-  the ensemble's.
-
-- 08-27 (night): **viewer e2e cascade filled** (`ba69cc1` + fix `b9b886c`) —
-  camera auto flows (auto-detect/verify, zero-tap calibrate, framing re-detect
-  incl. adoption/backoff/timeout, portrait block + mid-stream gating) now have
-  9 e2e specs; 4 specs red since `0b2857c` repaired; suite 50/50 green (was
-  45/4). The cascade caught two real bugs: zero-tap calibration never fired in
-  production (occupancy vs class-name grid), and the calibrate-reply
-  label-absorption had silently broken those 4 specs.
-
-- 08-27 (night): **recorder roll pinned through the live gateway** (`f0d121a`,
-  4 integration tests, suite 996 green) — two WS sessions → two dirs, manifests
-  chained, and the late-event race driven deterministically (estimator parked in
-  its worker thread across the roll; event lands in the closed dir it belongs
-  to). Mutation-checked both directions. Note: TESTING.md §0 still says "783
-  tests / ~12 s" — stale, fix after the schedule agent releases the file.
-
-- 08-27 (night): **framing re-detect shipped** (`0ebbbd2` + review fixes
-  `857163b`; 417 UI tests green). Every 10 s on a resting frame the page
-  re-detects, baselines the convention offset (median of 3, live-origin
-  framings only — a restored quad can't poison the permanent R0), adopts at
-  >0.45 squares ×2 consecutive (≤2.0 cap; reposition warns once per episode),
-  re-seeds the tracker; 20/40/80 s backoff then give-up on detector misses;
-  /detect now has a 15 s timeout so a stall can't wedge the page's controls.
-  Study projects −58 % wrong squares on take-5-like drift, 0 false adoptions on
-  the controls. Live-take proof outstanding (page wiring has no unit-test seam —
-  e2e/live only).
-
-- 08-27 (night): **framing-drift study**
-  ([report](docs/reports/2026-08-27-framing-drift.md)): take 5's residual is LK
-  *tracker creep* (two episodes; errors track px offset exactly — >60 px ⇒ 5.2
-  wrong/read; the operator's manual re-detect at seq 177 fixed 5→0 wrong). The
-  core detector tracks the true board on resting frames (96 % hit, ~80 ms,
-  deterministic) but sits a constant 17–33 px from finger-framed quads ⇒
-  adoption must baseline per session (QUAD_VERIFY_SHIFT=0.03 ≈ 0.47 squares is
-  too tight to reuse). Projected: 58 % of take 5's wrong squares removed; 0
-  false adoptions on the four controls. Also found: take 4 has the LEAST drift
-  and the worst accuracy — its errors are genuinely classification.
-
-- 08-27 (night): **recorder rolls per streaming session** (`db6217e`) — seq
-  regression per board opens a fresh sibling dir; late events routed to their
-  session by capture_ts (one-level race window, pinned by test); max_bytes stays
-  a whole-run cap; `rolled_from` chains a run's dirs. Old multi-session dirs
-  remain readable (replay's detection kept). Follow-ups noted: TESTING.md
-  wording + a per-roll server log line.
-
-- 08-27 (night): **b-demotion shipped and replay-verified** (`fe8a7bb` rule at the
-  `estimator.read_event` seam — composites blend raw dists via `PhotoDistReader`,
-  reviewed bit-for-bit blend-equivalent, exactly-once AST-pinned; `69d2c3e` guard
-  alarms fixed per review). Replay before/after (all four takes, prior stream):
-  control 97.18→97.32 / 30.8→33.2, hard 94.90→94.96 / 24.7→26.6, fast
-  97.04→97.32 / 54.1→57.0, take 5 92.11→92.26 / 28.6→29.7 — **every stream on
-  every take improved or held, none regressed**; biggest wins on settled (hard
-  41.2→50.0, fast 34.4→44.1). Guard: hard take at_risk (headroom 0.0017,
-  lost_in_band 67 — an upper bound that includes already-wrong-with-b-second;
-  watch it, don't panic). Replay dirs `baseline-3452334` / `bdemotion-fe8a7bb`
-  in each recording.
-
-- 08-27 (night): **baseline replays of all four 08-27 takes** (dirs
-  `recordings/*/replays/baseline-3452334/`, log in session scratchpad): 2500
-  frames, **0 estimate failures, GPU flat ~660 MiB** — the ratchet fix holds at
-  session length (live take 5 had 91 failures on 301 frames). Prior stream
-  (every-frame population — NOT comparable to recorded scores, see replay docs):
-  control 97.2 %/30.8 %, hard 94.9 %/24.7 %, fast 97.0 %/54.1 %, take 5
-  92.1 %/28.6 %. These are the diff-base for every estimator change from here.
-
-- 08-27 (night): **replay harness shipped** (`e759631`) — `board-reader-inference
-  replay <recording>` re-runs recorded frames through the live route/prior/settle
-  path on the recorded capture_ts clock; output under `<src>/replays/<name>/` is
-  eval-session-scoreable; deterministic (byte-identical, proven on the real
-  cascade); `FramePolicy` seam ready for move-triggered estimation. First result:
-  replaying 08-13 at full 7.5 fps locks the settled stream onto a d8/e8 k/q swap
-  for the whole session (needs ~19 agreeing reads to displace vs ~3 at trial
-  rate) — the stabilizer's adopt-first rule wants a tiebreak, and read RATE is
-  now known to change settled behaviour, not just lag.
-
-- 08-27 (night): **re-rank study: GO on one rule, NO-GO wider**
-  ([report](docs/reports/2026-08-27-evidence-rerank.md), `f66f9a4`+`4d3c165`).
-  Demote a `b` argmax when top-2 margin < 0.20 (swap top two, keep runner-up
-  prob): 38 squares fixed / **0 broken** over all four takes; anchored-prior
-  perfect boards control 58.3→70.8, hard 46.5→65.1, fast 58.1→71.0 (take 5
-  drift-bound, unchanged). Captures only ~22 % of top-2-reachable errors, so the
-  tall-crop retrain argument stands; control's q→k is NOT re-rankable (half
-  outside top-2). Guardrail wanted: margin-gap assertion in the trial scorer
-  (tightest observed gap 0.210). → implement next (Next 0b).
-
-- 08-27 (night): **arena ratchet fixed** (`dcfcf28`) — every GPU batch padded to
-  exactly batch_size (repeat-last-crop) and sliced back, in trained.py crop_dist
-  (covers the cascade secondary + tail) and embed.py (incl. the symbolic-width
-  probe, which now probes at full batch shape). Soak on the deployed config: flat
-  1142 MiB over 300 mixed-shape calls, 0 failures; a control with padding patched
-  out crept +774 MiB in 100 calls. Steady state 1142 MiB / 3 sessions.
-- 08-27 (night): **all five takes now scored** (`866653f`; truth+report in each
-  recording dir — recordings/ stays git-ignored). Take 5 prior 97.3 %/45.7 %
-  (guard_seqs=3, NOT guard-comparable — adaptive 1 fps rest); aborted 17:03 take
-  prior 98.3 %/23.5 %. Two new signals: (1) take 5's dominant residual is
-  **framing drift** — the a1 corner wandered ~79 px (≈1 square) over the session,
-  one coherent a-file shift, while drift-free segments score 100 % — the
-  restored-quad verify only runs at page open, nothing re-detects mid-session;
-  (2) the 17:03 raw stream shows the k/q-swap calibration plainly, and the
-  prior's kings constraint repaired **all 12** q/k errors — the constraint layer
-  earning its keep.
-
-- 08-27 (late): **The motion meter was dead on the deployment phone — root-caused
-  and rebuilt** (`5af963d`). Resting inter-frame difference measures ~6× the old
-  fixed noise floor on this rig, so stability lived under 0.35 all day: auto-detect
-  never fired (every detect was a tap), the forwarder sat in permanent burst (the
-  flat 8.2 fps), and the zero-tap trigger could never open. The meter (TS+Python,
-  mirrored) now learns each rig's own resting floor (asymmetric chase, gated so
-  sustained motion is not adopted as rest) and scores the ratio to it — tuned by
-  replaying all three takes (rest ≥0.9 on 56–62 % of frames, moves <0.7 on 27–35 %).
-  The page also samples motion from the board's crop box, not the full frame. Plus:
-  a **restored framing is auto-verified** by one detection at page open — a stale
-  saved quad after a perspective change read the board a full rank off and starved
-  the zero-tap gate (which correctly refused to calibrate from it).
-- 08-27 (late): **Fast take scored — realistic pace costs almost nothing.**
-  `recordings/20260827-175539` (report kept there; scored on a capture_ts-filtered
-  copy): the full Italian incl. the 6.d3 Qe7 7.Nc3 Qd8 tail in ~45 s (~3 s/move,
-  hands near the board throughout): prior **98.1 % per-square, 58.1 % perfect** —
-  the same perfect rate as the slow control. Settled drops to 32 % (settle lag ≫
-  segment length at this pace, by design). Latency median 1.60 s / max 2.56 s,
-  0.89 reads/s, **zero OOM failures** (batch-16 held). New residual at the shifted
-  perspective: `B->b` colour flips (18×, near-ties) and `empty->p` hallucinations
-  (24×, runner-up 23/24 — re-rankable). Eval gotcha: ingest seq resets per
-  streaming session but the recorder appends ONE dir per server run, so sessions'
-  seqs collide — the recorder should roll a dir per session.
-
-- 08-27 (evening): **Hard take run and scored** (`recordings/20260827-172736`,
-  1.e4–5...Re8 with both castlings, fresh one-photo bank; lighting NOT dimmed,
-  operator-confirmed): prior
-  **98.6 % per-square / 46.5 % perfect** on 43 events. The rank-8 k/q residual did
-  NOT reproduce — castled/rook-lift segments score 99.5–100 % prior; the hard take's
-  residual is bishop-attractor (`p->b` 17×, `q->b` 8×) with truth ranked second
-  25/25 at ~0.18 margin → re-rankable. The 6.d3+ tail is lost to the OOM below.
-- 08-27 (evening): **Both live stalls diagnosed: CUDA arena OOM, fixed** (`c2e9bf1`).
-  The cascade secondary fed a near-full-board unsure batch (a fresh one-photo
-  bank leaves run_e unsure almost everywhere; lighting was unchanged) pushes
-  its session arena to the cap (728 MiB@768, 1001 MiB@1024) and a BFC arena never
-  shrinks — every later read fails, stream goes quiet, worker survives. Fix: GPU
-  batches bounded at 16 (¼ the peak, ms of overhead). Also: never run browsers
-  during a take on the shared 4 GiB card.
-- 08-27 (evening): **Zero-tap session flow shipped** (`b1032ec`, `0b2857c`, `ec96b98`):
-  aim → start → play. Auto-detect (existing) + the first calibration firing itself
-  when the reading looks like a start position at rest (server gate stays the
-  authority); calibrate's `label_rotation` folded into the page labelling
-  automatically (sign pinned end-to-end); portrait hard-blocked with an overlay;
-  rotated-board refusals say the one actionable sentence. Plus shake mitigation:
-  per-frame sharpness on the wire, sharpest-recent-wins inbox (`prefer_frame`).
-  The mis-calibrated bank was set aside (`models/exemplars_session.npz.poisoned-20260827`).
-
-- 08-27: **Control trial run, scored, and the 08-13 fixes are confirmed landing.**
-  `recordings/20260827-163352` (Ruy Lopez through 4.Ba4, 337 frames, 31 reads, truth
-  authored + `report.json` kept). **prior 99.0 % per-square, 58.3 % perfect boards**
-  against 08-13's 97.0 % / 28.8 % — the kings-evidence repair (`faaa4ed`) doing exactly
-  what it was built for. Latency **median 1.38 s, max 1.56 s** vs 6.59 s on 08-13 (the
-  event-loop fix). Throughput unchanged: 9.65 fps in, 0.89 reads/s out.
-  *Evidence margins, the new measurement:* of 38 wrong raw squares, truth was the
-  runner-up in only 21. Split by confusion it answers the retrain question — `q->k`
-  (22×) has truth in the top 2 just **11/22** at median margin 0.152, so the crop often
-  does not contain the answer and re-ranking cannot fix it; `p->b` (7×, the b7 pawn
-  behind the leaning knight) has truth ranked **7/7** at margin 0.144, so that one is
-  re-rankable. *Eval-design finding:* `guard_seqs` must cover the **settle lag** or the
-  settled stream is scored while it is correctly still catching up — settled reads 29.2 %
-  perfect at guard 12 and 77.8 % (99.7 % per-square) at guard 45, on the same 7 boards.
-
-- 08-27: **Calibrate failed all afternoon because the phone was portrait.** Not a
-  regression (08-13's photos score 28-31/32 through today's code) and not the angle
-  (aspect 0.86-0.90, floor 0.62). `squares.py:264` extends every crop **upward in image
-  space** — "piece tops point up in a normal photo" — so a board rotated 90° in the frame
-  has each crop reaching into the neighbouring square. Proof: the same photo scores
-  18/32 REJECT as sent and **30/32 PASS rotated 90° CCW** (piece confidence 0.47 → 0.94).
-  Occupancy stayed 64/64 throughout, which is why it looked like a piece-type problem.
-  `autorotate` cannot help — it rotates *labels* from `square_dist`, one layer above the
-  crop axis. A quad-only heuristic for the upright direction was tried and **rejected**:
-  it predicts 270° where the truth is 90° (3/7 correct), so the usable signal is the
-  device orientation angle, not perspective foreshortening.
-
-- 08-27: **A trial now records why, not just what** — three gaps closed before the
-  re-trial. *Evidence*: every recorded event carries a top-2-per-square digest
-  (~1.8 kB vs ~25 kB for `square_dist`), and `eval-session` reports per confusion pair
-  how often truth was the runner-up and the median `p(read) − p(truth)` margin — a
-  near-miss the crop nearly answered vs a conviction the evidence never held.
-  *Timing*: fps in, reads/s out, frames per read and capture→publish latency, off the
-  frame index alone; it confirms the hand-derived 08-13 figures (**7.47 fps in, 0.85
-  reads/s out, latency median 1.29 s / max 6.59 s**). *Heartbeat*: `/camera` beats every
-  10 s into `client-logs/`, so a quiet stretch says which kind of quiet. Scoring now
-  always writes `<recording>/report.json`.
-- 08-27: **The 08-13 headline numbers were wrong, and are corrected.** Re-scoring with
-  unchanged code gives prior **28.8 %** perfect, settled **25.8 %** (97.7 % per-square)
-  — not 45.4 % / 66.6 % (98.96 %). The truth.json was revised after those numbers were
-  published (66 scored events / guard 25 today vs 81 / guard 12 in the learning) and no
-  report artifact was kept. README corrected. Same failure as the 638/640 entry — hence
-  the always-write-the-report rule.
-
-- 08-20: **Pre-publish pass — the repo can go public.** Full object-graph audit: no
-  photos, datasets, weights or secrets were ever committed. Apache-2.0, with
-  `THIRD-PARTY.md` for the two exclusions — the built viewer bundle is
-  **GPL-3.0-or-later** (chessground + cburnett; our source stays Apache and
-  core/edge/inference carry no GPL dep), and the trained model is **not
-  redistributable** (ChessReD CC BY-NC-SA + murky geometry).
-
-- 08-13: **Trial 19:33 analyzed end-to-end; four fixes landed** (`faaa4ed`, `ef9a675`,
-  `78bc4d2`, `37a1972`). Kings repair demotes the lowest-`p(k)` square, not the smallest
-  k→runner-up margin (that margin is q-tail noise: wrong 55% of 628 two-king replay
-  frames vs 27% for the evidence rule; EMA fixes nothing, the misread is systematic).
-  `settled` ships — a per-square *time* debounce (2.5 s + ≥2 reads; count-based K does
-  NOT transfer across a 10× read-rate range) on the wire beside `prior`, drawn with
-  dashed-amber pending rings. `eval-session` scores the three streams apart. And
-  /estimate + /calibrate moved off the event loop (the 6.6 s latency spike). Trial
-  facts: the "phantom b6 rook" was a real c6 knight leaning across the boundary
-  (attribution bleed, also corrupts b7); rank-8 crops at phone height are decapitated,
-  so k/q is indistinguishable in-crop.
-
-- 08-13: **The node stops starving the display GPU** — `cuda_providers()` ships CUDA EP
-  options (`BR_GPU_MEM_LIMIT_MB`, default 1024 MiB/session) and `make dev-cpu` hides the
-  card. A `/calibrate` batch had twice taken the VRAM X needed for the 4K monitor's
-  reverse-PRIME surface. Peak measured ~1.6 GiB of 4 GiB across 3 sessions.
+- **08-27 night wave** (detail: `git log 866653f..9167dfd`, docs/reports/2026-08-27-*):
+  all five takes scored; **replay harness** (recorded takes → rerunnable offline
+  benchmark; replay-vs-replay is the valid comparison); **GPU arena ratchet
+  fixed** (fixed-shape batches; 0 failures over every replay since, was 91/take);
+  **b-demotion shipped** (evidence re-rank study GO: +2–10 pp perfect, 0 broken);
+  **framing re-detect** (take 5's drift residual −58 %, baselined adoption, 0
+  false adoptions on controls); **burst-end read scheduling live** (~5× fewer GPU
+  reads, D3 floor + wall-clock backstop, `BR_SCHEDULE` escape hatch, events now
+  sparse by design → author truth with guard_seqs=3); **settled stream
+  coherence-fixed** (excess-monotone commits + bounded staleness ≤3 windows;
+  impossible boards 233→0 on control, perfect 0→28 %); **recorder rolls per
+  session** (seq-collision wart gone); **zero-tap calibrate root-caused**
+  (occupancy-vs-classname bug — it had never fired; fixed, e2e-pinned); **test
+  cascade filled** (1048 py / 417 vitest / 50 e2e; every feature unit +
+  integration + e2e; 4 silently-red e2e specs repaired). Every non-trivial
+  commit adversarially reviewed; findings fixed same-night.
+- 08-27 (day): meter was dead on the phone → adaptive floor (proven live in take
+  5); label-rotation auto-absorb; portrait hard block; sharpness-preferring
+  inbox; latency batch fix. Pre-wave history: `git log` before `866653f`.
 
 ## Next
 
-0c. **Move-triggered estimation** (operator-endorsed direction): the node reads
-   continuously today, wasting reads on resting boards and on mid-burst chaos
-   frames (whose huge unsure batches are the OOM path). Frames already carry
-   `stability` + `burst_id`; estimate at BURST END (the move-complete moment) +
-   a slow keepalive at rest (~3-5 s), skip mid-burst. Hard floor rate is
-   non-negotiable (D3 hint-never-gate; the dead-meter incident is the cautionary
-   tale). Later, per-square motion masks feed the stabilizer for hovering hands;
-   shadows stay the classifier's problem — a false burst is cheap, keepalive
-   bounds a missed move.
-0b. **Ship the `b` demotion** (study said GO — see Done): swap top-2 in
-   `square_dist` when argmax is `b` and margin < 0.20, upstream of
-   placement/evidence/prior; plus the margin-gap guardrail assertion in the trial
-   scorer. Then re-verify via replay on all four takes.
-0d. **Mid-session framing drift** (take 5's dominant residual, ~79 px a1 wander):
-   nothing re-detects/verifies the quad after streaming starts. Cheap candidates:
-   periodic restored-quad-style verify off keepalive frames, or corner tracking.
-1. **Retrain case, post-re-rank** — what the `b` rule leaves: control's `q->k`
-   (truth outside top-2 half the time) is the true crop case; ~78 % of residual
-   errors are outside the top-2 ceiling. A pose-derived crop axis belongs with
-   whatever retrain survives.
-2. **Estimator throughput / latency** — 0.89 reads/s (control) collapsing to 0.48
-   under the (now fixed) OOM; profile the cascade+ensemble read at batch 16 and
-   attack the biggest term (bank embed batching?). Faster reads shrink settle lag
-   and the guard window both.
-3. **Run M2 over `ccbf-r5`** with `--forward-original --corners` (the warp path is unusable at
-   this angle), judge the stream, then settle D3 — does `stability` earn its keep?
-4. **Give a user's `tuned.onnx` a deploy story** — per-operator artifact, no compose path today.
-5. **Attack the residual type confusions** — `p->b` leads trained-alone (confirmed live:
-   b7 pawn read `b` behind the leaning knight); a third of the ensemble's residual is
-   `empty->p`/`empty->P`, a different animal.
-6. **Decide whether calibrated confidences go on the wire** — a decision, not an experiment:
-   argmax is invariant, DESIGN §9 says the downstream smoother wants them.
-7. **Crop attribution / occlusion** — the prism is a *bounding* volume: the c6 knight's lean
-   hallucinated a b6 rook and corrupted b7 all trial. Base-weighted attribution over
-   bounding-prism membership. Plus detection follow-ups (`73efd60`, non-blocking).
+1. **Tall-crop retrain decision** — the case sharpened all night: the `b` rule
+   ships (residual shrunk), the control's `q->k` is NOT re-rankable (truth
+   outside top-2 half the time), 08-13's d8 q->k is a pure recognition error the
+   prior reads wrong 90 % of the time, and take 4 (least drift, worst accuracy)
+   is pure classification error. ~78 % of residual errors sit outside the top-2
+   ceiling. A pose-derived crop axis belongs with whatever retrain survives.
+2. **Estimator throughput / latency** — profile the cascade+ensemble read
+   (~1.3 GPU-s/read measured in the sweep) and attack the biggest term (bank
+   embed batching?). Faster reads shrink settle lag and the guard window both.
+   Burst-end scheduling made this cheaper to afford but reads are still the cost
+   unit.
+3. **Per-square motion masks** (deferred from the scheduler design): regional
+   motion feeding the stabilizer for hovering hands; only worth it if the proof
+   take shows hand-hover errors surviving the new stack.
+4. **Run M2 over `ccbf-r5`** with `--forward-original --corners` (the warp path
+   is unusable at this angle) and judge the stream at that angle.
+5. **Give a user's `tuned.onnx` a deploy story** — per-operator artifact, no
+   compose path today.
+6. **Attack the residual type confusions** — `p->b` leads trained-alone; a third
+   of the ensemble's residual is `empty->p`/`empty->P`, a different animal.
+   Feeds item 1.
+7. **Decide whether calibrated confidences go on the wire** — a decision, not an
+   experiment: argmax is invariant, DESIGN §9 says the downstream smoother wants
+   them.
+8. **Crop attribution / occlusion** — the prism is a *bounding* volume: the c6
+   knight's lean hallucinated a b6 rook and corrupted b7 all trial.
+   Base-weighted attribution over bounding-prism membership. Plus detection
+   follow-ups (`73efd60`, non-blocking).
 
 ## Open questions
 
 - **No real footage sits inside the good angle band**, and a ~40-candidate search found none:
   broadcast cameras frame players, not boards. Own footage is a sourcing requirement.
-- **Nothing consumes the position stream** — deliberate (D1/D3 put smoothing in the consumer),
-  but that consumer does not exist, so `stability` is measured and read by nobody.
+- **Nothing consumes the position stream** — deliberate (D1/D3 put smoothing in
+  the consumer), but that consumer app still does not exist. (`stability` now
+  earns its keep internally: forwarder + read scheduler both run on it.)
 - **Confidence is not usable today** — no board-level signal; the ensemble is under-confident.
 - **Bank writes are not monotone** — a 64/64 board lost a square after two `/calibrate` writes.
 - **The 638/640 baseline is unreproducible** — 5 of 10 curated boards point at deleted photos.
