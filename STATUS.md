@@ -18,11 +18,6 @@ confidences**. No moves, no legality, no PGN — those are the downstream applic
 - **Iteration is offline now** — recorded takes replace live phone takes (operator
   decision 08-27 eve); a replay harness turns each recording into a rerunnable
   benchmark. Dev stack stopped, GPU free.
-- bdemotion-verify — rule landed (`fe8a7bb`: `estimator.read_event` seam;
-  composites now blend raw dists via `PhotoDistReader` so it applies exactly
-  once; guardrail stat in trial scorer). NOW: after-replays of all four takes
-  (background, GPU, worktree-pinned) + code review of the blend refactor —
-  running — next: before/after table vs `baseline-3452334`.
 - phone-live-test — FOUR takes recorded, three scored (control 99.0 %/58.3 %,
   hard 98.6 %/46.5 %, fast 98.1 %/58.1 % prior). Take 5 (18:18, unscored, no truth)
   proved the meter fix live — send rate 1 fps at rest with real bursts (was a flat
@@ -49,6 +44,18 @@ confidences**. No moves, no legality, no PGN — those are the downstream applic
   Weigh a cheap re-rank/calibration pass against the retrain before training.
 
 ## Done (recent)
+
+- 08-27 (night): **b-demotion shipped and replay-verified** (`fe8a7bb` rule at the
+  `estimator.read_event` seam — composites blend raw dists via `PhotoDistReader`,
+  reviewed bit-for-bit blend-equivalent, exactly-once AST-pinned; `69d2c3e` guard
+  alarms fixed per review). Replay before/after (all four takes, prior stream):
+  control 97.18→97.32 / 30.8→33.2, hard 94.90→94.96 / 24.7→26.6, fast
+  97.04→97.32 / 54.1→57.0, take 5 92.11→92.26 / 28.6→29.7 — **every stream on
+  every take improved or held, none regressed**; biggest wins on settled (hard
+  41.2→50.0, fast 34.4→44.1). Guard: hard take at_risk (headroom 0.0017,
+  lost_in_band 67 — an upper bound that includes already-wrong-with-b-second;
+  watch it, don't panic). Replay dirs `baseline-3452334` / `bdemotion-fe8a7bb`
+  in each recording.
 
 - 08-27 (night): **baseline replays of all four 08-27 takes** (dirs
   `recordings/*/replays/baseline-3452334/`, log in session scratchpad): 2500
