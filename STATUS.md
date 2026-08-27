@@ -10,10 +10,15 @@ confidences**. No moves, no legality, no PGN — those are the downstream applic
 ## Now
 
 
-- move-trigger-experiment — agent building estimation-scheduling policies on the
-  replay `FramePolicy` seam (burst-end + keepalive floor vs every-frame) and
-  sweeping them over the four takes (owns GPU) — running — next: policy
-  recommendation + accuracy-per-read table.
+- move-trigger-ship — wiring `BurstTriggered(keepalive 3.0 s, 3 burst-end reads
+  @1.3 s)` into live ingest per the sweep's recommendation (policy picks from the
+  inbox so prefer_frame's sharper contender is what a burst-end read gets) —
+  running — next: full unit/integration cascade + TESTING.md sparse-events note.
+- stabilize-tiebreak — fixing the adopt-first-wholesale defect the sweep proved
+  (settled BELOW its own prior on the control take at every read rate; d8 q->k
+  locked 253/253) — running — next: replay-verify on all four takes, both
+  every-frame and burst policies.
+- schedule-review — code-reviewer on the sweep commit `5f9212f` — running.
 
 - public-release — repo is **push-ready** (Apache-2.0 + THIRD-PARTY.md, details
   scrubbed, history re-signed onto the current author email). Before pushing: add that
@@ -50,6 +55,23 @@ confidences**. No moves, no legality, no PGN — those are the downstream applic
   Weigh a cheap re-rank/calibration pass against the retrain before training.
 
 ## Done (recent)
+
+- 08-27 (night): **move-trigger sweep decided the scheduler**
+  ([report](docs/reports/2026-08-27-move-trigger-sweep.md), code `5f9212f` —
+  schedule.py policies, --restamp-stability, meter ported with a parity test).
+  SHIP: BurstTriggered(keepalive 3.0 s, 3 burst-end reads @1.3 s spacing,
+  forwarder hysteresis 0.7/0.85). Buys ~12× fewer GPU reads on flat-8fps takes
+  (~5× on an adaptive-forwarder stream — the honest live number); costs −0.9 pp
+  pooled prior per-square / −5 pp perfect (inside the sampling-chance band on
+  3/4 takes) and +2 s settle latency. PREMISE REFUTED: skipping mid-burst chaos
+  does NOT buy accuracy — the guard window already excludes it from scoring and
+  the errors are persistent type confusions, not blur. PROVEN DEFECT: the
+  settled adopt-first-wholesale rule fails at every read rate (control: settled
+  below its own prior, q->k locked 253/253). CAVEAT: baseline-3452334 /
+  bdemotion-fe8a7bb replays ran cascade-only — cwd-relative DINOV2 path +
+  silent bank fallback in a worktree (learning d318c366); the b-demotion
+  before/after stands (same stack both sides) but its absolute numbers are not
+  the ensemble's.
 
 - 08-27 (night): **viewer e2e cascade filled** (`ba69cc1` + fix `b9b886c`) —
   camera auto flows (auto-detect/verify, zero-tap calibrate, framing re-detect
