@@ -70,6 +70,22 @@ describe('MotionMeter', () => {
     expect(drop).toBeGreaterThan(rise);
   });
 
+  it("learns a noisy rig's resting difference and reads its rest as rest", () => {
+    // The 2026-08-27 finding: on the deployment phone the resting inter-frame
+    // difference measured ~6x the old fixed floor, so stability lived under 0.35
+    // and every threshold above it was dead. The meter must converge to >= 0.9
+    // on that rig's REST — and still drop when something actually moves.
+    const meter = new MotionMeter();
+    // resting frames whose alternation yields a constant mean diff of ~0.024
+    const restA = flat(0.5);
+    const restB = flat(0.5 + 0.024);
+    for (let i = 0; i < 80; i++) meter.update(i % 2 === 0 ? restA : restB);
+    expect(meter.stability).toBeGreaterThanOrEqual(0.9);
+    // a real move differences several times the resting scatter
+    meter.update(disturbed(0.5, 0.5, 1));
+    expect(meter.stability).toBeLessThan(0.7);
+  });
+
   it('re-reports 1.0 after a reset, as on a fresh camera', () => {
     const meter = new MotionMeter();
     meter.update(flat(0.5));

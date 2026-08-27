@@ -376,8 +376,33 @@ export function shouldAutoDetect({
   if (now - camera.liveAt < AUTO_SETTLE_MS || now < auto.nextAt) return false;
   if (stability < AUTO_STABILITY) return false;
   const sustainedLoss = auto.lostSince !== null && now - auto.lostSince >= AUTO_LOST_MS;
-  return !isFramed(camera.framing) || sustainedLoss;
+  // A RESTORED framing is last session's quad over this session's world: the
+  // board, the tripod or the perspective may all have changed while the page was
+  // closed (2026-08-27: a stale restored quad read the board a full rank off and
+  // correctly starved the zero-tap calibrate). Verify it with one detection as
+  // soon as the scene is still; success re-origins the framing to 'detected'.
+  return !isFramed(camera.framing) || sustainedLoss || camera.framing.origin === 'restored';
 }
+
+/**
+ * Largest SAME-INDEX corner displacement between two quads, as a fraction of the
+ * frame diagonal. Pointwise on purpose: two quads over the same physical corners
+ * in a different storage order are NOT a small shift — that is a relabelling, and
+ * the a8-check warning must fire for it.
+ */
+export function quadShift(a: CornerQuad, b: CornerQuad, frame: FrameSize): number {
+  const diagonal = Math.hypot(frame.width, frame.height);
+  let worst = 0;
+  for (let i = 0; i < 4; i++) {
+    const p = a[i] as Point;
+    const q = b[i] as Point;
+    worst = Math.max(worst, Math.hypot(p[0] - q[0], p[1] - q[1]));
+  }
+  return worst / diagonal;
+}
+
+/** A verifying re-detection landing within this is "the same framing, confirmed". */
+export const QUAD_VERIFY_SHIFT = 0.03;
 
 // ---- calibration guard -------------------------------------------------------
 

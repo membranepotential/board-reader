@@ -39,11 +39,18 @@ def test_identical_frames_stay_at_rest():
     assert scores == [1.0] * 5
 
 
-def test_sensor_noise_does_not_disturb_rest():
+def test_a_rigs_resting_noise_is_learned_and_reads_as_rest():
+    """2026-08-27: the deployment phone's resting difference measured ~6x the old
+    fixed floor, parking stability under 0.35 for entire takes. The meter now
+    learns each rig's own resting scatter — sustained noisy REST must converge to
+    >= 0.9, and a real sweep must still drop it at once."""
     meter = MotionMeter()
-    meter.update(still())
-    noisy = still().astype(np.int16) + 1  # a uniform 1/255 lift: below the floor
-    assert meter.update(np.clip(noisy, 0, 255).astype(np.uint8)) > 0.95
+    base = still().astype(np.int16)
+    lifted = np.clip(base + 6, 0, 255).astype(np.uint8)  # ~2.4% alternating flicker
+    for i in range(80):
+        meter.update(still() if i % 2 == 0 else lifted)
+    assert meter.stability >= 0.9
+    assert meter.update(swept(0)) < 0.7
 
 
 def test_a_hand_sweep_drops_stability_well_below_half():

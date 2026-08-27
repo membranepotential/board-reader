@@ -8,6 +8,8 @@ import {
   autoGaveUp,
   backoffFor,
   AUTO_CALIBRATE_START,
+  QUAD_VERIFY_SHIFT,
+  quadShift,
   calibrateBlockReason,
   looksLikeStartOccupancy,
   shouldAutoCalibrate,
@@ -522,5 +524,36 @@ describe('automatic calibration', () => {
     // cooldown after an attempt
     expect(shouldAutoCalibrate({ ...gate, auto: { nextAt: 2000, attempts: 1 } })).toBe(false);
     expect(shouldAutoCalibrate({ ...gate, now: 2001, auto: { nextAt: 2000, attempts: 1 } })).toBe(true);
+  });
+});
+
+describe('restored-framing verification', () => {
+  it('a restored framing triggers one auto-detection once the scene is still', () => {
+    const gate = {
+      auto: { fails: 0, nextAt: 0, lostSince: null },
+      now: 10_000,
+      camera: live('restored', 0),
+      activity: IDLE,
+      hidden: false,
+      stability: 0.95
+    };
+    expect(shouldAutoDetect(gate)).toBe(true);
+    // a detected or operator framing does not — this fires on page open only
+    expect(shouldAutoDetect({ ...gate, camera: live('detected', 0) })).toBe(false);
+    expect(shouldAutoDetect({ ...gate, camera: live('operator', 0) })).toBe(false);
+  });
+
+  it('quadShift is pointwise — a reordering of the same points is a big shift', () => {
+    const frame = { width: 1000, height: 1000 };
+    const quad: CornerQuad = [
+      [100, 100],
+      [900, 100],
+      [900, 900],
+      [100, 900]
+    ];
+    const nudged = quad.map(([x, y]) => [x + 5, y + 5]) as unknown as CornerQuad;
+    expect(quadShift(quad, nudged, frame)).toBeLessThan(QUAD_VERIFY_SHIFT);
+    const reordered = [quad[1], quad[2], quad[3], quad[0]] as unknown as CornerQuad;
+    expect(quadShift(quad, reordered, frame)).toBeGreaterThan(QUAD_VERIFY_SHIFT);
   });
 });

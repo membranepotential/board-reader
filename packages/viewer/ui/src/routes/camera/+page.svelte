@@ -104,6 +104,8 @@
     ratePerSecond,
     rebaseQuad,
     serialiseFraming,
+    QUAD_VERIFY_SHIFT,
+    quadShift,
     shouldAutoCalibrate,
     shouldAutoDetect,
     toQuad,
@@ -420,7 +422,18 @@
 
   function grabThumbnail(): Float32Array | null {
     if (motionCtx === null || video === undefined) return null;
-    motionCtx.drawImage(video, 0, 0, MOTION_SIDE, MOTION_SIDE);
+    // Sampled from the BOARD's crop once framed, the whole frame before: motion
+    // on the full frame is diluted by everything that is not the board (resting
+    // hands, background, exposure hunting over the scene), which is a large part
+    // of why stability lived under 0.35 on the 2026-08-27 takes. The meter's
+    // adaptive floor absorbs the one-frame spike when the region switches.
+    if (camera.kind === 'live' && isFramed(camera.framing)) {
+      const { framing, frame } = camera;
+      const box = cropBox(orderedCorners(framing.quad, framing.rot), frame);
+      motionCtx.drawImage(video, box.x, box.y, box.w, box.h, 0, 0, MOTION_SIDE, MOTION_SIDE);
+    } else {
+      motionCtx.drawImage(video, 0, 0, MOTION_SIDE, MOTION_SIDE);
+    }
     const { data } = motionCtx.getImageData(0, 0, MOTION_SIDE, MOTION_SIDE);
     // A fresh array per frame: `MotionMeter` RETAINS what it is given as the next
     // frame's reference, so a reused buffer would difference every frame against
@@ -709,6 +722,7 @@
       fails = 0;
       if (camera.kind !== 'live') return;
       auto = { ...auto, lostSince: null };
+      const previousQuad = camera.framing.quad;
       setFraming({ quad, rot: camera.framing.rot, origin: 'detected' });
       saveFraming();
       anchorTracker();
@@ -717,7 +731,13 @@
       // sustained loss can land the labels on a DIFFERENT physical corner than the
       // operator chose. That is the one case where the page changes a quad the
       // operator authored, so the warning stays up until rotate labels is pressed.
-      if (isAuto && reframing) {
+      // EXCEPT when the new quad landed on the old one point-for-point — then the
+      // labels cannot have moved, and a verify of a restored framing that changed
+      // nothing must not nag (it now runs on every page open).
+      const shifted = quadShift(previousQuad, quad, frame) > QUAD_VERIFY_SHIFT;
+      if (isAuto && reframing && !shifted) {
+        trial.note('framing-verified', { moved: false });
+      } else if (isAuto && reframing) {
         labelsNeedCheck = true;
         setBanner(
           'warn',

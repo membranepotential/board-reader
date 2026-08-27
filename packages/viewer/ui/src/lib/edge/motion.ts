@@ -32,20 +32,49 @@ const DUE_EPS = 1e-6;
 export interface MotionMeterOptions {
   /** Thumbnail side. 32×32 is enough to see a hand and cheap enough for 20 fps. */
   readonly downscale: number;
+  /** Steepness of the (diff / floor) → stability curve, in RATIO units. */
   readonly gain: number;
   /** Fast attack: a hand entering frame must drop stability at once. */
   readonly attack: number;
   /** Slower release, so rest is not declared between two strides of one move. */
   readonly release: number;
+  /**
+   * Ratios up to this score a full 1.0 — the resting scatter band. Motion has to
+   * exceed `tolerance ×` the learned floor before stability drops at all.
+   */
+  readonly tolerance: number;
+  /** Floor chase rate when a frame differences ABOVE it (slow — rides out moves). */
+  readonly floorUp: number;
+  /** Floor chase rate when a frame differences BELOW it (fast — finds real rest). */
+  readonly floorDown: number;
+  /** The floor never learns below this — an absolute sensor-noise lower bound. */
   readonly noiseFloor: number;
 }
 
+/**
+ * Tuned on the three 2026-08-27 phone takes (replayed from their recordings): the
+ * absolute scale of the old meter did NOT transfer to the deployment phone — rest
+ * measured 6× the assumed noise floor, so stability lived under 0.35 all day and
+ * everything thresholded on it (auto-detect, the burst forwarder) was dead. The
+ * meter now learns each rig's own resting difference (an asymmetric-chase floor,
+ * settling in the low quantiles of the resting mass) and scores the RATIO to it,
+ * which put ≥0.9 on 64–70 % of frames (the hold fraction) and <0.7 on 19–26 %
+ * (the move fraction) across all three takes with these values.
+ */
+/** Ratio under which a frame counts as resting scatter and teaches the floor at
+ * full rate; above it, at a fifth (see the update loop). */
+export const FLOOR_NEAR = 4.0;
+export const FLOOR_FAR_DIVISOR = 5.0;
+
 export const MOTION_DEFAULTS: MotionMeterOptions = {
   downscale: 32,
-  gain: 80,
+  gain: 1.5,
   attack: 0.7,
   release: 0.4,
-  noiseFloor: 0.004
+  tolerance: 2.0,
+  floorUp: 0.02,
+  floorDown: 0.08,
+  noiseFloor: 0.0015
 };
 
 /**
@@ -63,6 +92,8 @@ export class MotionMeter {
   readonly options: MotionMeterOptions;
   stability = 1;
   private prev: Float32Array | null = null;
+  /** The learned resting mean-difference of THIS rig's sampling path. */
+  private floor: number | null = null;
 
   constructor(options: Partial<MotionMeterOptions> = {}) {
     this.options = { ...MOTION_DEFAULTS, ...options };
@@ -84,8 +115,22 @@ export class MotionMeter {
     let sum = 0;
     for (let i = 0; i < thumbnail.length; i++) sum += Math.abs(thumbnail[i]! - prev[i]!);
     const diff = sum / thumbnail.length;
-    const { gain, noiseFloor, attack, release } = this.options;
-    const instant = Math.exp(-gain * Math.max(diff - noiseFloor, 0));
+    const { gain, tolerance, floorUp, floorDown, noiseFloor, attack, release } = this.options;
+    // Chase the resting difference asymmetrically: drop fast toward genuine rest,
+    // rise slowly through a move — the floor settles in the resting mass's low
+    // quantiles whatever this rig's sensor, holder and sampling path add up to.
+    // Seeded at the absolute bound, NOT the first observed diff: a camera that
+    // opens onto motion must not learn motion as its floor. The cost is a short
+    // conservative learn-up (a few seconds reading "moving" on a noisy rig) that
+    // the settle delays above this meter absorb anyway. The upward chase is
+    // additionally GATED: a frame far above the floor (a clear move, ratio past
+    // FLOOR_NEAR) teaches it at a fifth of the rate, so multi-second continuous
+    // motion — a piece dragged, the camera carried — is not adopted as rest.
+    if (this.floor === null) this.floor = noiseFloor;
+    const near = diff / this.floor <= FLOOR_NEAR;
+    const step = diff < this.floor ? floorDown : near ? floorUp : floorUp / FLOOR_FAR_DIVISOR;
+    this.floor = Math.max(noiseFloor, this.floor + step * (diff - this.floor));
+    const instant = Math.exp(-gain * Math.max(diff / this.floor - tolerance, 0));
     const weight = instant < this.stability ? attack : release;
     this.stability = Math.min(1, Math.max(0, (1 - weight) * this.stability + weight * instant));
     return this.stability;
@@ -94,6 +139,7 @@ export class MotionMeter {
   reset(): void {
     this.prev = null;
     this.stability = 1;
+    this.floor = null;
   }
 }
 
