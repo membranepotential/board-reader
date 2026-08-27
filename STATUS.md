@@ -13,10 +13,11 @@ confidences**. No moves, no legality, no PGN — those are the downstream applic
   replay `FramePolicy` seam (burst-end + keepalive floor vs every-frame) and
   sweeping them over the four takes (owns GPU) — running — next: policy
   recommendation + accuracy-per-read table.
-- framing-drift-experiment — analysis agent quantifying take 5's quad walk with
-  `board_reader_core.boarddetect` on recorded frames; would periodic re-detect
-  have caught it? — running — next: mechanism recommendation in
-  scratch/experiments/framing_drift/.
+- framing-redetect — svelte agent implementing the drift fix from the study
+  ([report](docs/reports/2026-08-27-framing-drift.md)): client-side periodic
+  re-detect on resting frames, per-session baseline R0, adopt at >0.45 squares
+  for 2 consecutive detections, re-seed the tracker — running — next: vitest
+  green + constants pinned.
 
 - public-release — repo is **push-ready** (Apache-2.0 + THIRD-PARTY.md, details
   scrubbed, history re-signed onto the current author email). Before pushing: add that
@@ -53,6 +54,17 @@ confidences**. No moves, no legality, no PGN — those are the downstream applic
   Weigh a cheap re-rank/calibration pass against the retrain before training.
 
 ## Done (recent)
+
+- 08-27 (night): **framing-drift study**
+  ([report](docs/reports/2026-08-27-framing-drift.md)): take 5's residual is LK
+  *tracker creep* (two episodes; errors track px offset exactly — >60 px ⇒ 5.2
+  wrong/read; the operator's manual re-detect at seq 177 fixed 5→0 wrong). The
+  core detector tracks the true board on resting frames (96 % hit, ~80 ms,
+  deterministic) but sits a constant 17–33 px from finger-framed quads ⇒
+  adoption must baseline per session (QUAD_VERIFY_SHIFT=0.03 ≈ 0.47 squares is
+  too tight to reuse). Projected: 58 % of take 5's wrong squares removed; 0
+  false adoptions on the four controls. Also found: take 4 has the LEAST drift
+  and the worst accuracy — its errors are genuinely classification.
 
 - 08-27 (night): **recorder rolls per streaming session** (`db6217e`) — seq
   regression per board opens a fresh sibling dir; late events routed to their
