@@ -34,7 +34,12 @@ from fastapi.responses import JSONResponse, Response
 
 from board_reader_core.boarddetect import LOW_ANGLE_ASPECT, quad_aspect
 from board_reader_core.corners import parse_corners
-from board_reader_core.protocol import GRID, START_PLACEMENT, square_evidence
+from board_reader_core.protocol import (
+    GRID,
+    START_PLACEMENT,
+    PositionEvent,
+    square_evidence,
+)
 from board_reader_core.recording import FrameRecorder
 from board_reader_core.wire import Frame, decode_jpeg
 
@@ -314,6 +319,42 @@ def _default_estimator(occupancy_est: CentroidEstimator | None = None) -> Estima
     return StubEstimator()
 
 
+def event_line(
+    event: PositionEvent, frame: Frame, *, published_ts: float | None
+) -> dict:
+    """One published event as its ``events.ndjson`` line (:data:`EVENTS_NAME`).
+
+    ``square_dist`` is stripped — replaying ``frames.ndjson`` through the same
+    estimator reproduces it, and at burst rate it is ~25 kB per line. What replay
+    cannot cheaply give back is *why* a square read the way it did, so the top-2
+    digest (:func:`square_evidence`, ~1.8 kB) rides along instead: it is what
+    turns "d8 read k" into "d8 read k at 0.51 over q at 0.49", and it is the
+    whole evidence base for the trial report's margin section. The digest is of
+    the estimator's own distribution — the ``prior`` repair never rewrites it —
+    so it stays comparable across the three streams.
+
+    The frame's own ``seq`` and ``capture_ts`` ride along too, so an event can be
+    joined back to the exact recorded frame it was estimated from.
+
+    ``published_ts`` is this node's wall clock at publish, and ``None`` omits it:
+    an offline replay (:mod:`board_reader_inference.replay`) never published
+    anything, and stamping it with either the replay's wall clock or the capture
+    time would put a fabricated capture->publish latency in the trial report. A
+    line without the key scores identically and reports "not stamped".
+
+    Shared with the replay harness on purpose: a replayed events.ndjson is only
+    worth comparing to a recorded one if the same code wrote both lines.
+    """
+    line = event.to_dict()
+    line.pop("square_dist", None)
+    line["evidence"] = square_evidence(event.square_dist)
+    line["frame_seq"] = frame.seq
+    line["capture_ts"] = frame.capture_ts
+    if published_ts is not None:
+        line["published_ts"] = published_ts
+    return line
+
+
 def create_app(
     estimator: Estimator | None = None,
     hub: PositionHub | None = None,
@@ -347,29 +388,10 @@ def create_app(
     # ``Uncalibrated`` and the worker skips the frame instead of publishing the
     # stub's fabricated placement.
     def _record_published(event, frame) -> None:
-        """One compact line per published event into the session's events.ndjson.
-
-        ``square_dist`` is stripped — replaying ``frames.ndjson`` through the same
-        estimator reproduces it, and at burst rate it is ~25 kB per line. What
-        replay cannot cheaply give back is *why* a square read the way it did, so
-        the top-2 digest (:func:`square_evidence`, ~1.8 kB) rides along instead:
-        it is what turns "d8 read k" into "d8 read k at 0.51 over q at 0.49", and
-        it is the whole evidence base for the trial report's margin section.
-        The digest is of the estimator's own distribution — the ``prior`` repair
-        never rewrites it — so it stays comparable across the three streams.
-
-        The frame's own ``seq`` and ``capture_ts`` ride along too, so an event can
-        be joined back to the exact recorded frame it was estimated from.
-        """
+        """One compact line per published event into the session's events.ndjson."""
         if recorder is None or not recorder.active:
             return
-        line = event.to_dict()
-        line.pop("square_dist", None)
-        line["evidence"] = square_evidence(event.square_dist)
-        line["frame_seq"] = frame.seq
-        line["capture_ts"] = frame.capture_ts
-        line["published_ts"] = time.time()
-        if not recorder.record_event(line):
+        if not recorder.record_event(event_line(event, frame, published_ts=time.time())):
             print(f"frame recording stopped: {recorder.stopped_reason}")
 
     ingest_ = FrameIngest(session.route, hub_, on_event=_record_published)

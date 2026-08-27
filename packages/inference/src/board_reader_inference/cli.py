@@ -8,6 +8,7 @@
     board-reader-inference positions --out run.ndjson --quiet    # capture it to a file
     board-reader-inference eval                                  # score the deployed stack
     board-reader-inference eval-session recordings/              # score a recorded trial
+    board-reader-inference replay recordings/<s> --score         # re-read a take offline
 
 Imports only :mod:`board_reader_core` and this package; it never imports the edge.
 Calibration takes an **already-rectified** board crop (run ``board-reader-edge
@@ -213,6 +214,53 @@ def cmd_eval_session(args: argparse.Namespace) -> int:
     return 0 if report.events_scored else 1
 
 
+def cmd_replay(args: argparse.Namespace) -> int:
+    from board_reader_core.recording import Recording
+
+    from board_reader_inference.replay import render, run
+    from board_reader_inference.trial import TRUTH_NAME, TruthError
+
+    try:
+        result = run(
+            args.recording,
+            name=args.name,
+            board_id=args.board,
+            all_sessions=args.all_sessions,
+            limit=args.limit,
+        )
+    except FileNotFoundError as e:
+        print(f"cannot replay: {e}", file=sys.stderr)
+        return 2
+    except ValueError as e:
+        # An empty board, an unreadable model file, a misconfigured pair of
+        # BR_MODEL_* — one line naming the fix, not a traceback.
+        print(f"cannot replay {args.recording}: {e}", file=sys.stderr)
+        return 2
+    print(render(result))
+    if not args.score:
+        # Say what to run next: the replay is a recording directory like any
+        # other, and that is the whole point of the layout.
+        print(f"score it:  uv run board-reader-inference eval-session {result.path}")
+        return 0 if result.stats.frames_estimated else 1
+    if not (result.path / TRUTH_NAME).exists():
+        print(
+            f"--score: {result.source} has no {TRUTH_NAME} to score against "
+            f"(write one, then: eval-session {result.path})",
+            file=sys.stderr,
+        )
+        return 2
+    from board_reader_inference.trial import run as score
+
+    try:
+        report = score(Recording(result.path))
+    except (TruthError, ValueError) as e:
+        print(f"cannot score {result.path}: {e}", file=sys.stderr)
+        return 2
+    print()
+    print(report.render())
+    return 0 if report.events_scored else 1
+
+
 def build_parser() -> argparse.ArgumentParser:
     from board_reader_core.protocol import START_PLACEMENT
 
@@ -340,6 +388,46 @@ def build_parser() -> argparse.ArgumentParser:
     )
     e.add_argument("--json", help="also write the full report as JSON here")
     e.set_defaults(func=cmd_eval)
+
+    from board_reader_inference.replay import REPLAYS_DIR
+
+    r = sub.add_parser(
+        "replay",
+        help="re-read a recorded take through today's estimator stack, writing a "
+        "recording-shaped directory eval-session can score",
+    )
+    r.add_argument(
+        "recording",
+        help="a recording session directory (or a root — the newest is taken)",
+    )
+    r.add_argument(
+        "--name",
+        help=f"name the replay directory (<recording>/{REPLAYS_DIR}/<name>); "
+        "default: the git description plus a digest of the BR_MODEL* environment, "
+        "so the same code and models replay into the same place",
+    )
+    r.add_argument("--board", help="replay this board_id (default: the first recorded)")
+    r.add_argument(
+        "--score",
+        action="store_true",
+        help="score the replay against the source's truth.json straight away "
+        "(same as eval-session on the replay directory)",
+    )
+    r.add_argument(
+        "--all-sessions",
+        dest="all_sessions",
+        action="store_true",
+        help="replay every streaming session in the recording into one file; by "
+        "default only the longest is replayed (seq restarts on reconnect, and "
+        "truth is a step function over seq)",
+    )
+    r.add_argument(
+        "--limit",
+        type=int,
+        default=None,
+        help="stop after this many estimates — a smoke run on a shared GPU",
+    )
+    r.set_defaults(func=cmd_replay)
 
     from board_reader_inference.trial import DEFAULT_EVERY, REPORT_NAME, TRUTH_NAME
 

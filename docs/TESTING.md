@@ -1055,6 +1055,68 @@ What to check:
 Exit codes: `0` scored, `1` nothing left to score, `2` no `truth.json` (skeleton
 printed) or a `truth.json` that cannot be trusted.
 
+### Option N — Replay a take through today's stack (offline benchmarking)
+
+Option M grades the events a run *published*. This one produces fresh ones: it
+pushes the recorded frames back through the estimator stack the environment
+builds today — the same routing decision, the same prior repair, the same
+debounce, the same event writer the live gateway uses — and writes them as a new
+recording-shaped directory. **A recorded take replaces a live one for
+iteration:** change the code, replay, score, diff. No phone, no board, no server.
+
+```bash
+# Whatever `serve` runs is what replay runs — same env vars, same builder:
+BR_MODEL=models/run_e/model.onnx BR_MODEL_B=models/run_f/model.onnx \
+BR_SESSION_BANK=models/exemplars_session.npz BR_GPU_MEM_LIMIT_MB=1024 \
+uv run board-reader-inference replay recordings/20260813-193308 --score
+```
+
+It lands beside the take it came from, so a benchmark can always be traced to its
+input — and the source recording itself is never written to:
+
+```
+recordings/20260813-193308/replays/<name>/manifest.json  # source, git, BR_MODEL*, digest
+                                        /events.ndjson   # the fresh reads
+                                        /frames.ndjson   # the replayed lines (thin)
+                                        /jpeg -> ../../jpeg          (symlink)
+                                        /truth.json -> ../../truth.json
+```
+
+`<name>` defaults to `<git describe>-<digest of the BR_MODEL* env>`: the same code
+against the same models replays into the same directory (a re-run supersedes its
+own answer), a different model lands beside it. `--name` overrides. `--score` runs
+Option M's scorer on the result straight away; without it the command prints the
+`eval-session` line to run.
+
+What to check:
+
+- **the replay is deterministic** — same recording, same code, same env gives a
+  byte-identical `events.ndjson` (modulo the model's own float nondeterminism), so
+  two replays can be diffed as a claim about the *code*. Everything time-based
+  runs on each frame's recorded `capture_ts`, never the wall clock: a 2.5 s settle
+  window is 2.5 seconds *of the recording* whether the replay takes ten minutes or
+  ten milliseconds;
+- **more events than the run published.** The live gateway's latest-wins inbox
+  drops frames when the estimator falls behind (08-13: 85 events from 748 frames);
+  replay reads every frame, so the report's `timing` block and the settled row are
+  denser than the live ones. Compare the raw/prior rows with the recorded report,
+  not the rates;
+- **`published_ts` is absent** and the report says `latency not stamped` — nothing
+  was published, and a fabricated capture→publish number is worse than none;
+- **multi-session recordings**: a reconnecting edge restarts `seq` at 0, and truth
+  is a step function over `seq`, so only the **longest** session is replayed and a
+  warning names the others. `--all-sessions` replays them all into one file;
+- `--limit N` stops after N estimates — a smoke run when the GPU is busy;
+- `--board <id>` picks one board out of a recording that holds several.
+
+> [!note] Which frames get estimated
+> The loop asks a *frame policy* per frame, and the only one today is
+> `EveryFrame` — offline there is no reason to leave a recorded frame unread. It
+> is the seam the move-triggered estimation milestone plugs into (estimate at
+> burst end, slow keepalive, skip mid-burst): the policy sees the recorded header
+> (`seq`, `capture_ts`, `stability`, `sharpness`, `burst_id`) and not the pixels,
+> so a declined frame costs not even a JPEG read.
+
 ---
 
 ## Quick health checks
