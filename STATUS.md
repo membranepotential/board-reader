@@ -18,9 +18,11 @@ confidences**. No moves, no legality, no PGN — those are the downstream applic
 - **Iteration is offline now** — recorded takes replace live phone takes (operator
   decision 08-27 eve); a replay harness turns each recording into a rerunnable
   benchmark. Dev stack stopped, GPU free.
-- ship-b-demotion — implementer agent landing the re-rank rule (swap top-2 on
-  `b` argmax at margin < 0.20) + scorer guardrail — running — next: replay-verify.
-- replay-review — code-reviewer on the harness commit `e759631` — running.
+- bdemotion-verify — rule landed (`fe8a7bb`: `estimator.read_event` seam;
+  composites now blend raw dists via `PhotoDistReader` so it applies exactly
+  once; guardrail stat in trial scorer). NOW: after-replays of all four takes
+  (background, GPU, worktree-pinned) + code review of the blend refactor —
+  running — next: before/after table vs `baseline-3452334`.
 - phone-live-test — FOUR takes recorded, three scored (control 99.0 %/58.3 %,
   hard 98.6 %/46.5 %, fast 98.1 %/58.1 % prior). Take 5 (18:18, unscored, no truth)
   proved the meter fix live — send rate 1 fps at rest with real bursts (was a flat
