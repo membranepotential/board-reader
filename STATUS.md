@@ -13,8 +13,6 @@ confidences**. No moves, no legality, no PGN — those are the downstream applic
   camera flows (portrait block, auto-detect/verify/calibrate, re-detect) and
   filling the gaps with node-stand-in specs (operator ask: full
   unit/integration/e2e cascade for everything) — running.
-- recorder-roll-integration — agent pinning the recorder roll through the real
-  server ingest path (two sessions → two dirs, late-event routing) — running.
 
 - move-trigger-experiment — agent building estimation-scheduling policies on the
   replay `FramePolicy` seam (burst-end + keepalive floor vs every-frame) and
@@ -56,6 +54,13 @@ confidences**. No moves, no legality, no PGN — those are the downstream applic
   Weigh a cheap re-rank/calibration pass against the retrain before training.
 
 ## Done (recent)
+
+- 08-27 (night): **recorder roll pinned through the live gateway** (`f0d121a`,
+  4 integration tests, suite 996 green) — two WS sessions → two dirs, manifests
+  chained, and the late-event race driven deterministically (estimator parked in
+  its worker thread across the roll; event lands in the closed dir it belongs
+  to). Mutation-checked both directions. Note: TESTING.md §0 still says "783
+  tests / ~12 s" — stale, fix after the schedule agent releases the file.
 
 - 08-27 (night): **framing re-detect shipped** (`0ebbbd2` + review fixes
   `857163b`; 417 UI tests green). Every 10 s on a resting frame the page
