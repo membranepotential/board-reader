@@ -1,6 +1,6 @@
 # STATUS — board-reader
 
-_reconciled: 2026-08-27 @ `3406d2d`_ · decisions live in [docs/DESIGN.md](docs/DESIGN.md), detail in `git log` + `scratch/experiments/*/report.md`; this is state.
+_reconciled: 2026-08-27 evening @ `b1032ec`_ · decisions live in [docs/DESIGN.md](docs/DESIGN.md), detail in `git log` + `scratch/experiments/*/report.md`; this is state.
 
 ## Goal
 
@@ -15,22 +15,38 @@ confidences**. No moves, no legality, no PGN — those are the downstream applic
   Unverified. Optional: a CI workflow, CONTRIBUTING.md. Pre-rewrite SHAs recoverable
   from `docs/commit-rewrite-{map.tsv,pre.bundle}` (git-ignored); `tools/check_commit_refs.py`
   translates stale citations.
-- phone-live-test — control trial scored (see Done); dev stack is **running** for the
-  *hard* take (rank-8 pieces, different lighting — phone **landscape**). Then decide
-  the tall-crop retrain's shape from the evidence margins.
-- ui-mockups — full-system HTML mockups **ready for review** in `docs/mockups/`
-  (index/camera/viewer/snapshot; decided changes baked in, proposals labelled).
-- camera-ux — the three decided changes are **implemented and committed**: portrait
-  hard block, short named-cause refusal banner, automatic label-rotation absorb
-  (plus `ec96b98`, the gate naming a rotated board). **Not yet deployed** — needs
-  `make ui` + a stack restart after the current take; the running stack predates them.
-- phone-live-test(2) — first hard-take attempt **aborted**: GPU OOM stalled the
-  stream (inference node holds ~2.9 GiB of 4; the estimator loop survives, frames
-  fail while pressure lasts), and the operator had calibrated a non-start position
-  with k/q swapped. Bank set aside (`models/exemplars_session.npz.poisoned-20260827`),
-  stack restarted fresh with `BR_GPU_MEM_LIMIT_MB=1024`; retake pending.
+- phone-live-test — control AND hard take **scored** (see Done). Next trial should
+  exercise the deployed zero-tap flow (aim → start → play) and confirm the OOM fix
+  under dim light; the planned 6.d3 Qe7 7.Nc3 Qd8 tail is still unplayed.
+- ui-mockups — full-system mockups **awaiting user review** in `docs/mockups/`
+  (also http://localhost:8766/ while the ad-hoc server runs).
+- tall-crop-retrain — decision input now in from BOTH trials: the dim-light residual
+  (`p->b` 17×, `q->b` 8×) is 25/25 truth-ranked-second, i.e. re-rankable WITHOUT a
+  retrain; the control's `q->k` (truth outside top-2 11/22) still argues for one.
+  Weigh a cheap re-rank/calibration pass against the retrain before training.
 
 ## Done (recent)
+
+- 08-27 (evening): **Hard take run and scored** (`recordings/20260827-172736`,
+  1.e4–5...Re8 with both castlings, dim light, fresh one-photo bank): prior
+  **98.6 % per-square / 46.5 % perfect** on 43 events. The rank-8 k/q residual did
+  NOT reproduce — castled/rook-lift segments score 99.5–100 % prior; the dim-light
+  residual is bishop-attractor (`p->b` 17×, `q->b` 8×) with truth ranked second
+  25/25 at ~0.18 margin → re-rankable. The 6.d3+ tail is lost to the OOM below.
+- 08-27 (evening): **Both live stalls diagnosed: CUDA arena OOM, fixed** (`c2e9bf1`).
+  The cascade secondary fed a near-full-board unsure batch under dim light pushes
+  its session arena to the cap (728 MiB@768, 1001 MiB@1024) and a BFC arena never
+  shrinks — every later read fails, stream goes quiet, worker survives. Fix: GPU
+  batches bounded at 16 (¼ the peak, ms of overhead). Also: never run browsers
+  during a take on the shared 4 GiB card.
+- 08-27 (evening): **Zero-tap session flow shipped** (`b1032ec`, `0b2857c`, `ec96b98`):
+  aim → start → play. Auto-detect (existing) + the first calibration firing itself
+  when the reading looks like a start position at rest (server gate stays the
+  authority); calibrate's `label_rotation` folded into the page labelling
+  automatically (sign pinned end-to-end); portrait hard-blocked with an overlay;
+  rotated-board refusals say the one actionable sentence. Plus shake mitigation:
+  per-frame sharpness on the wire, sharpest-recent-wins inbox (`prefer_frame`).
+  The mis-calibrated bank was set aside (`models/exemplars_session.npz.poisoned-20260827`).
 
 - 08-27: **Control trial run, scored, and the 08-13 fixes are confirmed landing.**
   `recordings/20260827-163352` (Ruy Lopez through 4.Ba4, 337 frames, 31 reads, truth
@@ -100,29 +116,17 @@ confidences**. No moves, no legality, no PGN — those are the downstream applic
   card. A `/calibrate` batch had twice taken the VRAM X needed for the 4K monitor's
   reverse-PRIME surface. Peak measured ~1.6 GiB of 4 GiB across 3 sessions.
 
-- 08-11: **Recognition reached its current shape** (`20b063a`, `364bea3`, `2b64ada`,
-  `155704c`, `3fc8831`) — τ-gated two-model cascade behind `BR_MODEL_B`, calibration
-  fine-tune behind `BR_MODEL_TUNED`, ensemble-with-the-bank beating either member
-  (user_photos 0.956), per-board display rotation. Answered-negative along the way:
-  decoupled routing, central-column pooling, and run_f deployed alone. Session
-  *diversity* is the fine-tune lever, not frame count. Detail: `git log`,
-  `scratch/experiments/*/report.md`.
-- 08-10: **The synthetic holdout does not predict deployment** — run_f's +4.8pp there
-  transferred as 0.0pp on real photos. Crops and epochs are exhausted as knobs.
-
 ## Next
 
-0. **The portrait crop axis** — (A) gate names the cause: **done** `ec96b98`. (B)
-   client-side guard: mockups awaiting review — the quad heuristic failed validation,
-   so the client blocks/warns on portrait rather than silently re-rotating; a
-   pose-derived crop axis (C) is the principled version and belongs with the retrain.
-0b. **The hard take** — rank-8 pieces, different lighting; the control is done.
-1. **Tall-crop retrain, gated on `eval-session`** — the d8/e8 k/q residual is a crop
-   problem (decapitated rank-8); score candidates on recordings/20260813-193308 truth,
-   and read the new evidence margins first: truth ranked second by a hair says the crop
-   carries the answer, truth outside the top 2 says a better head will not find it.
-2. **Estimator throughput** — measured 0.85 reads/s against 7.47 fps in; profile the
-   cascade+ensemble path (bank embed batching?); faster reads shrink settle lag too.
+1. **Re-rank before retrain** — the dim-light residual (`p->b`/`q->b`, truth second
+   25/25 at ~0.18 margin) should fall to a cheap logit-calibration / re-rank pass;
+   the control's `q->k` (truth outside top-2 half the time) is the true crop case.
+   Score any candidate on BOTH 08-27 truths + 08-13. A pose-derived crop axis
+   belongs with whatever retrain survives this.
+2. **Estimator throughput / latency** — 0.89 reads/s (control) collapsing to 0.48
+   under the (now fixed) OOM; profile the cascade+ensemble read at batch 16 and
+   attack the biggest term (bank embed batching?). Faster reads shrink settle lag
+   and the guard window both.
 3. **Run M2 over `ccbf-r5`** with `--forward-original --corners` (the warp path is unusable at
    this angle), judge the stream, then settle D3 — does `stability` earn its keep?
 4. **Give a user's `tuned.onnx` a deploy story** — per-operator artifact, no compose path today.
