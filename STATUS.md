@@ -9,6 +9,13 @@ confidences**. No moves, no legality, no PGN — those are the downstream applic
 
 ## Now
 
+- e2e-coverage — svelte agent auditing the Playwright suite against the shipped
+  camera flows (portrait block, auto-detect/verify/calibrate, re-detect) and
+  filling the gaps with node-stand-in specs (operator ask: full
+  unit/integration/e2e cascade for everything) — running.
+- recorder-roll-integration — agent pinning the recorder roll through the real
+  server ingest path (two sessions → two dirs, late-event routing) — running.
+
 - move-trigger-experiment — agent building estimation-scheduling policies on the
   replay `FramePolicy` seam (burst-end + keepalive floor vs every-frame) and
   sweeping them over the four takes (owns GPU) — running — next: policy
