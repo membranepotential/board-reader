@@ -15,7 +15,9 @@ everywhere else, but here the *timing* is.
 
 from __future__ import annotations
 
+import asyncio
 import json
+import os
 import time
 
 import numpy as np
@@ -31,15 +33,21 @@ from board_reader_core.protocol import (
 from board_reader_core.recording import EVENTS_NAME, INDEX_NAME, FrameRecorder, Recording
 from board_reader_core.wire import Frame, encode_jpeg
 
+from board_reader_inference import replay as replay_mod
 from board_reader_inference.cli import main
+from board_reader_inference.hub import PositionHub
+from board_reader_inference.ingest import FrameIngest
 from board_reader_inference.replay import (
     EveryFrame,
     ReplayResult,
     build_session,
+    check_name,
     default_name,
     find_sessions,
     replay,
 )
+from board_reader_inference.routing import Uncalibrated
+from board_reader_inference.server import event_line
 from board_reader_inference.session import EstimatorSession
 from board_reader_inference.stabilize import SETTLE_SECONDS
 from board_reader_inference.trial import REPORT_NAME, TRUTH_NAME
@@ -184,18 +192,71 @@ def test_two_replays_of_one_recording_are_byte_identical(source):
     assert (a.path / INDEX_NAME).read_bytes() == (b.path / INDEX_NAME).read_bytes()
 
 
-def test_default_name_tracks_the_model_environment(monkeypatch):
+def test_default_name_tracks_the_model_environment(monkeypatch, tmp_path):
     """The default replay name separates model configurations, not runs.
 
     Re-running the same code against the same models must land in the same
-    directory (it supersedes its own answer); pointing BR_MODEL somewhere else
-    must land beside it, or one score silently overwrites another's.
+    directory (it supersedes its own answer); pointing BR_MODEL somewhere else —
+    or retraining the model that path names, in place — must land beside it, or
+    one score silently overwrites another's.
     """
-    monkeypatch.setenv("BR_MODEL", "models/run_e/model.onnx")
+    monkeypatch.setattr(replay_mod, "git_describe", lambda: "g1a2b3c4")
+    model = tmp_path / "model.onnx"
+    model.write_bytes(b"weights")
+    monkeypatch.setenv("BR_MODEL", str(model))
+
     first = default_name()
+    assert first.startswith("g1a2b3c4-")
     assert first == default_name()
-    monkeypatch.setenv("BR_MODEL", "models/run_g/model.onnx")
+
+    other = tmp_path / "other.onnx"
+    other.write_bytes(b"weights")
+    monkeypatch.setenv("BR_MODEL", str(other))
+    assert default_name() != first  # a different model file
+
+    # Retrained in place: same path, same size, new bytes. models/run_e/model.onnx
+    # is a path and not a version, so the stat has to be part of the identity.
+    monkeypatch.setenv("BR_MODEL", str(model))
+    model.write_bytes(b"retrain")
+    os.utime(model, ns=(1, 2))
     assert default_name() != first
+
+
+def test_a_dirty_tree_has_no_default_name(monkeypatch):
+    """Two sets of uncommitted changes describe identically — and would collide.
+
+    The collision destroys the baseline a replay was meant to be diffed against,
+    which is the one thing the harness exists to protect, so it is refused rather
+    than resolved.
+    """
+    monkeypatch.setattr(replay_mod, "git_describe", lambda: "g1a2b3c4-dirty")
+    with pytest.raises(ValueError, match="--name"):
+        default_name()
+    monkeypatch.setattr(replay_mod, "git_describe", lambda: "unversioned")
+    with pytest.raises(ValueError, match="--name"):
+        default_name()
+
+
+@pytest.mark.parametrize("name", ["../escape", "a/b", "..", "", "."])
+def test_a_replay_name_must_be_one_path_component(name):
+    """The jpeg/truth symlinks hop a fixed ../.., so the depth is a contract.
+
+    A name with a separator in it would not merely escape the tree — it would
+    produce dangling links and a replay that scores nothing, discovered ten
+    minutes into a GPU run.
+    """
+    with pytest.raises(ValueError, match="single directory name"):
+        check_name(name)
+
+
+def test_a_replay_must_sit_two_levels_under_its_recording(source):
+    with pytest.raises(ValueError, match="two levels"):
+        replay(
+            source,
+            source.path / "shallow",
+            session=EstimatorSession(ScriptedEstimator({})),
+            log=None,
+        )
 
 
 # --------------------------------------------------------------------------- #
@@ -336,18 +397,23 @@ def test_the_policy_decides_which_frames_are_estimated(source):
     assert result.path.joinpath(INDEX_NAME).read_text().count("\n") == 8
 
 
-def test_limit_stops_reading_without_hiding_the_frames(source):
-    """``--limit`` is a smoke-run brake, and says so separately from the policy.
+def test_limit_truncates_the_take_rather_than_thinning_it(source):
+    """``--limit`` stops the replay looking at the recording, and indexes nothing more.
 
-    The frames past it are still real input, so they stay in the thin index and
-    are counted apart — a truncated replay must not read like a sparse one.
+    A truncated take is a shorter take, not a sparse reading of a long one: if the
+    unread frames stayed in the index, ``eval-session`` would report a run that
+    read one frame in 249 — a timing claim about a run that never happened. The
+    policy is not consulted for frames nobody saw either.
     """
     estimator = ScriptedEstimator({})
-    result = _run(source, "limited", estimator, limit=3)
-    assert estimator.seen == [0, 1, 2]
-    assert result.stats.frames_skipped_limit == 5
-    assert result.stats.frames_skipped_policy == 0
-    assert result.path.joinpath(INDEX_NAME).read_text().count("\n") == 8
+    policy = EvenSeqs()
+    result = _run(source, "limited", estimator, limit=2, policy=policy)
+
+    assert estimator.seen == [0, 2]
+    assert policy.asked == [0, 1, 2]  # asked up to the last frame it read, no further
+    assert result.stats.truncated is True
+    assert result.stats.frames_total == 3
+    assert result.path.joinpath(INDEX_NAME).read_text().count("\n") == 3
 
 
 def test_every_frame_is_the_default_policy(source):
@@ -356,6 +422,81 @@ def test_every_frame_is_the_default_policy(source):
     assert estimator.seen == list(range(8))
     assert EveryFrame().name == "every-frame"
 
+
+# --------------------------------------------------------------------------- #
+# Parity with the live ingest worker
+# --------------------------------------------------------------------------- #
+
+
+def _ingest_event_lines(frames: list[Frame], estimator) -> list[dict]:
+    """Drive the real :class:`FrameIngest` over ``frames`` and collect its events.
+
+    One frame at a time, draining after each: the live inbox is latest-wins
+    (maxsize=1) and would drop frames if they were pushed faster than the
+    estimator ran, which is the one live behaviour a parity check must not be at
+    the mercy of.
+    """
+
+    async def _drive() -> list[dict]:
+        lines: list[dict] = []
+        ingest = FrameIngest(
+            EstimatorSession(estimator).route,
+            PositionHub(),
+            on_event=lambda event, frame: lines.append(
+                event_line(event, frame, published_ts=None)
+            ),
+        )
+        for frame in frames:
+            ingest.submit(frame)
+            await ingest.drain()
+        await ingest.close()
+        return lines
+
+    return asyncio.run(_drive())
+
+
+def test_replay_publishes_exactly_what_the_live_worker_would(source):
+    """The fidelity claim, pinned: same frames, same estimator, same event lines.
+
+    Replay and :meth:`FrameIngest._run` are two hand-written orderings of the
+    same three steps — route, skip if Uncalibrated, estimate-repair-debounce —
+    and the whole value of the harness is that they cannot drift. If someone adds
+    a step to the live worker (another guard, a rewrite of the event before it is
+    published) and not to the replay loop, this fails; without it, the replay
+    quietly starts benchmarking a path nobody serves.
+
+    Byte-equal modulo ``published_ts``, which is the gateway's wall clock at
+    publish and the one thing an offline replay has no honest value for.
+    """
+    script = dict.fromkeys(range(3, 8), E4)
+    replayed = _events(_run(source, "parity", ScriptedEstimator(script)))
+    live = _ingest_event_lines(
+        [recorded.frame() for recorded in source.frames()], ScriptedEstimator(script)
+    )
+
+    assert len(replayed) == 8
+    assert [json.dumps(e, sort_keys=True) for e in replayed] == [
+        json.dumps(e, sort_keys=True) for e in live
+    ]
+
+
+def test_parity_holds_through_the_uncalibrated_skip(source, monkeypatch):
+    """Both paths must also agree on the frames they publish NOTHING for (§4.6).
+
+    The uncalibrated branch is the one that has already shipped a bug: the stream
+    path was written with three branches and published the stub's fabricated
+    start position at stream rate. A replay that skipped it differently would
+    benchmark a board nobody was shown.
+    """
+    monkeypatch.setattr(
+        EstimatorSession, "route", lambda self, frame: Uncalibrated(None, frame, None)
+    )
+    result = _run(source, "unready", ScriptedEstimator({}))
+    live = _ingest_event_lines([r.frame() for r in source.frames()], ScriptedEstimator({}))
+
+    assert _events(result) == live == []
+    assert result.stats.frames_skipped_unready == 8
+    assert result.stats.frames_estimated == 0
 
 # --------------------------------------------------------------------------- #
 # The CLI, end to end on the stub estimator

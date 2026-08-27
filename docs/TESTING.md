@@ -1082,11 +1082,39 @@ recordings/20260813-193308/replays/<name>/manifest.json  # source, git, BR_MODEL
                                         /truth.json -> ../../truth.json
 ```
 
-`<name>` defaults to `<git describe>-<digest of the BR_MODEL* env>`: the same code
-against the same models replays into the same directory (a re-run supersedes its
-own answer), a different model lands beside it. `--name` overrides. `--score` runs
-Option M's scorer on the result straight away; without it the command prints the
-`eval-session` line to run.
+`<name>` defaults to `<git describe>-<digest of the BR_MODEL* env, including each
+model file's size and mtime>`: the same code against the same models replays into
+the same directory (a re-run supersedes its own answer), a different model — or
+the same path retrained in place — lands beside it. **The default is only offered
+on a clean tree**: two sets of uncommitted changes describe identically, so they
+would replay into one directory and the second run would destroy the baseline the
+first was meant to be diffed against. A dirty tree is asked for `--name` (one path
+component, no `/` and no `..` — the replay's symlinks hop a fixed two levels).
+`--score` runs Option M's scorer on the result straight away; without it the
+command prints the `eval-session` line to run.
+
+> [!warning] Replay vs replay, never replay vs the recorded run
+> The live gateway's latest-wins inbox is a **quality** filter, not just a
+> staleness one: `ingest.prefer_frame` keeps the *sharper* of two contenders
+> within a one-second window, because a handheld phone smears half its frames. A
+> live run's recorded score is therefore measured on a blur-filtered subset of
+> its own frames, while a replay reads every frame the policy asks for — blurry
+> ones included. **A replay-vs-recorded raw delta is not a code result**: the two
+> numbers come from different frame populations and the replayed one is
+> systematically pessimistic. Treat it as directional at most.
+>
+> The second gap is the same size and points the other way: during a served run
+> `/calibrate` (and `/estimate`'s §4.6 auto-calibration) **hot-swaps** the active
+> estimator and the stream picks it up on its next frame, so a take where the
+> operator calibrated ten seconds in was read by two different estimators — its
+> early frames by one that had never seen this set. Replay freezes today's
+> estimator and bank for the whole take, so those early frames are read with
+> knowledge the live run did not have yet.
+>
+> The comparison that means something is **two replays of the same recording**:
+> same frames, same order, same freeze — so a difference between them is a
+> difference in the code or the models. Diff replays; quote the recorded run only
+> as the run that happened.
 
 What to check:
 
@@ -1096,17 +1124,20 @@ What to check:
   runs on each frame's recorded `capture_ts`, never the wall clock: a 2.5 s settle
   window is 2.5 seconds *of the recording* whether the replay takes ten minutes or
   ten milliseconds;
-- **more events than the run published.** The live gateway's latest-wins inbox
-  drops frames when the estimator falls behind (08-13: 85 events from 748 frames);
-  replay reads every frame, so the report's `timing` block and the settled row are
-  denser than the live ones. Compare the raw/prior rows with the recorded report,
-  not the rates;
+- **more events than the run published** (08-13: 748 against the run's 85), for the
+  reason in the warning above. The report's `timing` block and its settled row are
+  therefore denser than the live ones — the debounce is time-windowed rather than
+  count-based so that stays as comparable as it can be, which is not the same as
+  being the same measurement;
 - **`published_ts` is absent** and the report says `latency not stamped` — nothing
   was published, and a fabricated capture→publish number is worse than none;
 - **multi-session recordings**: a reconnecting edge restarts `seq` at 0, and truth
   is a step function over `seq`, so only the **longest** session is replayed and a
   warning names the others. `--all-sessions` replays them all into one file;
-- `--limit N` stops after N estimates — a smoke run when the GPU is busy;
+- `--limit N` stops after N estimates and leaves the rest of the take **unread** —
+  a smoke run when the GPU is busy. The result is a shorter take, not a sparser
+  reading of a long one: the unread frames are not in the replay's `frames.ndjson`
+  either, or `eval-session` would report a run that read one frame in 249;
 - `--board <id>` picks one board out of a recording that holds several.
 
 > [!note] Which frames get estimated
@@ -1115,7 +1146,10 @@ What to check:
 > is the seam the move-triggered estimation milestone plugs into (estimate at
 > burst end, slow keepalive, skip mid-burst): the policy sees the recorded header
 > (`seq`, `capture_ts`, `stability`, `sharpness`, `burst_id`) and not the pixels,
-> so a declined frame costs not even a JPEG read.
+> so a declined frame costs not even a JPEG read. Deciding from the header means
+> "estimate this one" is a request, not a guarantee — the frame may still have no
+> JPEG behind it or route `Uncalibrated` — so those land in their own counters and
+> are not charged to the policy.
 
 ---
 

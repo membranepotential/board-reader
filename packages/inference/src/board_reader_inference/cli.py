@@ -402,9 +402,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     r.add_argument(
         "--name",
-        help=f"name the replay directory (<recording>/{REPLAYS_DIR}/<name>); "
-        "default: the git description plus a digest of the BR_MODEL* environment, "
-        "so the same code and models replay into the same place",
+        help=f"name the replay directory (<recording>/{REPLAYS_DIR}/<name>, one "
+        "path component); default: the git description plus a digest of the "
+        "BR_MODEL* environment, so the same code and models replay into the same "
+        "place — offered only on a CLEAN tree, since two sets of uncommitted "
+        "changes would replay into one directory and overwrite each other",
     )
     r.add_argument("--board", help="replay this board_id (default: the first recorded)")
     r.add_argument(
@@ -425,7 +427,9 @@ def build_parser() -> argparse.ArgumentParser:
         "--limit",
         type=int,
         default=None,
-        help="stop after this many estimates — a smoke run on a shared GPU",
+        help="stop after this many estimates and leave the rest of the take "
+        "unread — a smoke run on a shared GPU. The result is a shorter take, "
+        "not a sparser reading of a long one",
     )
     r.set_defaults(func=cmd_replay)
 

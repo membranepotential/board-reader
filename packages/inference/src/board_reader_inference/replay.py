@@ -29,14 +29,41 @@ milliseconds, and the same recording through the same code and the same
 environment produces byte-identical events. That determinism is the point: it is
 what lets two replays be diffed as a claim about the *code*.
 
-**What replay does NOT reproduce** is the live pre-filter. The gateway's
-latest-wins inbox drops frames when the estimator falls behind (the 08-13 trial
-published 85 events from 748 frames); replay estimates every frame the policy
-asks for, so it reads a *denser* stream than the run did. That is deliberate —
-an offline benchmark should spend all the frames it has — but it means the
-timing block of a replayed report is not the live one, and a settled row settles
-off a different read rate. The debounce is time-windowed precisely so that stays
-comparable (see :mod:`.stabilize`).
+**What replay does NOT reproduce, 1: the live pre-filter is a QUALITY filter.**
+The gateway's latest-wins inbox drops frames whenever the estimator falls behind
+(the 08-13 trial published 85 events from 748 frames), and what survives is not
+merely the freshest frame — :func:`~board_reader_inference.ingest.prefer_frame`
+keeps the *sharper* of two contenders within a one-second window, because a
+handheld phone smears half of what it captures. A live run's recorded score is
+therefore measured on a blur-filtered subset of its own frames, while replay
+reads every frame the policy asks for, blurry ones included.
+
+That has one consequence worth stating in capitals, because it is the easiest
+way to misread this harness: **a replay-vs-RECORDED raw delta is not a code
+result.** The two numbers are computed over different frame populations and the
+replayed one is systematically pessimistic — it pays for the blurred frames the
+live pre-filter spent nothing on. Quote it as directional at most. The
+comparison that means something is **replay vs replay**: two replays of the same
+recording see the same frames in the same order, so a difference between them is
+a difference in the code or the models, which is the entire point.
+
+The same split applies to the derived rows: the timing block of a replayed report
+is not the live one (it reads a denser stream), and the settled row settles off a
+different read rate. The debounce is time-windowed rather than count-based
+precisely so that stays as comparable as it can be (see :mod:`.stabilize`) — but
+"as comparable as it can be" is not "the same measurement".
+
+**What replay does NOT reproduce, 2: the live estimator is not frozen.** During a
+served run ``POST /calibrate`` (and the §4.6 auto-calibration on ``POST /estimate``)
+hot-swaps the session's active estimator, and the stream picks the new one up on
+its very next frame — a take where the operator calibrated ten seconds in was
+read by *two different estimators*, and its early frames by one that had never
+seen this chess set. Replay resolves the environment once and freezes that
+estimator and that bank for the whole take, because nothing offline calibrates
+(there is no HTTP here). So early-take frames are replayed against knowledge the
+live run did not have yet, which flatters the replay exactly where the live run
+was still learning the board. Another reason the honest comparison is replay vs
+replay.
 
 **Output layout.** A replay is written as a *recording-shaped* directory so
 ``eval-session`` scores it unchanged::
@@ -48,9 +75,13 @@ comparable (see :mod:`.stabilize`).
                                     /truth.json -> ../../truth.json  (if the source has one)
 
 ``<name>`` defaults to the code state plus a digest of the model environment
-(``g1a2b3c4-dirty-5e6f7a8b``), so re-running the same code against the same
-models overwrites its own directory while a different model lands beside it. The
-source recording is never written to, apart from that ``replays/`` subdirectory.
+(``<git-describe>-<env-digest>``), so re-running the same code against the same models
+overwrites its own directory while a different model lands beside it. The default
+is only offered when the working tree is **clean** and the models it names have
+not changed on disk: an uncommitted tree has no code identity, and two different
+experiments would replay into one directory and destroy the baseline they were
+meant to be diffed against. A dirty tree is asked for ``--name``. The source
+recording is never written to, apart from that ``replays/`` subdirectory.
 
 **Multi-session recordings.** A recording directory can hold several streaming
 sessions (a reconnecting edge restarts ``seq`` at 0 — a known recorder wart), and
@@ -67,8 +98,16 @@ which frames to spend an estimate on. The only policy here is
 :class:`EveryFrame` — the scheduler is not this change's job. The policy sees the
 recorded header (:class:`~board_reader_core.recording.FrameEntry`: ``seq``,
 ``capture_ts``, ``stability``, ``sharpness``, ``burst_id``) and not the pixels,
-which is both what such a scheduler needs and what lets a skipped frame cost
+which is both what such a scheduler needs and what lets a declined frame cost
 nothing at all — its JPEG is never even read off disk.
+
+A policy decides from the header alone, so "estimate this one" is a *request*,
+not a guarantee: the frame it picked may still turn out to have no JPEG behind it
+(a half-copied recording) or route to
+:class:`~board_reader_inference.routing.Uncalibrated` (§4.6, nothing can read
+piece types yet). Those land in their own counters rather than being charged to
+the policy — a scheduler is judged on the frames it declined, not on the ones the
+disk or the estimator could not honour.
 """
 
 from __future__ import annotations
@@ -269,9 +308,12 @@ def config_env() -> dict[str, dict]:
 
     The values decide *which* estimator gets built; the stat says which bytes it
     was built from, which is the question asked six weeks later when a replay
-    does not reproduce ("was the session bank the same file?"). Only the values
-    feed :func:`config_digest` — an mtime changes on a copy that changed nothing,
-    and a replay should not fork its output directory over that.
+    does not reproduce ("was the session bank the same file?"). Both feed
+    :func:`config_digest`, deliberately: models are retrained **in place** here
+    (``models/run_e/model.onnx`` is a path, not a version), and a digest over the
+    paths alone would let a retrain silently overwrite its predecessor's score
+    with a different model's. The cost is a fresh directory after a no-op copy
+    that only moved an mtime, which is the cheap half of the trade.
     """
     out: dict[str, dict] = {}
     for name in CONFIG_ENV:
@@ -282,7 +324,7 @@ def config_env() -> dict[str, dict]:
         try:
             stat = Path(value).stat()
             entry["bytes"] = stat.st_size
-            entry["mtime"] = stat.st_mtime
+            entry["mtime_ns"] = stat.st_mtime_ns
         except OSError:
             pass  # not a path, or gone — the value alone is still provenance
         out[name] = entry
@@ -290,10 +332,12 @@ def config_env() -> dict[str, dict]:
 
 
 def config_digest(env: dict[str, dict]) -> str:
-    """A short stable digest of the estimator environment (8 hex chars)."""
-    payload = json.dumps(
-        {k: v["value"] for k, v in sorted(env.items())}, separators=(",", ":")
-    )
+    """A short stable digest of the estimator environment (8 hex chars).
+
+    Over the values *and* the stat of each file they name — see
+    :func:`config_env` for why the bytes on disk are part of the identity.
+    """
+    payload = json.dumps(dict(sorted(env.items())), separators=(",", ":"), sort_keys=True)
     return hashlib.sha256(payload.encode()).hexdigest()[:8]
 
 
@@ -303,8 +347,43 @@ def default_name(env: dict[str, dict] | None = None) -> str:
     Reproducible on purpose: the same code against the same models replays into
     the same directory (a re-run supersedes its own previous answer), while a
     different model lands beside it instead of silently overwriting a score.
+
+    Which is exactly why there is **no default for an uncommitted tree**. Two
+    different sets of uncommitted changes describe identically, so they would
+    replay into one directory and the second run would destroy the baseline the
+    first one was meant to be diffed against — the one thing this harness exists
+    to protect. A dirty (or unversioned) tree raises, naming ``--name``; the
+    caller then says what they are measuring, which is better provenance than a
+    hash could have been anyway.
     """
-    return f"{git_describe()}-{config_digest(env if env is not None else config_env())}"
+    described = git_describe()
+    if described == "unversioned" or described.endswith("-dirty"):
+        raise ValueError(
+            f"the working tree has no reproducible code identity ({described}), so "
+            "there is no safe default replay name: two different sets of "
+            "uncommitted changes would replay into the same directory and "
+            "overwrite each other's score. Pass --name <what you are measuring> "
+            "(or commit first)"
+        )
+    return f"{described}-{config_digest(env if env is not None else config_env())}"
+
+
+def check_name(name: str) -> str:
+    """A replay directory name that is one path component. Raises on anything else.
+
+    The replay's ``jpeg`` and ``truth.json`` are symlinks with a **fixed** ``../..``
+    hop back to the recording (:func:`_link_source`), so a name carrying a
+    separator or a ``..`` would not just escape the tree — it would produce
+    dangling links and a replay that scores nothing, discovered ten minutes into
+    a GPU run.
+    """
+    if not name or name in {".", ".."} or name != Path(name).name:
+        raise ValueError(
+            f"--name {name!r} must be a single directory name: no '/', no '..' "
+            "(a replay's jpeg/truth symlinks hop a fixed two levels back to the "
+            "recording)"
+        )
+    return name
 
 
 # --------------------------------------------------------------------------- #
@@ -319,7 +398,9 @@ class ReplayStats:
     frames_total: int = 0  # in the replayed session(s), before the policy
     frames_estimated: int = 0
     frames_skipped_policy: int = 0
-    frames_skipped_limit: int = 0  # past --limit: not read, but still real input
+    #: ``--limit`` stopped the replay early: the frames after it were never
+    #: looked at, so this is a shorter TAKE, not a sparser reading of a long one.
+    truncated: bool = False
     frames_skipped_unready: int = 0  # routed Uncalibrated (§4.6): nothing to publish
     frames_failed: int = 0  # the estimator raised; the stream goes on, as it does live
     frames_missing: int = 0  # index line points at a JPEG that is gone
@@ -330,7 +411,7 @@ class ReplayStats:
             "frames_total": self.frames_total,
             "frames_estimated": self.frames_estimated,
             "frames_skipped_policy": self.frames_skipped_policy,
-            "frames_skipped_limit": self.frames_skipped_limit,
+            "truncated": self.truncated,
             "frames_skipped_unready": self.frames_skipped_unready,
             "frames_failed": self.frames_failed,
             "frames_missing": self.frames_missing,
@@ -406,11 +487,13 @@ def replay(
                 "Pass --all-sessions to replay them all into one file.",
             )
 
-    out = Path(out_dir)
+    out = _checked_out_dir(out_dir, recording)
     out.mkdir(parents=True, exist_ok=True)
     stabilizer = BoardStabilizer()
     stats = ReplayStats()
     total = sum(sessions[i].frames for i in chosen)
+    if limit is not None:
+        total = min(total, limit)
     started = time.monotonic()
 
     events_path = out / EVENTS_NAME
@@ -421,11 +504,19 @@ def replay(
     ):
         for i in chosen:
             for entry in index[sessions[i].start : sessions[i].stop]:
-                stats.frames_total += 1
-                frames.write(_index_line(entry) + "\n")
                 if limit is not None and stats.frames_estimated >= limit:
-                    stats.frames_skipped_limit += 1
-                    continue
+                    # Truncation, not selection: the replay stops looking at the
+                    # recording here. Indexing the rest would tell `eval-session`
+                    # this take ran for 748 frames at one read per 249 of them,
+                    # which is a statement about a run that never happened — and
+                    # the policy must not be consulted for frames nobody saw.
+                    stats.truncated = True
+                    break
+                stats.frames_total += 1
+                # Indexed before the policy is asked, and whatever it answers: a
+                # frame the policy declined was still input the camera delivered,
+                # and hiding it would make a sparse policy look like a slow camera.
+                frames.write(_index_line(entry) + "\n")
                 if not policy.should_estimate(entry):
                     stats.frames_skipped_policy += 1
                     continue
@@ -460,6 +551,8 @@ def replay(
                         f"  {stats.frames_estimated} read(s) of {total} frames"
                         f" · {rate:.2f} reads/s",
                     )
+            if stats.truncated:
+                break
     stats.wall_seconds = time.monotonic() - started
 
     result = ReplayResult(
@@ -496,6 +589,25 @@ def _index_line(entry: FrameEntry) -> str:
     return json.dumps(
         {**entry.header, "received_ts": entry.received_ts, "jpeg": entry.jpeg_rel}
     )
+
+
+def _checked_out_dir(out_dir: str | Path, recording: Recording) -> Path:
+    """The replay directory, verified to sit exactly two levels under the source.
+
+    :func:`_link_source` hops a fixed ``../..`` back to the recording for the
+    pixels and the truth, so the depth is part of the contract rather than a
+    detail of where the CLI happens to put things. Writing anywhere else would
+    produce dangling symlinks — a replay that runs for ten GPU minutes and then
+    scores nothing — so it is refused up front instead.
+    """
+    out = Path(out_dir)
+    if out.parent.parent.resolve() != recording.path.resolve():
+        raise ValueError(
+            f"a replay directory must sit two levels under its recording "
+            f"(<recording>/{REPLAYS_DIR}/<name>); got {out} for {recording.path}. "
+            "Its jpeg/truth symlinks hop a fixed two levels back."
+        )
+    return out
 
 
 def _link_source(out: Path, recording: Recording) -> None:
@@ -582,7 +694,6 @@ def render(result: ReplayResult) -> str:
     ]
     skipped = [
         (s.frames_skipped_policy, "by the frame policy"),
-        (s.frames_skipped_limit, "past --limit"),
         (s.frames_skipped_unready, "with no estimator ready"),
         (s.frames_failed, "the estimator raised on"),
         (s.frames_missing, "whose JPEG is gone"),
@@ -590,6 +701,8 @@ def render(result: ReplayResult) -> str:
     detail = ", ".join(f"{n} {what}" for n, what in skipped if n)
     if detail:
         lines.append(f"skipped:   {detail}")
+    if s.truncated:
+        lines.append("stopped:   --limit reached — a truncated take, not a full one")
     if len(result.sessions) > 1:
         lines.append(
             "sessions:  "
@@ -619,7 +732,7 @@ def run(
     :attr:`ReplayResult.path`, which is a recording directory like any other).
     """
     recording = Recording.open(source)
-    out = recording.path / REPLAYS_DIR / (name or default_name())
+    out = recording.path / REPLAYS_DIR / (check_name(name) if name else default_name())
     return replay(
         recording,
         out,
