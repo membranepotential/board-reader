@@ -19,10 +19,12 @@ position back with no taps — corners are auto-detected, orientation auto-resol
 calibration bootstraps itself.
 
 The most recent live phone trial (2026-08-13) streamed **748/748 frames** without loss.
-Scored against hand-labelled truth for that recording, the debounced `settled` board is
-**98.96 % per-square** and **66.6 % perfect boards**; the residual is almost entirely one
+Scored against hand-labelled truth for that recording (`recordings/<session>/report.json`,
+regenerate with `board-reader-inference eval-session`), the debounced `settled` board is
+**97.7 % per-square** and **25.8 % perfect boards** — that row is replayed offline, since
+the recording predates the settled block shipping. The residual is *entirely* one
 confusion — king vs queen on d8/e8, where a phone-height camera decapitates the rank-8
-crops.
+crops — so a perfect board costs getting both of those squares right at once.
 
 **Next up:** the tall-crop retrain that attacks that residual, gated on real recordings
 rather than a synthetic holdout. See [STATUS.md](STATUS.md) for the current state and

@@ -1,6 +1,6 @@
 # STATUS — board-reader
 
-_reconciled: 2026-08-20 @ `d347ddf`_ · decisions live in [docs/DESIGN.md](docs/DESIGN.md), detail in `git log` + `scratch/experiments/*/report.md`; this is state.
+_reconciled: 2026-08-27 @ `3406d2d`_ · decisions live in [docs/DESIGN.md](docs/DESIGN.md), detail in `git log` + `scratch/experiments/*/report.md`; this is state.
 
 ## Goal
 
@@ -9,78 +9,81 @@ confidences**. No moves, no legality, no PGN — those are the downstream applic
 
 ## Now
 
-- public-release — repo is **push-ready**: Apache-2.0 + THIRD-PARTY.md, personal
-  details scrubbed, history rewritten onto the current author email (97 commits, all
-  re-signed). Remaining before the push: add that address as a UID on the signing key
-  and re-upload it to GitHub, or every commit lands Unverified. Optional: a CI workflow
-  (`make test` is 25 s) and CONTRIBUTING.md. Pre-rewrite SHAs are recoverable from
-  `docs/commit-rewrite-map.tsv` + `docs/commit-rewrite-pre.bundle` (both git-ignored);
-  `tools/check_commit_refs.py` translates stale citations and `tests/test_commit_refs.py`
-  keeps new ones from rotting.
-- phone-live-test — 19:33 re-trial **worked** (748/748 frames, watchdog recovered two
-  stalls) and its defects are diagnosed + fixed in-tree (uncommitted, see Done). Next:
-  commit, restart `make dev`, re-trial; then attack the one residual — d8/e8 k/q model
-  confusion (decapitated rank-8 crops) via the tall-crop retrain, gated on
-  `eval-session` numbers instead of the synthetic holdout.
+- public-release — repo is **push-ready** (Apache-2.0 + THIRD-PARTY.md, details
+  scrubbed, history re-signed onto the current author email). Before pushing: add that
+  address as a UID on the signing key and re-upload it, or every commit lands
+  Unverified. Optional: a CI workflow, CONTRIBUTING.md. Pre-rewrite SHAs recoverable
+  from `docs/commit-rewrite-{map.tsv,pre.bundle}` (git-ignored); `tools/check_commit_refs.py`
+  translates stale citations.
+- phone-live-test — the 08-13 fixes are committed and the instrumentation the next
+  trial needs is in (see Done). **Next action: run the trial** — `make dev`, phone on
+  `/camera`, calibrate, then two takes: the 08-13 opening again as a control (it has
+  truth already), then a harder segment (rank-8 pieces, different lighting). Author a
+  `truth.json` per recording, score with `eval-session`, and read the new evidence
+  section before deciding the tall-crop retrain's shape.
 
 ## Done (recent)
 
-- 08-20: **Pre-publish pass — the repo can go public.** Audited the full object graph:
-  no photos, datasets, weights or secrets were ever committed (one UI screenshot is the
-  only binary in history). Licensed **Apache-2.0** (patent grant; MIT gives none) with
-  `THIRD-PARTY.md` recording the two things it does not cover — the built viewer bundle
-  is **GPL-3.0-or-later** because `packages/viewer/ui` links chessground + cburnett
-  sprites (our source stays Apache; `core`/`edge`/`inference` carry no GPL dep), and the
-  trained model is **not redistributable** (ChessReD CC BY-NC-SA + murky geometry).
-  Scrubbed the tunnel skill's DNS/mail disclosure, de-named eval provenance, repointed a
-  dead agent-scratchpad path, refreshed the README off the unreproducible 633/640.
+- 08-27: **A trial now records why, not just what** — three gaps closed before the
+  re-trial. *Evidence*: every recorded event carries a top-2-per-square digest
+  (~1.8 kB vs ~25 kB for `square_dist`), and `eval-session` reports per confusion pair
+  how often truth was the runner-up and the median `p(read) − p(truth)` margin — a
+  near-miss the crop nearly answered vs a conviction the evidence never held.
+  *Timing*: fps in, reads/s out, frames per read and capture→publish latency, off the
+  frame index alone; it confirms the hand-derived 08-13 figures (**7.47 fps in, 0.85
+  reads/s out, latency median 1.29 s / max 6.59 s**). *Heartbeat*: `/camera` beats every
+  10 s into `client-logs/`, so a quiet stretch says which kind of quiet. Scoring now
+  always writes `<recording>/report.json`.
+- 08-27: **The 08-13 headline numbers were wrong, and are corrected.** Re-scoring with
+  unchanged code gives prior **28.8 %** perfect, settled **25.8 %** (97.7 % per-square)
+  — not 45.4 % / 66.6 % (98.96 %). The truth.json was revised after those numbers were
+  published (66 scored events / guard 25 today vs 81 / guard 12 in the learning) and no
+  report artifact was kept. README corrected. Same failure as the 638/640 entry — hence
+  the always-write-the-report rule.
 
-- 08-13 (eve, uncommitted): **Trial 19:33 analyzed end-to-end; four fixes landed.**
-  (1) *Kings repair chooses by evidence* — surplus kings demote the lowest-`p(k)` square,
-  not the smallest k→runner-up margin (that margin is q-tail noise: wrong 55% on the 628
-  two-king replay frames, evidence rule wrong 27%; EMA smoothing fixes nothing — the
-  misread is systematic). (2) *`settled` ships* — advisory per-square time debounce
-  (2.5 s + ≥2 reads; count-based K does NOT transfer across the 10× read-rate range) on
-  the wire beside `prior`, drawn by viewer + /camera with dashed-amber pending rings.
-  (3) *`eval-session`* — truth.json per recording, three-stream scorer, labeled crop
-  export; trial scored: raw 0% perfect boards, prior 45.4%, settled **66.6%** (98.96%
-  per-square), residual is *only* d8/e8 k/q. (4) `_parse_corners` deduped into core;
-  /estimate + /calibrate off the event loop (the trial's 6.6 s latency spike). Trial
-  facts: estimator sustains ~0.85 reads/s vs 7.5 fps input; the "phantom b6 rook" was a
-  real c6 knight leaning across the b6 boundary (attribution bleed, also corrupts b7);
-  rank-8 crops at phone height are decapitated — k/q indistinguishable in-crop.
+- 08-20: **Pre-publish pass — the repo can go public.** Full object-graph audit: no
+  photos, datasets, weights or secrets were ever committed. Apache-2.0, with
+  `THIRD-PARTY.md` for the two exclusions — the built viewer bundle is
+  **GPL-3.0-or-later** (chessground + cburnett; our source stays Apache and
+  core/edge/inference carry no GPL dep), and the trained model is **not
+  redistributable** (ChessReD CC BY-NC-SA + murky geometry).
 
-- 08-13: **The node stops starving the display GPU** — `cuda_providers()` now ships CUDA EP
-  options (`BR_GPU_MEM_LIMIT_MB`, default 1024 MiB/session, `kSameAsRequested`, `HEURISTIC`)
-  and `make dev-cpu` runs the same stack with the card hidden. Diagnosed from Xorg logs: a
-  `/calibrate` batch took the VRAM X needed for the 4K monitor's reverse-PRIME surface, twice.
-  Measured: 3-session peak ~1.6 GiB of the 4 GiB card; DINOv2 @batch 64 needs ≥896 MiB.
+- 08-13: **Trial 19:33 analyzed end-to-end; four fixes landed** (`faaa4ed`, `ef9a675`,
+  `78bc4d2`, `37a1972`). Kings repair demotes the lowest-`p(k)` square, not the smallest
+  k→runner-up margin (that margin is q-tail noise: wrong 55% of 628 two-king replay
+  frames vs 27% for the evidence rule; EMA fixes nothing, the misread is systematic).
+  `settled` ships — a per-square *time* debounce (2.5 s + ≥2 reads; count-based K does
+  NOT transfer across a 10× read-rate range) on the wire beside `prior`, drawn with
+  dashed-amber pending rings. `eval-session` scores the three streams apart. And
+  /estimate + /calibrate moved off the event loop (the 6.6 s latency spike). Trial
+  facts: the "phantom b6 rook" was a real c6 knight leaning across the boundary
+  (attribution bleed, also corrupts b7); rank-8 crops at phone height are decapitated,
+  so k/q is indistinguishable in-crop.
 
-- 08-11: **Calibration fine-tune ships** (`20b063a`) — `tools/train/calibrate_finetune.py`
-  (≥3-session gate) + `AveragedEstimator` behind `BR_MODEL_TUNED`, 50/50 with base; live
-  `/estimate` 63/64 vs base 58/64. Untested on unseen footage (same 5 `user_photos` throughout).
-- 08-11: **Two-model cascade deployed** (`364bea3`, `2b64ada`) — τ-gated `CascadeEstimator`
-  behind `BR_MODEL_B` (0.95), each member on its own sidecar geometry; `run_f` promoted into
-  `models/` + compose, so the canonical demo runs it.
-- 08-11: **`uploads_calibrate`'s 0.59 was a label bug** (`155704c`) — 19 rotated sidecars
-  repaired, 0.59 → **0.75**, halluc 254 → 30. Quote the 17-real-photo subset (**0.919**); the
-  13 pre-rectified 384px warps (0.63) are out-of-domain and drag the mean.
-- 08-11: **Session diversity is the fine-tune lever** (pre-registered confirm passed): 3 frames
-  from 3 lighting sessions → 0.938 → **0.969**, wrongtype 19 → 9, no forgetting. Single-session
-  frames are worthless at any count.
-- 08-11: **Ensemble beats both members** — user_photos 0.938 → **0.956**, OVERALL 0.696 →
-  **0.718**. Decoupled routing answered-negative: combine evidence, don't route.
-- 08-11: **Central-column pooling answered-negative** — the bakeoff's +9 was an 80-board-bank
-  artifact; bank size was the real lever. Also: per-board display rotation (`3fc8831`).
-- 08-10: **run_f (pose-aware crops) does NOT deploy alone** — fixes cross-style type, pays
-  occupancy. **+4.8pp of synthetic holdout transferred as 0.0pp on real photos**: the holdout
-  does not predict deployment, and crops/epochs are exhausted as knobs.
+- 08-13: **The node stops starving the display GPU** — `cuda_providers()` ships CUDA EP
+  options (`BR_GPU_MEM_LIMIT_MB`, default 1024 MiB/session) and `make dev-cpu` hides the
+  card. A `/calibrate` batch had twice taken the VRAM X needed for the 4K monitor's
+  reverse-PRIME surface. Peak measured ~1.6 GiB of 4 GiB across 3 sessions.
+
+- 08-11: **Recognition reached its current shape** (`20b063a`, `364bea3`, `2b64ada`,
+  `155704c`, `3fc8831`) — τ-gated two-model cascade behind `BR_MODEL_B`, calibration
+  fine-tune behind `BR_MODEL_TUNED`, ensemble-with-the-bank beating either member
+  (user_photos 0.956), per-board display rotation. Answered-negative along the way:
+  decoupled routing, central-column pooling, and run_f deployed alone. Session
+  *diversity* is the fine-tune lever, not frame count. Detail: `git log`,
+  `scratch/experiments/*/report.md`.
+- 08-10: **The synthetic holdout does not predict deployment** — run_f's +4.8pp there
+  transferred as 0.0pp on real photos. Crops and epochs are exhausted as knobs.
 
 ## Next
 
+0. **Run the instrumented trial** (control + hard segment) — everything below is
+   better decided with its numbers than without them.
 1. **Tall-crop retrain, gated on `eval-session`** — the d8/e8 k/q residual is a crop
-   problem (decapitated rank-8); score candidates on recordings/20260813-193308 truth.
-2. **Estimator throughput** — 0.85 reads/s vs 7.5 fps input; profile the
+   problem (decapitated rank-8); score candidates on recordings/20260813-193308 truth,
+   and read the new evidence margins first: truth ranked second by a hair says the crop
+   carries the answer, truth outside the top 2 says a better head will not find it.
+2. **Estimator throughput** — measured 0.85 reads/s against 7.47 fps in; profile the
    cascade+ensemble path (bank embed batching?); faster reads shrink settle lag too.
 3. **Run M2 over `ccbf-r5`** with `--forward-original --corners` (the warp path is unusable at
    this angle), judge the stream, then settle D3 — does `stability` earn its keep?
