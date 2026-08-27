@@ -18,8 +18,6 @@ confidences**. No moves, no legality, no PGN — those are the downstream applic
 - **Iteration is offline now** — recorded takes replace live phone takes (operator
   decision 08-27 eve); a replay harness turns each recording into a rerunnable
   benchmark. Dev stack stopped, GPU free.
-- baseline-replays — replaying all four 08-27 takes through today's fixed stack
-  (background, GPU) — running — next: scores become the offline benchmark baseline.
 - ship-b-demotion — implementer agent landing the re-rank rule (swap top-2 on
   `b` argmax at margin < 0.20) + scorer guardrail — running — next: replay-verify.
 - replay-review — code-reviewer on the harness commit `e759631` — running.
@@ -49,6 +47,14 @@ confidences**. No moves, no legality, no PGN — those are the downstream applic
   Weigh a cheap re-rank/calibration pass against the retrain before training.
 
 ## Done (recent)
+
+- 08-27 (night): **baseline replays of all four 08-27 takes** (dirs
+  `recordings/*/replays/baseline-3452334/`, log in session scratchpad): 2500
+  frames, **0 estimate failures, GPU flat ~660 MiB** — the ratchet fix holds at
+  session length (live take 5 had 91 failures on 301 frames). Prior stream
+  (every-frame population — NOT comparable to recorded scores, see replay docs):
+  control 97.2 %/30.8 %, hard 94.9 %/24.7 %, fast 97.0 %/54.1 %, take 5
+  92.1 %/28.6 %. These are the diff-base for every estimator change from here.
 
 - 08-27 (night): **replay harness shipped** (`e759631`) — `board-reader-inference
   replay <recording>` re-runs recorded frames through the live route/prior/settle
