@@ -9,6 +9,15 @@ confidences**. No moves, no legality, no PGN — those are the downstream applic
 
 ## Now
 
+- move-trigger-experiment — agent building estimation-scheduling policies on the
+  replay `FramePolicy` seam (burst-end + keepalive floor vs every-frame) and
+  sweeping them over the four takes (owns GPU) — running — next: policy
+  recommendation + accuracy-per-read table.
+- framing-drift-experiment — analysis agent quantifying take 5's quad walk with
+  `board_reader_core.boarddetect` on recorded frames; would periodic re-detect
+  have caught it? — running — next: mechanism recommendation in
+  scratch/experiments/framing_drift/.
+
 - public-release — repo is **push-ready** (Apache-2.0 + THIRD-PARTY.md, details
   scrubbed, history re-signed onto the current author email). Before pushing: add that
   address as a UID on the signing key and re-upload it, or every commit lands
