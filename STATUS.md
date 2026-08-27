@@ -15,14 +15,40 @@ confidences**. No moves, no legality, no PGN — those are the downstream applic
   Unverified. Optional: a CI workflow, CONTRIBUTING.md. Pre-rewrite SHAs recoverable
   from `docs/commit-rewrite-{map.tsv,pre.bundle}` (git-ignored); `tools/check_commit_refs.py`
   translates stale citations.
-- phone-live-test — the 08-13 fixes are committed and the instrumentation the next
-  trial needs is in (see Done). **Next action: run the trial** — `make dev`, phone on
-  `/camera`, calibrate, then two takes: the 08-13 opening again as a control (it has
-  truth already), then a harder segment (rank-8 pieces, different lighting). Author a
-  `truth.json` per recording, score with `eval-session`, and read the new evidence
-  section before deciding the tall-crop retrain's shape.
+- phone-live-test — control trial **run and scored** (08-27, see Done); the fixes are
+  measurably in. Still to do: the *hard* take (rank-8 pieces, different lighting) —
+  and the old phone must be held **landscape**, or crops are cut along the wrong axis
+  (see the portrait finding in Done). Then decide the tall-crop retrain's shape from
+  the evidence margins.
 
 ## Done (recent)
+
+- 08-27: **Control trial run, scored, and the 08-13 fixes are confirmed landing.**
+  `recordings/20260827-163352` (Ruy Lopez through 4.Ba4, 337 frames, 31 reads, truth
+  authored + `report.json` kept). **prior 99.0 % per-square, 58.3 % perfect boards**
+  against 08-13's 97.0 % / 28.8 % — the kings-evidence repair (`faaa4ed`) doing exactly
+  what it was built for. Latency **median 1.38 s, max 1.56 s** vs 6.59 s on 08-13 (the
+  event-loop fix). Throughput unchanged: 9.65 fps in, 0.89 reads/s out.
+  *Evidence margins, the new measurement:* of 38 wrong raw squares, truth was the
+  runner-up in only 21. Split by confusion it answers the retrain question — `q->k`
+  (22×) has truth in the top 2 just **11/22** at median margin 0.152, so the crop often
+  does not contain the answer and re-ranking cannot fix it; `p->b` (7×, the b7 pawn
+  behind the leaning knight) has truth ranked **7/7** at margin 0.144, so that one is
+  re-rankable. *Eval-design finding:* `guard_seqs` must cover the **settle lag** or the
+  settled stream is scored while it is correctly still catching up — settled reads 29.2 %
+  perfect at guard 12 and 77.8 % (99.7 % per-square) at guard 45, on the same 7 boards.
+
+- 08-27: **Calibrate failed all afternoon because the phone was portrait.** Not a
+  regression (08-13's photos score 28-31/32 through today's code) and not the angle
+  (aspect 0.86-0.90, floor 0.62). `squares.py:264` extends every crop **upward in image
+  space** — "piece tops point up in a normal photo" — so a board rotated 90° in the frame
+  has each crop reaching into the neighbouring square. Proof: the same photo scores
+  18/32 REJECT as sent and **30/32 PASS rotated 90° CCW** (piece confidence 0.47 → 0.94).
+  Occupancy stayed 64/64 throughout, which is why it looked like a piece-type problem.
+  `autorotate` cannot help — it rotates *labels* from `square_dist`, one layer above the
+  crop axis. A quad-only heuristic for the upright direction was tried and **rejected**:
+  it predicts 270° where the truth is 90° (3/7 correct), so the usable signal is the
+  device orientation angle, not perspective foreshortening.
 
 - 08-27: **A trial now records why, not just what** — three gaps closed before the
   re-trial. *Evidence*: every recorded event carries a top-2-per-square digest
@@ -77,8 +103,11 @@ confidences**. No moves, no legality, no PGN — those are the downstream applic
 
 ## Next
 
-0. **Run the instrumented trial** (control + hard segment) — everything below is
-   better decided with its numbers than without them.
+0. **The portrait crop axis** — hold the phone landscape for now. The fix is to
+   canonicalise the frame client-side from `screen.orientation.angle` (B) and to have
+   the calibrate gate name this cause instead of refusing generically (A); a
+   pose-derived crop axis (C) is the principled version and belongs with the retrain.
+0b. **The hard take** — rank-8 pieces, different lighting; the control is done.
 1. **Tall-crop retrain, gated on `eval-session`** — the d8/e8 k/q residual is a crop
    problem (decapitated rank-8); score candidates on recordings/20260813-193308 truth,
    and read the new evidence margins first: truth ranked second by a hair says the crop
