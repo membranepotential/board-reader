@@ -16,8 +16,7 @@ confidences**. No moves, no legality, no PGN — those are the downstream applic
   from `docs/commit-rewrite-{map.tsv,pre.bundle}` (git-ignored); `tools/check_commit_refs.py`
   translates stale citations.
 - phone-live-test — control AND hard take **scored** (see Done). Next trial should
-  exercise the deployed zero-tap flow (aim → start → play) and confirm the OOM fix
-  under dim light; the planned 6.d3 Qe7 7.Nc3 Qd8 tail is still unplayed.
+  exercise the deployed zero-tap flow (aim → start → play) and confirm the OOM fix; the planned 6.d3 Qe7 7.Nc3 Qd8 tail is still unplayed.
 - ui-mockups — full-system mockups **awaiting user review** in `docs/mockups/`
   (also http://localhost:8766/ while the ad-hoc server runs).
 - tall-crop-retrain — decision input now in from BOTH trials: the dim-light residual
@@ -28,13 +27,15 @@ confidences**. No moves, no legality, no PGN — those are the downstream applic
 ## Done (recent)
 
 - 08-27 (evening): **Hard take run and scored** (`recordings/20260827-172736`,
-  1.e4–5...Re8 with both castlings, dim light, fresh one-photo bank): prior
+  1.e4–5...Re8 with both castlings, fresh one-photo bank; lighting NOT dimmed,
+  operator-confirmed): prior
   **98.6 % per-square / 46.5 % perfect** on 43 events. The rank-8 k/q residual did
-  NOT reproduce — castled/rook-lift segments score 99.5–100 % prior; the dim-light
+  NOT reproduce — castled/rook-lift segments score 99.5–100 % prior; the hard take's
   residual is bishop-attractor (`p->b` 17×, `q->b` 8×) with truth ranked second
   25/25 at ~0.18 margin → re-rankable. The 6.d3+ tail is lost to the OOM below.
 - 08-27 (evening): **Both live stalls diagnosed: CUDA arena OOM, fixed** (`c2e9bf1`).
-  The cascade secondary fed a near-full-board unsure batch under dim light pushes
+  The cascade secondary fed a near-full-board unsure batch (a fresh one-photo
+  bank leaves run_e unsure almost everywhere; lighting was unchanged) pushes
   its session arena to the cap (728 MiB@768, 1001 MiB@1024) and a BFC arena never
   shrinks — every later read fails, stream goes quiet, worker survives. Fix: GPU
   batches bounded at 16 (¼ the peak, ms of overhead). Also: never run browsers
@@ -118,7 +119,7 @@ confidences**. No moves, no legality, no PGN — those are the downstream applic
 
 ## Next
 
-1. **Re-rank before retrain** — the dim-light residual (`p->b`/`q->b`, truth second
+1. **Re-rank before retrain** — the hard take's residual (`p->b`/`q->b`, truth second
    25/25 at ~0.18 margin) should fall to a cheap logit-calibration / re-rank pass;
    the control's `q->k` (truth outside top-2 half the time) is the true crop case.
    Score any candidate on BOTH 08-27 truths + 08-13. A pose-derived crop axis
