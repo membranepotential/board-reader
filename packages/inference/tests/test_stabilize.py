@@ -5,7 +5,12 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from board_reader_core.protocol import CLASSES, START_PLACEMENT, parse_placement
+from board_reader_core.protocol import (
+    CLASSES,
+    START_PLACEMENT,
+    encode_placement,
+    parse_placement,
+)
 
 from board_reader_inference.prior import tally, violation
 from board_reader_inference.stabilize import BoardStabilizer
@@ -231,3 +236,24 @@ def test_two_identical_streams_settle_identically():
         for stab in (BoardStabilizer(), BoardStabilizer())
     ]
     assert runs[0] == runs[1]
+
+
+def test_the_excess_never_rises_over_a_random_stream():
+    """Property: whatever it is fed, the settled board only ever becomes *more*
+    possible. Seeded, so a failure is reproducible; random boards are wildly
+    impossible, which is the point — the first read is adopted wholesale and
+    every commit after it has to pay its way down."""
+    import random
+
+    from board_reader_inference.stabilize import _excess
+
+    rng = random.Random(7)
+    for _ in range(20):
+        stab = BoardStabilizer()
+        previous = None
+        for i in range(30):
+            grid = [[rng.choice(CLASSES) for _ in range(8)] for _ in range(8)]
+            settled = stab.observe(encode_placement(grid), i * 0.4)
+            excess = _excess(parse_placement(settled.placement))
+            assert previous is None or excess <= previous
+            previous = excess
