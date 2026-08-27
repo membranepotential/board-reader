@@ -720,3 +720,137 @@ def test_cli_policy_and_restamp_flags(tmp_path, monkeypatch, capsys):
     assert main(["replay", str(recording), "--name", "x", "--policy", "burst"]) == 2
     assert "unknown policy 'burst'" in capsys.readouterr().err
     assert not (recording / "replays" / "x").exists()
+
+# --------------------------------------------------------------------------- #
+# The session seam: state must not cross it
+# --------------------------------------------------------------------------- #
+
+
+def _write_scripted_session(
+    root, *, stabilities, first_ts: float, session_id: str = "multi"
+) -> None:
+    """One streaming session whose frames carry a scripted ``stability``.
+
+    ``seq`` restarts at 0 for every call, which is what
+    :func:`~board_reader_inference.replay.find_sessions` splits on.
+    """
+    rng = np.random.default_rng(11)
+    recorder = FrameRecorder(root, session_id=session_id, writer="test")
+    for i, stability in enumerate(stabilities):
+        image = rng.integers(0, 255, (24, 24, 3), dtype=np.uint8)
+        frame = Frame(
+            board_id="phone",
+            seq=i,
+            capture_ts=first_ts + i * FRAME_DT,
+            image=image,
+            stability=stability,
+        )
+        recorder.record(frame.header(), encode_jpeg(image))
+    recorder.stop()
+
+
+@pytest.fixture
+def two_sessions(tmp_path):
+    """Session 1 ends mid-move; session 2 is a board nobody touches."""
+    root = tmp_path / "recordings"
+    _write_scripted_session(root, stabilities=[0.2] * 6, first_ts=1_700_000_000.0)
+    _write_scripted_session(root, stabilities=[0.99] * 20, first_ts=1_700_000_100.0)
+    return Recording(root / "multi")
+
+
+def test_each_replayed_session_gets_its_own_policy(two_sessions):
+    """A seq restart is a different stream, so the scheduler starts over on it.
+
+    Session 1 cuts out mid-burst. Carried across the seam, the policy would still
+    believe a move was in progress, watch session 2's opening calm frames end
+    "the" burst, and spend its whole ``burst_end_reads`` run on a move-complete
+    moment for a move that happened in another session — three phantom reads at
+    the top of a board nobody has touched. Fresh, session 2 reads its opening
+    frame and then nothing until the keepalive, which here outlives the session.
+    """
+    policy = BurstTriggered(keepalive_s=30.0, burst_end_reads=3, spacing_s=1.0)
+    result = _run(two_sessions, "sessions", policy=policy, all_sessions=True)
+
+    second = [
+        e["capture_ts"] for e in _events(result) if e["capture_ts"] >= 1_700_000_100.0
+    ]
+    assert second == [1_700_000_100.0], "session 2 read its opener and nothing else"
+    assert result.replayed == [0, 1]
+
+
+def test_a_policy_that_cannot_be_rebuilt_refuses_to_span_sessions(two_sessions):
+    """Rather than silently leaking its state across the seam.
+
+    A caller's own policy object has no spec string to rebuild it from, so there
+    is no way to hand each session its own. One session with it is unchanged and
+    fine; several is refused, loudly, naming why.
+    """
+    with pytest.raises(ValueError, match="burst state across every frame"):
+        _run(two_sessions, "refused", policy=EvenSeqs(), all_sessions=True)
+    # Refused before anything is written: no half-open replay to mistake for one.
+    assert not (two_sessions.path / "replays" / "refused").exists()
+
+    # ...and the single-session path still takes any object with the seam on it.
+    ok = _run(two_sessions, "single", policy=EvenSeqs())
+    assert ok.stats.frames_estimated == 10  # session 2's even seqs, 0..18
+
+
+# --------------------------------------------------------------------------- #
+# --restamp-stability is honest about gaps and about itself
+# --------------------------------------------------------------------------- #
+
+
+def test_a_restamp_refuses_a_recording_with_a_missing_jpeg(metered):
+    """Loud beats subtly-wrong.
+
+    The recorder writes the bytes before the line that names them, so an indexed
+    frame without its JPEG means a damaged tree. Skipping it would leave that one
+    frame carrying the OLD meter's absolute-scale value inside an otherwise
+    re-metered stream — a phantom burst, then a fake move-complete read — and its
+    index line would silently lack the restamped marker while the directory name
+    claims otherwise.
+    """
+    (metered.path / "jpeg" / "0000" / "000012.jpg").unlink()
+
+    with pytest.raises(ValueError, match="seq 12 has none"):
+        _run(metered, "gap", restamp=True)
+
+    # Without the flag the same gap is the ordinary counted case: one frame the
+    # disk could not honour, charged to neither the policy nor the run.
+    tolerated = _run(metered, "gap-ok")
+    assert tolerated.stats.frames_missing == 1
+    assert tolerated.stats.frames_estimated == 79
+
+
+def test_the_manifest_records_the_restamp_FLAG_not_a_count(metered):
+    """A run that re-metered nothing is still a restamp run.
+
+    Derived from ``frames_restamped > 0`` this said "not restamped" for a replay
+    sitting in a directory named ``-restamped`` — a manifest contradicting its own
+    path, which is the one thing provenance may never do.
+    """
+    result = _run(metered, "flagged", restamp=True, limit=0)
+    block = json.loads((result.path / "manifest.json").read_text())["replay"]
+
+    assert result.stats.frames_restamped == 0
+    assert block["restamp_stability"] is True
+    assert block["frames"]["frames_restamped"] == 0
+
+
+def test_cli_reports_a_damaged_recording_instead_of_replaying_it(
+    tmp_path, monkeypatch, capsys
+):
+    for name in (
+        "BR_MODEL", "BR_MODEL_B", "BR_MODEL_TUNED", "BR_CENTROIDS",
+        "BR_SESSION_BANK", "BR_OCCUPANCY_BANK",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.chdir(tmp_path)
+    _write_metered_recording(tmp_path / "recordings", moving=range(40, 50))
+    recording = tmp_path / "recordings" / "metered"
+    (recording / "jpeg" / "0000" / "000005.jpg").unlink()
+
+    assert main(["replay", str(recording), "--name", "gap", "--restamp-stability"]) == 2
+    err = capsys.readouterr().err
+    assert "seq 5 has none" in err
+    assert "without --restamp-stability" in err

@@ -159,6 +159,7 @@ from board_reader_inference.schedule import (
     EveryFrame,
     FramePolicy,
     MotionMeter,
+    parse_policy,
     policy_slug,
     restamped,
 )
@@ -442,6 +443,12 @@ class ReplayResult:
     replayed: list[int] = field(default_factory=list)  # indices into ``sessions``
     #: The policy's spec string — what chose these frames, in ``--policy`` form.
     policy: str = EveryFrame().name
+    #: Whether ``--restamp-stability`` was ASKED FOR. Deliberately the flag and
+    #: not ``stats.frames_restamped > 0``: a run that restamped nothing (a
+    #: ``--limit 0``, a take whose frames all vanished) is still a run whose
+    #: directory is named ``-restamped``, and a manifest that infers "no" there
+    #: contradicts its own path.
+    restamp: bool = False
 
 
 def build_session() -> EstimatorSession:
@@ -488,6 +495,17 @@ def replay(
     the field (the estimators only copy it onto the published event), so a
     restamped every-frame replay reads the same pixels in the same order as an
     unrestamped one; it is the control a scheduling sweep is diffed against.
+
+    **A fresh policy per session too, for the same reason the meter is fresh.** A
+    :class:`~.schedule.FramePolicy` is stateful over one stream — mid-burst,
+    reads owed by the last burst end, the keepalive anchor — and a seq restart is
+    a different stream. Carried across, session 2 opens *inside* session 1's
+    burst and manufactures a move-complete read at its very first calm frame, on
+    a board nobody moved. Each replayed session therefore gets its own instance,
+    rebuilt from the policy's spec string (:func:`~.schedule.parse_policy` round
+    trips :attr:`~.schedule.FramePolicy.name` by construction). A caller's own
+    policy object cannot be rebuilt that way, so replaying several sessions with
+    one is refused rather than silently leaked across the seam.
     """
     policy = policy or EveryFrame()
     board = board_id or _default_board(recording)
@@ -509,6 +527,9 @@ def replay(
                 "Pass --all-sessions to replay them all into one file.",
             )
 
+    # Eagerly, before a directory is made: a run that cannot give every session
+    # its own policy must fail with nothing written, not with a half-open replay.
+    policies = _per_session_policies(policy, len(chosen))
     out = _checked_out_dir(out_dir, recording)
     out.mkdir(parents=True, exist_ok=True)
     stabilizer = BoardStabilizer()
@@ -525,10 +546,12 @@ def replay(
         events_path.open("w", encoding="utf-8") as events,
         frames_path.open("w", encoding="utf-8") as frames,
     ):
-        for i in chosen:
-            # One meter per streaming session: a reconnect is a new camera, and a
-            # resting floor learned before it says nothing about the one after.
+        for nth, i in enumerate(chosen):
+            # One meter AND one policy per streaming session: a reconnect is a new
+            # camera, and neither a learned resting floor nor a half-finished burst
+            # carries across one.
             meter = MotionMeter()
+            session_policy = policies[nth]
             for entry in index[sessions[i].start : sessions[i].stop]:
                 if limit is not None and stats.frames_estimated >= limit:
                     # Truncation, not selection: the replay stops looking at the
@@ -543,16 +566,16 @@ def replay(
                     # Before the policy, and for EVERY frame including the ones it
                     # will decline: the meter's floor is learned from the run of
                     # frames, and a floor learned from a subsample is a different
-                    # meter. This is the whole cost of --restamp-stability.
-                    image = decode(entry)
-                    if image is not None:
-                        entry = restamped(entry, meter, image)
-                        stats.frames_restamped += 1
+                    # meter. This is the whole cost of --restamp-stability, and
+                    # `decode` RAISES on a gap rather than leaving one frame at its
+                    # recorded value (see _decoder).
+                    entry = restamped(entry, meter, decode(entry))
+                    stats.frames_restamped += 1
                 # Indexed before the policy is asked, and whatever it answers: a
                 # frame the policy declined was still input the camera delivered,
                 # and hiding it would make a sparse policy look like a slow camera.
                 frames.write(_index_line(entry) + "\n")
-                if not policy.should_estimate(entry):
+                if not session_policy.should_estimate(entry):
                     stats.frames_skipped_policy += 1
                     continue
                 try:
@@ -598,25 +621,82 @@ def replay(
         sessions=sessions,
         replayed=chosen,
         policy=policy.name,
+        restamp=restamp,
     )
     _link_source(out, recording)
     _write_manifest(result, recording, policy, type(session.estimator).__name__)
     return result
 
 
-def _decoder(recording: Recording) -> Callable[[FrameEntry], np.ndarray | None]:
-    """Pixels for one indexed frame, or ``None`` when its JPEG is gone.
+def _per_session_policies(policy: FramePolicy, sessions: int) -> list[FramePolicy]:
+    """One policy instance per replayed streaming session, never one shared.
 
-    The gap case is not an error here: the recorder writes the JPEG before the
-    line that names it, but a half-copied tree happens, and one missing frame
-    should cost the meter a slightly noisy reading rather than the whole replay.
+    A policy is stateful over a *stream*: whether a burst is in progress, how many
+    reads that burst end still owes, when the keepalive last fired. A seq restart
+    is not a pause in one stream, it is a different one — so carrying the object
+    across the seam opens the next session inside the previous session's burst,
+    and its first calm frame reads as a move completing on a board nobody touched.
+    The motion meter is already reset there for the same reason.
+
+    Rebuilding goes through the spec string rather than a ``reset()``, because
+    :attr:`~.schedule.FramePolicy.name` round-trips through
+    :func:`~.schedule.parse_policy` by construction (that is the invariant which
+    makes a manifest's ``policy`` field the argument that reproduces the run), so
+    the rebuilt policy is the same configuration with none of the history. A
+    caller's own policy object has no such spec; replaying one session with it is
+    fine and unchanged, and replaying several is refused rather than quietly
+    leaking state across the seam.
+    """
+    if sessions <= 1:
+        return [policy]
+    try:
+        return [parse_policy(policy.name) for _ in range(sessions)]
+    except ValueError as e:
+        raise ValueError(
+            f"cannot replay {sessions} streaming sessions with policy "
+            f"{policy.name!r}: it is not one of the --policy specs ({e}), so there "
+            "is no way to give each session its own instance. A policy carries "
+            "burst state across every frame it sees, and one shared across a seq "
+            "restart reports a move completing at the top of the next session. "
+            "Use a --policy spec, or replay one session at a time."
+        ) from e
+
+
+def _decoder(recording: Recording) -> Callable[[FrameEntry], np.ndarray]:
+    """Pixels for one indexed frame. Raises when its JPEG is not there.
+
+    Loud on purpose, and only ever called on the ``--restamp-stability`` path.
+    The recorder writes the bytes *before* the index line that names them
+    ("a reader that crashes into the end of this file never sees a line pointing
+    at nothing" — :meth:`~board_reader_core.recording.FrameRecorder.record`), so
+    within its design an indexed frame always has its JPEG and a gap means the
+    tree is damaged or half-copied.
+
+    That matters more under a restamp than anywhere else. Skipping a gap would
+    leave exactly that frame carrying its **recorded** ``stability`` — an old
+    absolute-scale 0.29 sitting in a stream of re-metered 0.99s, which is a
+    phantom burst and, one frame later, a fake move-complete read — and its index
+    line would silently lack :data:`~.schedule.RESTAMPED_KEY` while the directory
+    name says ``-restamped``. A benchmark that is subtly wrong about which frames
+    were moving is worse than one that refuses to run, so it refuses.
+
+    The read path keeps its own tolerance for a vanished JPEG (``frames_missing``):
+    there, one unread frame costs one estimate and is counted, which is the
+    documented "not charged to the policy" case rather than a corrupted signal.
     """
 
-    def decode(entry: FrameEntry) -> np.ndarray | None:
+    def decode(entry: FrameEntry) -> np.ndarray:
         try:
             return decode_jpeg((recording.path / entry.jpeg_rel).read_bytes())
-        except (OSError, ValueError):
-            return None
+        except (OSError, ValueError) as e:
+            raise ValueError(
+                f"--restamp-stability needs every frame's pixels and seq "
+                f"{entry.seq} has none ({entry.jpeg_rel}: {e}). The motion meter "
+                "learns its resting floor from the run of frames, so a gap is not "
+                "one missing reading — it would leave that frame stamped with the "
+                "OLD meter's value in an otherwise re-metered stream. Repair or "
+                "re-copy the recording, or replay it without --restamp-stability."
+            ) from e
 
     return decode
 
@@ -718,7 +798,11 @@ def _write_manifest(
                     # The spec string, so this field is literally the --policy
                     # argument that reproduces the run.
                     "policy": policy.name,
-                    "restamp_stability": result.stats.frames_restamped > 0,
+                    # The flag as given, not "did any frame get restamped": how
+                    # the run was CONFIGURED is the provenance question, and the
+                    # count of frames it managed to re-meter is a stat, in
+                    # ``frames.frames_restamped`` with the other counters.
+                    "restamp_stability": result.restamp,
                     "settle_seconds": SETTLE_SECONDS,
                     "settle_min_reads": SETTLE_MIN_READS,
                     "sessions": [s.to_dict() for s in sessions],
@@ -757,9 +841,9 @@ def render(result: ReplayResult) -> str:
     detail = ", ".join(f"{n} {what}" for n, what in skipped if n)
     if detail:
         lines.append(f"skipped:   {detail}")
-    if result.policy != EveryFrame().name or s.frames_restamped:
+    if result.policy != EveryFrame().name or result.restamp:
         note = result.policy
-        if s.frames_restamped:
+        if result.restamp:
             note += (
                 f" · stability re-metered on {s.frames_restamped} frame(s) "
                 "(recorded values overridden)"
