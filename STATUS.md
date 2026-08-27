@@ -13,9 +13,6 @@ confidences**. No moves, no legality, no PGN — those are the downstream applic
   replay `FramePolicy` seam (burst-end + keepalive floor vs every-frame) and
   sweeping them over the four takes (owns GPU) — running — next: policy
   recommendation + accuracy-per-read table.
-- recorder-roll — agent making FrameRecorder roll a fresh session dir on seq
-  regression (the colliding-seq wart that forced filtered-copy scoring) —
-  running — next: land + verify eval-session/replay on rolled dirs.
 - framing-drift-experiment — analysis agent quantifying take 5's quad walk with
   `board_reader_core.boarddetect` on recorded frames; would periodic re-detect
   have caught it? — running — next: mechanism recommendation in
@@ -56,6 +53,13 @@ confidences**. No moves, no legality, no PGN — those are the downstream applic
   Weigh a cheap re-rank/calibration pass against the retrain before training.
 
 ## Done (recent)
+
+- 08-27 (night): **recorder rolls per streaming session** (`db6217e`) — seq
+  regression per board opens a fresh sibling dir; late events routed to their
+  session by capture_ts (one-level race window, pinned by test); max_bytes stays
+  a whole-run cap; `rolled_from` chains a run's dirs. Old multi-session dirs
+  remain readable (replay's detection kept). Follow-ups noted: TESTING.md
+  wording + a per-roll server log line.
 
 - 08-27 (night): **b-demotion shipped and replay-verified** (`fe8a7bb` rule at the
   `estimator.read_event` seam — composites blend raw dists via `PhotoDistReader`,
