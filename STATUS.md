@@ -15,11 +15,13 @@ confidences**. No moves, no legality, no PGN — those are the downstream applic
   Unverified. Optional: a CI workflow, CONTRIBUTING.md. Pre-rewrite SHAs recoverable
   from `docs/commit-rewrite-{map.tsv,pre.bundle}` (git-ignored); `tools/check_commit_refs.py`
   translates stale citations.
-- phone-live-test — control trial **run and scored** (08-27, see Done); the fixes are
-  measurably in. Still to do: the *hard* take (rank-8 pieces, different lighting) —
-  and the old phone must be held **landscape**, or crops are cut along the wrong axis
-  (see the portrait finding in Done). Then decide the tall-crop retrain's shape from
-  the evidence margins.
+- phone-live-test — control trial scored (see Done); dev stack is **running** for the
+  *hard* take (rank-8 pieces, different lighting — phone **landscape**). Then decide
+  the tall-crop retrain's shape from the evidence margins.
+- camera-ux — calibrate gate now **names a board rotated in the frame** (`ec96b98`,
+  probes the 4 image rotations on rejection). Client-side portrait guard + automatic
+  label rotation are **mocked up for review**: `scratch/mockups/camera-ux.html`
+  (or http://localhost:8766/camera-ux.html while the ad-hoc server runs).
 
 ## Done (recent)
 
@@ -103,9 +105,9 @@ confidences**. No moves, no legality, no PGN — those are the downstream applic
 
 ## Next
 
-0. **The portrait crop axis** — hold the phone landscape for now. The fix is to
-   canonicalise the frame client-side from `screen.orientation.angle` (B) and to have
-   the calibrate gate name this cause instead of refusing generically (A); a
+0. **The portrait crop axis** — (A) gate names the cause: **done** `ec96b98`. (B)
+   client-side guard: mockups awaiting review — the quad heuristic failed validation,
+   so the client blocks/warns on portrait rather than silently re-rotating; a
    pose-derived crop axis (C) is the principled version and belongs with the retrain.
 0b. **The hard take** — rank-8 pieces, different lighting; the control is done.
 1. **Tall-crop retrain, gated on `eval-session`** — the d8/e8 k/q residual is a crop
