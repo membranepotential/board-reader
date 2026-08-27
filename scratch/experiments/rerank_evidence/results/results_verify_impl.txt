@@ -1,0 +1,1 @@
+55 firings, 0 mismatches between the shipped snippet and the digest-level rule — the snippet is exactly what §5-§8 measured.

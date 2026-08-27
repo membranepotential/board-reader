@@ -1,0 +1,7 @@
+take        sq  raw err  in top2  ceiling  rule fix  of ceiling || prior-stream perfect-board %: real / rule / top-2 oracle
+control   1536       38       21    55.3%         5       23.8% ||   58.3 /   70.8 /   83.3
+hard      2752       65       44    67.7%        15       34.1% ||   46.5 /   65.1 /   83.7
+fast      1984       87       51    58.6%        10       19.6% ||   58.1 /   71.0 /   83.9
+take5     2240       77       59    76.6%         8       13.6% ||   45.7 /   45.7 /   60.0
+
+ALL       8512      267      175    65.5%        38       21.7%

@@ -1,0 +1,620 @@
+{
+  "ORACLE pair-margin (fit on ALL 3 takes)": {
+    "rule": "pair-margin tau: n->N: 0.4131, b->p: 0.2855, P->empty: 0.2790, b->q: 0.2658, b->k: 0.2595, p->P: 0.2320, p->empty: 0.2000, K->Q: 0.1803, p->n: 0.1349, k->q: 0.1030, r->n: 0.0927, B->Q: 0.0873, p->r: 0.0743, P->N: 0.0685, R->Q: 0.0362, empty->N: 0.0351, P->B: 0.0243, empty->P: 0.0230, N->empty: 0.0215, b->B: 0.0089, empty->p: 0.0045, b->n: 0.0030",
+    "per_take": {
+      "control": {
+        "raw": {
+          "squares": 1536,
+          "correct_base": 1498,
+          "correct_new": 1507,
+          "fixed": 13,
+          "broken": 4,
+          "events": 24,
+          "perfect_base": 0,
+          "perfect_new": 4
+        },
+        "prior": {
+          "squares": 1536,
+          "correct_base": 1505,
+          "correct_new": 1509,
+          "fixed": 7,
+          "broken": 3,
+          "events": 24,
+          "perfect_base": 7,
+          "perfect_new": 8
+        },
+        "correct_swapped_away": 4
+      },
+      "hard": {
+        "raw": {
+          "squares": 2752,
+          "correct_base": 2687,
+          "correct_new": 2714,
+          "fixed": 33,
+          "broken": 6,
+          "events": 43,
+          "perfect_base": 11,
+          "perfect_new": 26
+        },
+        "prior": {
+          "squares": 2752,
+          "correct_base": 2705,
+          "correct_new": 2712,
+          "fixed": 12,
+          "broken": 5,
+          "events": 43,
+          "perfect_base": 19,
+          "perfect_new": 28
+        },
+        "correct_swapped_away": 6
+      },
+      "fast": {
+        "raw": {
+          "squares": 1984,
+          "correct_base": 1897,
+          "correct_new": 1934,
+          "fixed": 39,
+          "broken": 2,
+          "events": 31,
+          "perfect_base": 2,
+          "perfect_new": 7
+        },
+        "prior": {
+          "squares": 1984,
+          "correct_base": 1915,
+          "correct_new": 1926,
+          "fixed": 12,
+          "broken": 1,
+          "events": 31,
+          "perfect_base": 7,
+          "perfect_new": 7
+        },
+        "correct_swapped_away": 2
+      },
+      "take5": {
+        "raw": {
+          "squares": 2240,
+          "correct_base": 2163,
+          "correct_new": 2204,
+          "fixed": 43,
+          "broken": 2,
+          "events": 35,
+          "perfect_base": 12,
+          "perfect_new": 19
+        },
+        "prior": {
+          "squares": 2240,
+          "correct_base": 2182,
+          "correct_new": 2204,
+          "fixed": 23,
+          "broken": 1,
+          "events": 35,
+          "perfect_base": 16,
+          "perfect_new": 20
+        },
+        "correct_swapped_away": 2
+      }
+    }
+  },
+  "ORACLE class-bias  (fit on ALL 3 takes)": {
+    "rule": "class-bias b: empty:+0.75, N:+0.38, B:+0.15, Q:+0.75, p:-0.15, n:+0.30, b:-0.83, r:+0.08",
+    "per_take": {
+      "control": {
+        "raw": {
+          "squares": 1536,
+          "correct_base": 1498,
+          "correct_new": 1504,
+          "fixed": 7,
+          "broken": 1,
+          "events": 24,
+          "perfect_base": 0,
+          "perfect_new": 1
+        },
+        "prior": {
+          "squares": 1536,
+          "correct_base": 1505,
+          "correct_new": 1509,
+          "fixed": 5,
+          "broken": 1,
+          "events": 24,
+          "perfect_base": 7,
+          "perfect_new": 8
+        },
+        "correct_swapped_away": 1
+      },
+      "hard": {
+        "raw": {
+          "squares": 2752,
+          "correct_base": 2687,
+          "correct_new": 2703,
+          "fixed": 30,
+          "broken": 14,
+          "events": 43,
+          "perfect_base": 11,
+          "perfect_new": 25
+        },
+        "prior": {
+          "squares": 2752,
+          "correct_base": 2705,
+          "correct_new": 2702,
+          "fixed": 10,
+          "broken": 13,
+          "events": 43,
+          "perfect_base": 19,
+          "perfect_new": 26
+        },
+        "correct_swapped_away": 14
+      },
+      "fast": {
+        "raw": {
+          "squares": 1984,
+          "correct_base": 1897,
+          "correct_new": 1932,
+          "fixed": 43,
+          "broken": 8,
+          "events": 31,
+          "perfect_base": 2,
+          "perfect_new": 6
+        },
+        "prior": {
+          "squares": 1984,
+          "correct_base": 1915,
+          "correct_new": 1912,
+          "fixed": 12,
+          "broken": 15,
+          "events": 31,
+          "perfect_base": 7,
+          "perfect_new": 6
+        },
+        "correct_swapped_away": 8
+      },
+      "take5": {
+        "raw": {
+          "squares": 2240,
+          "correct_base": 2163,
+          "correct_new": 2189,
+          "fixed": 29,
+          "broken": 3,
+          "events": 35,
+          "perfect_base": 12,
+          "perfect_new": 15
+        },
+        "prior": {
+          "squares": 2240,
+          "correct_base": 2182,
+          "correct_new": 2191,
+          "fixed": 11,
+          "broken": 2,
+          "events": 35,
+          "perfect_base": 16,
+          "perfect_new": 16
+        },
+        "correct_swapped_away": 3
+      }
+    }
+  },
+  "LOO pair-margin (min_gain=1)": {
+    "control": {
+      "rule": "pair-margin tau: P->R: 0.4172, n->N: 0.4131, P->empty: 0.2790, b->q: 0.2658, b->k: 0.2595, b->p: 0.2467, K->Q: 0.2360, p->P: 0.2320, p->empty: 0.2000, k->q: 0.1516, p->n: 0.1349, r->n: 0.0927, B->Q: 0.0873, p->r: 0.0743, P->N: 0.0685, R->Q: 0.0362, empty->N: 0.0351, P->B: 0.0243, empty->P: 0.0230, b->B: 0.0089, empty->p: 0.0045, b->n: 0.0030",
+      "control": {
+        "raw": {
+          "squares": 1536,
+          "correct_base": 1498,
+          "correct_new": 1497,
+          "fixed": 11,
+          "broken": 12,
+          "events": 24,
+          "perfect_base": 0,
+          "perfect_new": 2
+        },
+        "prior": {
+          "squares": 1536,
+          "correct_base": 1505,
+          "correct_new": 1499,
+          "fixed": 5,
+          "broken": 11,
+          "events": 24,
+          "perfect_base": 7,
+          "perfect_new": 5
+        },
+        "correct_swapped_away": 12
+      }
+    },
+    "hard": {
+      "rule": "pair-margin tau: n->N: 0.4131, b->k: 0.3731, p->empty: 0.3139, b->p: 0.2855, P->empty: 0.2790, p->P: 0.2320, b->q: 0.2196, n->p: 0.2185, K->Q: 0.1803, k->q: 0.1030, B->Q: 0.0873, P->N: 0.0685, P->B: 0.0243, empty->P: 0.0230, N->empty: 0.0215, r->n: 0.0193, b->B: 0.0089, empty->p: 0.0007",
+      "hard": {
+        "raw": {
+          "squares": 2752,
+          "correct_base": 2687,
+          "correct_new": 2690,
+          "fixed": 17,
+          "broken": 14,
+          "events": 43,
+          "perfect_base": 11,
+          "perfect_new": 17
+        },
+        "prior": {
+          "squares": 2752,
+          "correct_base": 2705,
+          "correct_new": 2702,
+          "fixed": 11,
+          "broken": 14,
+          "events": 43,
+          "perfect_base": 19,
+          "perfect_new": 26
+        },
+        "correct_swapped_away": 14
+      }
+    },
+    "fast": {
+      "rule": "pair-margin tau: n->N: 0.4131, P->empty: 0.2790, b->q: 0.2658, b->k: 0.2595, p->P: 0.2320, b->p: 0.2083, K->Q: 0.1803, p->r: 0.1495, p->n: 0.1349, k->q: 0.1030, r->n: 0.0927, R->Q: 0.0362, empty->N: 0.0351, empty->P: 0.0230, N->empty: 0.0215, empty->p: 0.0045, b->n: 0.0030",
+      "fast": {
+        "raw": {
+          "squares": 1984,
+          "correct_base": 1897,
+          "correct_new": 1905,
+          "fixed": 11,
+          "broken": 3,
+          "events": 31,
+          "perfect_base": 2,
+          "perfect_new": 2
+        },
+        "prior": {
+          "squares": 1984,
+          "correct_base": 1915,
+          "correct_new": 1920,
+          "fixed": 7,
+          "broken": 2,
+          "events": 31,
+          "perfect_base": 7,
+          "perfect_new": 7
+        },
+        "correct_swapped_away": 3
+      }
+    },
+    "take5": {
+      "rule": "pair-margin tau: b->p: 0.2855, b->q: 0.2658, p->empty: 0.2000, p->n: 0.1349, k->q: 0.1030, r->n: 0.0927, B->Q: 0.0873, p->r: 0.0743, P->N: 0.0685, K->Q: 0.0573, R->Q: 0.0362, empty->N: 0.0351, P->B: 0.0243, N->empty: 0.0215, b->B: 0.0089, empty->p: 0.0045, b->k: 0.0040, b->n: 0.0030",
+      "take5": {
+        "raw": {
+          "squares": 2240,
+          "correct_base": 2163,
+          "correct_new": 2175,
+          "fixed": 12,
+          "broken": 0,
+          "events": 35,
+          "perfect_base": 12,
+          "perfect_new": 15
+        },
+        "prior": {
+          "squares": 2240,
+          "correct_base": 2182,
+          "correct_new": 2190,
+          "fixed": 9,
+          "broken": 1,
+          "events": 35,
+          "perfect_base": 16,
+          "perfect_new": 17
+        },
+        "correct_swapped_away": 0
+      }
+    }
+  },
+  "LOO pair-margin (min_gain=2)": {
+    "control": {
+      "rule": "pair-margin tau: P->R: 0.4172, n->N: 0.4131, P->empty: 0.2790, b->q: 0.2658, b->k: 0.2595, b->p: 0.2467, K->Q: 0.2360, p->empty: 0.2000, p->n: 0.1349, r->n: 0.0927, p->r: 0.0743, b->B: 0.0089, empty->p: 0.0045",
+      "control": {
+        "raw": {
+          "squares": 1536,
+          "correct_base": 1498,
+          "correct_new": 1497,
+          "fixed": 6,
+          "broken": 7,
+          "events": 24,
+          "perfect_base": 0,
+          "perfect_new": 1
+        },
+        "prior": {
+          "squares": 1536,
+          "correct_base": 1505,
+          "correct_new": 1501,
+          "fixed": 5,
+          "broken": 9,
+          "events": 24,
+          "perfect_base": 7,
+          "perfect_new": 5
+        },
+        "correct_swapped_away": 7
+      }
+    },
+    "hard": {
+      "rule": "pair-margin tau: n->N: 0.4131, b->k: 0.3731, p->empty: 0.3139, b->p: 0.2855, P->empty: 0.2790, b->q: 0.2196, n->p: 0.2185, K->Q: 0.1803, k->q: 0.1030, b->B: 0.0089",
+      "hard": {
+        "raw": {
+          "squares": 2752,
+          "correct_base": 2687,
+          "correct_new": 2689,
+          "fixed": 16,
+          "broken": 14,
+          "events": 43,
+          "perfect_base": 11,
+          "perfect_new": 16
+        },
+        "prior": {
+          "squares": 2752,
+          "correct_base": 2705,
+          "correct_new": 2702,
+          "fixed": 11,
+          "broken": 14,
+          "events": 43,
+          "perfect_base": 19,
+          "perfect_new": 26
+        },
+        "correct_swapped_away": 14
+      }
+    },
+    "fast": {
+      "rule": "pair-margin tau: n->N: 0.4131, P->empty: 0.2790, b->q: 0.2658, b->k: 0.2595, b->p: 0.2083, K->Q: 0.1803, p->r: 0.1495, p->n: 0.1349, k->q: 0.1030, r->n: 0.0927, empty->p: 0.0045",
+      "fast": {
+        "raw": {
+          "squares": 1984,
+          "correct_base": 1897,
+          "correct_new": 1905,
+          "fixed": 11,
+          "broken": 3,
+          "events": 31,
+          "perfect_base": 2,
+          "perfect_new": 2
+        },
+        "prior": {
+          "squares": 1984,
+          "correct_base": 1915,
+          "correct_new": 1920,
+          "fixed": 7,
+          "broken": 2,
+          "events": 31,
+          "perfect_base": 7,
+          "perfect_new": 7
+        },
+        "correct_swapped_away": 3
+      }
+    },
+    "take5": {
+      "rule": "pair-margin tau: b->p: 0.2855, b->q: 0.2658, p->empty: 0.2000, p->n: 0.1349, k->q: 0.1030, r->n: 0.0927, p->r: 0.0743, K->Q: 0.0573, b->B: 0.0089",
+      "take5": {
+        "raw": {
+          "squares": 2240,
+          "correct_base": 2163,
+          "correct_new": 2174,
+          "fixed": 11,
+          "broken": 0,
+          "events": 35,
+          "perfect_base": 12,
+          "perfect_new": 14
+        },
+        "prior": {
+          "squares": 2240,
+          "correct_base": 2182,
+          "correct_new": 2189,
+          "fixed": 8,
+          "broken": 1,
+          "events": 35,
+          "perfect_base": 16,
+          "perfect_new": 16
+        },
+        "correct_swapped_away": 0
+      }
+    }
+  },
+  "LOO pair-margin (min_gain=3)": {
+    "control": {
+      "rule": "pair-margin tau: n->N: 0.4131, P->empty: 0.2790, b->q: 0.2658, b->k: 0.2595, b->p: 0.2467, K->Q: 0.2360, p->empty: 0.2000, r->n: 0.0927, p->r: 0.0743",
+      "control": {
+        "raw": {
+          "squares": 1536,
+          "correct_base": 1498,
+          "correct_new": 1501,
+          "fixed": 6,
+          "broken": 3,
+          "events": 24,
+          "perfect_base": 0,
+          "perfect_new": 1
+        },
+        "prior": {
+          "squares": 1536,
+          "correct_base": 1505,
+          "correct_new": 1505,
+          "fixed": 5,
+          "broken": 5,
+          "events": 24,
+          "perfect_base": 7,
+          "perfect_new": 8
+        },
+        "correct_swapped_away": 3
+      }
+    },
+    "hard": {
+      "rule": "pair-margin tau: n->N: 0.4131, b->k: 0.3731, p->empty: 0.3139, b->p: 0.2855, P->empty: 0.2790, b->q: 0.2196, K->Q: 0.1803",
+      "hard": {
+        "raw": {
+          "squares": 2752,
+          "correct_base": 2687,
+          "correct_new": 2692,
+          "fixed": 16,
+          "broken": 11,
+          "events": 43,
+          "perfect_base": 11,
+          "perfect_new": 18
+        },
+        "prior": {
+          "squares": 2752,
+          "correct_base": 2705,
+          "correct_new": 2702,
+          "fixed": 11,
+          "broken": 14,
+          "events": 43,
+          "perfect_base": 19,
+          "perfect_new": 26
+        },
+        "correct_swapped_away": 11
+      }
+    },
+    "fast": {
+      "rule": "pair-margin tau: n->N: 0.4131, P->empty: 0.2790, b->q: 0.2658, b->k: 0.2595, b->p: 0.2083, K->Q: 0.1803, p->r: 0.1495, r->n: 0.0927",
+      "fast": {
+        "raw": {
+          "squares": 1984,
+          "correct_base": 1897,
+          "correct_new": 1905,
+          "fixed": 11,
+          "broken": 3,
+          "events": 31,
+          "perfect_base": 2,
+          "perfect_new": 2
+        },
+        "prior": {
+          "squares": 1984,
+          "correct_base": 1915,
+          "correct_new": 1920,
+          "fixed": 7,
+          "broken": 2,
+          "events": 31,
+          "perfect_base": 7,
+          "perfect_new": 7
+        },
+        "correct_swapped_away": 3
+      }
+    },
+    "take5": {
+      "rule": "pair-margin tau: b->p: 0.2855, b->q: 0.2658, p->empty: 0.2000, r->n: 0.0927, K->Q: 0.0573",
+      "take5": {
+        "raw": {
+          "squares": 2240,
+          "correct_base": 2163,
+          "correct_new": 2174,
+          "fixed": 11,
+          "broken": 0,
+          "events": 35,
+          "perfect_base": 12,
+          "perfect_new": 14
+        },
+        "prior": {
+          "squares": 2240,
+          "correct_base": 2182,
+          "correct_new": 2189,
+          "fixed": 8,
+          "broken": 1,
+          "events": 35,
+          "perfect_base": 16,
+          "perfect_new": 16
+        },
+        "correct_swapped_away": 0
+      }
+    }
+  },
+  "LOO class-bias": {
+    "control": {
+      "rule": "class-bias b: empty:+0.75, N:+0.60, B:+0.15, Q:+0.75, p:+0.08, n:+0.60, b:-0.83, r:+0.38, k:+0.15",
+      "control": {
+        "raw": {
+          "squares": 1536,
+          "correct_base": 1498,
+          "correct_new": 1503,
+          "fixed": 7,
+          "broken": 2,
+          "events": 24,
+          "perfect_base": 0,
+          "perfect_new": 1
+        },
+        "prior": {
+          "squares": 1536,
+          "correct_base": 1505,
+          "correct_new": 1507,
+          "fixed": 4,
+          "broken": 2,
+          "events": 24,
+          "perfect_base": 7,
+          "perfect_new": 8
+        },
+        "correct_swapped_away": 2
+      }
+    },
+    "hard": {
+      "rule": "class-bias b: empty:+1.35, P:+0.08, N:+0.30, B:+0.23, Q:+0.75, p:+0.45, n:-0.15, b:-0.23, q:+0.52, k:+0.60",
+      "hard": {
+        "raw": {
+          "squares": 2752,
+          "correct_base": 2687,
+          "correct_new": 2674,
+          "fixed": 19,
+          "broken": 32,
+          "events": 43,
+          "perfect_base": 11,
+          "perfect_new": 13
+        },
+        "prior": {
+          "squares": 2752,
+          "correct_base": 2705,
+          "correct_new": 2693,
+          "fixed": 11,
+          "broken": 23,
+          "events": 43,
+          "perfect_base": 19,
+          "perfect_new": 25
+        },
+        "correct_swapped_away": 32
+      }
+    },
+    "fast": {
+      "rule": "class-bias b: empty:+0.38, P:-0.38, N:+0.23, Q:+0.38, K:-0.30, n:+0.30, b:-0.83, q:+0.45",
+      "fast": {
+        "raw": {
+          "squares": 1984,
+          "correct_base": 1897,
+          "correct_new": 1915,
+          "fixed": 26,
+          "broken": 8,
+          "events": 31,
+          "perfect_base": 2,
+          "perfect_new": 4
+        },
+        "prior": {
+          "squares": 1984,
+          "correct_base": 1915,
+          "correct_new": 1912,
+          "fixed": 13,
+          "broken": 16,
+          "events": 31,
+          "perfect_base": 7,
+          "perfect_new": 6
+        },
+        "correct_swapped_away": 8
+      }
+    },
+    "take5": {
+      "rule": "class-bias b: empty:+0.60, P:-0.08, N:+0.45, B:+0.08, Q:+0.75, p:-0.08, n:+0.45, b:-0.98, r:+0.23",
+      "take5": {
+        "raw": {
+          "squares": 2240,
+          "correct_base": 2163,
+          "correct_new": 2182,
+          "fixed": 25,
+          "broken": 6,
+          "events": 35,
+          "perfect_base": 12,
+          "perfect_new": 14
+        },
+        "prior": {
+          "squares": 2240,
+          "correct_base": 2182,
+          "correct_new": 2187,
+          "fixed": 10,
+          "broken": 5,
+          "events": 35,
+          "perfect_base": 16,
+          "perfect_new": 14
+        },
+        "correct_swapped_away": 6
+      }
+    }
+  }
+}

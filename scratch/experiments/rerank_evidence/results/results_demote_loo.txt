@@ -1,0 +1,54 @@
+
+
+######## class-level demote, gate: fixes>=2, breaks<=0 in EACH fitting take ########
+
+  held control   fitted on ['fast', 'hard', 'take5']
+  rule: demote 'b' when margin < 0.20
+    raw     97.53 ->  97.85  (+0.33)     0.0 ->   4.2  ( +4.2)   fixed   5  broken   0  net   +5
+    prior   97.98 ->  98.24  (+0.26)    29.2 ->  33.3  ( +4.2)   fixed   5  broken   1  net   +4
+    conf: 0/1498 already-correct squares swapped; mean p1 0.7085 -> 0.7085
+
+  held hard   fitted on ['control', 'fast', 'take5']
+  rule: demote 'b' when margin < 0.24
+    raw     97.64 ->  98.18  (+0.55)    25.6 ->  46.5  (+20.9)   fixed  17  broken   2  net  +15
+    prior   98.29 ->  98.58  (+0.29)    44.2 ->  65.1  (+20.9)   fixed  10  broken   2  net   +8
+    conf: 2/2687 already-correct squares swapped; mean p1 0.8220 -> 0.8219
+
+  held fast   fitted on ['control', 'hard', 'take5']
+  rule: demote 'b' when margin < 0.20
+    raw     95.61 ->  96.12  (+0.50)     6.5 ->   6.5  ( +0.0)   fixed  10  broken   0  net  +10
+    prior   96.52 ->  96.82  (+0.30)    22.6 ->  22.6  ( +0.0)   fixed   7  broken   1  net   +6
+    conf: 0/1897 already-correct squares swapped; mean p1 0.7964 -> 0.7964
+
+  held take5   fitted on ['control', 'fast', 'hard']
+  rule: demote 'b' when margin < 0.20
+    raw     96.56 ->  96.92  (+0.36)    34.3 ->  37.1  ( +2.9)   fixed   8  broken   0  net   +8
+    prior   97.41 ->  97.68  (+0.27)    45.7 ->  45.7  ( +0.0)   fixed   6  broken   0  net   +6
+    conf: 0/2163 already-correct squares swapped; mean p1 0.7835 -> 0.7835
+
+
+######## class-level demote, gate: fixes>=3, breaks<=0 in EACH fitting take ########
+
+  held control   fitted on ['fast', 'hard', 'take5']
+  rule: demote 'b' when margin < 0.20
+    raw     97.53 ->  97.85  (+0.33)     0.0 ->   4.2  ( +4.2)   fixed   5  broken   0  net   +5
+    prior   97.98 ->  98.24  (+0.26)    29.2 ->  33.3  ( +4.2)   fixed   5  broken   1  net   +4
+    conf: 0/1498 already-correct squares swapped; mean p1 0.7085 -> 0.7085
+
+  held hard   fitted on ['control', 'fast', 'take5']
+  rule: demote 'b' when margin < 0.24
+    raw     97.64 ->  98.18  (+0.55)    25.6 ->  46.5  (+20.9)   fixed  17  broken   2  net  +15
+    prior   98.29 ->  98.58  (+0.29)    44.2 ->  65.1  (+20.9)   fixed  10  broken   2  net   +8
+    conf: 2/2687 already-correct squares swapped; mean p1 0.8220 -> 0.8219
+
+  held fast   fitted on ['control', 'hard', 'take5']
+  rule: demote 'b' when margin < 0.20
+    raw     95.61 ->  96.12  (+0.50)     6.5 ->   6.5  ( +0.0)   fixed  10  broken   0  net  +10
+    prior   96.52 ->  96.82  (+0.30)    22.6 ->  22.6  ( +0.0)   fixed   7  broken   1  net   +6
+    conf: 0/1897 already-correct squares swapped; mean p1 0.7964 -> 0.7964
+
+  held take5   fitted on ['control', 'fast', 'hard']
+  rule: demote 'b' when margin < 0.20
+    raw     96.56 ->  96.92  (+0.36)    34.3 ->  37.1  ( +2.9)   fixed   8  broken   0  net   +8
+    prior   97.41 ->  97.68  (+0.27)    45.7 ->  45.7  ( +0.0)   fixed   6  broken   0  net   +6
+    conf: 0/2163 already-correct squares swapped; mean p1 0.7835 -> 0.7835
