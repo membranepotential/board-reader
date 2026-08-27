@@ -106,6 +106,10 @@
     serialiseFraming,
     QUAD_VERIFY_SHIFT,
     quadShift,
+    REDETECT_START,
+    noteRedetectMiss,
+    noteRedetection,
+    shouldRedetect,
     shouldAutoCalibrate,
     shouldAutoDetect,
     toQuad,
@@ -121,6 +125,7 @@
     type Framing,
     type Lens,
     type PanelState,
+    type Redetect,
     type TrackingState
   } from '$lib/components/camera/state';
 
@@ -133,6 +138,7 @@
   let activity = $state.raw<Activity>({ kind: 'idle' });
   let auto = $state.raw<AutoDetect>(AUTO_DETECT_START);
   let autoCalib = $state.raw<AutoCalibrate>(AUTO_CALIBRATE_START);
+  let redetect = $state.raw<Redetect>(REDETECT_START);
 
   let tracking = $state(true);
   let trackingState = $state<TrackingState>('off');
@@ -465,6 +471,7 @@
 
     autoDetectTick();
     autoCalibTick();
+    redetectTick();
 
     if (decision === null) return;
     // Calibration is reading the live camera and rebuilding the node's bank from
@@ -670,6 +677,49 @@
     void runCalibrate(true);
   }
 
+  /** What one `/detect` round trip came back with. */
+  type DetectOutcome =
+    | { readonly kind: 'quad'; readonly quad: CornerQuad }
+    /** Every kind of miss, with the sentence the operator would be shown. */
+    | { readonly kind: 'none'; readonly advice: string };
+
+  /**
+   * One `/detect` round trip: the live frame at `DETECT_LONG_SIDE`, the reply
+   * unscaled back into frame pixels, and the shape check the node's quad has to
+   * pass before anything is done with it.
+   *
+   * Shared by all three callers — the operator's "look again", the automatic first
+   * framing, and the periodic drift check — so all three see the same picture at
+   * the same resolution and judge the answer by the same rules.
+   */
+  async function detectQuad(frame: FrameSize): Promise<DetectOutcome> {
+    if (video === undefined) return { kind: 'none', advice: 'the camera is not running' };
+    const k = Math.min(1, DETECT_LONG_SIDE / Math.max(frame.width, frame.height));
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.round(frame.width * k);
+    canvas.height = Math.round(frame.height * k);
+    canvas.getContext('2d')?.drawImage(video, 0, 0, canvas.width, canvas.height);
+    const jpeg = await toBlob(canvas, 0.9);
+    if (jpeg === null) {
+      return { kind: 'none', advice: 'the browser produced no image to look at' };
+    }
+    const result = await postDetect(jpeg);
+    if (!result.ok) {
+      return {
+        kind: 'none',
+        advice: `${result.error.message} — drag the handles onto the board instead`
+      };
+    }
+    const proposed = result.value.corners;
+    const at = (p: Point): Point => [Math.round(p[0] / k), Math.round(p[1] / k)];
+    const quad: CornerQuad = [at(proposed[0]), at(proposed[1]), at(proposed[2]), at(proposed[3])];
+    const defect = checkQuadShape(quad);
+    if (defect !== null) {
+      return { kind: 'none', advice: `the node's quad ${defect.message} — set the corners by hand` };
+    }
+    return { kind: 'quad', quad };
+  }
+
   /**
    * Geometry cannot know which corner is a8 (DESIGN decision #15), so a detection
    * replaces the quad but never the labelling — that stays the operator's, via
@@ -685,39 +735,15 @@
     let fails = auto.fails;
     activity = { kind: 'detecting', auto: isAuto };
     try {
-      const k = Math.min(1, DETECT_LONG_SIDE / Math.max(frame.width, frame.height));
-      const canvas = document.createElement('canvas');
-      canvas.width = Math.round(frame.width * k);
-      canvas.height = Math.round(frame.height * k);
-      canvas.getContext('2d')?.drawImage(video, 0, 0, canvas.width, canvas.height);
-      const jpeg = await toBlob(canvas, 0.9);
-      if (jpeg === null) {
-        fails++;
-        return;
-      }
-
-      const result = await postDetect(jpeg);
-      if (!result.ok) {
+      const outcome = await detectQuad(frame);
+      if (outcome.kind === 'none') {
         fails++;
         // An automatic miss is silent: the hint line already says what is
         // happening, and a toast per attempt would be four toasts for one wall.
-        if (!isAuto) {
-          setBanner('warn', `${result.error.message} — drag the handles onto the board instead`);
-        }
+        if (!isAuto) setBanner('warn', outcome.advice);
         return;
       }
-
-      const proposed = result.value.corners;
-      const at = (p: Point): Point => [Math.round(p[0] / k), Math.round(p[1] / k)];
-      const quad: CornerQuad = [at(proposed[0]), at(proposed[1]), at(proposed[2]), at(proposed[3])];
-      const defect = checkQuadShape(quad);
-      if (defect !== null) {
-        fails++;
-        if (!isAuto) {
-          setBanner('warn', `the node's quad ${defect.message} — set the corners by hand`);
-        }
-        return;
-      }
+      const quad = outcome.quad;
 
       fails = 0;
       if (camera.kind !== 'live') return;
@@ -726,6 +752,9 @@
       setFraming({ quad, rot: camera.framing.rot, origin: 'detected' });
       saveFraming();
       anchorTracker();
+      // The framing has been re-authored, and by the detector's own convention:
+      // the drift baseline measured against the previous one is meaningless now.
+      redetect = REDETECT_START;
 
       // A detection never touches `rot` (decision #15), so a re-detection after a
       // sustained loss can land the labels on a DIFFERENT physical corner than the
@@ -762,6 +791,112 @@
       // been re-set while this request was in flight.
       auto = { ...auto, fails, nextAt: performance.now() + backoffFor(fails) };
     }
+  }
+
+  // ---- periodic re-detection: re-locking a drifting frame -----------------------
+  // The tracker DRIFTS — a Lucas-Kanade plane tracker measures every frame against
+  // the last one, and on a board standing still the errors accumulate into about a
+  // square of walk over two minutes, silently, because the overlay is drawn where
+  // the tracker THINKS the board is
+  // (`docs/reports/2026-08-27-framing-drift.md`: 58 % of one session's wrong
+  // squares). So a resting, streaming page asks the detector where the board really
+  // is every `REDETECT_INTERVAL_MS` and re-anchors when the answer says it has
+  // walked. Every judgement — the gate, the per-session baseline that cancels the
+  // operator-vs-detector convention offset, the threshold, the counter — is in
+  // `state.ts`. This is the timer, the request, and the three things a verdict can
+  // move.
+
+  function redetectTick(): void {
+    if (
+      !shouldRedetect({
+        redetect,
+        now: performance.now(),
+        camera,
+        activity,
+        streaming,
+        stability,
+        bursting,
+        portrait,
+        hidden: document.hidden
+      })
+    ) {
+      return;
+    }
+    void verifyFraming();
+  }
+
+  async function verifyFraming(): Promise<void> {
+    if (camera.kind !== 'live') return;
+    const frame = camera.frame;
+    // The quad as it stands NOW, read beside the request that fixes the pixels:
+    // the tracker keeps running through the round trip, and pairing the detector's
+    // answer with a quad from several hundred ms later would measure the wait as
+    // well as the drift.
+    const tracked = camera.framing.quad;
+    activity = { kind: 'verifying' };
+    try {
+      const outcome = await detectQuad(frame);
+      if (outcome.kind === 'none') {
+        // A miss is NEUTRAL — see `noteRedetectMiss`. It is also silent: nobody
+        // asked for this check, and the framing it could not confirm is still the
+        // best one anybody has.
+        redetect = noteRedetectMiss(redetect, performance.now());
+        trial.note('framing-redetect', { outcome: 'miss' });
+        return;
+      }
+      const step = noteRedetection({
+        redetect,
+        now: performance.now(),
+        detected: outcome.quad,
+        tracked
+      });
+      redetect = step.redetect;
+      const verdict = step.outcome;
+      trial.note('framing-redetect', {
+        outcome: verdict.kind,
+        adopted: verdict.kind === 'adopt',
+        ...('shift' in verdict ? { shift: Number(verdict.shift.toFixed(3)) } : {}),
+        ...(verdict.kind === 'ambiguous' ? { margin: Number(verdict.margin.toFixed(2)) } : {})
+      });
+      if (verdict.kind === 'adopt') {
+        adoptFraming(verdict.quad, frame);
+      } else if (verdict.kind === 'suspect' && verdict.repeats === 1) {
+        // Too far to be drift: the phone or the board moved (DESIGN §4.4.1(b)).
+        // Never acted on — a reposition is the operator's to resolve — and said
+        // once per episode rather than every ten seconds.
+        setBanner(
+          'warn',
+          'The board no longer sits where the frame says — press look again, or drag ' +
+            'the handles back onto it.'
+        );
+      }
+    } catch (cause) {
+      redetect = noteRedetectMiss(redetect, performance.now());
+      trial.note('framing-redetect', { outcome: 'error', error: String(cause) });
+    } finally {
+      activity = { kind: 'idle' };
+    }
+  }
+
+  /**
+   * Re-anchor the tracker on the corrected quad.
+   *
+   * Calibration is deliberately untouched: this is the same physical board and the
+   * same labels — `rot` is carried over, and the corrected quad is expressed in the
+   * operator's own corner convention (`detected - R0`), so nothing the bank was
+   * keyed to has changed except that the crop is now centred on the board again.
+   * The banner is a short "here is what just happened", not a nag: there is nothing
+   * for the operator to do.
+   */
+  function adoptFraming(quad: CornerQuad, frame: FrameSize): void {
+    if (camera.kind !== 'live') return;
+    // A lens switch or a rotation while the request was in flight re-expressed
+    // every corner: this quad is in the old frame's pixels and means nothing here.
+    if (camera.frame.width !== frame.width || camera.frame.height !== frame.height) return;
+    setFraming({ quad, rot: camera.framing.rot, origin: 'detected' });
+    saveFraming();
+    anchorTracker();
+    setBanner('ok', 'The frame had drifted — re-locked onto the board.');
   }
 
   // ---- calibrate ----------------------------------------------------------------
@@ -965,6 +1100,7 @@
     if (camera.kind !== 'live') return;
     setFraming(unframed(camera.frame)); // -> not framed: the page goes back to looking
     auto = AUTO_DETECT_START;
+    redetect = REDETECT_START;
     saveFraming();
     anchorTracker();
   }
@@ -982,6 +1118,7 @@
     const frame = camera.frame;
     setFraming(parseStoredFraming(readLocal(cornerKey(boardId)), frame) ?? unframed(frame));
     auto = AUTO_DETECT_START;
+    redetect = REDETECT_START;
     saveFraming();
     anchorTracker();
   }
@@ -1026,6 +1163,9 @@
   function onRelease(): void {
     activity = { kind: 'idle' };
     if (camera.kind !== 'live') return;
+    // A fresh corner is a fresh convention — where this operator's finger puts the
+    // corner line is exactly what the drift baseline measures — so it starts over.
+    redetect = REDETECT_START;
     // The operator has framed it: automatic detection stands down.
     setFraming({ ...camera.framing, origin: 'operator' });
     saveFraming();
@@ -1190,6 +1330,7 @@
       liveAt: performance.now() // autoexposure and autofocus start settling now
     };
     auto = AUTO_DETECT_START;
+    redetect = REDETECT_START;
     // Anchored explicitly, not just built: `resize` can fire before
     // `loadedmetadata` and build the tracker while there is no framing yet, and
     // `ensureTracker` only re-anchors when it actually constructs one.
@@ -1226,6 +1367,8 @@
       };
       setBanner('warn', 'The camera frame changed shape — check the corners still sit on the board.');
       saveFraming();
+      // R0 is a per-corner offset in PIXELS of a frame that no longer exists.
+      redetect = REDETECT_START;
     } else {
       camera = { ...camera, frame };
     }

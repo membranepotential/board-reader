@@ -144,6 +144,14 @@ export type Activity =
   | { readonly kind: 'idle' }
   | { readonly kind: 'dragging'; readonly corner: CornerIndex }
   | { readonly kind: 'detecting'; readonly auto: boolean }
+  /**
+   * The periodic drift check (`shouldRedetect`). Its own variant rather than a
+   * flag on `detecting` because it is SILENT: it owns the camera and the quad
+   * like any detection, but nobody asked for it, so the hint line must not
+   * announce "looking for the board" every ten seconds at a board that is
+   * already found and streaming.
+   */
+  | { readonly kind: 'verifying' }
   | { readonly kind: 'calibrating' };
 
 /** Tracking as the chip states it: the tracker's own states, plus switched off. */
@@ -404,6 +412,427 @@ export function quadShift(a: CornerQuad, b: CornerQuad, frame: FrameSize): numbe
 /** A verifying re-detection landing within this is "the same framing, confirmed". */
 export const QUAD_VERIFY_SHIFT = 0.03;
 
+// ---- periodic re-detection: re-locking a drifting frame ----------------------
+//
+// The tracker DRIFTS. It is a Lucas-Kanade plane tracker, so every frame's
+// homography is measured against the last one and the small errors accumulate:
+// on a board standing still, on a shaky holder, the quad walks about one square
+// in two minutes (`docs/reports/2026-08-27-framing-drift.md`, take 5 — 82 px on
+// the a1 corner, 58 % of that session's wrong squares). It is not a bump and no
+// operator sees it happen; the picture still looks right, because the overlay is
+// drawn where the tracker thinks the board is.
+//
+// So a resting, streaming page asks `/detect` every REDETECT_INTERVAL_MS what
+// the board REALLY is, and re-anchors the tracker when the answer says it has
+// walked. Every constant below is measured in that report (§4); each cites what
+// from. The counter-intuitive part is the baseline: the detector's quad and the
+// operator's quad do not mean the same line — see `Redetect.residual`.
+
+/**
+ * How often a resting page checks itself. Catching take 5's drift at seq 136
+ * needs a detection every <= 12 frames ~ 6 s at 2.1 fps (every 24 frames only
+ * catches it at seq 160, after the damage); 10 s leaves margin and costs ~80 ms
+ * of node CPU per check.
+ */
+export const REDETECT_INTERVAL_MS = 10_000;
+
+/**
+ * The first N successful re-detections of a session are spent MEASURING, not
+ * judging: they establish `Redetect.residual`.
+ */
+export const REDETECT_BASELINE_N = 3;
+
+/**
+ * Adopt above this baselined shift, in SQUARE WIDTHS. The four control takes
+ * peak at 0.31/0.40/0.46/0.21 square of tracker drift and mis-address nothing;
+ * take 5 passes 0.51 at seq 124 and 0.75 by seq 160, where it is reading six
+ * squares off their true grid position.
+ */
+export const ADOPT_SHIFT_SQUARES = 0.45;
+
+/**
+ * ...on this many CONSECUTIVE successful re-detections. At K = 1 the threshold
+ * fires once on take 3; at K = 2 the sweep adopts zero times across all four
+ * controls at every cadence from 6 to 24 frames, and still catches take 5 at
+ * seq 136 — before the worst stretch, and before the operator noticed.
+ */
+export const ADOPT_CONSECUTIVE = 2;
+
+/**
+ * Above this it is not drift. Two squares of disagreement is a REPOSITION
+ * (DESIGN §4.4.1(b)) — a moved phone, a moved board, or a detector that locked
+ * onto something else entirely — and the page must hand that to the operator
+ * rather than quietly re-crop around it.
+ */
+export const ADOPT_MAX_SHIFT_SQUARES = 2.0;
+
+/**
+ * `/detect` returns an UNLABELLED quad (DESIGN decision #15), so its corners
+ * must be matched onto the tracked ones before anything is compared. Require the
+ * runner-up correspondence to be this many times worse than the winner. The
+ * measured minimum over 230 detections is 9.7x (best <= 59 px, second best
+ * >= 533 px), so this never blocks a real correction — it refuses an ambiguous
+ * one, which is the only way this mechanism could rotate the labels off a8.
+ */
+export const ADOPT_RELABEL_MARGIN = 4.0;
+
+/**
+ * A per-corner displacement in frame pixels: the same four slots as a quad, but
+ * a difference rather than a place.
+ */
+export type CornerOffsets = readonly [Point, Point, Point, Point];
+
+export interface Redetect {
+  /** `performance.now()` before which no check is made. */
+  readonly nextAt: number;
+  /** Residual samples so far. Emptied once `residual` is fixed. */
+  readonly samples: readonly CornerOffsets[];
+  /**
+   * R0 — the per-corner offset between where the operator's quad puts a corner
+   * and where the detector puts it, or `null` while it is still being measured.
+   *
+   * These are two different conventions for the same board and they differ by a
+   * CONSTANT: a finger-dragged corner sits on the board's edge, the detector's
+   * on the playing surface, 17-33 px apart on the hand-framed takes (4-6 px when
+   * the framing itself came from `/detect`). That offset is not drift and never
+   * shrinks, so an ABSOLUTE threshold on detector-vs-tracked distance
+   * false-alarms on every hand-framed session — the report's §2 finding, and the
+   * reason this whole mechanism is baselined per session rather than compared
+   * against zero.
+   */
+  readonly residual: CornerOffsets | null;
+  /** Consecutive readings over `ADOPT_SHIFT_SQUARES`. */
+  readonly over: number;
+  /** Consecutive readings past `ADOPT_MAX_SHIFT_SQUARES` — a reposition, not drift. */
+  readonly suspects: number;
+}
+
+export const REDETECT_START: Redetect = {
+  nextAt: 0,
+  samples: [],
+  residual: null,
+  over: 0,
+  suspects: 0
+};
+
+export interface RedetectGate {
+  readonly redetect: Redetect;
+  readonly now: number;
+  readonly camera: CameraState;
+  readonly activity: Activity;
+  /** The check exists to protect what is on the wire, so it runs while streaming. */
+  readonly streaming: boolean;
+  readonly stability: number;
+  /** Mid-burst the board is in motion by definition — a detection there is wasted. */
+  readonly bursting: boolean;
+  readonly portrait: boolean;
+  readonly hidden: boolean;
+}
+
+/**
+ * A RESTING frame, and nothing else in flight.
+ *
+ * The stability floor is `AUTO_STABILITY` for the same reason the first
+ * detection uses it: this frame is about to be measured to a fraction of a
+ * square, so it must be exemplar-grade and not merely "the camera is not
+ * moving". Take 5 reads >= 0.9 on 69 % of its frames, so resting frames are not
+ * scarce.
+ *
+ * There is deliberately no gate on the tracker being `locked`: a tracker that
+ * has LOST the board is already claimed, sooner, by `shouldAutoDetect`'s
+ * sustained-loss path (`AUTO_LOST_MS` = 6 s, inside this 10 s interval), and a
+ * `locked` requirement here would silently disable the whole mechanism on a
+ * device whose tracker never reports it.
+ */
+export function shouldRedetect({
+  redetect,
+  now,
+  camera,
+  activity,
+  streaming,
+  stability,
+  bursting,
+  portrait,
+  hidden
+}: RedetectGate): boolean {
+  if (!streaming || portrait || bursting || hidden) return false;
+  // One thing owns the camera and the quad at a time: not a drag, not a
+  // calibration, not another detection, and not a second check.
+  if (activity.kind !== 'idle') return false;
+  // Nothing to correct until the board has actually been framed — the
+  // placeholder is a guess, and `shouldAutoDetect` owns replacing it.
+  if (camera.kind !== 'live' || !isFramed(camera.framing)) return false;
+  if (now < redetect.nextAt) return false;
+  return stability >= AUTO_STABILITY;
+}
+
+/**
+ * One square's width in the quad's own pixels: the mean side over 8.
+ *
+ * The report's unit throughout, and deliberately NOT `quadShift`'s fraction of
+ * the frame diagonal — a crop lands on the wrong square when the grid slips by a
+ * square, not by a diagonal. (`QUAD_VERIFY_SHIFT` = 0.03 of the diagonal works
+ * out at 0.47 square on that data, right in the middle of the control
+ * distribution, so it is far too tight to reuse as an adoption threshold. It
+ * keeps its own job above, which is telling a verify that moved nothing from one
+ * that moved something.)
+ */
+export function squareWidth(quad: CornerQuad): number {
+  let perimeter = 0;
+  for (let i = 0; i < 4; i++) {
+    const p = quad[i] as Point;
+    const q = quad[(i + 1) % 4] as Point;
+    perimeter += Math.hypot(q[0] - p[0], q[1] - p[1]);
+  }
+  return perimeter / 32; // mean side (perimeter / 4), then eight squares to a side
+}
+
+/** Corner-for-corner `a - b`. Both quads must already be in the same slot order. */
+export function cornerOffsets(a: CornerQuad, b: CornerQuad): CornerOffsets {
+  const at = (i: 0 | 1 | 2 | 3): Point => [a[i][0] - b[i][0], a[i][1] - b[i][1]];
+  return [at(0), at(1), at(2), at(3)];
+}
+
+/**
+ * The per-corner, per-axis MEDIAN of the samples.
+ *
+ * The report says mean; the median is used because the baseline is three samples
+ * and it is permanent — one detection that landed a square off (the detector
+ * misses cluster on exactly the frames this runs on) would otherwise poison
+ * every later reading for the rest of the session. On the report's data the two
+ * agree: repeatability there is 0.00 px median, 0.72 px worst.
+ */
+export function medianOffsets(samples: readonly CornerOffsets[]): CornerOffsets | null {
+  if (samples.length === 0) return null;
+  const median = (values: readonly number[]): number => {
+    const sorted = [...values].sort((x, y) => x - y);
+    const mid = sorted.length >> 1;
+    const upper = sorted[mid] as number;
+    return sorted.length % 2 === 1 ? upper : (upper + (sorted[mid - 1] as number)) / 2;
+  };
+  const at = (i: 0 | 1 | 2 | 3): Point => [
+    median(samples.map((sample) => sample[i][0])),
+    median(samples.map((sample) => sample[i][1]))
+  ];
+  return [at(0), at(1), at(2), at(3)];
+}
+
+/**
+ * How far the tracked quad has walked, in square widths, with the convention
+ * offset taken out: `max over corners of |(detected - tracked) - R0|`.
+ *
+ * Max rather than mean because drift is not uniform — take 5's a1 reached 82 px
+ * while its h1 moved 27 — and it is the WORST corner that decides whether a
+ * square's crop lands on its neighbour.
+ */
+export function baselinedShift(
+  detected: CornerQuad,
+  tracked: CornerQuad,
+  residual: CornerOffsets
+): number {
+  // Normalised by the TRACKED grid, which is the one actually cutting squares out
+  // of the frame — the question is how far off ITS own squares the crop has
+  // wandered. (The report normalises by the detector's grid; the two differ by the
+  // drift itself, a few per cent. Using the tracked quad also keeps a spurious
+  // undersized detection from dividing a moderate disagreement into a huge one.)
+  const unit = squareWidth(tracked);
+  if (!(unit > 0)) return 0;
+  const offsets = cornerOffsets(detected, tracked);
+  let worst = 0;
+  for (let i = 0; i < 4; i++) {
+    const o = offsets[i] as Point;
+    const r = residual[i] as Point;
+    worst = Math.max(worst, Math.hypot(o[0] - r[0], o[1] - r[1]));
+  }
+  return worst / unit;
+}
+
+/** The detector's quad expressed in the operator's convention: `detected - R0`. */
+export function correctedQuad(detected: CornerQuad, residual: CornerOffsets): CornerQuad {
+  const at = (i: 0 | 1 | 2 | 3): Point => [
+    detected[i][0] - residual[i][0],
+    detected[i][1] - residual[i][1]
+  ];
+  return [at(0), at(1), at(2), at(3)];
+}
+
+export interface QuadMatch {
+  /** `detected`, re-ordered onto `tracked`'s four slots. */
+  readonly aligned: CornerQuad;
+  /** The winning order's worst-corner distance, in pixels. */
+  readonly cost: number;
+  /** How many times worse the runner-up order is; `Infinity` for an exact hit. */
+  readonly margin: number;
+}
+
+/**
+ * The eight orders of four corners that keep them a ring: four rotations, each
+ * either winding. Anything else crosses the quad over itself and is not a
+ * relabelling of the same board.
+ */
+type CornerOrder = readonly [CornerIndex, CornerIndex, CornerIndex, CornerIndex];
+
+const CORNER_ORDERS: readonly CornerOrder[] = [
+  [0, 1, 2, 3],
+  [1, 2, 3, 0],
+  [2, 3, 0, 1],
+  [3, 0, 1, 2],
+  [0, 3, 2, 1],
+  [3, 2, 1, 0],
+  [2, 1, 0, 3],
+  [1, 0, 3, 2]
+];
+
+/**
+ * `detected` matched onto `tracked` by nearest corner, with the margin over the
+ * runner-up.
+ *
+ * A detection carries no labels (decision #15): its storage order is the
+ * detector's, and slot 0 is not necessarily the operator's a8. Comparing the two
+ * quads slot-for-slot without this would read a mere re-ordering as a two-board
+ * shift. Every non-winning order moves at least one corner by most of a board's
+ * side, which is what makes `margin` a decisive check rather than a formality.
+ */
+export function matchCorners(detected: CornerQuad, tracked: CornerQuad): QuadMatch {
+  let bestOrder = CORNER_ORDERS[0] as CornerOrder;
+  let best = Infinity;
+  let second = Infinity;
+  for (const order of CORNER_ORDERS) {
+    let cost = 0;
+    for (let i = 0; i < 4; i++) {
+      const p = detected[order[i] as CornerIndex];
+      const q = tracked[i] as Point;
+      cost = Math.max(cost, Math.hypot(p[0] - q[0], p[1] - q[1]));
+    }
+    if (cost < best) {
+      second = best;
+      best = cost;
+      bestOrder = order;
+    } else if (cost < second) {
+      second = cost;
+    }
+  }
+  return {
+    aligned: [
+      detected[bestOrder[0]],
+      detected[bestOrder[1]],
+      detected[bestOrder[2]],
+      detected[bestOrder[3]]
+    ],
+    cost: best,
+    margin: best === 0 ? Infinity : second / best
+  };
+}
+
+/**
+ * What one successful re-detection means. Exactly one of these, so the page
+ * cannot act on two readings of the same number.
+ */
+export type RedetectOutcome =
+  /** Still measuring the convention offset; `samples` of `REDETECT_BASELINE_N` taken. */
+  | { readonly kind: 'baselining'; readonly samples: number }
+  /**
+   * The detected corners cannot be matched onto the tracked ones with confidence,
+   * so nothing is concluded — no baseline sample, and no adoption however far the
+   * quads are apart. A big enough translation does this by itself: two boards'
+   * worth of displacement makes every corner pairing nearly as good as every
+   * other, which is exactly when adopting one would be a relabelling.
+   */
+  | { readonly kind: 'ambiguous'; readonly margin: number }
+  /** Inside the threshold: the tracker is where it says it is. */
+  | { readonly kind: 'steady'; readonly shift: number }
+  /** Over the threshold, but not yet on `ADOPT_CONSECUTIVE` readings. */
+  | { readonly kind: 'arming'; readonly shift: number }
+  /** Walked. `quad` is the correction, in the operator's own corner convention. */
+  | { readonly kind: 'adopt'; readonly shift: number; readonly quad: CornerQuad }
+  /** Too far to be drift — a reposition. `repeats` is 1 on the first of a run. */
+  | { readonly kind: 'suspect'; readonly shift: number; readonly repeats: number };
+
+export interface RedetectResult {
+  readonly redetect: Redetect;
+  readonly outcome: RedetectOutcome;
+}
+
+/**
+ * A detector MISS is neutral: it neither contributes to the baseline nor moves
+ * the adoption counter, it only schedules the next check.
+ *
+ * Deliberately not a reset. The misses cluster on the drifted frames themselves
+ * (10 % on take 5 against 4 % overall), so a miss that disarmed the counter
+ * would be most likely to do so exactly when the mechanism was about to fire.
+ */
+export function noteRedetectMiss(redetect: Redetect, now: number): Redetect {
+  return { ...redetect, nextAt: now + REDETECT_INTERVAL_MS };
+}
+
+/**
+ * Fold one successful re-detection in: baseline, then judge.
+ *
+ * `tracked` is the quad as it stood when the detected FRAME was taken, not when
+ * the reply came back — the tracker keeps running through the request, and
+ * pairing the detector's answer with a quad from a few hundred ms later would
+ * measure the wait as well as the drift.
+ */
+export function noteRedetection(input: {
+  readonly redetect: Redetect;
+  readonly now: number;
+  readonly detected: CornerQuad;
+  readonly tracked: CornerQuad;
+}): RedetectResult {
+  const { redetect, now, detected, tracked } = input;
+  const next: Redetect = { ...redetect, nextAt: now + REDETECT_INTERVAL_MS };
+
+  const match = matchCorners(detected, tracked);
+  const matched = match.margin >= ADOPT_RELABEL_MARGIN;
+
+  if (redetect.residual === null) {
+    // A correspondence nobody can trust must not become the session's convention.
+    if (!matched) return { redetect: next, outcome: { kind: 'ambiguous', margin: match.margin } };
+    const samples = [...redetect.samples, cornerOffsets(match.aligned, tracked)];
+    const done = samples.length >= REDETECT_BASELINE_N;
+    return {
+      redetect: {
+        ...next,
+        samples: done ? [] : samples,
+        residual: done ? medianOffsets(samples) : null
+      },
+      outcome: { kind: 'baselining', samples: samples.length }
+    };
+  }
+
+  const shift = baselinedShift(match.aligned, tracked, redetect.residual);
+  if (shift > ADOPT_MAX_SHIFT_SQUARES) {
+    const repeats = redetect.suspects + 1;
+    return {
+      redetect: { ...next, over: 0, suspects: repeats },
+      outcome: { kind: 'suspect', shift, repeats }
+    };
+  }
+  if (shift <= ADOPT_SHIFT_SQUARES) {
+    return { redetect: { ...next, over: 0, suspects: 0 }, outcome: { kind: 'steady', shift } };
+  }
+  const over = redetect.over + 1;
+  if (over < ADOPT_CONSECUTIVE) {
+    return { redetect: { ...next, over, suspects: 0 }, outcome: { kind: 'arming', shift } };
+  }
+  // The last guard, and the only one that could put a8 on the wrong corner: a quad
+  // whose second-best correspondence is nearly as good as its best is not safely
+  // relabellable, so it is refused ADOPTION specifically. The count is kept, so the
+  // next unambiguous reading of the same drift acts immediately.
+  if (!matched) {
+    return {
+      redetect: { ...next, over, suspects: 0 },
+      outcome: { kind: 'ambiguous', margin: match.margin }
+    };
+  }
+  // Adopted: the counter starts again, but R0 is KEPT — the correction is
+  // expressed in the operator's convention, so the convention has not changed.
+  return {
+    redetect: { ...next, over: 0, suspects: 0 },
+    outcome: { kind: 'adopt', shift, quad: correctedQuad(match.aligned, redetect.residual) }
+  };
+}
+
 // ---- calibration guard -------------------------------------------------------
 
 /**
@@ -438,6 +867,9 @@ export function calibrateBlockReason(input: {
 }): string | null {
   if (input.activity.kind === 'calibrating') return 'calibrating…';
   if (input.activity.kind === 'detecting') return 'looking for the board…';
+  // Same reasoning: a drift check ends with an unconditional hand-back to idle,
+  // which would land in the middle of a calibration begun underneath it.
+  if (input.activity.kind === 'verifying') return 'checking the framing…';
   // Calibration reads the live camera directly, not the stream — it needs the
   // camera running, which is a weaker and more honest requirement than needing
   // the socket up.

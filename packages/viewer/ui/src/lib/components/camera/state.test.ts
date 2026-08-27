@@ -1,7 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import type { CornerQuad } from '$lib/protocol';
+import type { CornerQuad, Point } from '$lib/protocol';
 import {
+  ADOPT_CONSECUTIVE,
+  ADOPT_MAX_SHIFT_SQUARES,
+  ADOPT_RELABEL_MARGIN,
   AUTO_BACKOFF_MS,
+  AUTO_STABILITY,
   AUTO_DETECT_START,
   AUTO_LOST_MS,
   AUTO_SETTLE_MS,
@@ -27,10 +31,22 @@ import {
   rebaseQuad,
   serialiseFraming,
   shouldAutoDetect,
+  cornerOffsets,
+  matchCorners,
+  type CornerOffsets,
+  type RedetectGate,
+  noteRedetectMiss,
+  noteRedetection,
+  REDETECT_INTERVAL_MS,
+  REDETECT_START,
+  shouldRedetect,
+  squareWidth,
   toQuad,
   trackingChip,
   withinRateWindow,
   type Activity,
+  type Redetect,
+  type RedetectOutcome,
   type AutoDetect,
   type CameraState,
   type Framing
@@ -555,5 +571,340 @@ describe('restored-framing verification', () => {
     expect(quadShift(quad, nudged, frame)).toBeLessThan(QUAD_VERIFY_SHIFT);
     const reordered = [quad[1], quad[2], quad[3], quad[0]] as unknown as CornerQuad;
     expect(quadShift(quad, reordered, frame)).toBeGreaterThan(QUAD_VERIFY_SHIFT);
+  });
+});
+
+describe('periodic re-detection', () => {
+  // A square board, 800 px on a side, so one square is exactly 100 px: every
+  // shift below can be read as a fraction of a square by eye.
+  const TRACKED: CornerQuad = [
+    [200, 100],
+    [1000, 100],
+    [1000, 900],
+    [200, 900]
+  ];
+  const SQUARE = 100;
+
+  /** `TRACKED` with a per-corner displacement applied — a drifted or offset quad. */
+  function moved(dx: number, dy = 0, corners: readonly number[] = [0, 1, 2, 3]): CornerQuad {
+    const at = (i: number): Point =>
+      corners.includes(i)
+        ? [(TRACKED[i] as Point)[0] + dx, (TRACKED[i] as Point)[1] + dy]
+        : (TRACKED[i] as Point);
+    return [at(0), at(1), at(2), at(3)];
+  }
+
+  const gate: RedetectGate = {
+    redetect: REDETECT_START,
+    now: 60_000,
+    camera: live('detected'),
+    activity: IDLE,
+    streaming: true,
+    stability: 1,
+    bursting: false,
+    portrait: false,
+    hidden: false
+  };
+
+  describe('the gate', () => {
+    it('runs on a resting, streaming, framed page', () => {
+      expect(shouldRedetect(gate)).toBe(true);
+    });
+
+    it('refuses everything the check is not for', () => {
+      const cases: readonly [string, Partial<RedetectGate>][] = [
+        ['not streaming', { streaming: false }],
+        ['portrait', { portrait: true }],
+        ['mid-burst', { bursting: true }],
+        ['hidden', { hidden: true }],
+        ['moving', { stability: AUTO_STABILITY - 0.01 }],
+        ['no camera', { camera: { kind: 'requesting' } }],
+        ['never framed', { camera: live('placeholder') }],
+        ['dragging', { activity: { kind: 'dragging', corner: 0 } }],
+        ['detecting', { activity: { kind: 'detecting', auto: true } }],
+        ['already checking', { activity: { kind: 'verifying' } }],
+        ['calibrating', { activity: { kind: 'calibrating' } }],
+        ['inside the interval', { redetect: { ...REDETECT_START, nextAt: gate.now + 1 } }]
+      ];
+      for (const [why, override] of cases) {
+        expect(shouldRedetect({ ...gate, ...override }), why).toBe(false);
+      }
+    });
+
+    it('checks a board that was framed by hand as readily as a detected one', () => {
+      // The convention offset is exactly what the baseline is for, so a
+      // finger-dragged framing is not excluded from being checked.
+      expect(shouldRedetect({ ...gate, camera: live('operator') })).toBe(true);
+      expect(shouldRedetect({ ...gate, camera: live('restored') })).toBe(true);
+    });
+
+    it('spaces the checks by the interval', () => {
+      const after = noteRedetectMiss(REDETECT_START, gate.now);
+      expect(after.nextAt).toBe(gate.now + REDETECT_INTERVAL_MS);
+      expect(shouldRedetect({ ...gate, redetect: after })).toBe(false);
+      expect(
+        shouldRedetect({ ...gate, redetect: after, now: gate.now + REDETECT_INTERVAL_MS })
+      ).toBe(true);
+    });
+  });
+
+  describe('the square-width unit', () => {
+    it('is the mean side over eight, not a fraction of the frame', () => {
+      expect(squareWidth(TRACKED)).toBeCloseTo(SQUARE, 6);
+    });
+
+    it('is NOT what quadShift measures — the reason this has its own unit', () => {
+      // 0.45 square of shift on this board is 45 px, which the frame-diagonal
+      // convention calls 0.031 — a hair over QUAD_VERIFY_SHIFT. The two numbers
+      // are not interchangeable and the report says so explicitly.
+      const shifted = moved(45);
+      expect(quadShift(TRACKED, shifted, FRAME)).toBeLessThan(2 * QUAD_VERIFY_SHIFT);
+      expect(quadShift(TRACKED, shifted, FRAME)).toBeGreaterThan(QUAD_VERIFY_SHIFT);
+    });
+  });
+
+  describe('corner correspondence', () => {
+    it('matches a detection back onto the tracked slots whatever order it arrived in', () => {
+      const rotated: CornerQuad = [TRACKED[2], TRACKED[3], TRACKED[0], TRACKED[1]];
+      const match = matchCorners(rotated, TRACKED);
+      expect(match.aligned).toEqual(TRACKED);
+      expect(match.cost).toBe(0);
+      expect(match.margin).toBe(Infinity);
+    });
+
+    it('matches a reversed winding too', () => {
+      const flipped: CornerQuad = [TRACKED[0], TRACKED[3], TRACKED[2], TRACKED[1]];
+      expect(matchCorners(flipped, TRACKED).aligned).toEqual(TRACKED);
+    });
+
+    it('leaves the runner-up most of a board away, which is what the margin checks', () => {
+      const match = matchCorners(moved(20), TRACKED);
+      expect(match.cost).toBeCloseTo(20, 6);
+      expect(match.margin).toBeGreaterThan(ADOPT_RELABEL_MARGIN);
+    });
+
+    it('refuses to BASELINE from an ambiguous correspondence', () => {
+      // A quad small enough that every order is about equally wrong: no
+      // correspondence is safe, so nothing may become the session's convention.
+      const tiny: CornerQuad = [
+        [600, 490],
+        [610, 490],
+        [610, 500],
+        [600, 500]
+      ];
+      const { redetect, outcome } = noteRedetection({
+        redetect: REDETECT_START,
+        now: 1000,
+        detected: tiny,
+        tracked: TRACKED
+      });
+      expect(outcome.kind).toBe('ambiguous');
+      expect(redetect.samples).toEqual([]);
+      expect(redetect.residual).toBeNull();
+      expect(redetect.nextAt).toBe(1000 + REDETECT_INTERVAL_MS);
+    });
+  });
+
+  describe('the baseline', () => {
+    it('spends the first three detections measuring, and takes their median', () => {
+      // A 30 px convention offset with one bad sample in the middle. The median
+      // ignores the outlier; a mean would carry 6.7 px of it forever.
+      let state = REDETECT_START;
+      const samples = [30, 130, 32];
+      const kinds: string[] = [];
+      samples.forEach((dx, i) => {
+        const step = noteRedetection({
+          redetect: state,
+          now: i * REDETECT_INTERVAL_MS,
+          detected: moved(dx),
+          tracked: TRACKED
+        });
+        state = step.redetect;
+        kinds.push(step.outcome.kind);
+      });
+      expect(kinds).toEqual(['baselining', 'baselining', 'baselining']);
+      expect(state.residual).toEqual([
+        [32, 0],
+        [32, 0],
+        [32, 0],
+        [32, 0]
+      ]);
+      expect(state.samples).toEqual([]);
+    });
+
+    it('is not advanced by a miss', () => {
+      let state = noteRedetection({
+        redetect: REDETECT_START,
+        now: 0,
+        detected: moved(30),
+        tracked: TRACKED
+      }).redetect;
+      state = noteRedetectMiss(state, REDETECT_INTERVAL_MS);
+      expect(state.samples).toHaveLength(1);
+      expect(state.residual).toBeNull();
+    });
+  });
+
+  /** Run a sequence of detections (`null` is a detector miss) from a given start. */
+  function replay(
+    detections: readonly (CornerQuad | null)[],
+    start: Redetect = REDETECT_START
+  ): { readonly state: Redetect; readonly outcomes: readonly RedetectOutcome[] } {
+    let state = start;
+    const outcomes: RedetectOutcome[] = [];
+    detections.forEach((detected, i) => {
+      const now = i * REDETECT_INTERVAL_MS;
+      if (detected === null) {
+        state = noteRedetectMiss(state, now);
+        return;
+      }
+      const step = noteRedetection({ redetect: state, now, detected, tracked: TRACKED });
+      state = step.redetect;
+      outcomes.push(step.outcome);
+    });
+    return { state, outcomes };
+  }
+
+  describe('adoption', () => {
+    it('never fires on a constant convention offset, however large', () => {
+      // The hand-framed sessions: the detector's line sits a fixed 30 px from the
+      // operator's — 0.3 square, most of the way to the threshold — for ever. An
+      // absolute threshold would false-alarm on every one of them.
+      const { outcomes } = replay(Array.from({ length: 12 }, () => moved(30)));
+      expect(outcomes.slice(3).every((o) => o.kind === 'steady')).toBe(true);
+      for (const outcome of outcomes.slice(3)) {
+        if (outcome.kind === 'steady') expect(outcome.shift).toBeCloseTo(0, 6);
+      }
+    });
+
+    it('adopts on the SECOND consecutive over-threshold reading of a drift ramp', () => {
+      // The tracked quad walks; the detector keeps reporting the true board, so
+      // the gap grows. 30 px of that is the convention offset, the rest is drift.
+      const ramp = [30, 30, 30, 40, 60, 85, 110].map((dx) => moved(dx));
+      const { outcomes } = replay(ramp);
+      expect(outcomes.map((o) => o.kind)).toEqual([
+        'baselining',
+        'baselining',
+        'baselining',
+        'steady', // 0.10 square
+        'steady', // 0.30 square
+        'arming', // 0.55 square — over, but only once
+        'adopt' //   0.80 square — twice in a row
+      ]);
+    });
+
+    it('adopts the detector quad in the OPERATOR’s convention, not the detector’s', () => {
+      const { outcomes } = replay([30, 30, 30, 85, 110].map((dx) => moved(dx)));
+      const adopted = outcomes.at(-1);
+      expect(adopted?.kind).toBe('adopt');
+      if (adopted?.kind !== 'adopt') return;
+      // 110 px detected minus the 30 px convention offset: the corners the
+      // operator would have dragged, on the board the detector actually found.
+      expect(adopted.quad).toEqual(moved(80));
+      expect(adopted.shift).toBeCloseTo(0.8, 6);
+    });
+
+    it('starts the count again after adopting, but keeps R0', () => {
+      const { state } = replay([30, 30, 30, 85, 110].map((dx) => moved(dx)));
+      expect(state.over).toBe(0);
+      expect(state.residual).toEqual([
+        [30, 0],
+        [30, 0],
+        [30, 0],
+        [30, 0]
+      ]);
+      // And having adopted, the very next reading of the same gap is steady
+      // again only once the tracker has actually been moved — the pure layer
+      // just counts, so a still-drifted reading arms afresh rather than adopting.
+      const { outcomes } = replay([moved(110)], state);
+      expect(outcomes.map((o) => o.kind)).toEqual(['arming']);
+    });
+
+    it('treats a miss as neutral: no progress, no reset', () => {
+      const ramp = [moved(30), moved(30), moved(30), moved(85), null, moved(110)];
+      const { outcomes } = replay(ramp);
+      // The miss did not disarm the counter, so the reading after it still
+      // adopts — misses cluster on the drifted frames themselves.
+      expect(outcomes.map((o) => o.kind)).toEqual([
+        'baselining',
+        'baselining',
+        'baselining',
+        'arming',
+        'adopt'
+      ]);
+    });
+
+    it('disarms on a reading back inside the threshold', () => {
+      const { outcomes } = replay([30, 30, 30, 85, 35, 85, 40].map((dx) => moved(dx)));
+      expect(outcomes.map((o) => o.kind)).toEqual([
+        'baselining',
+        'baselining',
+        'baselining',
+        'arming',
+        'steady',
+        'arming',
+        'steady'
+      ]);
+    });
+
+    it('refuses to ADOPT a quad it cannot relabel, and keeps the count for the next one', () => {
+      // The last guard before a8 could move. It needs a detection whose corners
+      // do NOT pair off decisively while the baselined signal still looks like
+      // ordinary drift, which takes a pathological convention offset to build:
+      // with a realistic R0 (17-33 px) the reposition cap fires first, because a
+      // quad has to be displaced by most of a board before its second-best
+      // corner pairing gets close to its best.
+      const offset: CornerOffsets = [
+        [250, 0],
+        [250, 0],
+        [250, 0],
+        [250, 0]
+      ];
+      const { redetect, outcome } = noteRedetection({
+        redetect: { ...REDETECT_START, residual: offset, over: ADOPT_CONSECUTIVE - 1 },
+        now: 0,
+        detected: moved(330), // 0.8 square past the convention offset
+        tracked: TRACKED
+      });
+      expect(outcome.kind).toBe('ambiguous');
+      if (outcome.kind === 'ambiguous') {
+        expect(outcome.margin).toBeLessThan(ADOPT_RELABEL_MARGIN);
+      }
+      // Not disarmed: the drift is real, so the next unambiguous reading acts.
+      expect(redetect.over).toBe(ADOPT_CONSECUTIVE);
+    });
+
+    it('refuses to adopt a reposition, and says so once per episode', () => {
+      // Beyond ADOPT_MAX_SHIFT_SQUARES it is not drift — the phone or the board
+      // moved. Adopting would quietly re-crop around a board nobody framed.
+      const far = moved(30 + (ADOPT_MAX_SHIFT_SQUARES + 0.5) * SQUARE);
+      const { state, outcomes } = replay([moved(30), moved(30), moved(30), far, far, far]);
+      expect(outcomes.slice(3).map((o) => o.kind)).toEqual(['suspect', 'suspect', 'suspect']);
+      expect(outcomes.slice(3).map((o) => (o.kind === 'suspect' ? o.repeats : 0))).toEqual([
+        1, 2, 3
+      ]);
+      expect(state.over).toBe(0);
+    });
+
+    it('does not let a reposition run bleed into the adoption count', () => {
+      const far = moved(30 + (ADOPT_MAX_SHIFT_SQUARES + 0.5) * SQUARE);
+      const { outcomes } = replay([moved(30), moved(30), moved(30), far, far, moved(85)]);
+      // Two suspects then one genuinely-drifted reading: arming, not adopting.
+      expect(outcomes.at(-1)?.kind).toBe('arming');
+    });
+
+    it('measures the WORST corner, so one corner walking is enough', () => {
+      // Take 5's shape: a1 reached 82 px while h1 moved 27. A mean would have
+      // called that a third of a square and stayed silent.
+      const oneCorner = (dx: number): CornerQuad => moved(dx, 0, [3]);
+      const { outcomes } = replay([oneCorner(0), oneCorner(0), oneCorner(0), oneCorner(80), oneCorner(85)]);
+      expect(outcomes.map((o) => o.kind)).toEqual([
+        'baselining',
+        'baselining',
+        'baselining',
+        'arming',
+        'adopt'
+      ]);
+    });
   });
 });
