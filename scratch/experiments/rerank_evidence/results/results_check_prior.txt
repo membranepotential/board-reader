@@ -1,9 +1,0 @@
-control  n= 24  raw argmax reproduced 24/24  prior reproduced 14/24  (16 squares differ in total)
-hard     n= 43  raw argmax reproduced 43/43  prior reproduced 39/43  (7 squares differ in total)
-fast     n= 31  raw argmax reproduced 31/31  prior reproduced 13/31  (32 squares differ in total)
-take5    n= 35  raw argmax reproduced 35/35  prior reproduced 34/35  (2 squares differ in total)
-
-control  prior wrong: true  15/1536  reconstructed  31/1536   tail mass median 0.2561 p90 0.4803
-hard     prior wrong: true  40/2752  reconstructed  47/2752   tail mass median 0.0746 p90 0.3141
-fast     prior wrong: true  37/1984  reconstructed  69/1984   tail mass median 0.1288 p90 0.3164
-take5    prior wrong: true  60/2240  reconstructed  58/2240   tail mass median 0.1333 p90 0.3454

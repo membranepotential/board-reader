@@ -1,9 +1,0 @@
-rule: demote top-1 'b' when p1 - p2 < 0.2
-
-take      events  fires  per-board  fixes  breaks  neutral   conf on fixed squares (p1 -> p2)
-control       24      6       0.25      5       0        1   0.342 -> 0.247  (max after: 0.312)
-hard          43     18       0.42     15       0        3   0.471 -> 0.348  (max after: 0.422)
-fast          31     23       0.74     10       0       13   0.381 -> 0.322  (max after: 0.403)
-take5         35      8       0.23      8       0        0   0.338 -> 0.264  (max after: 0.310)
-
-total: 133 events, 55 firings (0.41/board), 38 fixes, 0 breaks, 17 neutral (square was wrong either way)
