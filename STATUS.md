@@ -12,25 +12,25 @@ confidences**. No moves, no legality, no PGN — those are the downstream applic
 - **The 08-27 night wave is COMPLETE** (see Done). Estimator, scheduler,
   stabilizer, framing, recorder, harness all landed, reviewed, and
   replay-verified; suite 1048 Python + 417 vitest + 50 e2e, all green.
+- trial-run — live proof-session stack (`make dev`, recorder on) — being
+  brought up 2026-08-28; user does the live take at `/camera` when ready.
 - **Next live take = the proof session.** It should demonstrate, zero-tap:
   auto-detect → auto-verify → start → auto-calibrate ("Calibrated
   automatically…", trigger bug fixed in `b9b886c`), burst-end reads (~5× fewer
   GPU calls, watch `/healthz` ingest.unscheduled, backstopped==0), drift
   re-lock ("The frame had drifted — re-locked"), no OOM at any length, coherent
   settled stream. Author truth with `guard_seqs=3` (sparse events by design).
-- public-release — repo is **push-ready** (Apache-2.0 + THIRD-PARTY.md, details
-  scrubbed, history re-signed onto the current author email). Before pushing: add
-  that address as a UID on the signing key and re-upload it, or every commit
-  lands Unverified. Optional: a CI workflow, CONTRIBUTING.md. Pre-rewrite SHAs
-  recoverable from `docs/commit-rewrite-{map.tsv,pre.bundle}` (git-ignored);
-  `tools/check_commit_refs.py` translates stale citations.
 - ui-mockups — awaiting user review in `docs/mockups/` (user: redo later as
   clickable simulations, not storyboards).
-- OPEN (user decision): rescued b-demotion squares report ~0.34–0.47, above the
-  viewer's 0.5 low-confidence marker — flag them visually or leave as-is?
 
 ## Done (recent)
 
+- 08-28: **repo pushed public**. Pre-rewrite SHAs recoverable from
+  `docs/commit-rewrite-{map.tsv,pre.bundle}` (git-ignored);
+  `tools/check_commit_refs.py` translates stale citations.
+- 08-28: **b-demotion confidence display: user decided leave as-is** — rescued
+  squares reporting ~0.34–0.47 stay unflagged; correct recognition is the
+  ambition, confidence marking would only clutter the UI.
 - **08-27 night wave** (detail: `git log 866653f..9167dfd`, docs/reports/2026-08-27-*):
   all five takes scored; **replay harness** (recorded takes → rerunnable offline
   benchmark; replay-vs-replay is the valid comparison); **GPU arena ratchet
