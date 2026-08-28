@@ -70,8 +70,8 @@ WAIT_TIMEOUT="${BR_RP_WAIT_TIMEOUT:-10m}"
 MIN_BALANCE_USD="${BR_RP_MIN_BALANCE:-0.50}"
 
 LOCAL_RUNS="scratch/runs"   # artifacts land in <repo>/scratch/runs/<name>/
-ARTIFACTS=(best.pt model.onnx model.onnx.meta.json history.json events.jsonl
-           val.log eval.txt pipe.log config.yaml)
+ARTIFACTS=(best.pt model.onnx model.onnx.data model.onnx.meta.json history.json
+           events.jsonl val.log eval.txt pipe.log config.yaml)
 
 # Code-only sync: data, caches and models live on the volume, not in the push.
 RSYNC_EXCLUDES=(--exclude=.git --exclude=data --exclude=scratch --exclude=models
