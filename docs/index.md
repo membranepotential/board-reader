@@ -47,6 +47,9 @@ reconstruction and PGN belong to whatever consumes the stream.
 - [[2026-08-28-two-kings-decode|Two-kings decode]] — the follow-up refuted: the shipped
   demotion rule is already confidence-based and Pareto-best; ~7 settled boards is the
   ceiling of any per-frame tie-break, the residual lever is the bank lock
+- [[2026-08-29-bank-rematch|Bank rematch]] — masked banks and full-data training both
+  NO-GO; the bank's value is session adaptation (exemplars only recordings hold), and
+  a curated gain is again not a deployment verdict. The shipped stack stands
 - [[youtube-streams]] — curated static-camera OTB footage for bring-up
 - `aspects.yaml` — which parts must stay in sync with which, and the contract between them
 

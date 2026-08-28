@@ -185,8 +185,11 @@ the corpus itself would depend on the mask setting).
 
 Curated three-way (shipped members, `BR_CROP_MASK=gray`): baseline 305/320 →
 rebuilt-unmasked **307** → rebuilt-masked **308** — corpus +2, masking +1. Not a
-deployment verdict (that needs the take replays — see [[measuring-accuracy]]); it is
-the go-signal for the masked-members rematch.
+deployment verdict — and indeed the take replays *inverted* it
+([[2026-08-29-bank-rematch]]): the rebuilt banks lose 13 perfect boards on the 4-take
+gate because they cannot contain the auto-calibrate exemplars grown live from those
+sessions' frames (pixels only in `recordings/`, never in uploads). The bank's
+deployed value is session adaptation; corpus quality is second to it.
 
 > [!warning] A bigger bank is not a better bank — judge calibration too
 > The first, unguarded rebuild (all 54 uploads, 13,824 rows) scored one square

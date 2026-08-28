@@ -15,31 +15,25 @@ confidences**. No moves, no legality, no PGN — those are the downstream applic
 - ui-mockups — awaiting user review in `docs/mockups/` (user: redo later as
   clickable simulations, not storyboards).
 
-- **08-28 retrain program CLOSED** — masking shipped, cloud pipeline live
-  (see Done). Nothing running; RunPod volume standing ($2.10/mo), pods reaped,
-  balance $7.25.
-- **cloud-phase-2+3** — Phase 2 DONE ($0.29, loader-bound verdict, README
-  "Cloud perf"); Phase 3.1 run_i_cloud DONE ($2.36, 20 epochs @1170 img/s):
-  **holdout 0.9283 (+2.9pp) but chesscog 0.828 (−3.2pp vs run_g_cloud)** —
-  full data overfits the synthetic mix; run_g_cloud stays the best OOD bbox
-  member. **Rematch gates RUNNING** (local GPU, background): (1) shipped
-  members + masked bank, (2) run_g_cloud⊕run_h_cloud + masked bank —
-  scratch/gates-rematch-20260829.log.
-- **masked-bank-rebuild** — DONE (`9e7a654` + review-hardened `6572b76`):
-  `rebuild-bank` shares the live guard (`session.verify_labels`); corpus 54 →
-  31 used / 10 guard-rejected / 13 rectified-excluded; banks 7,936 exemplars,
-  differ only in masking. Curated three-way: baseline 305 → unmasked 307 →
-  masked **308**/320. Lesson: the unguarded 13.8k bank scored 309 while
-  collapsing confidence 0.59→0.51 — judge banks on calibration too. Rematch
-  gates wait on run_i.
-- **two-kings-coherence-fix** — CLOSED as a refutation (`8c42b83`): the shipped
-  rule already demotes the lower-confidence king and is Pareto-best over 4 rules
-  x 4 takes; the 31/31-wrong figure was the *rejected* e7 row. Lever at ceiling
-  (~7 settled boards reachable by any per-frame tie-break); productive lever is
-  the bank. Bonus: found `make dev` served unmasked since `38c40ac` — parity
-  guard was red on main, fixed (`4d6ce3e`).
+- **08-28/29 improvement cycle CLOSED** (see Done): masking shipped, cloud
+  pipeline live, bank rematch NO-GO — **the shipped stack stands**. Nothing
+  running; RunPod volume standing ($2.10/mo), pods reaped, balance $4.45.
 
 ## Done (recent)
+
+- **08-29 (night): the rematch cycle closed — every challenger NO-GO, three
+  mechanisms found** (docs/reports/2026-08-29-bank-rematch.md): masked bank
+  loses the 4-take gate 35→22 perfect (its curated +3 inverted — the baseline
+  bank's value is auto-calibrate exemplars grown from the sessions' own frames,
+  which uploads cannot contain); masked members + masked bank 35→17; run_i
+  full-data lifts holdout to 0.9283 but drops chesscog to 0.828. Also:
+  two-kings decode claim refuted (`8c42b83`, docs/reports/2026-08-28-two-kings-
+  decode.md — shipped rule Pareto-best, tie-break ceiling ~7 boards);
+  `make dev` unmasked-drift fixed (`4d6ce3e`); `rebuild-bank` landed review-
+  hardened (`6572b76` — guard shares live `verify_labels`, 10/54 uploads
+  genuinely bad); cloud Phase 2 closed (loader-bound, ~110 img/s/vCPU,
+  workers 8; README "Cloud perf"); lint backlog cleared. Suite 1147. Cloud
+  spend $3.30 total.
 
 - **08-28 retrain program E1–E7** (full numbers + narrative:
   docs/reports/2026-08-28-retrain-program.md; details
@@ -88,12 +82,15 @@ confidences**. No moves, no legality, no PGN — those are the downstream applic
 
 ## Next
 
-1. **Cloud Phase 2+3** (docs/plans/2026-08-28-runpod-migration.md): tune the
-   pod (bf16/batch/workers grid — amp:false and batch 48 are Turing relics;
-   L4 measured only 3.7×), then full-data run_i (~$3). Rematch run_g/run_h
-   after **re-embedding the bank from masked crops** (the E6 lesson: the bank
-   half decides these takes). Then the fine-tune deploy story (E2/E3; feeds
-   Next 5).
+1. **Bank provenance, then the session-fair rematch**: persist the source crop
+   (or masked+unmasked embedding pair) for every exemplar written — calibrate
+   AND auto-calibrate — so bank re-embeds become possible at all. A session-
+   fair rematch is runnable today by mining the auto-calibrate frames out of
+   `recordings/` (frames + settled placements are recorded); that is the
+   remaining way the masked-bank question gets a real answer
+   (docs/reports/2026-08-29-bank-rematch.md §residue). Cloud Phase 3.2–3.4
+   (unfreeze, architectures, resolution) remain open on the measured pipeline;
+   the fine-tune deploy story (E2/E3) feeds Next 5.
 2. **Estimator throughput / latency** — profile the cascade+ensemble read
    (~1.3 GPU-s/read measured in the sweep) and attack the biggest term (bank
    embed batching?). Faster reads shrink settle lag and the guard window both.
