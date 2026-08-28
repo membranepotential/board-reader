@@ -87,6 +87,7 @@ RUNPODCTL="${RUNPODCTL:-runpodctl}"
 # ---------------------------------------------------------------------------
 DRY_RUN=false
 FALLBACK_PRO6000=false
+SECURE=false   # --secure: GPU pods on SECURE cloud (~2x price) — explicit only
 POD_ID=""
 POD_NAME=""
 POD_HOST=""
@@ -316,7 +317,14 @@ create_pod() {
   if [ -n "$gpu" ]; then
     # COMMUNITY is ~2x cheaper than the SECURE default; --public-ip is what
     # makes port 22 publicly mapped, which --wait (and our SSH) needs there.
-    args+=(--image "$IMAGE" --cloud-type COMMUNITY --gpu-id "$gpu" --gpu-count 1 --public-ip)
+    # SECURE (explicit --secure only) maps port 22 publicly without the flag,
+    # which is documented as community-only.
+    if $SECURE; then
+      warn "SECURE cloud requested explicitly (~2x the community price)"
+      args+=(--image "$IMAGE" --cloud-type SECURE --gpu-id "$gpu" --gpu-count 1)
+    else
+      args+=(--image "$IMAGE" --cloud-type COMMUNITY --gpu-id "$gpu" --gpu-count 1 --public-ip)
+    fi
   else
     # DEVIATION: CPU pods are not offered on community cloud, and --public-ip
     # is documented as "community cloud only" — so the staging pod runs on the
@@ -704,7 +712,7 @@ print(f"spend limit  ${limit}")
 # ---------------------------------------------------------------------------
 usage() {
   cat >&2 <<'USAGE'
-usage: rp [--dry-run] [--fallback-pro6000] <command> [args]
+usage: rp [--dry-run] [--fallback-pro6000] [--secure] <command> [args]
 
   sweep <config.yaml>...   one pod for the whole queue: create -> setup ->
                            train/export/evaluate each config -> pull artifacts
@@ -731,6 +739,7 @@ main() {
     case "$1" in
       --dry-run) DRY_RUN=true ;;
       --fallback-pro6000) FALLBACK_PRO6000=true ;;
+      --secure) SECURE=true ;;
       -h|--help) usage ;;
       --) shift; rest+=("$@"); break ;;
       *) rest+=("$1") ;;
