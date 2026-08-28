@@ -69,7 +69,16 @@ zram sysctls) are the operator's, tracked outside this repo. The crash cost
 one screen-run export (0-byte files, retrained artifacts unharmed) and
 `run_g` was re-run to completion under the caps.
 
-## Continuation (cloud GPU)
+## Continuation (cloud GPU) — CLOSED 08-28 late
+
+Executed same-day on RunPod (L4, EU-RO-1). Outcome: **NO-GO on the masked
+member pair** (run_g/run_h lose the 4-take gate they were built for — E6's d8
+win turns out to be a bank-lookup effect, and settled coherence doubles the
+q->k residual into a swap); **serve-time masking with the existing members
+shipped instead** (`BR_CROP_MASK: gray` in compose). Full numbers, diagnosis
+and the enabling cloud pipeline:
+[2026-08-28-improvement-report](2026-08-28-improvement-report.md). The
+original runbook follows for provenance.
 
 The remaining work, in order — all commands from repo root, torch venv per
 `tools/train/README.md` §Setup:

@@ -26,12 +26,18 @@ confidences**. No moves, no legality, no PGN — those are the downstream applic
 - **retrain program RESUMED on RunPod** (user 08-28 evening; plan:
   docs/plans/2026-08-28-runpod-migration.md, skill: /runpod, budget $7.91).
   Runbook: docs/reports/2026-08-28-retrain-program.md §Continuation.
-  Phase 0 done: masked pose cache complete (11/11 styles); `rp` runner
-  landed (`684507d`, config-path + CPU-disk fixes after review). DC re-pinned
-  EU-RO-1 (EU-SE-1 has no volume support); volume 30 GB; staging runs over
-  the S3 volume API (EU-RO-1 had zero CPU instances; key in keyring).
-  - cache upload (16.3 GB @ ~5 MB/s) — RUNNING — next: `rp sweep
-    smoke_cloud + run_g` (parity gate ±0.005 of 0.8983), then run_h.
+  Phase 0+staging done: masked pose cache 11/11; `rp` runner landed and
+  live-debugged (`684507d`..`6a4a749`: --ports 22/tcp, adopt, setsid --wait,
+  chown-free rsync, cache-backed style resolution + 8 tests). DC re-pinned
+  EU-RO-1 (EU-SE-1 has no volume support); volume 30 GB; 17.6 GB staged over
+  the S3 volume API (zero CPU instances there; separate S3 key in keyring).
+  - **PROGRAM CLOSED — see docs/reports/2026-08-28-improvement-report.md.**
+    Shipped: BR_CROP_MASK=gray in compose (existing run_e⊕run_f) — perfect
+    boards ~20→35 across the 4-take gate (08-13 lock 6→22/31), curated
+    305/320 (flat), sub-point tax elsewhere. Masked-retrained pair NO-GO
+    deployed (bank-dominant blend; E6 win = bank-lookup effect) — benched as
+    OOD assets (+4pp chesscog each). Cloud: parity PASS (0.8995 vs 0.8983),
+    L4 628 img/s (3.7x), $0.66 spent, pods reaped, volume standing.
 
 ## Done (recent)
 

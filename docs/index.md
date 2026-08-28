@@ -41,6 +41,9 @@ reconstruction and PGN belong to whatever consumes the stream.
 - [[2026-08-28-proof-trial|Proof trial]] — the first live take over the full stack, scored
 - [[2026-08-28-retrain-program|Retrain program E1–E7]] — bleed diagnosis → occlusion masking →
   masked-crop retrain; frozen baselines and the cloud-GPU continuation runbook
+- [[2026-08-28-improvement-report|Improvement report]] — the program closed: serve-time
+  masking shipped (perfect boards ≈20→35 across the gate takes), masked-retrained
+  members benched with the why, RunPod pipeline measured ($0.66 total)
 - [[youtube-streams]] — curated static-camera OTB footage for bring-up
 - `aspects.yaml` — which parts must stay in sync with which, and the contract between them
 

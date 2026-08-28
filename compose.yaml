@@ -29,6 +29,12 @@ services:
       # ~1.3× cost. Both absent (fresh clone) degrades to the stub like BR_MODEL
       # alone; a partial pair is a hard startup error by design.
       BR_MODEL_B: /models/run_f/model.onnx
+      # Occlusion-aware crop masking (E6, 08-28 ship decision): gray-fill the
+      # pixels a closer neighbor's prism occludes before classify/embed. The
+      # 4-take gate: +15 perfect boards on the q<->k-locked take (bank lookup
+      # unlatches), roughly flat elsewhere; the masked-RETRAINED members lost
+      # this same gate and stay benched (docs/reports/2026-08-28-retrain-program.md).
+      BR_CROP_MASK: gray
       # Every ingested frame is recorded (WP-H2) so the run can be replayed:
       #   board-reader-edge feed --recording recordings/ --throttle
       # Bind-mounted, or the recording would die with the container.
