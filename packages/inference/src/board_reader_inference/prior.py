@@ -304,6 +304,33 @@ def _kings_flip(
     distributions fixes neither (the misread is systematic), so this choice of
     *evidence* is the decoder's whole lever.
 
+    **That lever is at its ceiling, and the 08-13 take is not evidence it is
+    broken.** Re-measured 2026-08-28 on the shipped cascade+bank
+    (``run_e``/``run_f``, ``bank-baseline-20260828``, ``BR_CROP_MASK=gray``),
+    the take's d8 misread is a session-bank exemplar lock: the *false* king d8
+    reads ``k`` at a stable 0.33-0.41 with a fat 0.17-0.24 margin, while the
+    *true* king e8 ranges 0.20-0.45 with a margin as thin as 0.003. So the two
+    squares' ``p(king)`` genuinely cross — this rule demotes d8 on 17 of 34
+    two-king events and e8 on the other 17. It is a coin flip because the
+    evidence is a coin flip, not because the rule reads it wrong; the
+    :class:`~board_reader_inference.stabilize.BoardStabilizer` is what recovers
+    the take (settled 22/31 perfect from a 15/31 prior, against a 29/31 ceiling
+    if every demotion went to d8).
+
+    Three alternatives were scored across all four gate takes (the same
+    ``tools/train/gates.sh`` replays) and every one of them is worse:
+    ``margin`` (the pre-faaa4ed MAP rule, and the true maximum-likelihood
+    answer under square independence) collapses 08-13 to 2/31 settled;
+    ``max-margin`` and ``neg-entropy`` buy 08-13 (27/31 and 22/31) by demoting
+    the *more* confident king, which is anti-MAP — it wins only because this
+    take's bank lock happens to make the wrong king the confident one, and it
+    costs 20260827-175539 its settled perfects (5/12 -> 2/12, per-square 0.9609
+    -> 0.9440) and 20260828-111421 per-square accuracy (0.9266 -> 0.9096). Do
+    not re-open this on the 08-13 swap alone: a rule that fixes one take's
+    systematic misread and breaks two others is a fitted constant, not a
+    decoder. The remaining lever is recognition on d8 (or a temporal identity
+    prior above this pure function), never a different per-frame tie-break.
+
     The demoted square still goes to its most probable class among those that
     strictly reduce the total violation (so relieving KINGS cannot silently
     worsen another constraint), and the recorded cost stays the margin given up,

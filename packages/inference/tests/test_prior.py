@@ -198,6 +198,43 @@ def test_surplus_kings_resolve_by_king_evidence_not_by_margin():
     assert result.placement.split("/")[0] == "r2qk2r"  # e8 kept the king
 
 
+def test_two_kings_at_the_same_king_evidence_break_the_tie_deterministically():
+    """The 08-13 take's real shape: d8/e8 ``p(k)`` differ by 1e-4 on some frames
+    (0.3766 vs 0.3767), so the two squares are effectively tied and *something*
+    has to decide. It must not be the float noise: the tie-break is the lower
+    square index, so the same input always repairs the same way and the
+    debounce downstream sees a stable board rather than an alternation."""
+    dist = _dist(MIDGAME)
+    king = np.full(NUM_CLASSES, 0.30 / 11)
+    king[CLASS_INDEX["k"]], king[CLASS_INDEX["q"]] = 0.60, 0.10
+    dist[0, 3], dist[0, 4] = king.copy(), king.copy()  # d8 and e8, bit-identical
+    result = decode(dist)
+    (flip,) = result.flips
+    assert flip.square == "d8" and flip.to_class == "q"  # lower index loses
+    assert result.placement.split("/")[0] == "r2qk2r"
+    assert decode(dist).placement == result.placement  # and it is reproducible
+
+
+def test_the_demoted_king_takes_its_best_class_that_relieves_the_excess():
+    """Not simply the runner-up: the *most probable class that still reduces the
+    total violation*, so relieving KINGS can never quietly break another
+    constraint. MIDGAME's black army sits exactly on the promotion budget (8
+    pawns, 2N/2B/2R), so once d8 reads as a king black has no queen and ``q`` is
+    the only officer with headroom — a third knight would spend a ninth
+    promotion. The estimator ranks ``n`` above ``q`` here and the decoder still
+    picks ``q``."""
+    dist = _dist(MIDGAME)
+    weak = np.full(NUM_CLASSES, 0.10 / 10)
+    weak[CLASS_INDEX["k"]], weak[CLASS_INDEX["n"]], weak[CLASS_INDEX["q"]] = 0.50, 0.30, 0.10
+    dist[0, 3] = weak  # d8: k 0.50, then n 0.30, then q 0.10
+    result = decode(dist)
+    (flip,) = result.flips
+    assert flip.square == "d8" and flip.from_class == "k"
+    assert flip.to_class == "q"  # not "n", though the reader preferred it 3:1
+    assert flip.cost == pytest.approx(np.log(0.50) - np.log(0.10))
+    assert result.residual.satisfied
+
+
 def test_a_pawn_on_rank_eight_is_relabelled_when_the_frame_is_known():
     result = decode(_dist(MIDGAME, {"a8": ("p", 0.7)}), quarter_turns=0)
     (flip,) = result.flips
