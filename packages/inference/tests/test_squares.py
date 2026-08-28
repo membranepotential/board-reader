@@ -11,8 +11,13 @@ from board_reader_core.sim import render_board, simulate_angled_view
 from board_reader_inference.squares import (
     BboxGeometry,
     PoseGeometry,
+    _apply_occlusion_fill,
     _board_to_image,
+    _closer_neighbor_prisms,
     _focal_from_homography,
+    _occlusion_fill_from_env,
+    _occlusion_mask,
+    _prism_base_y,
     board_pose,
     crop_squares,
     crop_squares_photo,
@@ -339,3 +344,154 @@ def test_rot90_points_keeps_labels_on_physical_corners():
     moved = rot90_points(quad, 1, image.shape)
     assert np.allclose(moved[0], [0.0, 6.0])  # a8: old (0,0) -> new bottom-left
     assert np.allclose(sorted(map(tuple, moved)), sorted(map(tuple, full_frame_corners(np.rot90(image)))))
+
+
+# --------------------------------------------------------------------------- #
+# Occlusion-aware crop masking (E6) — pure geometry/masking layer
+# --------------------------------------------------------------------------- #
+
+
+def test_occlusion_fill_from_env_unset_is_off(monkeypatch):
+    monkeypatch.delenv("BR_CROP_MASK", raising=False)
+    assert _occlusion_fill_from_env() is None
+
+
+def test_occlusion_fill_from_env_reads_valid_fills(monkeypatch):
+    monkeypatch.setenv("BR_CROP_MASK", "gray")
+    assert _occlusion_fill_from_env() == "gray"
+    monkeypatch.setenv("BR_CROP_MASK", "BLUR")  # case-insensitive
+    assert _occlusion_fill_from_env() == "blur"
+    monkeypatch.setenv("BR_CROP_MASK", "")  # explicitly empty = off
+    assert _occlusion_fill_from_env() is None
+
+
+def test_occlusion_fill_from_env_rejects_unknown_value(monkeypatch):
+    monkeypatch.setenv("BR_CROP_MASK", "sepia")
+    with pytest.raises(ValueError, match="BR_CROP_MASK"):
+        _occlusion_fill_from_env()
+
+
+def test_closer_neighbor_prisms_filters_by_nearness_and_overlap():
+    # Four squares in a row; base_y increases with index (index 3 nearest camera).
+    prism_rects = np.array(
+        [
+            [0.0, 0.0, 10.0, 10.0],  # square 0: overlaps target, but FARTHER
+            [100.0, 100.0, 110.0, 110.0],  # square 1: closer but no overlap
+            [5.0, 5.0, 15.0, 15.0],  # square 2: closer AND overlaps -> included
+            [5.0, 5.0, 15.0, 15.0],  # square 3 (== target): excluded, it's self
+        ]
+    )
+    base_y = np.array([1.0, 20.0, 20.0, 5.0])
+    target_box = (0.0, 0.0, 10.0, 10.0)
+    got = _closer_neighbor_prisms(3, prism_rects, base_y, target_box)
+    assert got == [(5.0, 5.0, 15.0, 15.0)]
+
+
+def test_closer_neighbor_prisms_excludes_self():
+    prism_rects = np.array([[0.0, 0.0, 10.0, 10.0], [0.0, 0.0, 10.0, 10.0]])
+    base_y = np.array([1.0, 1.0])
+    assert _closer_neighbor_prisms(0, prism_rects, base_y, (0.0, 0.0, 10.0, 10.0)) == []
+
+
+def test_occlusion_mask_marks_only_the_neighbor_region():
+    # 10x10 box at image origin (0,0)-(10,10). A neighbor prism covers the right
+    # half only.
+    box_px = (0, 0, 10, 10)
+    own_prism = (0.0, 0.0, 0.0, 0.0)  # no self-overlap in this box
+    neighbors = [(5.0, 0.0, 10.0, 10.0)]
+    occluded = _occlusion_mask(box_px, own_prism, neighbors)
+    assert occluded.shape == (10, 10)
+    assert occluded[:, :5].sum() == 0
+    assert occluded[:, 5:].all()
+
+
+def test_occlusion_mask_subtracts_own_prism_even_where_neighbor_overlaps():
+    """S's own prism region is NEVER masked, even where a closer neighbor's
+    prism box also covers it (the required subtraction)."""
+    box_px = (0, 0, 10, 10)
+    neighbors = [(0.0, 0.0, 10.0, 10.0)]  # neighbor covers the WHOLE box
+    own_prism = (3.0, 3.0, 7.0, 7.0)  # S's own prism sits in the middle
+    occluded = _occlusion_mask(box_px, own_prism, neighbors)
+    assert not occluded[3:7, 3:7].any(), "S's own prism must never be masked"
+    assert occluded[0, 0] and occluded[9, 9], "outside S's own prism, the neighbor still masks"
+
+
+def test_occlusion_mask_no_neighbors_is_all_false():
+    occluded = _occlusion_mask((0, 0, 4, 4), (0.0, 0.0, 4.0, 4.0), [])
+    assert not occluded.any()
+    assert occluded.shape == (4, 4)
+
+
+def test_apply_occlusion_fill_gray_uses_the_crops_mean_color():
+    patch = np.zeros((4, 4, 3), dtype=np.uint8)
+    patch[:, :2] = 100  # left half one color, right half stays 0
+    mean_color = patch.reshape(-1, 3).mean(axis=0)
+    occluded = np.zeros((4, 4), dtype=bool)
+    occluded[:, 2:] = True  # mask the (unmodified) right half
+    out = _apply_occlusion_fill(patch, occluded, "gray")
+    assert np.array_equal(out[:, :2], patch[:, :2]), "unmasked region must be untouched"
+    assert np.allclose(out[:, 2:], mean_color)
+
+
+def test_apply_occlusion_fill_blur_only_touches_masked_pixels():
+    patch = np.zeros((16, 16, 3), dtype=np.uint8)
+    patch[:, 8:] = 255  # sharp vertical edge
+    occluded = np.zeros((16, 16), dtype=bool)
+    occluded[:, :8] = True  # mask the left (black) half only
+    out = _apply_occlusion_fill(patch, occluded, "blur")
+    assert np.array_equal(out[:, 8:], patch[:, 8:]), "unmasked region must be untouched"
+    assert not np.array_equal(out[:, :8], patch[:, :8]), "masked region must actually blur"
+
+
+def test_apply_occlusion_fill_rejects_unknown_fill():
+    patch = np.zeros((2, 2, 3), dtype=np.uint8)
+    with pytest.raises(ValueError):
+        _apply_occlusion_fill(patch, np.zeros((2, 2), dtype=bool), "sepia")  # type: ignore[arg-type]
+
+
+def test_prism_base_y_orders_near_rank_below_far_rank():
+    """In the sim's angled view, rank 1 (near the camera) must sit lower in the
+    image (larger projected y) than rank 8 — the nearness rule masking keys on."""
+    board = render_board(square_px=32)
+    photo, quad = simulate_angled_view(board)
+    base_y = _prism_base_y(quad, photo.shape)
+    assert base_y[56:64].mean() > base_y[0:8].mean()  # rank1 rows > rank8 rows
+
+
+def test_crop_squares_photo_flag_off_is_byte_identical(monkeypatch):
+    """Unset BR_CROP_MASK and no explicit ``mask=`` must run no masking code:
+    identical output to an explicit ``mask=None`` and to the pre-E6 call shape."""
+    monkeypatch.delenv("BR_CROP_MASK", raising=False)
+    board = render_board(START_PLACEMENT, square_px=48)
+    photo, quad = simulate_angled_view(board)
+    default_call = crop_squares_photo(photo, quad, size=64)
+    explicit_off = crop_squares_photo(photo, quad, size=64, mask=None)
+    assert len(default_call) == len(explicit_off) == 64
+    assert all(np.array_equal(a, b) for a, b in zip(default_call, explicit_off))
+
+
+def test_crop_squares_photo_env_var_drives_the_default_mask(monkeypatch):
+    board = render_board(START_PLACEMENT, square_px=48)
+    photo, quad = simulate_angled_view(board)
+    monkeypatch.setenv("BR_CROP_MASK", "gray")
+    via_env = crop_squares_photo(photo, quad, size=64)
+    via_param = crop_squares_photo(photo, quad, size=64, mask="gray")
+    monkeypatch.delenv("BR_CROP_MASK", raising=False)
+    unmasked = crop_squares_photo(photo, quad, size=64)
+    assert all(np.array_equal(a, b) for a, b in zip(via_env, via_param))
+    assert any(not np.array_equal(a, b) for a, b in zip(via_env, unmasked)), (
+        "masking must actually change at least one crop on a real angled board"
+    )
+
+
+def test_crop_squares_photo_mask_never_erases_the_squares_own_piece():
+    """A closer neighbor's prism must not eat into S's own square: the piece
+    standing on S stays visible under masking (S-prism subtraction)."""
+    board = render_board(START_PLACEMENT, square_px=48)
+    photo, quad = simulate_angled_view(board)
+    unmasked = crop_squares_photo(photo, quad, size=224)
+    masked = crop_squares_photo(photo, quad, size=224, mask="gray")
+    e2 = 6 * 8 + 4  # occupied by a white pawn glyph
+    e4 = 4 * 8 + 4  # empty square, unaffected either way
+    assert _near_white(unmasked[e2]) and _near_white(masked[e2])
+    assert not _near_white(unmasked[e4]) and not _near_white(masked[e4])

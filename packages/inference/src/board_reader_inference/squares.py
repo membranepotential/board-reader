@@ -31,8 +31,10 @@ suppressing grid lines and neighbouring-square spill.
 from __future__ import annotations
 
 import math
+import os
 from collections.abc import Sequence
 from dataclasses import dataclass
+from typing import Literal
 
 import cv2
 import numpy as np
@@ -427,6 +429,150 @@ def square_boxes(
     return pose_square_boxes(corners, image_shape, geometry)
 
 
+# --------------------------------------------------------------------------- #
+# Occlusion-aware crop masking (E6, env-flagged experiment) — pure layer
+# --------------------------------------------------------------------------- #
+# At inference we do not know which neighbouring squares are OCCUPIED (truth is
+# unavailable), so masking is keyed on geometry alone: any square whose piece
+# prism would stand physically in front of and inside square S's crop box gets
+# its pixels replaced there, regardless of whether that square actually holds a
+# piece. An empty closer square's prism region is mostly bare board surface, so
+# masking it loses little; a genuinely occupied one is exactly the neighbor-bleed
+# source E4/E5 measured (c5 bishop -> b5 hallucinations etc).
+
+#: Fill strategy for a masked pixel region. Selected by ``BR_CROP_MASK``.
+OcclusionFill = Literal["gray", "blur"]
+
+#: Neighbor-prism geometry used to derive occlusion, independent of whatever
+#: geometry the calling model was trained on: occlusion is a fact about the
+#: physical scene, not about a particular model's crop convention.
+_MASK_GEOMETRY = PoseGeometry()
+
+
+def _occlusion_fill_from_env() -> OcclusionFill | None:
+    """``BR_CROP_MASK={gray,blur}`` picks the fill; unset/empty = off.
+
+    Off is the default and must stay byte-identical to pre-E6 behavior: no
+    masking code runs at all when this returns ``None``.
+    """
+    raw = os.environ.get("BR_CROP_MASK", "").strip().lower()
+    if not raw:
+        return None
+    if raw not in ("gray", "blur"):
+        raise ValueError(f"BR_CROP_MASK must be 'gray' or 'blur', got {raw!r}")
+    return raw  # type: ignore[return-value]
+
+
+def _prism_rects(corners: np.ndarray, image_shape: tuple[int, ...]) -> np.ndarray:
+    """``(64, 4)`` neighbor-prism boxes as ``(x0, y0, x1, y1)``, image pixels."""
+    boxes = pose_square_boxes(corners, image_shape, _MASK_GEOMETRY)
+    return np.stack([boxes[:, 0, 0], boxes[:, 0, 1], boxes[:, 2, 0], boxes[:, 2, 1]], axis=1)
+
+
+def _prism_base_y(corners: np.ndarray, image_shape: tuple[int, ...]) -> np.ndarray:
+    """``(64,)`` projected image-``y`` of each square's base center (``Z=0``).
+
+    Nearness to the camera: the square whose base projects LOWER in the image
+    (larger ``y``) is the one standing in front, so it occludes squares behind
+    it. Uses the same recovered pose as :func:`pose_square_boxes`.
+    """
+    K, r1, r2, r3t = board_pose(corners, image_shape, _MASK_GEOMETRY)
+    r3, t = r3t[0], r3t[1]
+    centers = np.array(
+        [[c + 0.5, r + 0.5, 0.0] for r in range(GRID) for c in range(GRID)]
+    )
+    cam = centers @ np.stack([r1, r2, r3]) + t
+    img = (K @ cam.T).T
+    return img[:, 1] / img[:, 2]
+
+
+def _closer_neighbor_prisms(
+    square: int,
+    prism_rects: np.ndarray,
+    base_y: np.ndarray,
+    box: tuple[float, float, float, float],
+) -> list[tuple[float, float, float, float]]:
+    """Prism rects of squares CLOSER to the camera than ``square`` that overlap ``box``.
+
+    Excludes ``square`` itself. "Closer" = larger base-``y`` (see
+    :func:`_prism_base_y`); overlap is a plain axis-aligned rectangle test
+    against ``box`` (the target square's own crop box, ``(x0, y0, x1, y1)``).
+    """
+    x0, y0, x1, y1 = box
+    out: list[tuple[float, float, float, float]] = []
+    for n in range(prism_rects.shape[0]):
+        if n == square or base_y[n] <= base_y[square]:
+            continue
+        nx0, ny0, nx1, ny1 = prism_rects[n]
+        if nx1 <= x0 or nx0 >= x1 or ny1 <= y0 or ny0 >= y1:
+            continue
+        out.append((float(nx0), float(ny0), float(nx1), float(ny1)))
+    return out
+
+
+def _occlusion_mask(
+    box_px: tuple[int, int, int, int],
+    own_prism: tuple[float, float, float, float],
+    neighbor_prisms: Sequence[tuple[float, float, float, float]],
+) -> np.ndarray:
+    """Boolean ``(H, W)`` mask over the pixel rect ``box_px`` — True = replace.
+
+    True wherever a pixel falls inside some ``neighbor_prisms`` rect, EXCLUDING
+    anywhere inside ``own_prism`` (square S's own prism region is never masked,
+    even where a closer neighbor's prism overlaps it too).
+    """
+    xi0, yi0, xi1, yi1 = box_px
+    h, w = yi1 - yi0, xi1 - xi0
+    if h <= 0 or w <= 0 or not neighbor_prisms:
+        return np.zeros((max(h, 0), max(w, 0)), dtype=bool)
+    ys = np.arange(yi0, yi1)
+    xs = np.arange(xi0, xi1)
+    occluded = np.zeros((h, w), dtype=bool)
+    for nx0, ny0, nx1, ny1 in neighbor_prisms:
+        row = (ys >= ny0) & (ys < ny1)
+        col = (xs >= nx0) & (xs < nx1)
+        occluded |= row[:, None] & col[None, :]
+    ox0, oy0, ox1, oy1 = own_prism
+    own_row = (ys >= oy0) & (ys < oy1)
+    own_col = (xs >= ox0) & (xs < ox1)
+    occluded &= ~(own_row[:, None] & own_col[None, :])
+    return occluded
+
+
+def _apply_occlusion_fill(
+    patch: np.ndarray, occluded: np.ndarray, fill: OcclusionFill
+) -> np.ndarray:
+    """Replace ``patch`` pixels where ``occluded`` is True, per ``fill``."""
+    if fill == "gray":
+        mean_color = patch.reshape(-1, *patch.shape[2:]).mean(axis=0)
+        out = patch.copy()
+        out[occluded] = mean_color
+        return out
+    if fill == "blur":
+        # Heavy blur: sigma proportional to the crop's own (pre-resize) extent,
+        # so it scales with the source photo's resolution rather than a fixed
+        # pixel count. cv2.GaussianBlur's cost scales with kernel size (~6x
+        # sigma per side), so at a full-resolution photo's crop sizes a literal
+        # call blows up (measured: a 300x180 patch at sigma~37 costs ~100+ms,
+        # 100x+ this function's other branch, enough to turn a 30-frame replay
+        # into a multi-minute one). Downsample, blur small, upsample: a
+        # standard equivalent-strength approximation at a fraction of the cost.
+        sigma = max(patch.shape[0], patch.shape[1]) / 8.0
+        scale = max(1, round(sigma / 4.0))
+        if scale > 1:
+            h, w = patch.shape[:2]
+            sw, sh = max(1, w // scale), max(1, h // scale)
+            small = cv2.resize(patch, (sw, sh), interpolation=cv2.INTER_AREA)
+            small = cv2.GaussianBlur(small, (0, 0), sigmaX=sigma / scale)
+            blurred = cv2.resize(small, (w, h), interpolation=cv2.INTER_LINEAR)
+        else:
+            blurred = cv2.GaussianBlur(patch, (0, 0), sigmaX=sigma)
+        out = patch.copy()
+        out[occluded] = blurred[occluded]
+        return out
+    raise ValueError(f"unknown occlusion fill {fill!r}")  # pragma: no cover - guarded upstream
+
+
 def crop_squares_photo(
     image: np.ndarray,
     corners: np.ndarray,
@@ -434,6 +580,7 @@ def crop_squares_photo(
     geometry: CropGeometry = DEFAULT_GEOMETRY,
     size: int = 224,
     squares: Sequence[int] | None = None,
+    mask: OcclusionFill | None = None,
 ) -> list[np.ndarray]:
     """Cut *tall* per-square boxes out of the ORIGINAL photo (rank 8→1, file a→h).
 
@@ -448,13 +595,31 @@ def crop_squares_photo(
     ``squares``: which of the 64 board indices to cut, in the order given (default
     all 64). The cascade's second model only ever looks at the squares its first
     model was unsure about, so it pays for those crops and no others.
+
+    ``mask``: occlusion-aware crop masking (E6). ``None`` (default) reads
+    ``BR_CROP_MASK`` — this is the single choke point every crop-classifier and
+    the exemplar-bank embedder cut crops through, so setting the env var affects
+    all of them uniformly with no other call site touching this flag. Left
+    unset, no masking code runs and output is byte-identical to before E6.
     """
+    if mask is None:
+        mask = _occlusion_fill_from_env()
     h_img, w_img = image.shape[:2]
     boxes = square_boxes(corners, geometry, image.shape)
+    all_squares = list(range(GRID * GRID))
     if squares is not None:
-        boxes = boxes[np.asarray(squares, dtype=int)]
+        sel = np.asarray(squares, dtype=int)
+        boxes = boxes[sel]
+        square_ids = sel.tolist()
+    else:
+        square_ids = all_squares
+    prism_rects: np.ndarray | None = None
+    base_y: np.ndarray | None = None
+    if mask is not None:
+        prism_rects = _prism_rects(corners, image.shape)
+        base_y = _prism_base_y(corners, image.shape)
     crops: list[np.ndarray] = []
-    for box in boxes:
+    for box, sq in zip(boxes, square_ids, strict=True):
         x0, y0 = box[0]
         x1, y1 = box[2]
         xi0, yi0 = max(0, math.floor(x0)), max(0, math.floor(y0))
@@ -464,6 +629,15 @@ def crop_squares_photo(
             patch = np.zeros(
                 (8, 8, 3) if image.ndim == 3 else (8, 8), dtype=image.dtype
             )
+        elif mask is not None:
+            assert prism_rects is not None and base_y is not None
+            neighbors = _closer_neighbor_prisms(sq, prism_rects, base_y, (x0, y0, x1, y1))
+            if neighbors:
+                occluded = _occlusion_mask(
+                    (xi0, yi0, xi1, yi1), tuple(prism_rects[sq]), neighbors
+                )
+                if occluded.any():
+                    patch = _apply_occlusion_fill(patch, occluded, mask)
         ph, pw = patch.shape[:2]
         if ph != pw:  # pad to square so the resize doesn't change aspect
             d = abs(ph - pw)
