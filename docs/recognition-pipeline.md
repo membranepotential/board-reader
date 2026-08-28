@@ -129,6 +129,11 @@ model is the reverse. On the labeled eval:
 | deployed model alone (`run_e`, 11 styles) | 599 / 640 |
 | trained ⊕ bank, maturity-weighted **(deployed)** | **638 / 640** |
 
+(All four rows are historical 2026-08 measurements on the ten-board curated set,
+which was pruned to five boards on 2026-08-28 after five photos were deleted —
+see [[measuring-accuracy#The curated set dataevalground_truthjson]]. The
+reproducible successor baseline lives there.)
+
 Model-alone rank on this bright set is not the deployment order: `run_e` was chosen on the
 dim boards (653 vs 600 / 768 squares) and on the ensemble, which is what serves. See
 [[training-and-data#How run_e was decided 2026-08-06]].

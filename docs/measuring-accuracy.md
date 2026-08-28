@@ -163,8 +163,34 @@ inherits the model's orientation guess and survives a model that guesses differe
 
 ### The curated set (`data/eval/ground_truth.json`)
 
-Ten hand-labeled boards from 2026-07. Still read by the harness, but **the
-calibration bank was built from nine of them** — see below.
+Ten hand-labeled boards from 2026-07, **pruned to five on 2026-08-28**: the five
+`up_20260718_*` entries pointed at `data/uploads` photos that had been deleted, so
+the historical headline below could not be recomputed. The five survivors
+(`img_0565`–`img_0569`) now carry their photos *inside the set*
+(`data/eval/images/`), so the set is self-contained and every number from it is
+reproducible. The pre-prune file is kept beside it
+(`ground_truth.json.bak-20260828`).
+
+**What the prune cost:** `up_20260718_0001` — the one board the original bank had
+never seen, i.e. the set's only held-out measurement — was among the deleted. The
+pruned set has **no held-out board at all**; generalisation numbers live in
+`chesscog_transfer` and in scored trial recordings, not here.
+
+**The reproducible baseline (2026-08-28)**, deployed stack as `make dev` serves it
+— cascade (`run_e` ⊕ `run_f`, τ 0.95) ⊕ session bank (768 exemplars), scored on CPU:
+
+| | raw | with `--prior` decode |
+|---|---|---|
+| Perfect boards | 0 / 5 | 1 / 5 |
+| Per-square | 307 / 320 | 308 / 320 (1 fixed, 0 broken) |
+| ECE | 0.240 (underconfident) | — |
+
+Rerun it: `uv run board-reader-inference eval data/eval/ground_truth.json`
+(hide CUDA if the dev stack holds the card).
+
+Everything below this line predates the prune and is scored on the ten-board set —
+**historical, no longer recomputable**. The original bank was built from nine of
+the ten:
 
 ## Contamination
 
@@ -182,7 +208,7 @@ number from a bank-backed stack on these boards is an upper bound, and the harne
 prints a warning saying so whenever a bank is active.
 
 The same ten boards, same harness, the two configurations side by side
-(`run_e`, deployed 2026-08-06):
+(`run_e`, deployed 2026-08-06 — historical, see the prune note above):
 
 | | trained alone | deployed ensemble |
 |---|---|---|
