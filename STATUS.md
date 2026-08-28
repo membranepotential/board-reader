@@ -15,29 +15,9 @@ confidences**. No moves, no legality, no PGN — those are the downstream applic
 - ui-mockups — awaiting user review in `docs/mockups/` (user: redo later as
   clickable simulations, not storyboards).
 
-- cloud-training — GPU training moves to RunPod (RTX A6000 community, EU-SE-1,
-  $0.33/hr; A40 same-DC fallback — network volumes are DC-locked, EU-SE-1 is the
-  only DC with two viable GPUs). Report + plan + `/runpod` skill landed; key in
-  the login keyring via `tools/runpod/env.sh`. **Next: Phase 0** — finish the
-  `pose_h1.9_r0.5_f1_maskgray` cache (9 of 11 styles missing, blocks run_h
-  anywhere) and write the trap-guarded `tools/train/cloud/rp` runner. Balance
-  $7.91, plan costs ~$5.30. docs/reports/2026-08-28-cloud-training-migration.md ·
-  docs/plans/2026-08-28-runpod-migration.md
-- **retrain program RESUMED on RunPod** (user 08-28 evening; plan:
-  docs/plans/2026-08-28-runpod-migration.md, skill: /runpod, budget $7.91).
-  Runbook: docs/reports/2026-08-28-retrain-program.md §Continuation.
-  Phase 0+staging done: masked pose cache 11/11; `rp` runner landed and
-  live-debugged (`684507d`..`6a4a749`: --ports 22/tcp, adopt, setsid --wait,
-  chown-free rsync, cache-backed style resolution + 8 tests). DC re-pinned
-  EU-RO-1 (EU-SE-1 has no volume support); volume 30 GB; 17.6 GB staged over
-  the S3 volume API (zero CPU instances there; separate S3 key in keyring).
-  - **PROGRAM CLOSED — see docs/reports/2026-08-28-improvement-report.md.**
-    Shipped: BR_CROP_MASK=gray in compose (existing run_e⊕run_f) — perfect
-    boards ~20→35 across the 4-take gate (08-13 lock 6→22/31), curated
-    305/320 (flat), sub-point tax elsewhere. Masked-retrained pair NO-GO
-    deployed (bank-dominant blend; E6 win = bank-lookup effect) — benched as
-    OOD assets (+4pp chesscog each). Cloud: parity PASS (0.8995 vs 0.8983),
-    L4 628 img/s (3.7x), $0.66 spent, pods reaped, volume standing.
+- **08-28 retrain program CLOSED** — masking shipped, cloud pipeline live
+  (see Done). Nothing running; RunPod volume standing ($2.10/mo), pods reaped,
+  balance $7.25.
 
 ## Done (recent)
 
@@ -47,8 +27,17 @@ confidences**. No moves, no legality, no PGN — those are the downstream applic
   fine-tunes measured clean (E2 leaked, E3 partial win); bleed measured (44 %
   of residual); decode rule NO-GO; occlusion masking shipped (`BR_CROP_MASK`,
   depth-fixed after review) and proven on the d8 lock; **run_g masked retrain
-  matches holdout, +3.2 pp chesscog**. run_h + gates pending on cloud GPU.
+  matches holdout, +3.2 pp chesscog**.
   Mid-program RAM-overcommit freeze → serialize + systemd-run caps adopted.
+- **08-28 evening: program closed on RunPod + gates**
+  (docs/reports/2026-08-28-improvement-report.md): rp runner + S3 staging +
+  cache-backed style resolution landed (`684507d`..`c2f3c58`); parity PASS
+  (0.8995 vs 0.8983); run_h_cloud trained (0.8944). Gates: masked-retrained
+  pair NO-GO deployed (E6 d8 win = bank-lookup effect; members benched as OOD
+  assets, +4pp chesscog each); **shipped BR_CROP_MASK=gray in compose**
+  (`38c40ac`) — perfect boards ~20→35 on the 4-take gate, curated 305/320.
+  Total cloud spend $0.66. New defect: settled coherence demotes the correct
+  king on a raw two-kings read (see Next 6).
 - 08-28: **proof trial done and scored** (docs/reports/2026-08-28-proof-trial.md,
   recording 20260828-111421). Zero-tap checklist passed: auto-calibrate fired
   (bank 768→1024 mid-take), re-detector adopted real drift at 78 s with zero
@@ -79,11 +68,12 @@ confidences**. No moves, no legality, no PGN — those are the downstream applic
 
 ## Next
 
-1. **Finish the retrain program on cloud GPU**: run_h (masked pose member),
-   4-take replay gates + curated gate for the masked cascade, ship decision,
-   improvement report (E1–E7 numbers in
-   docs/reports/2026-08-28-retrain-program.md). Then decide the fine-tune
-   deploy story (E2/E3 showed per-board personalization wins; feeds Next 5).
+1. **Cloud Phase 2+3** (docs/plans/2026-08-28-runpod-migration.md): tune the
+   pod (bf16/batch/workers grid — amp:false and batch 48 are Turing relics;
+   L4 measured only 3.7×), then full-data run_i (~$3). Rematch run_g/run_h
+   after **re-embedding the bank from masked crops** (the E6 lesson: the bank
+   half decides these takes). Then the fine-tune deploy story (E2/E3; feeds
+   Next 5).
 2. **Estimator throughput / latency** — profile the cascade+ensemble read
    (~1.3 GPU-s/read measured in the sweep) and attack the biggest term (bank
    embed batching?). Faster reads shrink settle lag and the guard window both.
@@ -97,8 +87,10 @@ confidences**. No moves, no legality, no PGN — those are the downstream applic
 5. **Give a user's `tuned.onnx` a deploy story** — per-operator artifact, no
    compose path today.
 6. **Attack the residual type confusions** — `p->b` leads trained-alone; a third
-   of the ensemble's residual is `empty->p`/`empty->P`, a different animal.
-   Feeds item 1.
+   of the ensemble's residual is `empty->p`/`empty->P`, a different animal. And
+   the 08-28 gate found **settled coherence demotes the CORRECT king** when raw
+   hallucinates a second one (q->k doubled into a full swap, 31/31 events on
+   08-13) — prefer demoting the lower-confidence duplicate. Feeds item 1.
 7. **Decide whether calibrated confidences go on the wire** — a decision, not an
    experiment: argmax is invariant, DESIGN §9 says the downstream smoother wants
    them.
