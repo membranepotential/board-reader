@@ -22,12 +22,13 @@ confidences**. No moves, no legality, no PGN — those are the downstream applic
   verdict, workers 8 is the only winner, README "Cloud perf"); **run_i_cloud
   full-data training LAUNCHING** (~15 min/epoch, worst case ~$2.50, patience 5)
   — next: gates on the artifact, then the bank re-embed rematch.
-- **masked-bank-rebuild** — LANDED (`9e7a654`, under adversarial review):
-  `rebuild-bank` CLI reuses the live calibrate path; banks
-  `data/eval/bank-{masked,rebuilt-unmasked}-20260828.npz` (13,824 exemplars).
-  Curated three-way: baseline 305 → rebuilt-unmasked 308 → masked **309**/320
-  (corpus +3, masking +1). Caveats: confidence distribution shifts ~0.59→0.52;
-  no model-guard on the corpus. Rematch gates wait on run_i.
+- **masked-bank-rebuild** — DONE (`9e7a654` + review-hardened `6572b76`):
+  `rebuild-bank` shares the live guard (`session.verify_labels`); corpus 54 →
+  31 used / 10 guard-rejected / 13 rectified-excluded; banks 7,936 exemplars,
+  differ only in masking. Curated three-way: baseline 305 → unmasked 307 →
+  masked **308**/320. Lesson: the unguarded 13.8k bank scored 309 while
+  collapsing confidence 0.59→0.51 — judge banks on calibration too. Rematch
+  gates wait on run_i.
 - **two-kings-coherence-fix** — CLOSED as a refutation (`8c42b83`): the shipped
   rule already demotes the lower-confidence king and is Pareto-best over 4 rules
   x 4 takes; the 31/31-wrong figure was the *rejected* e7 row. Lever at ceiling
@@ -131,3 +132,8 @@ confidences**. No moves, no legality, no PGN — those are the downstream applic
   squares on *other* boards (2026-08-06: a confirmed 64/64 board re-scored 63/64
   after two later writes; trained-alone still read it right, so the bank caused
   it). No regression gate on bank writes exists. Open issue.
+- **`verify_labels` cannot reject an all-empty placement** (`agree < 0.6 × 0` never
+  fires) — a piece-filled photo labeled empty would embed piece pixels as `empty`
+  exemplars. Pre-existing in live `/calibrate`, found 08-28 writing the rebuild
+  guard tests; fixing changes live calibration semantics, wants its own review.
+  Related: 6 non-portrait guard rejects are probably repairable (~+20% corpus).

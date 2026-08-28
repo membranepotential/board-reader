@@ -171,26 +171,36 @@ source — and every `/calibrate` post persists its photo + corners + placement 
 board-reader-inference rebuild-bank --uploads data/uploads --mask gray -o bank.npz
 ```
 
-It reuses the live calibrate machinery verbatim (same geometry, augmentation,
-temperature), so a rebuilt bank differs from a live-grown one only in masking and corpus
-membership. First measurement (curated set, shipped members, three-way to separate the
-two effects): baseline 305/320 → rebuilt-unmasked 308 → rebuilt-masked **309** — the
-corpus is worth +3, masking +1. Not a deployment verdict (that needs the take replays —
-see [[measuring-accuracy]]); it is the go-signal for the masked-members rematch.
+It reuses the live calibrate machinery verbatim — including the label guard: the
+agreement rule was extracted out of the live session into `session.verify_labels`, so
+`/calibrate` and the rebuild now share one implementation (default-on,
+`--guard-model models/run_e/model.onnx`, `--no-verify-labels` to skip). Pre-rectified
+384×384 warps — out-of-domain for photo crops, and provably inert under masking (0/64
+crops change) — are excluded by default. On the current corpus: **54 uploads → 31 used,
+10 guard-rejected** (five near-total label mismatches, one 7/32, and the four
+2026-08-27 portrait-phone uploads the live path also rejected), 13 rectified. Both
+banks: 7,936 exemplars, differing **only** in masking (7,536 rows change; verdict lists
+identical by construction — the guard probes unmasked crops regardless of `--mask`, or
+the corpus itself would depend on the mask setting).
 
-Three properties of a rebuilt bank to keep in mind:
+Curated three-way (shipped members, `BR_CROP_MASK=gray`): baseline 305/320 →
+rebuilt-unmasked **307** → rebuilt-masked **308** — corpus +2, masking +1. Not a
+deployment verdict (that needs the take replays — see [[measuring-accuracy]]); it is
+the go-signal for the masked-members rematch.
 
-- **It is much larger** (54 boards × 64 × 4 photometric variants = 13,824 exemplars vs
-  the baseline's 1,024) and **mean board confidence drops ~0.59 → 0.51–0.53**: more
-  exemplars raise every class's max-cosine, flattening the softmax. Anything tuned on
-  the old confidence distribution (the `APPEND_MAX_CONF` refresh gate, threshold lore)
-  sees a different distribution.
-- **Residuals reorder, they don't just shrink** — the non-monotone-bank-writes effect:
-  boards that were clean under the baseline can pick up errors under a better-average
-  bank.
-- **The rebuild skips the live path's model-guarded label check** (corners were audited
-  offline instead), so an upload the live path would have *rejected* could be in the
-  rebuilt corpus — an untested confound inside the +3.
+> [!warning] A bigger bank is not a better bank — judge calibration too
+> The first, unguarded rebuild (all 54 uploads, 13,824 rows) scored one square
+> *higher* (309) while collapsing mean board confidence 0.59 → 0.51: the polluted and
+> out-of-domain rows were buying per-square points by flattening every softmax. The
+> guarded 7,936-row bank holds confidence at baseline levels. Per-square alone would
+> have rewarded the worse bank — candidate banks must be judged on calibration as well
+> as accuracy.
+
+Two more properties to keep in mind: **residuals reorder, they don't just shrink**
+(the non-monotone-bank-writes effect — boards clean under the baseline can pick up
+errors under a better-average bank), and `verify_labels` **cannot reject an all-empty
+placement** (`agree < 0.6 × 0` never triggers) — a pre-existing live-path hole found
+while testing the guard, tracked in [[STATUS]].
 
 ## Related
 
