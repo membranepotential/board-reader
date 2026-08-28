@@ -18,8 +18,21 @@ confidences**. No moves, no legality, no PGN — those are the downstream applic
 - ui-mockups — awaiting user review in `docs/mockups/` (user: redo later as
   clickable simulations, not storyboards).
 
+- retrain-E4 — residual attribution measurement (how much of the gate takes'
+  residual is neighbor-prism crop bleed) — agent running 08-28.
+
 ## Done (recent)
 
+- 08-28 retrain-E3: leave-session-out crop fine-tune (`finetune_crops.py`,
+  tested) — clean cross-session gains are partial: 08-13 settled 97.5→98.2 %
+  (perfect 6→13/31, q<->k −28 %); 08-28 degrades 93.3→90.8 % (missed up). E2's
+  sweep was mostly leakage. Fine-tune helps type residual, can't touch
+  drift/bleed. Report: scratch/experiments/e3_crops_lso/report.md.
+- 08-28 retrain-E2: start-position fine-tune (7 sessions) vs deployed cascade,
+  replay-gated — settled 08-13: 97.5%→100% (q<->k erased, 31/31 perfect);
+  settled 08-28: 93.3%→92.6% (hallucinations 14→23). Caveat: harvest included a
+  start frame of each scored take (same-session leakage) → E3 goes
+  leave-session-out. Report: scratch/experiments/e2_calib_finetune/report.md.
 - 08-28: **proof trial done and scored** (docs/reports/2026-08-28-proof-trial.md,
   recording 20260828-111421). Zero-tap checklist passed: auto-calibrate fired
   (bank 768→1024 mid-take), re-detector adopted real drift at 78 s with zero
