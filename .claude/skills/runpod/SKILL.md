@@ -84,21 +84,22 @@ after us. That is why the trap and `reap` (below) exist.
 
 Network volumes are **datacenter-locked** — `runpodctl` has no cross-DC transfer
 — so the datacenter choice pins our GPU pool for as long as the volume exists.
+**And not every DC supports volumes**: as of 2026-08-28 `EU-SE-1` (the original
+A6000 plan) does not — `network-volume create` rejects it and lists the DCs
+that qualify. Check that list before ever re-pinning.
 
-**Pin `EU-SE-1`.** It is the only DC carrying two viable GPUs, so a stockout on
-the cheap one has a fallback in the same DC:
+**Pinned: `EU-RO-1`** — volume `board-reader` (20 GB) lives there. It carries
+two viable community GPUs, so a stockout on the cheap one has a same-DC answer:
 
 | GPU | VRAM | Price | Cloud | Stock | Role |
 |---|---|---|---|---|---|
-| RTX A6000 | 48 GB | **$0.33/hr** | COMMUNITY | Low | primary |
-| A40 | 48 GB | $0.44/hr | SECURE | Medium | fallback when A6000 is out |
+| RTX 4090 | 24 GB | **$0.34/hr** | COMMUNITY | Low | primary |
+| RTX PRO 6000 | 96 GB | $1.69/hr | COMMUNITY | Low | explicit escalation for VRAM-hungry runs (`rp --fallback-pro6000`) |
 
-Both are Ampere: native bf16 tensor cores (unlike the local Turing card, where
-fp16 NaNs in the forward pass) and 48 GB, which is what makes unfrozen backbones
-and 384 px inputs possible at all.
-
-Avoid pinning `EUR-IS-2` for the RTX 4090 ($0.34): it is the only DC that has
-one, stock is Low, and there is no same-DC fallback.
+Both are post-Ampere (Ada/Blackwell): native bf16 tensor cores, unlike the
+local Turing card where fp16 NaNs in the forward pass. 24 GB covers everything
+short of a large unfrozen backbone at 384 px; those runs escalate to the PRO
+6000 explicitly rather than re-pinning the volume.
 
 Re-check before every session — stock moves:
 

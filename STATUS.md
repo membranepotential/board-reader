@@ -23,11 +23,13 @@ confidences**. No moves, no legality, no PGN — those are the downstream applic
   anywhere) and write the trap-guarded `tools/train/cloud/rp` runner. Balance
   $7.91, plan costs ~$5.30. docs/reports/2026-08-28-cloud-training-migration.md ·
   docs/plans/2026-08-28-runpod-migration.md
-- **retrain program PAUSED for cloud-GPU handoff** (user 08-28 evening).
-  run_g done; run_h + gates remain. Resume runbook:
-  docs/reports/2026-08-28-retrain-program.md §Continuation. Local GPU idle;
-  nothing running. data/, recordings/, scratch/ must be synced to the cloud
-  box (gitignored). Improvement report due after the gates.
+- **retrain program RESUMED on RunPod** (user 08-28 evening; plan:
+  docs/plans/2026-08-28-runpod-migration.md, skill: /runpod, budget $7.91).
+  Runbook: docs/reports/2026-08-28-retrain-program.md §Continuation.
+  - pose maskgray cache build (Phase 0.1) — 9/11 styles remaining — RUNNING
+    locally, memory-capped — next: stage to volume when done.
+  - `tools/train/cloud/rp` runner + `setup.sh` (Phase 0.2/0.3) — implementer
+    agent — next: CPU-pod teardown test before any GPU spend.
 
 ## Done (recent)
 

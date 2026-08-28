@@ -16,10 +16,13 @@ the hard ceiling — nothing here can overrun it.
   command). It was briefly in a plaintext `.env` on this public repo; that file
   is now deleted and `.env` is gitignored as defence in depth. The key was never
   committed (`git log --all -- .env` is empty), so no rotation was needed.
-- **Datacenter: `EU-SE-1`** — the only DC with two viable GPUs, which matters
-  because network volumes are DC-locked:
-  - RTX A6000, 48 GB, **$0.33/hr** COMMUNITY, stock Low — primary
-  - A40, 48 GB, $0.44/hr SECURE, stock Medium — fallback
+- **Datacenter: `EU-RO-1`** *(revised 08-28 evening: `EU-SE-1` turned out not to
+  support network volumes at all, and the A40 left it anyway — the A6000 is
+  unreachable with a volume. EU-RO-1 carries two community GPUs beside a
+  volume-capable DC; volume `board-reader` / `n102g25d6l`, 20 GB, created)*:
+  - RTX 4090, 24 GB, **$0.34/hr** COMMUNITY, stock Low — primary
+  - RTX PRO 6000, 96 GB, $1.69/hr COMMUNITY, stock Low — explicit escalation
+    for VRAM-hungry runs only (never a silent fallback)
 - Local baseline to beat: `run_g` = 2405 s, 170 img/s, `best_acc 0.8983`.
 
 Both candidates are Ampere with 48 GB — native bf16 and 2× the VRAM of the 4090
@@ -40,8 +43,9 @@ lands at ~3 min and **~$0.02**.
 - [ ] **0.3** Write `tools/train/cloud/setup.sh` — reproduces the venv recipe from
       `tools/train/README.md` on a fresh pod and ends by running `_env.sh`.
       Pin the CUDA wheel index to the pod image's CUDA, not the local cu13x.
-- [ ] **0.4** Lower the account `spendLimit` from $80 toward the balance. Belt and
-      braces; the balance is already the real cap.
+- [x] **0.4** ~~Lower the account `spendLimit`~~ — void: `spendLimit` is a
+      RunPod-set spend *rate* limit, not user-changeable (user, 08-28). The
+      balance (no auto-recharge) is the safety net.
 - [ ] **0.5** Measure home upstream and decide whether 7.9 GB goes up in one push
       or overnight. This sets the Phase 1 schedule, nothing else.
 

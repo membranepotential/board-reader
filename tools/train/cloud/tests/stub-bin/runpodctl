@@ -1,0 +1,60 @@
+#!/usr/bin/env bash
+# Stub runpodctl for tools/train/cloud/tests/test_rp.sh. Logs every invocation
+# to $RP_STUB_LOG and answers with canned JSON shaped like the real v2 beta.
+# It never touches the network and never needs a key.
+set -uo pipefail
+
+printf '%s\n' "$*" >>"${RP_STUB_LOG:?RP_STUB_LOG unset}"
+
+POD_JSON='{"id":"pod-stub-1","name":"stub","desiredStatus":"RUNNING","runtimeStatus":"running","publicIp":"10.0.0.1","portMappings":{"22":41234}}'
+
+# Dispatch on <resource> [<action>] — the leading non-flag words, exactly how
+# runpodctl v2 is shaped. Everything after the first flag is ignored.
+key=""
+n=0
+for a in "$@"; do
+  case "$a" in -*) break ;; esac
+  key="${key:+$key }$a"
+  n=$((n + 1))
+  [ "$n" -ge 2 ] && break
+done
+
+case "$key" in
+  "user")
+    echo '{"id":"user-stub","clientBalance":7.91,"spendLimit":80}'
+    ;;
+  "network-volume list")
+    echo '[{"dataCenterId":"EU-RO-1","id":"n102g25d6l","name":"board-reader","size":20}]'
+    ;;
+  "pod list")
+    # `pod list --name <x>` is the trap's orphan sweep; it finds nothing unless
+    # RP_STUB_ORPHAN is set, which exercises the name-based backstop.
+    if [ -n "${RP_STUB_ORPHAN:-}" ] && printf '%s\n' "$*" | grep -q -- '--name'; then
+      echo '[{"id":"pod-orphan-9","name":"orphan","desiredStatus":"RUNNING"}]'
+    else
+      echo "${RP_STUB_PODS:-[]}"
+    fi
+    ;;
+  "pod create")
+    if [ -n "${RP_STUB_CREATE_FAIL:-}" ] && printf '%s\n' "$*" | grep -qF -- "$RP_STUB_CREATE_FAIL"; then
+      echo "error: no instances available for gpu type" >&2
+      exit 1
+    fi
+    if [ -n "${RP_STUB_CREATE_TIMEOUT:-}" ]; then
+      echo "error: timed out waiting for ssh; pod id: pod-stub-1 kept running" >&2
+      exit 1
+    fi
+    echo "$POD_JSON"
+    ;;
+  "pod get") echo "$POD_JSON" ;;
+  "pod delete")
+    if [ -n "${RP_STUB_DELETE_FAIL:-}" ]; then
+      echo "error: pod not found (already deleted?)" >&2
+      exit 1
+    fi
+    echo '{"deleted":true,"id":"'"$3"'"}'
+    ;;
+  "ssh info") echo '{"command":"ssh root@10.0.0.1 -p 41234 -i ~/.ssh/id_ed25519"}' ;;
+  "billing pods"|"billing network-volume") echo '[]' ;;
+  *) echo "stub runpodctl: unhandled: $*" >&2; exit 3 ;;
+esac
