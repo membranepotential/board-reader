@@ -480,6 +480,15 @@ link_data() {
       mkdir -p $VOL_DATA/\$d
       ln -sfn $VOL_DATA/\$d $VOL_REPO/data/\$d
     done
+    # Raw styles staged under data/external/ (e.g. chesscog_transfer, which
+    # evaluate.py reads as IMAGES via discover_styles, not from the crop cache)
+    # each get a symlink beside the _cropcache one.
+    if [ -d $VOL_DATA/external ]; then
+      for s in $VOL_DATA/external/*/; do
+        [ -d \"\$s\" ] || continue
+        ln -sfn \"\${s%/}\" $VOL_REPO/data/external/\$(basename \"\$s\")
+      done
+    fi
     ln -sfn $VOL_VENV $VOL_REPO/scratch/torchvenv"
 }
 

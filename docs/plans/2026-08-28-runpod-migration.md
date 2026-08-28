@@ -31,22 +31,22 @@ lands at ~3 min and **~$0.02**.
 
 ## Phase 0 — local prep (no spend)
 
-- [ ] **0.1** Complete the `pose_h1.9_r0.5_f1_maskgray` cache. It is missing 9 of
+- [x] **0.1** *(done 08-28: all 11 styles, 8.4 GB — chessrender360 was a freeze casualty, rebuilt)* Complete the `pose_h1.9_r0.5_f1_maskgray` cache. It is missing 9 of
       11 styles (2.7 GB vs the 8.8 GB unmasked variant), so `run_h`/E7 member 2
       cannot run anywhere until it is built. Pure CPU — the local GPU is free
       meanwhile.
-- [ ] **0.2** Write `tools/train/cloud/rp` — the runner. Non-negotiable
+- [x] **0.2** *(done: `684507d`, 40-assertion suite)* Write `tools/train/cloud/rp` — the runner. Non-negotiable
       properties, in order: preflight (balance, no orphan pods, volume present) →
       create with `--cloud-type COMMUNITY` → **`trap … EXIT INT TERM` that deletes
       the pod** → `_env.sh` → run the config queue → pull artifacts → delete.
       Subcommands: `sweep`, `stage`, `reap`, `cost`.
-- [ ] **0.3** Write `tools/train/cloud/setup.sh` — reproduces the venv recipe from
+- [x] **0.3** *(done: `684507d`)* Write `tools/train/cloud/setup.sh` — reproduces the venv recipe from
       `tools/train/README.md` on a fresh pod and ends by running `_env.sh`.
       Pin the CUDA wheel index to the pod image's CUDA, not the local cu13x.
 - [x] **0.4** ~~Lower the account `spendLimit`~~ — void: `spendLimit` is a
       RunPod-set spend *rate* limit, not user-changeable (user, 08-28). The
       balance (no auto-recharge) is the safety net.
-- [ ] **0.5** Measure home upstream and decide whether 7.9 GB goes up in one push
+- [x] **0.5** *(measured during staging: ~5 MB/s sustained; 16.3 GB ≈ 55 min)* Measure home upstream and decide whether 7.9 GB goes up in one push
       or overnight. This sets the Phase 1 schedule, nothing else.
 
 **Gate:** `rp` deletes its pod on `Ctrl-C`, on error, and on success. Test this
@@ -54,11 +54,11 @@ against a CPU pod (cents) before it ever guards a GPU.
 
 ## Phase 1 — beachhead: prove parity (~$0.60)
 
-- [ ] **1.1** Create the network volume: 20 GB in `EU-SE-1` (**$1.40/month**,
+- [x] **1.1** *(done: `n102g25d6l`, grown to 30 GB — caches 16.4 G + on-volume venv ~5 G did not fit 20)* Create the network volume: 20 GB in `EU-SE-1` (**$1.40/month**,
       billed whether or not a pod is attached). Sized for
       `hr1.6_sp0.15_maskgray` (7.9 GB) + eval data (~0.1 GB) + run artifacts,
       with room for one more cache. Expand later rather than over-provision now.
-- [ ] **1.2** Stage data on a **CPU pod** with the volume attached — no reason to
+- [x] **1.2** *(done via the S3 volume API instead — EU-RO-1 had zero CPU instances; see SKILL.md §3. Also staged data/external/chesscog_transfer, which evaluate.py reads as raw images, not cache)* Stage data on a **CPU pod** with the volume attached — no reason to
       pay for an idle GPU while 8 GB uploads. Ship
       `_cropcache/hr1.6_sp0.15_maskgray/`, `data/eval`, `data/uploads`,
       `data/images`, and the repo.
