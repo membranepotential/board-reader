@@ -229,11 +229,13 @@ EU-RO-1, 30 GB) so pods are disposable:
 harness, trial recordings, truth authoring, and **every ship/no-ship decision** stay local;
 the cloud produces candidates that must pass the local replay + curated + settled gates.
 
-**Measured so far:** parity gate PASS (`run_g_cloud` 0.8995 vs local 0.8983); L4 throughput
-628 img/s vs 170 local (3.7×) *before* Phase-2 tuning — early grid readings suggest the
-loader, not the GPU, is the binding constraint at cloud speeds (bf16/channels_last/batch
-all land within ~630–645 img/s). Full grid numbers land in `tools/train/README.md` when
-Phase 2 closes. Total spend through the program's close: **$0.66**.
+**Measured:** parity gate PASS (`run_g_cloud` 0.8995 vs local 0.8983); L4 throughput 628
+img/s vs 170 local (3.7×), tuned to **721** by the Phase-2 grid — whose real finding is
+that **the loader, not the GPU, binds at cloud speeds**: bf16, channels_last, fp16,
+compile and batch 128/256 are all throughput-neutral (624–644 img/s), the no-op loader
+ceiling peaks at 737 img/s at 8 workers on 6 vCPUs and degrades past it. Rent vCPUs, not
+GPU flops (~110 img/s per vCPU). Full grid: `tools/train/README.md` "Cloud perf". Spend
+through the program's close $0.66, + $0.29 for the grid.
 
 ## Synthetic data
 

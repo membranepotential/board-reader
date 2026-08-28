@@ -164,6 +164,31 @@ autotune is always on; DataLoader workers each pin `cv2`/torch to one thread so
 worker parallelism is real. `channels_last`/`compile` are config flags, off by
 default (no tensor cores / no triton on this box — re-benchmark elsewhere).
 
+### Cloud perf (L4 SECURE pod, 6 vCPU, measured 2026-08-28 — `rp bench`)
+
+**The loader binds, not the GPU.** Every GPU-side knob is throughput-neutral
+because the JPEG-decode+augment pipeline caps the whole loop; the only winner
+is `num_workers: 8` (+15%). Grid (2-epoch points off `run_g_cloud`, epoch-1
+img/s; full report `scratch/bench/report.txt`):
+
+| point | img/s | | point | img/s |
+|---|---|---|---|---|
+| fp32 w4 (parity cfg) | 640 | | bf16+cl, batch 128 | 643 |
+| bf16 | 632 | | **bf16+cl, b128, w8** | **721** |
+| bf16 + channels_last | 640 | | bf16+cl, batch 256 | 632 |
+| fp16 + cl | 624 | | bf16+cl + compile | 644 |
+
+Loader ceiling (model removed, `bench_loader.py`): w4 **637** · w8 **737** ·
+w16 606 · w24 581 img/s — peaks at ~1.3 workers/vCPU and *degrades* past it.
+Consequences:
+
+- Cloud configs keep `amp: false`, batch 48 (numeric comparability for free —
+  neither buys throughput here) and set **`num_workers: 8`**.
+- **Rent vCPUs, not GPU flops**: ~110 img/s per vCPU is the scaling law until
+  the loader is rearchitected (GPU decode/DALI — unexplored, out of scope).
+- Re-run `rp bench` on any pod shape with a different vCPU count before
+  trusting these constants there.
+
 ## Deployment integration (shipped)
 
 The exported ONNX is `crop (N,3,224,224) → logits (N,13)`; `softmax(logits)` is the

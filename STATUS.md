@@ -18,9 +18,10 @@ confidences**. No moves, no legality, no PGN — those are the downstream applic
 - **08-28 retrain program CLOSED** — masking shipped, cloud pipeline live
   (see Done). Nothing running; RunPod volume standing ($2.10/mo), pods reaped,
   balance $7.25.
-- **cloud-phase-2+3** — main session: pod tuning grid (amp/batch/workers +
-  loader ceiling) → tuned config → full-data run_i — IN PROGRESS — next: bench
-  pod.
+- **cloud-phase-2+3** — main session: Phase 2 DONE ($0.29 — loader-bound
+  verdict, workers 8 is the only winner, README "Cloud perf"); **run_i_cloud
+  full-data training LAUNCHING** (~15 min/epoch, worst case ~$2.50, patience 5)
+  — next: gates on the artifact, then the bank re-embed rematch.
 - **two-kings-coherence-fix** — CLOSED as a refutation (`8c42b83`): the shipped
   rule already demotes the lower-confidence king and is Pareto-best over 4 rules
   x 4 takes; the 31/31-wrong figure was the *rejected* e7 row. Lever at ceiling

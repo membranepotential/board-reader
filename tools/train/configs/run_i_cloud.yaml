@@ -1,0 +1,45 @@
+# Run (i) on the pod — Phase 3.1: run_g_cloud with the wall-clock cap removed.
+# steps_per_epoch: null -> a true epoch (~13.8k steps at batch 48, ~15 min at
+# the measured 721 img/s); patience does the stopping. Worst case 20 epochs
+# ~= 5 h ~= $2.50 on the SECURE L4.
+#
+# The only Phase-2 winner is num_workers: 8 (the pipeline is loader-bound —
+# tools/train/README.md "Cloud perf"); amp stays false and batch stays 48
+# because both are throughput-neutral there and keep numeric comparability
+# with run_g_cloud (0.8995 / chesscog 0.860), the baseline this must beat.
+styles:
+  - chessred
+  - chessrender360
+  - chessr_cana
+  - chessr_russiangreytown
+  - chessr_vlab_wooden
+  - w2_bellanger
+  - w2_cemkalyoncu
+  - w2_chessr_cana
+  - w2_chessr_rgt
+  - w2_pjhanzlik
+  - w2_polyhaven
+require_mode: board
+holdout: chessr_vlab_wooden
+
+model: resnet18
+init: imagenet
+shape_bias: true
+
+headroom: 1.6
+side_pad: 0.15
+mask: gray
+
+epochs: 20
+patience: 5
+batch_size: 48
+lr: 0.0005
+weight_decay: 0.05
+steps_per_epoch: null
+warmup_frac: 0.05
+
+device: auto
+amp: false
+num_workers: 8
+seed: 0
+out_dir: "scratch/runs/run_i_cloud"

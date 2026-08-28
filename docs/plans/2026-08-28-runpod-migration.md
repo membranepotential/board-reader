@@ -64,13 +64,17 @@ against a CPU pod (cents) before it ever guards a GPU.
       pay for an idle GPU while 8 GB uploads. Ship
       `_cropcache/hr1.6_sp0.15_maskgray/`, `data/eval`, `data/uploads`,
       `data/images`, and the repo.
-- [ ] **1.3** Bring up an A6000, run `setup.sh`, confirm `_env.sh` passes.
-- [ ] **1.4** Run `configs/smoke.yaml` — proves the loop end to end for pennies.
-- [ ] **1.5** **The parity gate.** Re-run `run_g` *exactly as configured* —
-      `amp: false`, batch 48, `steps_per_epoch: 300`, `seed: 0`. Compare to the
-      local `best_acc 0.8983`.
-- [ ] **1.6** Record wall time. **This replaces the 10–16× estimate with a
-      measurement; every budget downstream is recomputed from it.**
+- [x] **1.3** *(done 08-28 evening — on a SECURE L4, not an A6000: EU-RO-1
+      community stock was dry all session; venv persists on the volume)* Bring
+      up a GPU pod, run `setup.sh`, confirm `_env.sh` passes.
+- [x] **1.4** *(done: smoke_cloud.yaml)* Run the smoke config — proves the loop
+      end to end for pennies.
+- [x] **1.5** *(PASS: 0.8995 vs 0.8983, chesscog 0.860 — via run_g_cloud.yaml,
+      styles pinned explicitly because "all" resolves in a different order on
+      the pod and order changes batch composition)* **The parity gate.**
+- [x] **1.6** *(measured: 628 img/s = 3.7×, 10.3 min per run_g vs 40.1 local —
+      far under the 10–16× estimate; the Phase-2 grid explains why)* Record
+      wall time.
 
 **Gate:** `best_acc` within ~±0.005 of 0.8983. cuDNN kernel selection differs
 across GPUs, so byte-identical is not the bar and never will be — but a larger
@@ -79,19 +83,26 @@ must be chased before spending more.
 
 ## Phase 2 — tune the box, then make it routine (~$0.70)
 
-- [ ] **2.1** Short-run benchmark grid (2 epochs each): `amp` {off, bf16, fp16} ×
-      `channels_last` {off, on} × `compile` {off, on}, then `batch_size`
-      {48, 128, 256} and `num_workers` {8, 16, 24}. The local `amp: false` is a
-      *Turing* result — Ampere has native bf16 and should invert it, but measure.
-- [ ] **2.2** **Find the loader ceiling explicitly.** Locally the JPEG loader is
-      flat across workers 6/8/12, but that only proves it keeps up at 170 img/s.
-      At 3000 img/s it is the prime suspect. Measure img/s against workers with
-      the model replaced by a no-op before believing any headline speedup.
-- [ ] **2.3** Land the winners as `configs/_cloud_base.yaml`; document the
-      measured numbers in `tools/train/README.md`. Keep
-      `multiprocessing_context='fork'` regardless of what the grid says.
-- [ ] **2.4** Re-baseline `run_e` and `run_f` on the pod (~$0.05) so later
-      comparisons have same-hardware references.
+- [x] **2.1** *(done 08-28 night, `rp bench` / `cloud/bench_grid.sh`, $0.29:
+      every GPU knob is throughput-neutral — bf16/cl/fp16/compile/b128/b256
+      all 624–644 img/s vs fp32's 640. The Turing result did NOT invert
+      because the GPU was never the constraint; see 2.2)* Short-run benchmark
+      grid.
+- [x] **2.2** *(measured, `bench_loader.py`: no-op ceiling 637 (w4) / **737
+      (w8)** / 606 (w16) / 581 (w24) on 6 vCPUs — the loader IS the wall;
+      peaks ~1.3 workers/vCPU and degrades past it. ~110 img/s per vCPU is
+      the scaling law: rent vCPUs, not GPU flops)* **Find the loader ceiling
+      explicitly.**
+- [x] **2.3** *(done — in `tools/train/README.md` "Cloud perf". DEVIATION: no
+      `_cloud_base.yaml`: Config has no include mechanism, so a base file
+      would be dead documentation; the single winner (`num_workers: 8`) is
+      applied directly in run_i_cloud.yaml, amp/batch deliberately kept at the
+      parity values since both are free)* Land the winners; document.
+- [ ] **2.4** ~~Re-baseline `run_e`/`run_f` on the pod~~ — deferred: their
+      *unmasked* caches are not on the volume (~17 GB / ~1 h more staging),
+      and the comparisons that matter now (run_i vs run_g_cloud) are already
+      same-hardware. Stage + run only when a cross-family cloud comparison is
+      actually needed.
 
 **Gate:** a documented, reproducible cloud config whose throughput is measured,
 not assumed.
