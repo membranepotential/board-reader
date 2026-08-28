@@ -4,6 +4,7 @@
     board-reader-inference serve --centroids centroids.npz      # use the M1 estimator
     board-reader-inference serve --record-dir runs/             # ingress recorded here
     board-reader-inference calibrate --image rect.png --placement <FEN1> -o centroids.npz
+    board-reader-inference rebuild-bank --mask gray -o bank.npz  # re-embed the bank
     board-reader-inference positions --changes-only              # tail the position stream
     board-reader-inference positions --out run.ndjson --quiet    # capture it to a file
     board-reader-inference eval                                  # score the deployed stack
@@ -136,6 +137,44 @@ def cmd_calibrate(args: argparse.Namespace) -> int:
     print(
         f"calibrated {present}/13 class centroids ({args.backbone}, {crop_mode}"
         f"{', augmented' if args.augment else ''}) from {source} -> {args.out}"
+    )
+    return 0
+
+
+def cmd_rebuild_bank(args: argparse.Namespace) -> int:
+    from board_reader_inference.embed import make_embedder
+    from board_reader_inference.rebuild import (
+        load_calibrate_uploads,
+        parse_mask,
+        rebuild_bank,
+    )
+    from board_reader_inference.squares import BboxGeometry
+
+    mask = parse_mask(args.mask)
+    uploads, unusable = load_calibrate_uploads(args.uploads)
+    if not uploads:
+        print(
+            f"no usable calibrate uploads under {args.uploads} "
+            f"({len(unusable)} skipped)",
+            file=sys.stderr,
+        )
+        return 2
+    result = rebuild_bank(
+        uploads,
+        make_embedder(args.backbone),
+        mask=mask,
+        backbone=args.backbone,
+        geometry=BboxGeometry(headroom=args.headroom, side_pad=args.side_pad),
+    )
+    for skip in (*unusable, *result.skipped):
+        print(f"skipped {skip.sidecar.name}: {skip.reason}", file=sys.stderr)
+    result.classifier.save(args.out)
+    classes = len(set(result.classifier.labels.tolist()))
+    print(
+        f"rebuilt {result.exemplars} exemplars ({classes}/13 classes) from "
+        f"{len(result.used)} calibrate uploads under {args.uploads} "
+        f"[mask={args.mask}, {args.backbone}, photo hr={args.headroom} "
+        f"sp={args.side_pad}] -> {args.out}"
     )
     return 0
 
@@ -293,6 +332,7 @@ def build_parser() -> argparse.ArgumentParser:
     from board_reader_core.protocol import START_PLACEMENT
 
     from board_reader_inference.evaluate import DEFAULT_PATHS
+    from board_reader_inference.session import FRESH_BANK_GEOMETRY
 
     p = argparse.ArgumentParser(prog="board-reader-inference", description=__doc__)
     sub = p.add_subparsers(dest="command", required=True)
@@ -357,6 +397,42 @@ def build_parser() -> argparse.ArgumentParser:
         "calibration crops; widens lighting robustness",
     )
     c.set_defaults(func=cmd_calibrate)
+
+    from board_reader_inference.rebuild import MASK_CHOICES
+
+    b = sub.add_parser(
+        "rebuild-bank",
+        help="re-embed the session exemplar bank from retained /calibrate uploads",
+        description="Rebuild a session bank offline from every retained "
+        "`<stamp>-calibrate.jpg`/`.json` pair, running the same cropping and "
+        "exemplar machinery /calibrate does. --mask picks the occlusion masking "
+        "the exemplars are embedded under, so a bank can be domain-aligned with "
+        "a masked serving path (BR_CROP_MASK) instead of predating it.",
+    )
+    b.add_argument(
+        "--uploads", default="data/uploads",
+        help="directory of retained uploads (BR_SAVE_UPLOADS); default data/uploads",
+    )
+    b.add_argument("-o", "--out", required=True, help="output bank .npz path")
+    b.add_argument(
+        "--mask", default="gray", choices=list(MASK_CHOICES),
+        help="occlusion masking applied to the exemplar crops (serving default: "
+        "gray). 'none' embeds unmasked regardless of BR_CROP_MASK",
+    )
+    b.add_argument(
+        "--backbone", default="dinov2", choices=["lite", "dinov2"],
+        help="embedder; must match the one serving will score against",
+    )
+    b.add_argument(
+        "--headroom", type=float, default=FRESH_BANK_GEOMETRY.headroom,
+        help="photo-box upward extension in square-widths (the bank's own geometry)",
+    )
+    b.add_argument(
+        "--side-pad", dest="side_pad", type=float,
+        default=FRESH_BANK_GEOMETRY.side_pad,
+        help="photo-box sideways padding in square-widths",
+    )
+    b.set_defaults(func=cmd_rebuild_bank)
 
     from board_reader_inference.positions import DEFAULT_URL
 
