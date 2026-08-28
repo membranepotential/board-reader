@@ -75,7 +75,8 @@ signal_and_wait() {   # signal_and_wait <SIG>
 section "syntax"
 for f in "$ROOT/tools/train/cloud/rp" \
          "$ROOT/tools/train/cloud/setup.sh" \
-         "$ROOT/tools/train/cloud/remote_run.sh"; do
+         "$ROOT/tools/train/cloud/remote_run.sh" \
+         "$ROOT/tools/train/cloud/bench_grid.sh"; do
   if bash -n "$f" 2>/dev/null; then ok "bash -n $(basename "$f")"; else bad "bash -n $(basename "$f")"; fi
 done
 
@@ -99,6 +100,24 @@ for want in "--cloud-type COMMUNITY" "NVIDIA GeForce RTX 4090" "--data-center-id
   fi
 done
 if printf '%s' "$DRYOUT" | grep -qF -- "pod stop"; then bad "plan uses pod stop"; else ok "never 'pod stop'"; fi
+
+section "dry-run: bench spends nothing and plans the grid"
+run_rp --dry-run bench
+check "$RC" 0 "dry-run bench exits 0"
+hasnt "$LOG" "pod create" "dry-run bench does not execute pod create"
+DRYOUT="$(RP_STUB_LOG="$(mktemp)" PATH="$STUBS:$PATH" "$RP" --dry-run bench 2>&1)"
+for want in "bench_grid.sh" "pod delete" "--cloud-type COMMUNITY"; do
+  if printf '%s' "$DRYOUT" | grep -qF -- "$want"; then
+    ok "bench plan contains $want"
+  else
+    bad "bench plan is missing $want"
+  fi
+done
+
+section "trap: bench deletes its pod on success"
+run_rp bench
+check "$RC" 0 "live-ish bench exits 0"
+has "$LOG" "pod delete pod-stub-1" "bench pod deleted on success"
 
 section "dry-run: stage and reap"
 run_rp --dry-run stage tools/train/configs

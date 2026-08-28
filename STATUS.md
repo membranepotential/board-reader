@@ -18,6 +18,11 @@ confidences**. No moves, no legality, no PGN — those are the downstream applic
 - **08-28 retrain program CLOSED** — masking shipped, cloud pipeline live
   (see Done). Nothing running; RunPod volume standing ($2.10/mo), pods reaped,
   balance $7.25.
+- **cloud-phase-2+3** — main session: pod tuning grid (amp/batch/workers +
+  loader ceiling) → tuned config → full-data run_i — IN PROGRESS — next: bench
+  pod.
+- **two-kings-coherence-fix** — implementer agent: settled coherence must demote
+  the lower-confidence duplicate king, not the incumbent — PENDING SPAWN.
 
 ## Done (recent)
 

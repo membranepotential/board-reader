@@ -573,7 +573,13 @@ cmd_sweep() {
 
   preflight
   arm_trap sweep
+  create_gpu_pod
+  provision_and_run "${configs[@]}"
+}
 
+# GPU create with the explicit-only PRO 6000 fallback. Caller must have run
+# preflight and armed the trap; sets POD_ID or dies.
+create_gpu_pod() {
   local gpu="$GPU_PRIMARY"
   if ! create_pod "$gpu"; then
     if $FALLBACK_PRO6000; then
@@ -588,7 +594,6 @@ accept $GPU_FALLBACK instead — it is ~5x the price, so this is never automatic
     fi
   fi
   log "pod $POD_ID up on $gpu"
-  provision_and_run "${configs[@]}"
 }
 
 # Everything after a pod exists: provision it, run the config queue, pull
@@ -636,6 +641,42 @@ provision_and_run() {
     die "$failed of ${#configs[@]} run(s) failed — the trap is deleting pod $POD_ID"
   fi
   log "queue done — the trap now deletes pod $POD_ID"
+}
+
+# ---------------------------------------------------------------------------
+# bench — the Phase 2 throughput grid: one pod, cloud/bench_grid.sh, one report
+# back, delete. No export/evaluate, no candidate artifacts — throughput samples.
+# ---------------------------------------------------------------------------
+cmd_bench() {
+  local base="${1:-configs/run_g_cloud.yaml}"
+  [ -f "$ROOT/tools/train/$base" ] || [ -f "$base" ] || die "no such config: $base"
+
+  preflight
+  arm_trap bench
+  create_gpu_pod
+
+  resolve_ssh
+  assert_ram
+  ensure_rsync
+  sync_repo
+  link_data
+  run_setup
+
+  local rc=0
+  pod_ssh "cd $(printf '%q' "$VOL_REPO/tools/train") && \
+           setsid --wait bash cloud/bench_grid.sh $(printf '%q' "$base")" || rc=$?
+
+  # The report + per-point logs are the whole product; pull them even on
+  # failure — a half-finished grid still carries every completed point.
+  run_state mkdir -p "$ROOT/scratch/bench"
+  run_state rsync -rlptD --ignore-missing-args -e "$(ssh_e)" \
+    --include='*.txt' --include='*.log' --include='*/' --include='history.json' \
+    --exclude='*' \
+    "root@$POD_HOST:$VOL_REPO/scratch/bench/" "$ROOT/scratch/bench/" \
+    || warn "no bench output to pull"
+
+  [ "$rc" -eq 0 ] || die "bench grid failed (exit $rc) — logs in scratch/bench/"
+  log "bench done — report in scratch/bench/report.txt; the trap now deletes pod $POD_ID"
 }
 
 # ---------------------------------------------------------------------------
@@ -784,6 +825,9 @@ usage: rp [--dry-run] [--fallback-pro6000] [--secure] <command> [args]
                            train/export/evaluate each config -> pull artifacts
                            -> delete. The pod is deleted on success, error and
                            Ctrl-C alike.
+  bench [base.yaml]        one pod for the Phase 2 throughput grid
+                           (cloud/bench_grid.sh): train-only points + the
+                           loader ceiling -> scratch/bench/report.txt -> delete.
   stage <path>...          CPU pod with the volume attached; rsync repo-relative
                            paths onto the volume; delete.
   reap                     delete every pod standing on the account.
@@ -820,6 +864,7 @@ main() {
   local -a args=("${rest[@]:1}")
   case "$cmd" in
     sweep) cmd_sweep ${args[@]+"${args[@]}"} ;;
+    bench) cmd_bench ${args[@]+"${args[@]}"} ;;
     adopt) cmd_adopt ${args[@]+"${args[@]}"} ;;
     stage) cmd_stage ${args[@]+"${args[@]}"} ;;
     reap)  cmd_reap ;;
