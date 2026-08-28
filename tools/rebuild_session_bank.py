@@ -1,5 +1,15 @@
 """Rebuild the session exemplar bank from retained calibrate uploads.
 
+**SUPERSEDED by ``board-reader-inference rebuild-bank``**
+(:mod:`board_reader_inference.rebuild`, 2026-08-28), which does the same job with
+selectable occlusion masking (``--mask``, needed once ``BR_CROP_MASK`` shipped),
+an already-rectified-warp filter, overwrite protection, and — instead of the
+hand-rolled agreement rule inlined below — a direct call to the *same*
+``session.verify_labels`` the live ``/calibrate`` guard uses, so the two cannot
+drift. Prefer the CLI. This script is kept only for the one thing the CLI does
+not do: seeding from a BASE bank (``models/exemplars_dinov2.npz``) and moving the
+previous ``models/exemplars_session.npz`` aside instead of refusing to overwrite.
+
 Recovery + hygiene tool (2026-07-18 field incident: an orientation-blind
 /calibrate pushed color-swapped exemplars into the persisted bank). Rebuilds
 ``models/exemplars_session.npz`` from scratch:

@@ -142,6 +142,10 @@ def cmd_calibrate(args: argparse.Namespace) -> int:
 
 
 def cmd_rebuild_bank(args: argparse.Namespace) -> int:
+    from pathlib import Path
+
+    from board_reader_core.protocol import NUM_CLASSES
+
     from board_reader_inference.embed import make_embedder
     from board_reader_inference.rebuild import (
         load_calibrate_uploads,
@@ -151,31 +155,78 @@ def cmd_rebuild_bank(args: argparse.Namespace) -> int:
     from board_reader_inference.squares import BboxGeometry
 
     mask = parse_mask(args.mask)
+    # Before any GPU work: a bank npz is untracked (data/ is gitignored) and a
+    # pinned baseline is one tab-completion away from being unrecoverable.
+    if Path(args.out).exists() and not args.force:
+        print(
+            f"{args.out} already exists; refusing to overwrite it. Pass --force to "
+            "replace it, or name a different -o. (Bank files are gitignored: an "
+            "overwrite cannot be undone.)",
+            file=sys.stderr,
+        )
+        return 2
     uploads, unusable = load_calibrate_uploads(args.uploads)
+    for skip in unusable:
+        print(f"  {skip.outcome:<9} {skip.upload_id}: {skip.detail}", file=sys.stderr)
     if not uploads:
         print(
-            f"no usable calibrate uploads under {args.uploads} "
+            f"no readable calibrate uploads under {args.uploads} "
             f"({len(unusable)} skipped)",
             file=sys.stderr,
         )
         return 2
+
+    guard = None
+    if args.verify_labels:
+        from board_reader_inference.trained import TrainedEstimator
+
+        try:
+            guard = TrainedEstimator(args.guard_model)
+        except Exception as e:
+            print(
+                f"label guard needs a usable model: {args.guard_model} did not load "
+                f"({e}). Point --guard-model at the deployed classifier, or pass "
+                "--no-verify-labels to embed the operator's labels unchecked.",
+                file=sys.stderr,
+            )
+            return 2
+
     result = rebuild_bank(
         uploads,
         make_embedder(args.backbone),
         mask=mask,
+        guard=guard,
+        include_rectified=args.include_rectified,
         backbone=args.backbone,
         geometry=BboxGeometry(headroom=args.headroom, side_pad=args.side_pad),
     )
-    for skip in (*unusable, *result.skipped):
-        print(f"skipped {skip.sidecar.name}: {skip.reason}", file=sys.stderr)
-    result.classifier.save(args.out)
-    classes = len(set(result.classifier.labels.tolist()))
-    print(
-        f"rebuilt {result.exemplars} exemplars ({classes}/13 classes) from "
-        f"{len(result.used)} calibrate uploads under {args.uploads} "
-        f"[mask={args.mask}, {args.backbone}, photo hr={args.headroom} "
-        f"sp={args.side_pad}] -> {args.out}"
+    for verdict in result.verdicts:
+        stream = sys.stdout if verdict.outcome == "used" else sys.stderr
+        print(
+            f"  {verdict.outcome:<9} {verdict.upload_id}: {verdict.detail}", file=stream
+        )
+    counts = " · ".join(
+        f"{len(result.of(outcome))} {outcome}"
+        for outcome in ("used", "rejected", "rectified", "unusable")
+        if result.of(outcome)
     )
+    result.classifier.save(args.out)
+    print(
+        f"rebuilt {result.exemplars} exemplars ({result.classes}/{NUM_CLASSES} "
+        f"classes) from {len(uploads)} uploads under {args.uploads} [{counts}] "
+        f"[mask={args.mask}, {args.backbone}, photo hr={args.headroom} "
+        f"sp={args.side_pad}, guard={args.guard_model if guard else 'off'}] "
+        f"-> {args.out}"
+    )
+    if result.classes < NUM_CLASSES and not args.allow_incomplete:
+        print(
+            f"bank covers only {result.classes}/{NUM_CLASSES} classes — the missing "
+            "ones can never be predicted, so this bank silently caps recognition. "
+            "Add calibrate photos containing them, or pass --allow-incomplete if "
+            "that is intended.",
+            file=sys.stderr,
+        )
+        return 1
     return 0
 
 
@@ -398,16 +449,17 @@ def build_parser() -> argparse.ArgumentParser:
     )
     c.set_defaults(func=cmd_calibrate)
 
-    from board_reader_inference.rebuild import MASK_CHOICES
+    from board_reader_inference.rebuild import DEFAULT_GUARD_MODEL, MASK_CHOICES
 
     b = sub.add_parser(
         "rebuild-bank",
         help="re-embed the session exemplar bank from retained /calibrate uploads",
         description="Rebuild a session bank offline from every retained "
-        "`<stamp>-calibrate.jpg`/`.json` pair, running the same cropping and "
-        "exemplar machinery /calibrate does. --mask picks the occlusion masking "
-        "the exemplars are embedded under, so a bank can be domain-aligned with "
-        "a masked serving path (BR_CROP_MASK) instead of predating it.",
+        "`<stamp>-calibrate.jpg`/`.json` pair, running the same label guard, "
+        "cropping and exemplar machinery /calibrate does. --mask picks the "
+        "occlusion masking the exemplars are embedded under, so a bank can be "
+        "domain-aligned with a masked serving path (BR_CROP_MASK) instead of "
+        "predating it.",
     )
     b.add_argument(
         "--uploads", default="data/uploads",
@@ -415,9 +467,37 @@ def build_parser() -> argparse.ArgumentParser:
     )
     b.add_argument("-o", "--out", required=True, help="output bank .npz path")
     b.add_argument(
+        "--force", action="store_true",
+        help="overwrite --out if it already exists (bank files are gitignored, so "
+        "an overwrite is unrecoverable — hence off by default)",
+    )
+    b.add_argument(
         "--mask", default="gray", choices=list(MASK_CHOICES),
         help="occlusion masking applied to the exemplar crops (serving default: "
         "gray). 'none' embeds unmasked regardless of BR_CROP_MASK",
+    )
+    b.add_argument(
+        "--verify-labels", action=argparse.BooleanOptionalAction, default=True,
+        help="check each upload's labels against --guard-model before embedding, "
+        "exactly as /calibrate does (rotated corner order silently color-swaps a "
+        "bank). --no-verify-labels embeds the sidecars unchecked",
+    )
+    b.add_argument(
+        "--guard-model", dest="guard_model", default=DEFAULT_GUARD_MODEL,
+        help=f"ONNX classifier the label guard probes with (default "
+        f"{DEFAULT_GUARD_MODEL}); should be the model that will serve against "
+        "this bank",
+    )
+    b.add_argument(
+        "--include-rectified", dest="include_rectified", action="store_true",
+        help="also embed already-rectified warps (corners == the image border). "
+        "Excluded by default: masking is inert on them and their flat squares are "
+        "out of domain for the bank's tall photo boxes",
+    )
+    b.add_argument(
+        "--allow-incomplete", dest="allow_incomplete", action="store_true",
+        help="exit 0 even if the bank covers fewer than 13 classes (a class with "
+        "no exemplar can never be predicted)",
     )
     b.add_argument(
         "--backbone", default="dinov2", choices=["lite", "dinov2"],
