@@ -18,14 +18,17 @@ confidences**. No moves, no legality, no PGN — those are the downstream applic
 - ui-mockups — awaiting user review in `docs/mockups/` (user: redo later as
   clickable simulations, not storyboards).
 
-- retrain-E7 — masked-crop retrain of both cascade members — implementer on
-  CPU prep; GPU training gated behind the E6 replay redo.
-- retrain-E6-redo — E6 replay sweep rerun under the fixed depth rule
-  (`a6b4463`; e6f-* names; provisional e6-* numbers superseded) — running,
+- retrain-E7 — masked-crop retrain (gray fill, both members; screen gate →
+  2 scoring runs → 4-take replay + curated gates) — implementer training,
   owns the GPU.
 
 ## Done (recent)
 
+- 08-28 retrain-E6-redo (fixed rule): d8 q<->k win REAL (25→9, byte-identical
+  post-fix); b1/b5 hallucination tax REAL OOD (not the rule bug); pooled
+  inference-only net +9 settled / +11 perfect, fill choice take-dependent
+  (blur pooled-wins, gray kept for training). Masking-alone not shippable;
+  retrain carries the load. summary.json updated, provisional kept.
 - 08-28 review: BR_CROP_MASK commit reviewed — nearness rule was image-row,
   inverted under the rot90 probe and masked ~12 % of rectified crops
   spuriously; fixed to camera depth + tie epsilon (`a6b4463`), env typo now
