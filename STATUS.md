@@ -18,13 +18,19 @@ confidences**. No moves, no legality, no PGN — those are the downstream applic
 - ui-mockups — awaiting user review in `docs/mockups/` (user: redo later as
   clickable simulations, not storyboards).
 
-- retrain-E7 — masked-crop retrain of both cascade members (bbox+mask,
-  pose+mask; screen gate then 2 scoring runs; replay + curated gates) —
-  implementer running 08-28 evening. GPU reserved.
-- review — code-reviewer on the BR_CROP_MASK commit — running.
+- retrain-E7 — masked-crop retrain of both cascade members — implementer on
+  CPU prep; GPU training gated behind the E6 replay redo.
+- retrain-E6-redo — E6 replay sweep rerun under the fixed depth rule
+  (`a6b4463`; e6f-* names; provisional e6-* numbers superseded) — running,
+  owns the GPU.
 
 ## Done (recent)
 
+- 08-28 review: BR_CROP_MASK commit reviewed — nearness rule was image-row,
+  inverted under the rot90 probe and masked ~12 % of rectified crops
+  spuriously; fixed to camera depth + tie epsilon (`a6b4463`), env typo now
+  warn-once not per-frame raise, fill hygiene. E6's provisional numbers
+  (incl. some of its OOD tax) superseded by the e6f rerun.
 - 08-28 retrain-E6: occlusion masking (BR_CROP_MASK, committed, 1085 green) —
   mechanism confirmed: 08-13 settled +30, perfect 6→22/31 (d8 q<->k 25→9
   wrong); small OOD tax on non-pathological takes (model never saw masks) →
