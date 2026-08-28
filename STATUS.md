@@ -18,11 +18,17 @@ confidences**. No moves, no legality, no PGN — those are the downstream applic
 - ui-mockups — awaiting user review in `docs/mockups/` (user: redo later as
   clickable simulations, not storyboards).
 
-- retrain-E6 — occlusion-aware crop masking (neighbor-prism region
-  neutralized at crop time, env-flagged), replay-gated — implementer running.
+- retrain-E7 — masked-crop retrain of both cascade members (bbox+mask,
+  pose+mask; screen gate then 2 scoring runs; replay + curated gates) —
+  implementer running 08-28 evening. GPU reserved.
+- review — code-reviewer on the BR_CROP_MASK commit — running.
 
 ## Done (recent)
 
+- 08-28 retrain-E6: occlusion masking (BR_CROP_MASK, committed, 1085 green) —
+  mechanism confirmed: 08-13 settled +30, perfect 6→22/31 (d8 q<->k 25→9
+  wrong); small OOD tax on non-pathological takes (model never saw masks) →
+  E7 masked-crop retrain. Report: scratch/experiments/e6_mask_crops/report.md.
 - 08-28 retrain-E5: bleed-demotion decoding rule — **NO-GO**, rigorously:
   4,480-config sweep, no config clears 0-broken, no safety gap (correct reads
   inside every firing band), LOTO negative 4/7, breaks are pawn chains, fixes
