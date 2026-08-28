@@ -18,11 +18,16 @@ confidences**. No moves, no legality, no PGN — those are the downstream applic
 - ui-mockups — awaiting user review in `docs/mockups/` (user: redo later as
   clickable simulations, not storyboards).
 
-- retrain-E5 — offline bleed-demotion rule search over evidence digests
-  (LOTO-validated, evidence-rerank methodology) — agent running 08-28.
+- retrain-E6 — occlusion-aware crop masking (neighbor-prism region
+  neutralized at crop time, env-flagged), replay-gated — implementer running.
 
 ## Done (recent)
 
+- 08-28 retrain-E5: bleed-demotion decoding rule — **NO-GO**, rigorously:
+  4,480-config sweep, no config clears 0-broken, no safety gap (correct reads
+  inside every firing band), LOTO negative 4/7, breaks are pawn chains, fixes
+  mostly redundant with the prior. The signal is in the pixels → E6 masks
+  crops upstream. Report: scratch/experiments/e5_bleed_rule/report.md.
 - 08-28 retrain-E4: bleed attribution measured — 44 % of pooled raw residual
   is neighbor-prism bleed @0.30 (08-28 take: 66 %, +6.6 pp oracle ceiling);
   overlap alone is ANTI-discriminative (correct squares overlap more); the
