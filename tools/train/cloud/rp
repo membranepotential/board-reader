@@ -319,17 +319,21 @@ create_pod() {
     # makes port 22 publicly mapped, which --wait (and our SSH) needs there.
     # SECURE (explicit --secure only) maps port 22 publicly without the flag,
     # which is documented as community-only.
+    # --ports 22/tcp is load-bearing on every branch: a CLI-created pod
+    # publishes NO ports by default (live finding, 08-28 — `pod get` said
+    # "pod does not publish 22/tcp" while --wait hung against it), and --wait
+    # needs a publicly mapped 22 to ever return.
     if $SECURE; then
       warn "SECURE cloud requested explicitly (~2x the community price)"
-      args+=(--image "$IMAGE" --cloud-type SECURE --gpu-id "$gpu" --gpu-count 1)
+      args+=(--image "$IMAGE" --cloud-type SECURE --gpu-id "$gpu" --gpu-count 1 --ports 22/tcp)
     else
-      args+=(--image "$IMAGE" --cloud-type COMMUNITY --gpu-id "$gpu" --gpu-count 1 --public-ip)
+      args+=(--image "$IMAGE" --cloud-type COMMUNITY --gpu-id "$gpu" --gpu-count 1 --public-ip --ports 22/tcp)
     fi
   else
     # DEVIATION: CPU pods are not offered on community cloud, and --public-ip
     # is documented as "community cloud only" — so the staging pod runs on the
     # SECURE default, where port 22 is publicly mapped without the flag.
-    args+=(--image "$CPU_IMAGE" --compute-type cpu)
+    args+=(--image "$CPU_IMAGE" --compute-type cpu --ports 22/tcp)
   fi
 
   log "creating pod (${gpu:-cpu}) — this is the moment money starts"
@@ -364,12 +368,25 @@ create_pod() {
 # undocumented, so both are parsed defensively.
 resolve_ssh() {
   if $DRY_RUN; then POD_HOST="dryrun.invalid"; POD_PORT="22"; return 0; fi
-  local ep
-  ep="$(run_ro "$RUNPODCTL" pod get "$POD_ID" -o json 2>/dev/null | parse_endpoint || true)"
-  if [ -z "$ep" ]; then
-    ep="$(run_ro "$RUNPODCTL" ssh info "$POD_ID" -o json 2>/dev/null | parse_endpoint || true)"
-  fi
-  [ -n "$ep" ] || die "could not resolve an SSH endpoint for $POD_ID (the pod is being deleted)"
+  # The endpoint can lag the pod's RUNNING state (port mapping publishes late),
+  # so retry before concluding the JSON shape is wrong — and when giving up,
+  # keep the raw responses: they are the only way to fix parse_endpoint.
+  local ep="" try dbg="$ROOT/scratch/rp_debug-$POD_ID"
+  mkdir -p "$ROOT/scratch"
+  for try in 1 2 3 4 5 6 7 8; do
+    run_ro "$RUNPODCTL" pod get "$POD_ID" -o json >"$dbg-podget.json" 2>&1 || true
+    ep="$(parse_endpoint <"$dbg-podget.json" || true)"
+    if [ -z "$ep" ]; then
+      run_ro "$RUNPODCTL" ssh info "$POD_ID" -o json >"$dbg-sshinfo.json" 2>&1 || true
+      ep="$(parse_endpoint <"$dbg-sshinfo.json" || true)"
+    fi
+    [ -n "$ep" ] && break
+    log "no SSH endpoint yet for $POD_ID (try $try/8) — raw responses in $dbg-*.json"
+    sleep 15
+  done
+  [ -n "$ep" ] || die "could not resolve an SSH endpoint for $POD_ID after 8 tries — \
+inspect $dbg-*.json, fix parse_endpoint (the pod is being deleted)"
+  rm -f "$dbg-podget.json" "$dbg-sshinfo.json"
   POD_HOST="${ep% *}"
   POD_PORT="${ep#* }"
   log "ssh root@$POD_HOST -p $POD_PORT"
@@ -561,6 +578,15 @@ accept $GPU_FALLBACK instead — it is ~5x the price, so this is never automatic
     fi
   fi
   log "pod $POD_ID up on $gpu"
+  provision_and_run "${configs[@]}"
+}
+
+# Everything after a pod exists: provision it, run the config queue, pull
+# artifacts. Shared by sweep (fresh pod) and adopt (pre-existing pod). The
+# caller must have armed the trap and set POD_ID.
+provision_and_run() {
+  local -a configs=("$@")
+  local cfg name remote_out
 
   resolve_ssh
   assert_ram
@@ -598,6 +624,34 @@ accept $GPU_FALLBACK instead — it is ~5x the price, so this is never automatic
     die "$failed of ${#configs[@]} run(s) failed — the trap is deleting pod $POD_ID"
   fi
   log "queue done — the trap now deletes pod $POD_ID"
+}
+
+# ---------------------------------------------------------------------------
+# adopt — take over a pod that already exists (an orphan from a killed runner)
+# and run the queue on it. The trap owns it from here: it WILL be deleted.
+# ---------------------------------------------------------------------------
+cmd_adopt() {
+  local pod_id="${1:-}"; shift || true
+  [ -n "$pod_id" ] && [ $# -gt 0 ] || die "usage: rp adopt <pod-id> <config.yaml>..."
+  local cfg abs rel
+  local -a configs=()
+  for cfg in "$@"; do
+    if [ -f "$cfg" ]; then abs="$(realpath "$cfg")"
+    elif [ -f "$ROOT/tools/train/$cfg" ]; then abs="$(realpath "$ROOT/tools/train/$cfg")"
+    else die "no such config: $cfg"
+    fi
+    rel="${abs#"$ROOT/tools/train/"}"
+    [ "$rel" != "$abs" ] || die "config must live under tools/train/: $cfg"
+    configs+=("$rel")
+  done
+
+  load_key || true
+  have_key || die "adopt needs the API key"
+  check_balance
+  arm_trap adopt
+  POD_ID="$pod_id"
+  log "adopted pod $POD_ID — the trap now owns and will delete it"
+  provision_and_run "${configs[@]}"
 }
 
 # ---------------------------------------------------------------------------
@@ -754,6 +808,7 @@ main() {
   local -a args=("${rest[@]:1}")
   case "$cmd" in
     sweep) cmd_sweep ${args[@]+"${args[@]}"} ;;
+    adopt) cmd_adopt ${args[@]+"${args[@]}"} ;;
     stage) cmd_stage ${args[@]+"${args[@]}"} ;;
     reap)  cmd_reap ;;
     cost)  cmd_cost ;;
