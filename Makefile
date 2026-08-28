@@ -58,6 +58,9 @@ BR_SAVE_UPLOADS ?= data/uploads
 # serving BR_MODEL by itself for two days. tests/test_deploy_parity.py is now
 # the guard, and aspects.yaml carries the Makefile as part of `deploy`.
 BR_MODEL_B      ?= models/run_f/model.onnx
+# Occlusion-aware crop masking (E6, the 08-28 ship decision) — the deployed
+# default compose.yaml serves; `make dev` must read boards the same way.
+BR_CROP_MASK    ?= gray
 
 # ...but forwarded only when the node can actually serve it. Two configurations
 # are hard startup errors *by design* — a partial pair (one member missing, so
@@ -133,6 +136,7 @@ endif
 	@BR_MODEL=$(BR_MODEL) \
 	BR_SESSION_BANK=$(BR_SESSION_BANK) \
 	BR_SAVE_UPLOADS=$(BR_SAVE_UPLOADS) \
+	BR_CROP_MASK=$(BR_CROP_MASK) \
 	$(CASCADE_ENV) \
 	$(if $(BR_MODEL_TUNED),BR_MODEL_TUNED=$(BR_MODEL_TUNED),) \
 	$(if $(BR_CASCADE_TAU),BR_CASCADE_TAU=$(BR_CASCADE_TAU),) \
