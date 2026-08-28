@@ -23,7 +23,7 @@ import torch
 import torch.nn as nn
 from augment import eval_transform, train_transform
 from config import Config
-from cropcache import CACHE_ROOT, build_cache, geo_cache_root
+from cropcache import CACHE_ROOT, ensure_caches, geo_cache_root, resolve_styles
 from dataset import (
     CropDataset,
     class_counts_str,
@@ -36,7 +36,6 @@ from dataset import (
 )
 from metrics import SquareStats
 from runlog import RunLog
-from styles import chessred_style, discover_styles
 from torch.utils.data import DataLoader, WeightedRandomSampler
 
 from board_reader_core.protocol import CLASSES, NUM_CLASSES
@@ -68,29 +67,6 @@ def pick_device(pref: str, *, min_free_mib: int = 1500) -> torch.device:
         f"[device] only {free/2**20:.0f} MiB free on the GPU (< {min_free_mib}); "
         "refusing the silent CPU fallback — free the GPU or set device: cpu"
     )
-
-
-def resolve_styles(cfg: Config) -> list[str]:
-    available = discover_styles()
-    if cfg.require_mode is not None:
-        available = {n: s for n, s in available.items() if s.mode == cfg.require_mode}
-    if cfg.styles == ["all"]:
-        return list(available)
-    missing = [s for s in cfg.styles if s not in available]
-    if missing:
-        raise SystemExit(f"styles not found: {missing}; available: {list(available)}")
-    return list(cfg.styles)
-
-
-
-def ensure_caches(names: list[str], cfg: Config) -> None:
-    available = discover_styles()
-    root = geo_cache_root(cfg)
-    for name in names:
-        style = available[name]
-        if name == "chessred" and cfg.max_boards is not None:
-            style = chessred_style(max_boards=cfg.max_boards)
-        build_cache(style, out_root=root, size=cfg.size, geometry=cfg.geometry, mask=cfg.mask)
 
 
 @torch.inference_mode()

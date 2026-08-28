@@ -609,12 +609,14 @@ provision_and_run() {
   for cfg in "${configs[@]}"; do
     name="$(config_run_name "$cfg")"
     log "=== run $name ==="
-    # setsid: the pipeline gets its own process group, so an abort can kill the
-    # GROUP (kill -9 -PGID) rather than SIGSTOP-ing a CUDA process, which turns
-    # it into a zombie-spinner. `pod delete` is the terminal kill regardless.
+    # setsid --wait: the pipeline gets its own process group, so an abort can
+    # kill the GROUP (kill -9 -PGID) rather than SIGSTOP-ing a CUDA process,
+    # which turns it into a zombie-spinner. --wait is load-bearing: bare setsid
+    # forks, the parent exits 0 instantly, and a failed run reports success
+    # (live finding, 08-28 — two dead runs came back as "queue done").
     rc=0
     pod_ssh "cd $(printf '%q' "$VOL_REPO/tools/train") && \
-             setsid bash cloud/remote_run.sh $(printf '%q' "$cfg") $(printf '%q' "$name")" \
+             setsid --wait bash cloud/remote_run.sh $(printf '%q' "$cfg") $(printf '%q' "$name")" \
       || rc=$?
     remote_out="$(pod_ssh "cat $(printf '%q' "$VOL_REPO/scratch/rp_out_dir.$name") 2>/dev/null" \
                   | tr -d '[:space:]')" || remote_out=""

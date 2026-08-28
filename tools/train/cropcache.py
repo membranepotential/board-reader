@@ -35,7 +35,7 @@ if os.environ.get("BR_CV_THREADS"):
     cv2.setNumThreads(int(os.environ["BR_CV_THREADS"]))
 
 import _bootstrap
-from styles import BOARD, Style, discover_styles
+from styles import BOARD, Style, chessred_style, discover_styles
 
 from board_reader_core.protocol import CLASS_INDEX, CLASSES, parse_placement
 
@@ -83,6 +83,12 @@ class CacheMeta:
     # the pre-E7 unmasked caches. Missing in old meta.json -> None (default),
     # which is the correct read: those caches predate masking entirely.
     mask: str | None = None
+    # Style mode at build time ("board" | "crop"). Lets a machine that holds
+    # only the cache (a cloud pod — no raw datasets) resolve styles from it.
+    # Metas older than this field default to "board", which is right for every
+    # cache we ship to such machines; the one crop-mode cache (zenodo) lives
+    # only where the raw registry also lives and resolves from there.
+    mode: str = BOARD
 
     @property
     def geometry(self) -> CropGeometry:
@@ -257,6 +263,7 @@ def build_cache(
         n_samples=len(samples),
         crop_geometry=geometry.to_dict(),
         mask=effective_mask,
+        mode=style.mode,
     )
     with open(meta_path, "w") as f:
         json.dump(meta.to_dict(), f, indent=2)
@@ -279,6 +286,64 @@ def geo_cache_root(cfg):  # cfg: config.Config — annotated loosely to keep thi
     if cfg.mask is not None:
         tag = f"{tag}_mask{cfg.mask}"
     return CACHE_ROOT / tag
+
+# --- style resolution against caches (torch-free: also used by tests/pods) ---
+
+def cached_style_modes(cfg: Config) -> dict[str, str]:
+    """Styles resolvable from a complete crop cache alone, name -> mode.
+
+    A cache with ``meta.json`` is self-contained for training (``load_styles``
+    reads only shards), so on a machine without the raw datasets — a cloud pod
+    holds nothing but staged caches — the cache itself is the style registry.
+    """
+    root = geo_cache_root(cfg)
+    if not root.is_dir():
+        return {}
+    out: dict[str, str] = {}
+    for d in sorted(root.iterdir()):
+        if (d / "meta.json").exists():
+            out[d.name] = load_meta(d.name, root).mode
+    return out
+
+
+def resolve_styles(cfg: Config) -> list[str]:
+    available = discover_styles()
+    if cfg.require_mode is not None:
+        available = {n: s for n, s in available.items() if s.mode == cfg.require_mode}
+    # The raw registry wins; complete caches fill the gaps. Note the two orders
+    # differ (registry: manifest-path order; cache: sorted) — a run that must be
+    # order-reproducible across machines should list its styles explicitly.
+    cached = {
+        n: m
+        for n, m in cached_style_modes(cfg).items()
+        if n not in available and cfg.require_mode in (None, m)
+    }
+    if cfg.styles == ["all"]:
+        return list(available) + list(cached)
+    known = set(available) | set(cached)
+    missing = [s for s in cfg.styles if s not in known]
+    if missing:
+        raise SystemExit(f"styles not found: {missing}; available: {sorted(known)}")
+    return list(cfg.styles)
+
+
+
+def ensure_caches(names: list[str], cfg: Config) -> None:
+    root = geo_cache_root(cfg)
+    # A style whose cache is already complete never needs its raw data — that is
+    # what lets a pod train from staged caches alone. (build_cache would no-op on
+    # the existing meta anyway, but only after a registry lookup that dies when
+    # the raw datasets are absent.)
+    todo = [n for n in names if not (root / n / "meta.json").exists()]
+    if not todo:
+        return
+    available = discover_styles()
+    for name in todo:
+        style = available[name]
+        if name == "chessred" and cfg.max_boards is not None:
+            style = chessred_style(max_boards=cfg.max_boards)
+        build_cache(style, out_root=root, size=cfg.size, geometry=cfg.geometry, mask=cfg.mask)
+
 
 def load_meta(style_name: str, out_root: Path = CACHE_ROOT) -> CacheMeta:
     with open(out_root / style_name / "meta.json") as f:

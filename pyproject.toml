@@ -124,6 +124,7 @@ testpaths = [
     "packages",
     "tools/video/tests",
     "tools/train/tests/test_calibrate_finetune.py",
+    "tools/train/tests/test_cache_style_resolution.py",
     "tools/train/tests/test_cropcache_mask.py",
     "tools/train/tests/test_finetune_crops.py",
 ]

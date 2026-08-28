@@ -1,0 +1,43 @@
+# run_g for the RunPod parity gate (Phase 1.5) — identical to run_g except:
+# - styles listed EXPLICITLY in the order the local run resolved them to
+#   (scratch/runs/run_g.local-gtx1650/config.yaml). "all" resolves via the raw
+#   registry locally but via the cache scan on a pod, and the two orders differ;
+#   order changes batch composition, which the +-0.005 parity bar cannot absorb.
+# - out_dir keeps the cloud artifacts beside, not over, the local archive.
+# Baseline: local run_g best_acc 0.8983 / chesscog_transfer 0.851.
+styles:
+  - chessred
+  - chessrender360
+  - chessr_cana
+  - chessr_russiangreytown
+  - chessr_vlab_wooden
+  - w2_bellanger
+  - w2_cemkalyoncu
+  - w2_chessr_cana
+  - w2_chessr_rgt
+  - w2_pjhanzlik
+  - w2_polyhaven
+require_mode: board
+holdout: chessr_vlab_wooden
+
+model: resnet18
+init: imagenet
+shape_bias: true
+
+headroom: 1.6
+side_pad: 0.15
+mask: gray
+
+epochs: 20
+patience: 5
+batch_size: 48
+lr: 0.0005
+weight_decay: 0.05
+steps_per_epoch: 300
+warmup_frac: 0.05
+
+device: auto
+amp: false
+num_workers: 4
+seed: 0
+out_dir: "scratch/runs/run_g_cloud"
