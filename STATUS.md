@@ -18,11 +18,16 @@ confidences**. No moves, no legality, no PGN — those are the downstream applic
 - ui-mockups — awaiting user review in `docs/mockups/` (user: redo later as
   clickable simulations, not storyboards).
 
-- retrain-E4 — residual attribution measurement (how much of the gate takes'
-  residual is neighbor-prism crop bleed) — agent running 08-28.
+- retrain-E5 — offline bleed-demotion rule search over evidence digests
+  (LOTO-validated, evidence-rerank methodology) — agent running 08-28.
 
 ## Done (recent)
 
+- 08-28 retrain-E4: bleed attribution measured — 44 % of pooled raw residual
+  is neighbor-prism bleed @0.30 (08-28 take: 66 %, +6.6 pp oracle ceiling);
+  overlap alone is ANTI-discriminative (correct squares overlap more); the
+  signal is identity coincidence. c5→b5 and c6→b6 confirmed; d8's residual and
+  R->P are largely bleed. Report: scratch/experiments/e4_bleed_attribution/.
 - 08-28 retrain-E3: leave-session-out crop fine-tune (`finetune_crops.py`,
   tested) — clean cross-session gains are partial: 08-13 settled 97.5→98.2 %
   (perfect 6→13/31, q<->k −28 %); 08-28 degrades 93.3→90.8 % (missed up). E2's
