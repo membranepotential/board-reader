@@ -25,9 +25,11 @@ the hard ceiling — nothing here can overrun it.
     for VRAM-hungry runs only (never a silent fallback)
 - Local baseline to beat: `run_g` = 2405 s, 170 img/s, `best_acc 0.8983`.
 
-Both candidates are Ampere with 48 GB — native bf16 and 2× the VRAM of the 4090
-option, at a lower price. Expected speedup **10–16×**, so a `run_g`-equivalent
-lands at ~3 min and **~$0.02**.
+The 4090 (Ada) has native bf16 and ~2× the A6000's raw throughput at the same
+price; 24 GB covers everything short of a large unfrozen backbone at 384 px,
+which escalates to the PRO 6000 explicitly. Expected speedup **10–16×**, so a
+`run_g`-equivalent lands at ~3 min and **~$0.02** — Phase 1.6 replaces this
+estimate with a measurement.
 
 ## Phase 0 — local prep (no spend)
 
