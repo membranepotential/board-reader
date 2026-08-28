@@ -142,7 +142,7 @@ Non-negotiable, and each one is a scar:
 ### 1. Preflight — before spending anything
 
 ```bash
-set -a; . ./.env; set +a
+. ./tools/runpod/env.sh                             # key from the keyring, never a file
 runpodctl user                                    # balance covers the plan?
 runpodctl pod list                                # MUST be [] — else reap first
 runpodctl network-volume list                     # volume exists? right DC?
@@ -238,7 +238,7 @@ gates.** Models come back as a 45 MB `best.pt` / `model.onnx`.
 ## Quick reference
 
 ```bash
-set -a; . ./.env; set +a                       # load key (never print it)
+. ./tools/runpod/env.sh                        # key from keyring (or: tools/runpod/with-key <cmd>)
 runpodctl user                                 # balance
 runpodctl gpu list                             # prices + per-DC stock
 runpodctl datacenter list                      # what each DC carries

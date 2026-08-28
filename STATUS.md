@@ -15,6 +15,14 @@ confidences**. No moves, no legality, no PGN — those are the downstream applic
 - ui-mockups — awaiting user review in `docs/mockups/` (user: redo later as
   clickable simulations, not storyboards).
 
+- cloud-training — GPU training moves to RunPod (RTX A6000 community, EU-SE-1,
+  $0.33/hr; A40 same-DC fallback — network volumes are DC-locked, EU-SE-1 is the
+  only DC with two viable GPUs). Report + plan + `/runpod` skill landed; key in
+  the login keyring via `tools/runpod/env.sh`. **Next: Phase 0** — finish the
+  `pose_h1.9_r0.5_f1_maskgray` cache (9 of 11 styles missing, blocks run_h
+  anywhere) and write the trap-guarded `tools/train/cloud/rp` runner. Balance
+  $7.91, plan costs ~$5.30. docs/reports/2026-08-28-cloud-training-migration.md ·
+  docs/plans/2026-08-28-runpod-migration.md
 - **retrain program PAUSED for cloud-GPU handoff** (user 08-28 evening).
   run_g done; run_h + gates remain. Resume runbook:
   docs/reports/2026-08-28-retrain-program.md §Continuation. Local GPU idle;
