@@ -56,3 +56,8 @@ docs/commit-rewrite-pre.bundle
 # which the viewer ships as package data. Generated — never committed.
 node_modules/
 packages/viewer/src/board_reader_viewer/web/
+
+# Secrets (RUNPOD_API_KEY etc) — repo is public
+.env
+.env.*
+!.env.example
