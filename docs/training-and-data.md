@@ -61,7 +61,7 @@ A run **fails fast** rather than degrading: a non-finite loss aborts immediately
 step events is the liveness signal — GPU util can read 100% while true throughput has
 collapsed (the SIGSTOP zombie-spinner failure), and only throughput catches it.
 
-> [!note] The perf ceiling is the card, not the pipeline (measured 2026-08-07)
+> [!note] The perf ceiling is the card, not the pipeline (measured 2026-08-07 — **local GTX 1650 only**; the cloud section below re-measures every one of these on Ada-class GPUs)
 > fp32 ResNet18@224 on the GTX 1650 is compute-bound at ~165 img/s: batch 48/64/96 and
 > 6/8/12 workers are all flat, `channels_last` *loses* (136 img/s, no fp32-NHWC kernels
 > on Turing), bf16 is emulated (~2.7× slower) and fp16 NaNs in the forward — `amp: false`
@@ -146,6 +146,8 @@ All under `scratch/runs/` (git-ignored; reproducible from `tools/train/configs/`
 | `d18` | headroom sweep, `hr=1.8 / sp=0.25` | ties the holdout, loses on real photos (409 vs 430) |
 | `run_e` | wave-2: 11 styles incl. wooden-Staunton dim renders | **won** — holdout 0.835 → 0.898; **deployed as the primary member** |
 | `run_f` | the pose-aware crop bet: a camera-pose-derived prism (`h1.9/r0.5`) instead of the axis-aligned box | **did not win its pre-registered rule** (holdout 0.894 ties, `user_photos` 0.938 → 0.894). Kept anyway: it fails *differently* — cross-style wrongtype 173 → 121, at the cost of hallucinations 1 → 12 — which is what makes it usable as the cascade's second member (2026-08-11) |
+| `run_g` / `run_h` | E7: retrain both cascade members on **occlusion-masked** crops so training matches masked serving | member-level a clean win (holdout ties, chesscog_transfer 0.819 → 0.851–0.860 for both geometries) — and **benched anyway**: deployed as the cascade the pair *lost* every gate take, because the masking win is a bank-lookup effect the retrained classifiers overrule ([[2026-08-28-improvement-report]]). Kept as OOD assets awaiting a bank re-embedded from masked crops |
+| `run_g_cloud` / `run_h_cloud` | the RunPod parity + first cloud runs | parity PASS (0.8995 vs local 0.8983, ±0.005 gate); same chesscog within noise. Cloud numbers are comparable to *each other*, not to historical local ones (cuDNN kernel selection differs per GPU) |
 
 > [!note] Crop geometry is an **exhausted knob** (closed 2026-08-10)
 > `d16`/`d18` swept `headroom`/`side_pad` — two scalars on an axis-aligned bounding box. The
@@ -193,6 +195,45 @@ decided it.
 >
 > The daylight base bank *lowers* both models on the dim slice (600→591, 653→630). That is
 > [[calibration-and-the-bank|the known lighting failure]] reproducing, not a `run_e` effect.
+
+## Training in the cloud (RunPod, since 2026-08-28)
+
+The GTX 1650 caps training at ~170 img/s and serializes every GPU workstream, so training
+(and only training — see the division of labour) can run on rented RunPod GPUs. Decision
+record: [[2026-08-28-cloud-training-migration|migration analysis]]; plan with measured
+checkboxes: `docs/plans/2026-08-28-runpod-migration.md`; operating guide (keys, cost
+discipline, traps): `.claude/skills/runpod/SKILL.md`.
+
+**The architecture** — everything durable lives on a network volume (`board-reader`,
+EU-RO-1, 30 GB) so pods are disposable:
+
+- `tools/train/cloud/rp` — the runner. `sweep <configs…>` rents one GPU pod for the whole
+  queue, provisions it (repo rsync, volume symlinks, on-volume venv via `setup.sh`), runs
+  each config through `remote_run.sh` (train → export → evaluate, `===RP_*===` markers),
+  pulls artifacts back to `scratch/runs/<name>/`, and deletes the pod. **The EXIT/INT/TERM
+  trap that deletes the pod is armed before the create call** — that property has a
+  48-assertion stub suite (`cloud/tests/test_rp.sh`) because a forgotten pod is the one
+  failure that costs real money. Also: `bench` (the Phase-2 throughput grid), `stage`,
+  `adopt` (take over an orphan), `reap`, `cost`.
+- **Staging is pod-free** over RunPod's S3-compatible volume API (`tools/runpod/s3-env.sh`,
+  key in the login keyring) — resumable `aws s3 sync` straight onto the volume.
+- **The pod trains from crop caches alone.** A complete cache (`meta.json`) is
+  self-contained: `resolve_styles` treats the raw-dataset registry as authoritative and
+  fills gaps from cache scans, so `data/external/` (raw datasets, undocumented provenance)
+  never travels. Cache building stays local (pure CPU).
+- **Style order is pinned explicitly** in the `*_cloud.yaml` configs: `"all"` resolves in
+  manifest order locally but sorted-scan order on a pod, and batch composition differences
+  break the ±0.005 parity bar.
+
+**Division of labour** — the cloud is a GPU, nothing more. Cache building, the replay
+harness, trial recordings, truth authoring, and **every ship/no-ship decision** stay local;
+the cloud produces candidates that must pass the local replay + curated + settled gates.
+
+**Measured so far:** parity gate PASS (`run_g_cloud` 0.8995 vs local 0.8983); L4 throughput
+628 img/s vs 170 local (3.7×) *before* Phase-2 tuning — early grid readings suggest the
+loader, not the GPU, is the binding constraint at cloud speeds (bf16/channels_last/batch
+all land within ~630–645 img/s). Full grid numbers land in `tools/train/README.md` when
+Phase 2 closes. Total spend through the program's close: **$0.66**.
 
 ## Synthetic data
 

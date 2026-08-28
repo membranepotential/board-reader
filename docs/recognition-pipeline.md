@@ -19,7 +19,8 @@ flowchart TD
   detect --> geom
   geom --> boxes["square_boxes(geometry)<br/>bbox: base quads + headroom<br/>pose: projected piece prisms"]
   boxes --> crops["crop_squares_photo<br/>64 x 224² crops"]
-  crops --> est[estimator]
+  crops --> mask["occlusion masking (BR_CROP_MASK)<br/>gray-fill closer neighbors' prisms"]
+  mask --> est[estimator]
   est --> dist["square_dist (8,8,13)"]
   dist --> demote["demote_attractor<br/>black-bishop calibration"]
   demote --> rot[autorotate?]
@@ -71,6 +72,31 @@ sidecar that `TrainedEstimator` reads. Never hard-code it on either side.
 The `?debug=1` overlay draws from `square_boxes` under the active estimator's own geometry —
 the same function recognition crops with — so the visualization cannot drift into showing a
 re-derivation of the geometry.
+
+### Occlusion masking — the deployed default since 2026-08-28
+
+A crop's box is a *bounding* volume, so a neighboring piece leaning toward the camera can
+occupy a large fraction of another square's crop and be read as if it stood there (the
+"bleed" family — measured at 44% of the deployed residual in the
+[[2026-08-28-retrain-program|retrain program]]'s E4). **`BR_CROP_MASK=gray`** (set by both
+`compose.yaml` and `make dev`) gray-fills, in each square's crop, the pixels that fall
+inside a **closer** neighbor's prism before the crop reaches the classifier **and the bank
+embedder**. Nearness is camera depth from the recovered pose, not image row — an earlier
+image-row version demoted the wrong neighbor at oblique angles and was fixed in review
+(`a6b4463`).
+
+Two effects, one of them surprising
+([[2026-08-28-improvement-report|improvement report]]):
+
+- The intended one: bleed pixels stop reaching the classifier.
+- The dominant one: masked crops shift the DINOv2 embedding enough that the session bank's
+  nearest-exemplar lookup **unlatches from a wrong exemplar** it had locked onto. That is
+  what nearly doubled perfect boards on the 4-take gate (≈20 → 35), almost entirely on the
+  q↔k-locked 08-13 take — a bank-side effect, not a classifier one. It is also why
+  retraining the members on masked crops did *not* compose with the deployed blend: the
+  bank half decides those takes.
+
+`blur` exists as an alternative fill; unset means unmasked (the pre-08-28 behavior).
 
 > [!note] Under `BboxGeometry` the debug boxes must be *reindexed*, not re-derived
 > `headroom` and `side_pad` extend a box along fixed **image** axes, so re-deriving boxes

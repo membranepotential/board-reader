@@ -37,6 +37,7 @@ uv run board-reader-edge feed --video clip.mp4 --throttle   # or a real clip
 BR_MODEL=models/run_e/model.onnx \
 BR_SESSION_BANK=models/exemplars_session.npz \
 BR_SAVE_UPLOADS=data/uploads \
+BR_CROP_MASK=gray \
 uv run board-reader-inference serve --host 0.0.0.0
 ```
 
@@ -68,6 +69,7 @@ photograph a start position.
 | `BR_MODEL` | ONNX crop classifier → `TrainedEstimator`. The zero-shot default. Reads its crop geometry from `<model>.onnx.meta.json`. |
 | `BR_MODEL_B` | A second crop classifier on a different crop geometry → `CascadeEstimator`. Squares `BR_MODEL` is unsure about are re-read by this one and the two averaged. **Both members must ship a geometry sidecar** — a missing one is a startup failure, not a warning. `GET /healthz` reports how often it fires. |
 | `BR_CASCADE_TAU` | The cascade's confidence gate (default `0.95`): squares whose max probability falls below it go to `BR_MODEL_B`. Lower = cheaper and closer to `BR_MODEL` alone. |
+| `BR_CROP_MASK` | Occlusion-aware crop masking: `gray` (the deployed default in `compose.yaml` and `make dev`) fills each crop's pixels that fall inside a *closer* neighbor's prism before classify/embed; `blur` blurs them; unset = unmasked. Shipped 2026-08-28 — perfect boards ≈20→35 on the 4-take gate, mostly by unlatching bank nearest-exemplar locks ([[recognition-pipeline#Occlusion masking — the deployed default since 2026-08-28]]). |
 | `BR_MODEL_TUNED` | A calibration fine-tune of `BR_MODEL`, from `tools/train/calibrate_finetune.py` → `AveragedEstimator`: both models read every square off **one** crop pass (they share a geometry) and the distributions are averaged 50/50. Measured 0.969 on the board it was calibrated for, against `BR_MODEL` alone at 0.938. Two hard startup errors, both deliberate: **without `BR_MODEL`** (the tuned model alone hallucinates pieces onto empty squares — it is the base's vote that suppresses them), and **together with `BR_MODEL_B`** (an unmeasured stack; pick one). `GET /healthz` names both members. |
 | `BR_SCHEDULE` | Which arriving frames get an estimate, as a `replay --policy` spec — the same string a sweep measured. Default (set by `serve`, also `--schedule`): `burst-end:burst_end_reads=3`, i.e. read at the end of each move plus a 3 s keepalive floor; ~12× fewer estimates than reading everything, for −0.9 pp prior per-square ([the sweep](reports/2026-08-27-move-trigger-sweep.md)). **The live event stream is sparse by design** — `GET /healthz` shows `ingest.unscheduled` climbing while `estimated` crawls, and that is the system working. `every-frame` is the way back. `ingest.backstopped > 0` means an edge's `capture_ts` stopped advancing and the node is reading on its own clock to stay alive. |
 | `BR_SESSION_BANK` | Path for the per-set exemplar bank. **Opt-in: unset means nothing is ever written.** With `BR_MODEL` set, the two are ensembled. |

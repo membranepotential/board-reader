@@ -53,11 +53,16 @@ at serve. Diagnosis from the replays:
   unlatches from the wrong exemplar. The retrained classifiers re-assert the
   q→k read (raw stream: 28/31 events), so better members do not compose with a
   bank-dominant (30/70) blend.
-- **New defect found: settled coherence doubles the error.** Raw d8 q→k plus a
-  correct e8 king reads as "two kings"; the coherence layer demotes the *real*
-  king, turning one wrong square into a symmetric q↔k swap on every event
-  (settled 31+31). Filed as follow-up: prefer demoting the lower-confidence of
-  duplicate kings.
+- ~~**New defect found: settled coherence doubles the error.** Raw d8 q→k plus
+  a correct e8 king reads as "two kings"; the coherence layer demotes the
+  *real* king, turning one wrong square into a symmetric q↔k swap on every
+  event (settled 31+31). Filed as follow-up: prefer demoting the
+  lower-confidence of duplicate kings.~~ **Refuted same night**
+  ([[2026-08-28-two-kings-decode]]): the decoder already demotes the
+  lower-confidence king and is Pareto-best over 4 rules × 4 takes; the 31/31
+  figure belongs to this table's *rejected* e7 row (the shipped config splits
+  17/17), and the confidence evidence genuinely favors the wrong square — the
+  lever is the bank lock on d8, not the tie-break.
 
 run_g/run_h are kept as **OOD assets** (`scratch/runs/run_g*`, `run_h_cloud`):
 the +4 pp generalization is real and waits on bank-domain alignment (re-embed

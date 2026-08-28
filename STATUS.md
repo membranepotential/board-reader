@@ -21,8 +21,12 @@ confidences**. No moves, no legality, no PGN — those are the downstream applic
 - **cloud-phase-2+3** — main session: pod tuning grid (amp/batch/workers +
   loader ceiling) → tuned config → full-data run_i — IN PROGRESS — next: bench
   pod.
-- **two-kings-coherence-fix** — implementer agent: settled coherence must demote
-  the lower-confidence duplicate king, not the incumbent — PENDING SPAWN.
+- **two-kings-coherence-fix** — CLOSED as a refutation (`8c42b83`): the shipped
+  rule already demotes the lower-confidence king and is Pareto-best over 4 rules
+  x 4 takes; the 31/31-wrong figure was the *rejected* e7 row. Lever at ceiling
+  (~7 settled boards reachable by any per-frame tie-break); productive lever is
+  the bank. Bonus: found `make dev` served unmasked since `38c40ac` — parity
+  guard was red on main, fixed (`4d6ce3e`).
 
 ## Done (recent)
 
@@ -92,10 +96,11 @@ confidences**. No moves, no legality, no PGN — those are the downstream applic
 5. **Give a user's `tuned.onnx` a deploy story** — per-operator artifact, no
    compose path today.
 6. **Attack the residual type confusions** — `p->b` leads trained-alone; a third
-   of the ensemble's residual is `empty->p`/`empty->P`, a different animal. And
-   the 08-28 gate found **settled coherence demotes the CORRECT king** when raw
-   hallucinates a second one (q->k doubled into a full swap, 31/31 events on
-   08-13) — prefer demoting the lower-confidence duplicate. Feeds item 1.
+   of the ensemble's residual is `empty->p`/`empty->P`, a different animal.
+   (The 08-28 "two-kings demotes the CORRECT king" claim was investigated and
+   refuted — see `8c42b83`: the decoder already prefers the lower-confidence
+   duplicate, the evidence genuinely crosses on 08-13, and the residual lever
+   is the bank lock on d8, not the tie-break.) Feeds item 1.
 7. **Decide whether calibrated confidences go on the wire** — a decision, not an
    experiment: argmax is invariant, DESIGN §9 says the downstream smoother wants
    them.
