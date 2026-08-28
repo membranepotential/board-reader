@@ -158,15 +158,32 @@ Size it for the caches actually needed, not for comfort — it bills at
 runpodctl network-volume create --name board-reader --size 20 --data-center-id EU-SE-1
 ```
 
-### 3. Stage the data (once, on a CPU pod)
+### 3. Stage the data (once, over the S3 API — no pod at all)
 
 Training reads **only** `data/external/_cropcache/` (confirmed in
 `dataset.py:load_styles`) — the raw datasets never need to travel. Ship the cache
 variant the sweep needs plus `data/eval`, `data/uploads` and `data/images` (~100
 MB) so `evaluate.py` can score candidates on the pod.
 
-Do this on a CPU pod with the volume attached. There is no reason to pay for an
-idle GPU while 8 GB crawls up a domestic uplink.
+RunPod exposes network volumes over an **S3-compatible API**
+(https://docs.runpod.io/storage/s3-api) — the bucket is the volume id, the
+endpoint is DC-specific (`https://s3api-eu-ro-1.runpod.io`). Uploading this way
+costs nothing, resumes (`aws s3 sync`), and does not depend on instance stock —
+which matters, because **EU-RO-1 has had zero CPU instances available** and
+`rp stage`'s CPU-pod path then cannot run at all. Auth is a *separate* S3 API
+key (console → Settings → S3 API Keys), stored in the keyring under
+`service runpod-s3 part access|secret`:
+
+```bash
+. ./tools/runpod/s3-env.sh    # AWS_* from the keyring; neutralizes ~/.aws
+aws s3 sync data/external/_cropcache/<variant> \
+  "s3://$BR_RP_S3_BUCKET/_cropcache/<variant>" --endpoint-url "$BR_RP_S3_ENDPOINT"
+```
+
+Key layout on the volume must match what `rp`'s `link_data` symlinks expect:
+`_cropcache/<variant>/`, `data/eval`, `data/uploads`, `data/images`. Files
+>500 MB need multipart (aws cli does this automatically; parts cap at 500 MB).
+`rp stage` (CPU pod + rsync) remains the fallback when stock allows.
 
 ### 4. Run a sweep
 
