@@ -12,52 +12,25 @@ confidences**. No moves, no legality, no PGN — those are the downstream applic
 - **The 08-27 night wave is COMPLETE** (see Done). Estimator, scheduler,
   stabilizer, framing, recorder, harness all landed, reviewed, and
   replay-verified; suite 1048 Python + 417 vitest + 50 e2e, all green.
-- tall-crop-retrain — small experiments first, then scale; improvement report
-  at the end — starting (main session).
-- docs-wrap (fork) — trial report + baseline docs — in progress.
 - ui-mockups — awaiting user review in `docs/mockups/` (user: redo later as
   clickable simulations, not storyboards).
 
-- retrain-E7 — masked-crop retrain (gray fill, both members; screen gate →
-  2 scoring runs → 4-take replay + curated gates) — implementer training,
-  owns the GPU.
+- **retrain program PAUSED for cloud-GPU handoff** (user 08-28 evening).
+  run_g done; run_h + gates remain. Resume runbook:
+  docs/reports/2026-08-28-retrain-program.md §Continuation. Local GPU idle;
+  nothing running. data/, recordings/, scratch/ must be synced to the cloud
+  box (gitignored). Improvement report due after the gates.
 
 ## Done (recent)
 
-- 08-28 retrain-E6-redo (fixed rule): d8 q<->k win REAL (25→9, byte-identical
-  post-fix); b1/b5 hallucination tax REAL OOD (not the rule bug); pooled
-  inference-only net +9 settled / +11 perfect, fill choice take-dependent
-  (blur pooled-wins, gray kept for training). Masking-alone not shippable;
-  retrain carries the load. summary.json updated, provisional kept.
-- 08-28 review: BR_CROP_MASK commit reviewed — nearness rule was image-row,
-  inverted under the rot90 probe and masked ~12 % of rectified crops
-  spuriously; fixed to camera depth + tie epsilon (`a6b4463`), env typo now
-  warn-once not per-frame raise, fill hygiene. E6's provisional numbers
-  (incl. some of its OOD tax) superseded by the e6f rerun.
-- 08-28 retrain-E6: occlusion masking (BR_CROP_MASK, committed, 1085 green) —
-  mechanism confirmed: 08-13 settled +30, perfect 6→22/31 (d8 q<->k 25→9
-  wrong); small OOD tax on non-pathological takes (model never saw masks) →
-  E7 masked-crop retrain. Report: scratch/experiments/e6_mask_crops/report.md.
-- 08-28 retrain-E5: bleed-demotion decoding rule — **NO-GO**, rigorously:
-  4,480-config sweep, no config clears 0-broken, no safety gap (correct reads
-  inside every firing band), LOTO negative 4/7, breaks are pawn chains, fixes
-  mostly redundant with the prior. The signal is in the pixels → E6 masks
-  crops upstream. Report: scratch/experiments/e5_bleed_rule/report.md.
-- 08-28 retrain-E4: bleed attribution measured — 44 % of pooled raw residual
-  is neighbor-prism bleed @0.30 (08-28 take: 66 %, +6.6 pp oracle ceiling);
-  overlap alone is ANTI-discriminative (correct squares overlap more); the
-  signal is identity coincidence. c5→b5 and c6→b6 confirmed; d8's residual and
-  R->P are largely bleed. Report: scratch/experiments/e4_bleed_attribution/.
-- 08-28 retrain-E3: leave-session-out crop fine-tune (`finetune_crops.py`,
-  tested) — clean cross-session gains are partial: 08-13 settled 97.5→98.2 %
-  (perfect 6→13/31, q<->k −28 %); 08-28 degrades 93.3→90.8 % (missed up). E2's
-  sweep was mostly leakage. Fine-tune helps type residual, can't touch
-  drift/bleed. Report: scratch/experiments/e3_crops_lso/report.md.
-- 08-28 retrain-E2: start-position fine-tune (7 sessions) vs deployed cascade,
-  replay-gated — settled 08-13: 97.5%→100% (q<->k erased, 31/31 perfect);
-  settled 08-28: 93.3%→92.6% (hallucinations 14→23). Caveat: harvest included a
-  start frame of each scored take (same-session leakage) → E3 goes
-  leave-session-out. Report: scratch/experiments/e2_calib_finetune/report.md.
+- **08-28 retrain program E1–E7** (full numbers + narrative:
+  docs/reports/2026-08-28-retrain-program.md; details
+  scratch/experiments/e{2..7}_*/report.md): trials exported as crop styles;
+  fine-tunes measured clean (E2 leaked, E3 partial win); bleed measured (44 %
+  of residual); decode rule NO-GO; occlusion masking shipped (`BR_CROP_MASK`,
+  depth-fixed after review) and proven on the d8 lock; **run_g masked retrain
+  matches holdout, +3.2 pp chesscog**. run_h + gates pending on cloud GPU.
+  Mid-program RAM-overcommit freeze → serialize + systemd-run caps adopted.
 - 08-28: **proof trial done and scored** (docs/reports/2026-08-28-proof-trial.md,
   recording 20260828-111421). Zero-tap checklist passed: auto-calibrate fired
   (bank 768→1024 mid-take), re-detector adopted real drift at 78 s with zero
@@ -88,11 +61,11 @@ confidences**. No moves, no legality, no PGN — those are the downstream applic
 
 ## Next
 
-1. **Tall-crop retrain — GO (user 2026-08-28)**: small experiments first, then
-   scale; consider smart/pose-derived crops (prior work exists); iterate on the
-   test data; deliver an improvement report at the end. ~78 % of residual errors
-   sit outside the top-2 ceiling; take 4 and 08-13's d8 `q->k` are pure
-   recognition errors. In progress (main session).
+1. **Finish the retrain program on cloud GPU**: run_h (masked pose member),
+   4-take replay gates + curated gate for the masked cascade, ship decision,
+   improvement report (E1–E7 numbers in
+   docs/reports/2026-08-28-retrain-program.md). Then decide the fine-tune
+   deploy story (E2/E3 showed per-board personalization wins; feeds Next 5).
 2. **Estimator throughput / latency** — profile the cascade+ensemble read
    (~1.3 GPU-s/read measured in the sweep) and attack the biggest term (bank
    embed batching?). Faster reads shrink settle lag and the guard window both.

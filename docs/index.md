@@ -39,6 +39,8 @@ reconstruction and PGN belong to whatever consumes the stream.
   drift]] · [[2026-08-27-evidence-rerank|Evidence re-rank]] — the night-wave studies behind
   the read scheduler, the client re-detector and the b-demotion
 - [[2026-08-28-proof-trial|Proof trial]] — the first live take over the full stack, scored
+- [[2026-08-28-retrain-program|Retrain program E1–E7]] — bleed diagnosis → occlusion masking →
+  masked-crop retrain; frozen baselines and the cloud-GPU continuation runbook
 - [[youtube-streams]] — curated static-camera OTB footage for bring-up
 - `aspects.yaml` — which parts must stay in sync with which, and the contract between them
 
