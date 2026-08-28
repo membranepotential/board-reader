@@ -21,6 +21,7 @@ unseen style.
 from __future__ import annotations
 
 import json
+import os
 from collections import defaultdict
 from collections.abc import Iterator
 from dataclasses import dataclass
@@ -261,7 +262,16 @@ def discover_styles(external: Path = EXTERNAL) -> dict[str, Style]:
     styles: dict[str, Style] = {}
     if (external / "chessred" / "annotations.json").exists():
         styles["chessred"] = chessred_style()
-    for manifest in sorted(external.glob(f"**/{NORMALIZED_MANIFEST}")):
+    # os.walk(followlinks=True), not glob("**/..."): pathlib's ** does not
+    # descend into symlinked directories (no opt-in before 3.13), and on a
+    # cloud pod every staged style under data/external IS a symlink onto the
+    # network volume — glob silently discovered nothing there.
+    manifests = sorted(
+        Path(dirpath) / NORMALIZED_MANIFEST
+        for dirpath, _dirs, files in os.walk(external, followlinks=True)
+        if NORMALIZED_MANIFEST in files
+    )
+    for manifest in manifests:
         for name, style in load_normalized_styles(manifest).items():
             uniq = name
             i = 2

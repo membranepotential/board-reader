@@ -120,3 +120,36 @@ def test_ensure_caches_skips_complete_caches_without_registry(
 def test_ensure_caches_still_needs_registry_for_missing(cache_root, empty_registry, tmp_path):
     with pytest.raises(KeyError):
         ensure_caches(["never_built"], _cfg(tmp_path))
+
+
+def test_discover_styles_follows_symlinked_dirs(tmp_path):
+    """Pod layout: every style under data/external is a symlink onto the volume.
+
+    pathlib's ``**`` glob does not descend into symlinked dirs, which made the
+    pod's registry empty; discovery must walk with followlinks instead.
+    """
+    import styles as styles_mod
+
+    real = tmp_path / "volume" / "somestyle"
+    real.mkdir(parents=True)
+    (real / styles_mod.NORMALIZED_MANIFEST).write_text(json.dumps([]))
+    external = tmp_path / "external"
+    external.mkdir()
+    (external / "somestyle").symlink_to(real)
+
+    seen: list[Path] = []
+
+    def spy(manifest):
+        seen.append(manifest)
+        return {}
+
+    real_loader = styles_mod.load_normalized_styles
+    styles_mod.load_normalized_styles = spy
+    try:
+        styles_mod.discover_styles(external)
+    finally:
+        styles_mod.load_normalized_styles = real_loader
+
+    assert seen == [external / "somestyle" / styles_mod.NORMALIZED_MANIFEST], (
+        "discovery did not reach the manifest behind the symlinked style dir"
+    )
