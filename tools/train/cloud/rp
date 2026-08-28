@@ -495,7 +495,10 @@ sync_repo() {
   pod_ssh "mkdir -p $(printf '%q' "$VOL_REPO")"
   # --delete (not --delete-excluded): stale code goes, but the excluded paths on
   # the pod — data/, scratch/ and the symlinks link_data plants there — survive.
-  run_state rsync -az --delete "${RSYNC_EXCLUDES[@]}" \
+  # -rlptDz, not -az: -a implies -og (owner/group), and chown on the network
+  # volume is Operation-not-permitted — rsync then exits 23 and set -e turns a
+  # cosmetic attribute miss into a dead pod (live finding, 08-28).
+  run_state rsync -rlptDz --delete "${RSYNC_EXCLUDES[@]}" \
     -e "$(ssh_e)" "$ROOT/" "root@$POD_HOST:$VOL_REPO/"
 }
 
@@ -545,7 +548,7 @@ pull_artifacts() {
   run_state mkdir -p "$dest"
   log "pulling artifacts -> $LOCAL_RUNS/$name/"
   for f in "${ARTIFACTS[@]}"; do
-    run_state rsync -a --ignore-missing-args -e "$(ssh_e)" \
+    run_state rsync -rlptD --ignore-missing-args -e "$(ssh_e)" \
       "root@$POD_HOST:$remote_dir/$f" "$dest/" \
       || warn "no $f in $remote_dir (stage may have failed — check pipe.log)"
   done
@@ -704,10 +707,10 @@ cmd_stage() {
     # Trailing slash on a directory source copies its *contents* into dest,
     # which is what makes _cropcache/<variant> land as <variant>.
     if [ -d "$src" ]; then
-      run_state rsync -a --partial --info=stats1 -e "$(ssh_e)" \
+      run_state rsync -rlptD --partial --info=stats1 -e "$(ssh_e)" \
         "${src%/}/" "root@$POD_HOST:$dest/"
     else
-      run_state rsync -a --partial --info=stats1 -e "$(ssh_e)" \
+      run_state rsync -rlptD --partial --info=stats1 -e "$(ssh_e)" \
         "$src" "root@$POD_HOST:$dest"
     fi
   done
