@@ -12,34 +12,32 @@ confidences**. No moves, no legality, no PGN — those are the downstream applic
 - **The 08-27 night wave is COMPLETE** (see Done). Estimator, scheduler,
   stabilizer, framing, recorder, harness all landed, reviewed, and
   replay-verified; suite 1048 Python + 417 vitest + 50 e2e, all green.
-- trial-run — live proof-session stack (`make dev`, recorder on, session
-  20260828-111421) — **up and verified**; user plays the planned Italian line
-  at `/camera`; truth pre-authored, score with `eval-session` after.
-- **Next live take = the proof session.** It should demonstrate, zero-tap:
-  auto-detect → auto-verify → start → auto-calibrate ("Calibrated
-  automatically…", trigger bug fixed in `b9b886c`), burst-end reads (~5× fewer
-  GPU calls, watch `/healthz` ingest.unscheduled, backstopped==0), drift
-  re-lock ("The frame had drifted — re-locked"), no OOM at any length, coherent
-  settled stream. Author truth with `guard_seqs=3` (sparse events by design).
+- tall-crop-retrain — small experiments first, then scale; improvement report
+  at the end — starting (main session).
+- docs-wrap (fork) — trial report + baseline docs — in progress.
 - ui-mockups — awaiting user review in `docs/mockups/` (user: redo later as
   clickable simulations, not storyboards).
 
 ## Done (recent)
 
-- 08-28: **curated baseline made reproducible** — 5 dead `up_*` entries pruned
-  (their photos were deleted; among them the set's only bank-held-out board),
-  surviving photos moved into `data/eval/images/`. New baseline, deployed
-  cascade⊕bank stack: **307/320 per-square, 0/5 perfect** (prior: 308/320, 1/5),
-  ECE 0.24. The 638/640 headline is historical. Docs updated.
-- 08-28: **own real footage exists** (user-confirmed) — trial recordings
-  (08-13, 08-27 takes 1–5, today's proof session) are the footage source;
-  broadcast sourcing closed.
-- 08-28: **repo pushed public**. Pre-rewrite SHAs recoverable from
-  `docs/commit-rewrite-{map.tsv,pre.bundle}` (git-ignored);
-  `tools/check_commit_refs.py` translates stale citations.
-- 08-28: **b-demotion confidence display: user decided leave as-is** — rescued
-  squares reporting ~0.34–0.47 stay unflagged; correct recognition is the
-  ambition, confidence marking would only clutter the UI.
+- 08-28: **proof trial done and scored** (docs/reports/2026-08-28-proof-trial.md,
+  recording 20260828-111421). Zero-tap checklist passed: auto-calibrate fired
+  (bank 768→1024 mid-take), re-detector adopted real drift at 78 s with zero
+  false adoptions, 36 reads/243 frames, backstopped 0, latency p50 1.55 s, no
+  OOM. Settled 91.9 % per-square, 4/22 perfect; per-segment decline tracks the
+  drift; post-adoption residual is recognition, not framing. **Demotion A/B**
+  (replay-vs-replay): "0 broken" is dead — the rule trades eaten `b`s against
+  `empty->b` hallucinations, net +4 settled; keep it, revisit with the retrain.
+- 08-28: **curated baseline re-pinned** — the mid-trial calibrate invalidated
+  the morning's 768-bank number; baseline now pins its own bank snapshot
+  (`data/eval/bank-baseline-20260828.npz`): **304/320, 0/5 perfect**, ECE 0.34.
+- 08-28: **curated set pruned to 5 boards** (dead photos removed, survivors
+  moved into `data/eval/images/`; the only bank-held-out board was among the
+  dead). The 638/640 headline is historical.
+- 08-28: **repo pushed public** (pre-rewrite SHAs: `docs/commit-rewrite-*`,
+  `tools/check_commit_refs.py`); **own footage confirmed** (trial recordings are
+  the source; broadcast sourcing closed); **b-demotion display stays as-is**
+  (user: recognition is the ambition, confidence marking clutters the UI).
 - **08-27 night wave** (detail: `git log 866653f..9167dfd`,
   docs/reports/2026-08-27-*): replay harness; GPU arena ratchet fixed;
   b-demotion shipped (+2–10 pp perfect); framing re-detect (drift −58 %);
@@ -52,12 +50,11 @@ confidences**. No moves, no legality, no PGN — those are the downstream applic
 
 ## Next
 
-1. **Tall-crop retrain decision** — the case sharpened all night: the `b` rule
-   ships (residual shrunk), the control's `q->k` is NOT re-rankable (truth
-   outside top-2 half the time), 08-13's d8 q->k is a pure recognition error the
-   prior reads wrong 90 % of the time, and take 4 (least drift, worst accuracy)
-   is pure classification error. ~78 % of residual errors sit outside the top-2
-   ceiling. A pose-derived crop axis belongs with whatever retrain survives.
+1. **Tall-crop retrain — GO (user 2026-08-28)**: small experiments first, then
+   scale; consider smart/pose-derived crops (prior work exists); iterate on the
+   test data; deliver an improvement report at the end. ~78 % of residual errors
+   sit outside the top-2 ceiling; take 4 and 08-13's d8 `q->k` are pure
+   recognition errors. In progress (main session).
 2. **Estimator throughput / latency** — profile the cascade+ensemble read
    (~1.3 GPU-s/read measured in the sweep) and attack the biggest term (bank
    embed batching?). Faster reads shrink settle lag and the guard window both.
@@ -79,7 +76,11 @@ confidences**. No moves, no legality, no PGN — those are the downstream applic
 8. **Crop attribution / occlusion** — the prism is a *bounding* volume: the c6
    knight's lean hallucinated a b6 rook and corrupted b7 all trial.
    Base-weighted attribution over bounding-prism membership. Plus detection
-   follow-ups (`73efd60`, non-blocking).
+   follow-ups (`73efd60`, non-blocking). The 08-28 demotion A/B pins both sides
+   of the `b` trade on this (c5's crop bleeding into b5).
+9. **Client-side session video** (user proposal 08-28): `MediaRecorder` on the
+   camera track, chunked upload during the session, stored beside the recording
+   — edge/detector debugging plus trivial truth-authoring (~25–50 MB/take).
 
 ## Open questions
 

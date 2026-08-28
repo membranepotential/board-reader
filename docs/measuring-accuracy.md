@@ -176,16 +176,29 @@ never seen, i.e. the set's only held-out measurement — was among the deleted. 
 pruned set has **no held-out board at all**; generalisation numbers live in
 `chesscog_transfer` and in scored trial recordings, not here.
 
-**The reproducible baseline (2026-08-28)**, deployed stack as `make dev` serves it
-— cascade (`run_e` ⊕ `run_f`, τ 0.95) ⊕ session bank (768 exemplars), scored on CPU:
+**The reproducible baseline (2026-08-28)** — the deployed composition with the
+bank **pinned**: the live `models/exemplars_session.npz` mutates by design
+(the 08-28 trial's auto-calibrate grew it 768 → 1024 exemplars *mid-take*,
+which also flips the blend to the mature 30/70 weighting — a different stack,
+not just more data), so a baseline quoted against the live bank changes out
+from under you. The baseline therefore carries its own snapshot,
+`data/eval/bank-baseline-20260828.npz` (1024 exemplars), and is scored as
+`CascadeEstimator(run_e ⊕ run_f, τ 0.95) ×0.30 + CentroidEstimator(1024
+exemplars) ×0.70`, on CPU:
 
 | | raw | with `--prior` decode |
 |---|---|---|
-| Perfect boards | 0 / 5 | 1 / 5 |
-| Per-square | 307 / 320 | 308 / 320 (1 fixed, 0 broken) |
-| ECE | 0.240 (underconfident) | — |
+| Perfect boards | 0 / 5 | 0 / 5 |
+| Per-square | 304 / 320 · 95.0 % | 303 / 320 (0 fixed, 1 broken) |
+| ECE | 0.336 (underconfident) | — |
 
-Rerun it: `uv run board-reader-inference eval data/eval/ground_truth.json`
+Artifact: `data/eval/baseline-20260828.json`. Rerun it:
+
+```bash
+BR_SESSION_BANK=data/eval/bank-baseline-20260828.npz \
+  uv run board-reader-inference eval data/eval/ground_truth.json
+```
+
 (hide CUDA if the dev stack holds the card).
 
 Everything below this line predates the prune and is scored on the ten-board set —

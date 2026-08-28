@@ -35,6 +35,10 @@ reconstruction and PGN belong to whatever consumes the stream.
 - [[STATUS]] — what is done, what is next, what is unresolved
 - [[2026-07-18-zero-shot-campaign|Zero-shot campaign report]] — the investigation that
   produced the current recognizer
+- [[2026-08-27-move-trigger-sweep|Move-trigger sweep]] · [[2026-08-27-framing-drift|Framing
+  drift]] · [[2026-08-27-evidence-rerank|Evidence re-rank]] — the night-wave studies behind
+  the read scheduler, the client re-detector and the b-demotion
+- [[2026-08-28-proof-trial|Proof trial]] — the first live take over the full stack, scored
 - [[youtube-streams]] — curated static-camera OTB footage for bring-up
 - `aspects.yaml` — which parts must stay in sync with which, and the contract between them
 
@@ -46,8 +50,9 @@ adaptively since M2: a ~1 fps keepalive at rest, a burst through motion, with a
 measured `stability` on every frame. The browser edge also **tracks the board plane**,
 so the quad follows the camera with its `a8` labelling intact (DESIGN §4.4.1(a))
 through a bump, a hand sweeping over the board, or the phone moving to a new angle.
-The **inference** node runs a stateless per-frame estimator over 64 square crops and
-publishes a position event. The **viewer** renders it; the headless
+The **inference** node runs a stateless estimator over 64 square crops and publishes a
+position event — since 08-27 not for every frame: a burst-end scheduler reads at the end of
+each move plus a keepalive, ~12× fewer reads (`BR_SCHEDULE`, see [[runbook]]). The **viewer** renders it; the headless
 `board-reader-inference positions` tails or captures it. Edge and inference never import
 each other — they meet only on the wire. Recognition is a multi-style-trained crop classifier
 blended with a per-set nearest-exemplar bank; the trained half is robust where it has never
