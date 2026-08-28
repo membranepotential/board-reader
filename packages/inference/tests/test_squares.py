@@ -17,7 +17,7 @@ from board_reader_inference.squares import (
     _focal_from_homography,
     _occlusion_fill_from_env,
     _occlusion_mask,
-    _prism_base_y,
+    _prism_depth,
     board_pose,
     crop_squares,
     crop_squares_photo,
@@ -365,14 +365,23 @@ def test_occlusion_fill_from_env_reads_valid_fills(monkeypatch):
     assert _occlusion_fill_from_env() is None
 
 
-def test_occlusion_fill_from_env_rejects_unknown_value(monkeypatch):
+def test_occlusion_fill_from_env_unknown_value_warns_and_runs_unmasked(monkeypatch, caplog):
+    """A typo must degrade to "no masking", visibly — never raise on the
+    per-frame path, where ingest swallows exceptions frame by frame and the
+    board's stream would die silently forever."""
     monkeypatch.setenv("BR_CROP_MASK", "sepia")
-    with pytest.raises(ValueError, match="BR_CROP_MASK"):
-        _occlusion_fill_from_env()
+    with caplog.at_level("WARNING"):
+        assert _occlusion_fill_from_env() is None
+    assert any("BR_CROP_MASK" in r.message for r in caplog.records)
+    # Warned once per distinct value, not per frame.
+    caplog.clear()
+    with caplog.at_level("WARNING"):
+        assert _occlusion_fill_from_env() is None
+    assert not caplog.records
 
 
 def test_closer_neighbor_prisms_filters_by_nearness_and_overlap():
-    # Four squares in a row; base_y increases with index (index 3 nearest camera).
+    # Four squares; depth DECREASES toward the camera (smaller = closer).
     prism_rects = np.array(
         [
             [0.0, 0.0, 10.0, 10.0],  # square 0: overlaps target, but FARTHER
@@ -381,16 +390,26 @@ def test_closer_neighbor_prisms_filters_by_nearness_and_overlap():
             [5.0, 5.0, 15.0, 15.0],  # square 3 (== target): excluded, it's self
         ]
     )
-    base_y = np.array([1.0, 20.0, 20.0, 5.0])
+    depth = np.array([20.0, 1.0, 1.0, 5.0])
     target_box = (0.0, 0.0, 10.0, 10.0)
-    got = _closer_neighbor_prisms(3, prism_rects, base_y, target_box)
+    got = _closer_neighbor_prisms(3, prism_rects, depth, target_box)
     assert got == [(5.0, 5.0, 15.0, 15.0)]
 
 
 def test_closer_neighbor_prisms_excludes_self():
     prism_rects = np.array([[0.0, 0.0, 10.0, 10.0], [0.0, 0.0, 10.0, 10.0]])
-    base_y = np.array([1.0, 1.0])
-    assert _closer_neighbor_prisms(0, prism_rects, base_y, (0.0, 0.0, 10.0, 10.0)) == []
+    depth = np.array([1.0, 0.5])
+    assert _closer_neighbor_prisms(0, prism_rects, depth, (0.0, 0.0, 10.0, 10.0)) != []
+    assert _closer_neighbor_prisms(1, prism_rects, depth, (0.0, 0.0, 10.0, 10.0)) == []
+
+
+def test_closer_neighbor_prisms_equidistant_squares_never_occlude():
+    """The degenerate poses (rectified board, full-frame corners) recover the
+    same depth for every base center; nothing may occlude anything there."""
+    prism_rects = np.array([[0.0, 0.0, 10.0, 10.0], [2.0, 2.0, 12.0, 12.0]])
+    depth = np.array([3.0, 3.0])
+    assert _closer_neighbor_prisms(0, prism_rects, depth, (0.0, 0.0, 10.0, 10.0)) == []
+    assert _closer_neighbor_prisms(1, prism_rects, depth, (0.0, 0.0, 12.0, 12.0)) == []
 
 
 def test_occlusion_mask_marks_only_the_neighbor_region():
@@ -422,15 +441,24 @@ def test_occlusion_mask_no_neighbors_is_all_false():
     assert occluded.shape == (4, 4)
 
 
-def test_apply_occlusion_fill_gray_uses_the_crops_mean_color():
+def test_apply_occlusion_fill_gray_uses_the_surviving_pixels_mean():
     patch = np.zeros((4, 4, 3), dtype=np.uint8)
     patch[:, :2] = 100  # left half one color, right half stays 0
-    mean_color = patch.reshape(-1, 3).mean(axis=0)
     occluded = np.zeros((4, 4), dtype=bool)
     occluded[:, 2:] = True  # mask the (unmodified) right half
     out = _apply_occlusion_fill(patch, occluded, "gray")
     assert np.array_equal(out[:, :2], patch[:, :2]), "unmasked region must be untouched"
-    assert np.allclose(out[:, 2:], mean_color)
+    # The fill is the mean of the pixels that SURVIVE (the left half, 100),
+    # not of the whole patch: averaging the occluder into its replacement
+    # would leak what the mask removes.
+    assert np.allclose(out[:, 2:], 100)
+
+
+def test_apply_occlusion_fill_gray_all_occluded_falls_back_to_patch_mean():
+    patch = np.full((4, 4, 3), 60, dtype=np.uint8)
+    occluded = np.ones((4, 4), dtype=bool)
+    out = _apply_occlusion_fill(patch, occluded, "gray")
+    assert np.allclose(out, 60)
 
 
 def test_apply_occlusion_fill_blur_only_touches_masked_pixels():
@@ -449,13 +477,31 @@ def test_apply_occlusion_fill_rejects_unknown_fill():
         _apply_occlusion_fill(patch, np.zeros((2, 2), dtype=bool), "sepia")  # type: ignore[arg-type]
 
 
-def test_prism_base_y_orders_near_rank_below_far_rank():
-    """In the sim's angled view, rank 1 (near the camera) must sit lower in the
-    image (larger projected y) than rank 8 — the nearness rule masking keys on."""
+def test_prism_depth_orders_near_rank_before_far_rank():
+    """In the sim's angled view, rank 1 (near the camera) must have SMALLER
+    camera depth than rank 8 — the nearness rule masking keys on."""
     board = render_board(square_px=32)
     photo, quad = simulate_angled_view(board)
-    base_y = _prism_base_y(quad, photo.shape)
-    assert base_y[56:64].mean() > base_y[0:8].mean()  # rank1 rows > rank8 rows
+    depth = _prism_depth(quad, photo.shape)
+    assert depth[56:64].mean() < depth[0:8].mean()  # rank1 closer than rank8
+
+
+def test_prism_depth_nearness_survives_the_rot90_probe():
+    """Occlusion is a fact about the physical scene: rotating the photo and its
+    corners together (the session.py orientation probe does exactly this) must
+    not change WHICH rank is deemed closer. The projected-y rule this replaced
+    inverted at k=2."""
+    from board_reader_inference.squares import rot90_points
+
+    board = render_board(square_px=32)
+    photo, quad = simulate_angled_view(board)
+    depth0 = _prism_depth(quad, photo.shape)
+    rot = np.rot90(photo, 2).copy()
+    quad2 = rot90_points(quad, 2, photo.shape)
+    depth2 = _prism_depth(quad2, rot.shape)
+    assert (depth0[56:64].mean() < depth0[0:8].mean()) == (
+        depth2[56:64].mean() < depth2[0:8].mean()
+    )
 
 
 def test_crop_squares_photo_flag_off_is_byte_identical(monkeypatch):
@@ -493,5 +539,10 @@ def test_crop_squares_photo_mask_never_erases_the_squares_own_piece():
     masked = crop_squares_photo(photo, quad, size=224, mask="gray")
     e2 = 6 * 8 + 4  # occupied by a white pawn glyph
     e4 = 4 * 8 + 4  # empty square, unaffected either way
-    assert _near_white(unmasked[e2]) and _near_white(masked[e2])
+    def white_px(crop):
+        return int((crop > 235).all(axis=-1).sum())
+    # The piece's pixels must SURVIVE masking, not merely leave one bright
+    # pixel behind: at least 90% of the unmasked white-glyph pixels remain.
+    assert white_px(unmasked[e2]) > 0
+    assert white_px(masked[e2]) >= 0.9 * white_px(unmasked[e2])
     assert not _near_white(unmasked[e4]) and not _near_white(masked[e4])

@@ -30,6 +30,7 @@ suppressing grid lines and neighbouring-square spill.
 
 from __future__ import annotations
 
+import logging
 import math
 import os
 from collections.abc import Sequence
@@ -449,17 +450,30 @@ OcclusionFill = Literal["gray", "blur"]
 _MASK_GEOMETRY = PoseGeometry()
 
 
+_WARNED_MASK_VALUES: set[str] = set()
+
+
 def _occlusion_fill_from_env() -> OcclusionFill | None:
     """``BR_CROP_MASK={gray,blur}`` picks the fill; unset/empty = off.
 
     Off is the default and must stay byte-identical to pre-E6 behavior: no
     masking code runs at all when this returns ``None``.
+
+    An unknown value WARNS once and runs unmasked rather than raising: this is
+    read on the per-frame path, where a raise would be swallowed per frame by
+    the ingest loop and silently kill the board's stream forever — a typo must
+    degrade to "no masking", visibly, not to a dead board.
     """
     raw = os.environ.get("BR_CROP_MASK", "").strip().lower()
     if not raw:
         return None
     if raw not in ("gray", "blur"):
-        raise ValueError(f"BR_CROP_MASK must be 'gray' or 'blur', got {raw!r}")
+        if raw not in _WARNED_MASK_VALUES:
+            _WARNED_MASK_VALUES.add(raw)
+            logging.getLogger(__name__).warning(
+                "BR_CROP_MASK=%r is not 'gray' or 'blur' — masking is OFF", raw
+            )
+        return None
     return raw  # type: ignore[return-value]
 
 
@@ -469,12 +483,25 @@ def _prism_rects(corners: np.ndarray, image_shape: tuple[int, ...]) -> np.ndarra
     return np.stack([boxes[:, 0, 0], boxes[:, 0, 1], boxes[:, 2, 0], boxes[:, 2, 1]], axis=1)
 
 
-def _prism_base_y(corners: np.ndarray, image_shape: tuple[int, ...]) -> np.ndarray:
-    """``(64,)`` projected image-``y`` of each square's base center (``Z=0``).
+#: Two squares whose camera depths differ by less than this are treated as
+#: equidistant — neither occludes the other. Depths are in board units (square
+#: edges); real perspective separates adjacent ranks by orders of magnitude
+#: more, while the degenerate poses (rectified boards / full-frame corners,
+#: where every base center recovers the same depth) collapse to a spread of
+#: exactly zero. The epsilon exists for float noise in that second case.
+_DEPTH_EPS = 1e-6
 
-    Nearness to the camera: the square whose base projects LOWER in the image
-    (larger ``y``) is the one standing in front, so it occludes squares behind
-    it. Uses the same recovered pose as :func:`pose_square_boxes`.
+
+def _prism_depth(corners: np.ndarray, image_shape: tuple[int, ...]) -> np.ndarray:
+    """``(64,)`` camera-space depth of each square's base center (``Z=0``).
+
+    Nearness to the camera is a DEPTH comparison, not an image-row one: the
+    projected-``y`` heuristic this replaces inverted under the rot90 orientation
+    probe (session.py feeds rotated images through this path) and ordered by
+    row index on rectified boards where nothing occludes anything. Depth is
+    orientation-invariant and equal-by-construction in the degenerate poses,
+    which the caller turns into "no occluders" via :data:`_DEPTH_EPS`.
+    Uses the same recovered pose as :func:`pose_square_boxes`.
     """
     K, r1, r2, r3t = board_pose(corners, image_shape, _MASK_GEOMETRY)
     r3, t = r3t[0], r3t[1]
@@ -482,26 +509,27 @@ def _prism_base_y(corners: np.ndarray, image_shape: tuple[int, ...]) -> np.ndarr
         [[c + 0.5, r + 0.5, 0.0] for r in range(GRID) for c in range(GRID)]
     )
     cam = centers @ np.stack([r1, r2, r3]) + t
-    img = (K @ cam.T).T
-    return img[:, 1] / img[:, 2]
+    return cam[:, 2]
 
 
 def _closer_neighbor_prisms(
     square: int,
     prism_rects: np.ndarray,
-    base_y: np.ndarray,
+    depth: np.ndarray,
     box: tuple[float, float, float, float],
 ) -> list[tuple[float, float, float, float]]:
     """Prism rects of squares CLOSER to the camera than ``square`` that overlap ``box``.
 
-    Excludes ``square`` itself. "Closer" = larger base-``y`` (see
-    :func:`_prism_base_y`); overlap is a plain axis-aligned rectangle test
+    Excludes ``square`` itself. "Closer" = smaller camera depth by more than
+    :data:`_DEPTH_EPS` (see :func:`_prism_depth`) — equidistant squares never
+    occlude each other, which makes the degenerate rectified/full-frame poses
+    a no-op by construction. Overlap is a plain axis-aligned rectangle test
     against ``box`` (the target square's own crop box, ``(x0, y0, x1, y1)``).
     """
     x0, y0, x1, y1 = box
     out: list[tuple[float, float, float, float]] = []
     for n in range(prism_rects.shape[0]):
-        if n == square or base_y[n] <= base_y[square]:
+        if n == square or depth[n] >= depth[square] - _DEPTH_EPS:
             continue
         nx0, ny0, nx1, ny1 = prism_rects[n]
         if nx1 <= x0 or nx0 >= x1 or ny1 <= y0 or ny0 >= y1:
@@ -544,9 +572,14 @@ def _apply_occlusion_fill(
 ) -> np.ndarray:
     """Replace ``patch`` pixels where ``occluded`` is True, per ``fill``."""
     if fill == "gray":
-        mean_color = patch.reshape(-1, *patch.shape[2:]).mean(axis=0)
+        # Mean over the pixels that survive: averaging the occluder into its
+        # own replacement would leak some of what the mask is there to remove.
+        # (All-occluded fallback: whole-patch mean is the only color there is.)
+        kept = patch[~occluded]
+        src = kept if kept.size else patch.reshape(-1, *patch.shape[2:])
+        mean_color = np.round(src.reshape(-1, *patch.shape[2:]).mean(axis=0))
         out = patch.copy()
-        out[occluded] = mean_color
+        out[occluded] = mean_color.astype(patch.dtype)
         return out
     if fill == "blur":
         # Heavy blur: sigma proportional to the crop's own (pre-resize) extent,
@@ -606,18 +639,17 @@ def crop_squares_photo(
         mask = _occlusion_fill_from_env()
     h_img, w_img = image.shape[:2]
     boxes = square_boxes(corners, geometry, image.shape)
-    all_squares = list(range(GRID * GRID))
     if squares is not None:
         sel = np.asarray(squares, dtype=int)
         boxes = boxes[sel]
         square_ids = sel.tolist()
     else:
-        square_ids = all_squares
+        square_ids = list(range(GRID * GRID))
     prism_rects: np.ndarray | None = None
-    base_y: np.ndarray | None = None
+    depth: np.ndarray | None = None
     if mask is not None:
         prism_rects = _prism_rects(corners, image.shape)
-        base_y = _prism_base_y(corners, image.shape)
+        depth = _prism_depth(corners, image.shape)
     crops: list[np.ndarray] = []
     for box, sq in zip(boxes, square_ids, strict=True):
         x0, y0 = box[0]
@@ -630,8 +662,8 @@ def crop_squares_photo(
                 (8, 8, 3) if image.ndim == 3 else (8, 8), dtype=image.dtype
             )
         elif mask is not None:
-            assert prism_rects is not None and base_y is not None
-            neighbors = _closer_neighbor_prisms(sq, prism_rects, base_y, (x0, y0, x1, y1))
+            assert prism_rects is not None and depth is not None
+            neighbors = _closer_neighbor_prisms(sq, prism_rects, depth, (x0, y0, x1, y1))
             if neighbors:
                 occluded = _occlusion_mask(
                     (xi0, yi0, xi1, yi1), tuple(prism_rects[sq]), neighbors
