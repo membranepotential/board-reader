@@ -18,10 +18,13 @@ confidences**. No moves, no legality, no PGN — those are the downstream applic
 - **08-28 retrain program CLOSED** — masking shipped, cloud pipeline live
   (see Done). Nothing running; RunPod volume standing ($2.10/mo), pods reaped,
   balance $7.25.
-- **cloud-phase-2+3** — main session: Phase 2 DONE ($0.29 — loader-bound
-  verdict, workers 8 is the only winner, README "Cloud perf"); **run_i_cloud
-  full-data training LAUNCHING** (~15 min/epoch, worst case ~$2.50, patience 5)
-  — next: gates on the artifact, then the bank re-embed rematch.
+- **cloud-phase-2+3** — Phase 2 DONE ($0.29, loader-bound verdict, README
+  "Cloud perf"); Phase 3.1 run_i_cloud DONE ($2.36, 20 epochs @1170 img/s):
+  **holdout 0.9283 (+2.9pp) but chesscog 0.828 (−3.2pp vs run_g_cloud)** —
+  full data overfits the synthetic mix; run_g_cloud stays the best OOD bbox
+  member. **Rematch gates RUNNING** (local GPU, background): (1) shipped
+  members + masked bank, (2) run_g_cloud⊕run_h_cloud + masked bank —
+  scratch/gates-rematch-20260829.log.
 - **masked-bank-rebuild** — DONE (`9e7a654` + review-hardened `6572b76`):
   `rebuild-bank` shares the live guard (`session.verify_labels`); corpus 54 →
   31 used / 10 guard-rejected / 13 rectified-excluded; banks 7,936 exemplars,

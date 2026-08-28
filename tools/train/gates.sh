@@ -17,7 +17,10 @@ cd "$ROOT"
 MODEL="${1:-scratch/runs/run_g/model.onnx}"
 MODEL_B="${2:-scratch/runs/run_h/model.onnx}"
 NAME="${BR_GATE_NAME:-e7-masked}"
-BANK="data/eval/bank-baseline-20260828.npz"
+# The pinned 08-28 baseline bank by default; BR_GATE_BANK overrides for the
+# bank-rematch runs (e.g. data/eval/bank-masked-20260828.npz) — rows are only
+# comparable to controls scored with the SAME bank, so the name must say which.
+BANK="${BR_GATE_BANK:-data/eval/bank-baseline-20260828.npz}"
 
 for f in "$MODEL" "$MODEL_B" "$BANK"; do
   [ -f "$f" ] || { echo "[gates] missing $f" >&2; exit 1; }
