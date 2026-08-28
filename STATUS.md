@@ -22,6 +22,12 @@ confidences**. No moves, no legality, no PGN — those are the downstream applic
   verdict, workers 8 is the only winner, README "Cloud perf"); **run_i_cloud
   full-data training LAUNCHING** (~15 min/epoch, worst case ~$2.50, patience 5)
   — next: gates on the artifact, then the bank re-embed rematch.
+- **masked-bank-rebuild** — LANDED (`9e7a654`, under adversarial review):
+  `rebuild-bank` CLI reuses the live calibrate path; banks
+  `data/eval/bank-{masked,rebuilt-unmasked}-20260828.npz` (13,824 exemplars).
+  Curated three-way: baseline 305 → rebuilt-unmasked 308 → masked **309**/320
+  (corpus +3, masking +1). Caveats: confidence distribution shifts ~0.59→0.52;
+  no model-guard on the corpus. Rematch gates wait on run_i.
 - **two-kings-coherence-fix** — CLOSED as a refutation (`8c42b83`): the shipped
   rule already demotes the lower-confidence king and is Pareto-best over 4 rules
   x 4 takes; the 31/31-wrong figure was the *rejected* e7 row. Lever at ceiling

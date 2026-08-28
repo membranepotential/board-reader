@@ -20,9 +20,8 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from config import Config
-from cropcache import build_cache, load_meta
+from cropcache import build_cache, geo_cache_root, load_meta
 from styles import CROP, CropSample, Style, StyleSample
-from cropcache import geo_cache_root
 
 from board_reader_core.protocol import START_PLACEMENT
 from board_reader_core.sim import render_board, simulate_angled_view
