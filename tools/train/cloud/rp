@@ -348,7 +348,14 @@ create_pod() {
 
   "$RUNPODCTL" "${args[@]}" >"$out" 2>&1 || rc=$?
   cat "$out" >&2
-  POD_ID="$(json_pluck id <"$out" || true)"
+  # --wait prefixes human-readable "waiting for ssh on pod <id>" lines to the
+  # JSON (live finding, 08-28: json.load on the mixed output failed, POD_ID
+  # came up empty, and the trap reaped a healthy pod by name). Parse the JSON
+  # from its first line, and take the id from the progress text as a backup.
+  POD_ID="$(sed -n '/^{/,$p' "$out" | json_pluck id || true)"
+  if [ -z "$POD_ID" ]; then
+    POD_ID="$(grep -oE '\bon pod [a-z0-9]{6,}' "$out" | head -n1 | awk '{print $3}' || true)"
+  fi
   if [ -z "$POD_ID" ]; then
     # --wait-timeout keeps the pod and puts the id in a non-JSON error line.
     # Best effort: the exact wording is undocumented, which is precisely why
