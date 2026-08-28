@@ -503,7 +503,7 @@ def _prism_depth(corners: np.ndarray, image_shape: tuple[int, ...]) -> np.ndarra
     which the caller turns into "no occluders" via :data:`_DEPTH_EPS`.
     Uses the same recovered pose as :func:`pose_square_boxes`.
     """
-    K, r1, r2, r3t = board_pose(corners, image_shape, _MASK_GEOMETRY)
+    _K, r1, r2, r3t = board_pose(corners, image_shape, _MASK_GEOMETRY)
     r3, t = r3t[0], r3t[1]
     centers = np.array(
         [[c + 0.5, r + 0.5, 0.0] for r in range(GRID) for c in range(GRID)]

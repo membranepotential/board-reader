@@ -23,7 +23,7 @@ import torch
 import torch.nn as nn
 from augment import eval_transform, train_transform
 from config import Config
-from cropcache import CACHE_ROOT, ensure_caches, geo_cache_root, resolve_styles
+from cropcache import ensure_caches, geo_cache_root, resolve_styles
 from dataset import (
     CropDataset,
     class_counts_str,
@@ -40,8 +40,6 @@ from torch.utils.data import DataLoader, WeightedRandomSampler
 
 from board_reader_core.protocol import CLASSES, NUM_CLASSES
 from models import build_model, param_summary, trainable_parameters
-
-from board_reader_inference.squares import BboxGeometry, geometry_tag
 
 try:
     from plots import render_run_plots

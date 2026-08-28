@@ -40,13 +40,13 @@ def _mk_cache(root: Path, name: str, mode: str = "board", *, legacy: bool = Fals
 
 
 def _cfg(tmp_path: Path, **over) -> Config:
-    base = dict(
-        styles=["all"],
-        headroom=1.6,
-        side_pad=0.15,
-        mask="gray",
-        out_dir=str(tmp_path / "out"),
-    )
+    base = {
+        "styles": ["all"],
+        "headroom": 1.6,
+        "side_pad": 0.15,
+        "mask": "gray",
+        "out_dir": str(tmp_path / "out"),
+    }
     base.update(over)
     return Config(**base)
 

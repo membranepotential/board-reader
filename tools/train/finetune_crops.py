@@ -236,7 +236,7 @@ def cap_empties(
     empties = [r for r in records if r.label == "empty"]
     if not non_empty or not empties:
         return list(records)
-    cap = int(round(multiple * max(Counter(r.label for r in non_empty).values())))
+    cap = round(multiple * max(Counter(r.label for r in non_empty).values()))
     if len(empties) <= cap:
         return list(records)
     kept = random.Random(seed).sample(empties, cap)
@@ -411,7 +411,7 @@ def scorecard(base, tuned, crops, labels, session_names: list[str], device) -> d
         rows.append(
             {
                 "session": name,
-                "n": int(len(idx)),
+                "n": len(idx),
                 "base": int((p_base[idx].argmax(1) == y).sum()),
                 "tuned": int((p_tuned[idx].argmax(1) == y).sum()),
                 "averaged": int(

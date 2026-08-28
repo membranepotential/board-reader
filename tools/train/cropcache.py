@@ -25,6 +25,7 @@ import os
 from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import cv2
 import numpy as np
@@ -36,6 +37,9 @@ if os.environ.get("BR_CV_THREADS"):
 
 import _bootstrap
 from styles import BOARD, Style, chessred_style, discover_styles
+
+if TYPE_CHECKING:
+    from config import Config
 
 from board_reader_core.protocol import CLASS_INDEX, CLASSES, parse_placement
 
