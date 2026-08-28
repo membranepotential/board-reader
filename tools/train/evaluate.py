@@ -33,6 +33,7 @@ from models import build_model
 from board_reader_inference.squares import (
     BboxGeometry,
     CropGeometry,
+    OcclusionFill,
     crop_squares_photo,
     geometry_from_dict,
 )
@@ -169,7 +170,12 @@ def _make_predictor(args, *, grayscale: bool):
 
 
 def eval_boards(
-    boards: list[EvalBoard], predictor, *, geometry: CropGeometry, per_board: bool = False
+    boards: list[EvalBoard],
+    predictor,
+    *,
+    geometry: CropGeometry,
+    mask: OcclusionFill | None = None,
+    per_board: bool = False,
 ) -> tuple[SquareStats, int]:
     stats = SquareStats()
     perfect = 0
@@ -178,7 +184,7 @@ def eval_boards(
         if img is None:
             print(f"  WARN unreadable {b.image_path}")
             continue
-        crops = crop_squares_photo(img, b.corners, geometry=geometry, size=SIZE)
+        crops = crop_squares_photo(img, b.corners, geometry=geometry, size=SIZE, mask=mask)
         pred = predictor.predict(crops)
         stats.update(b.labels, pred)
         n_correct = int((pred == b.labels).sum())
@@ -199,6 +205,15 @@ def main() -> None:
         "--style", action="append", default=["chesscog_transfer"],
         help="also score this registered style as an unseen-style set "
              "(default: chesscog_transfer; repeatable)",
+    )
+    ap.add_argument(
+        "--mask", choices=["gray", "blur"], default=None,
+        help="occlusion-aware crop masking (E7), matching BR_CROP_MASK at serve "
+             "time. Applied only to sets that carry real board corners "
+             "(user_photos, uploads_calibrate, and any --style that is a "
+             "BOARD-mode style, e.g. chesscog_transfer); a CROP-mode style has no "
+             "corners to derive occlusion from and is always scored unmasked, "
+             "noted per-set below.",
     )
     ap.add_argument("--no-grayscale", action="store_true", help="skip the shape-bias diagnostic")
     args = ap.parse_args()
@@ -228,9 +243,29 @@ def main() -> None:
         )
     print(f"eval geometry: {geometry}")
 
-    sets = {"user_photos": load_user_photos(), "uploads_calibrate": load_uploads_calibrate()}
+    # (boards, mask) per set. user_photos/uploads_calibrate always carry real
+    # corners (ground_truth.json / upload sidecars), so a requested mask always
+    # applies. A --style set only gets one if it is BOARD-mode (has corners);
+    # CROP-mode styles (pre-cut single squares, e.g. the Zenodo auxiliary sets)
+    # have nothing to derive occlusion from and stay unmasked — noted below so
+    # it reads as a documented caveat, not a silent mismatch.
+    from styles import BOARD
+    from styles import discover_styles as _discover_styles
+
+    available_styles = _discover_styles()
+    sets: dict[str, tuple[list[EvalBoard], OcclusionFill | None]] = {
+        "user_photos": (load_user_photos(), args.mask),
+        "uploads_calibrate": (load_uploads_calibrate(), args.mask),
+    }
     for style_name in dict.fromkeys(args.style):
-        sets[style_name] = load_style(style_name)
+        boards = load_style(style_name)
+        style = available_styles.get(style_name)
+        set_mask = args.mask
+        if args.mask is not None and (style is None or style.mode != BOARD):
+            print(f"  NOTE: {style_name} is crop-level (no board corners) — "
+                  f"scoring unmasked despite --mask {args.mask}")
+            set_mask = None
+        sets[style_name] = (boards, set_mask)
 
     def run(grayscale: bool) -> SquareStats:
         predictor = _make_predictor(args, grayscale=grayscale)
@@ -238,12 +273,12 @@ def main() -> None:
         print(f"\n=== {tag} ===")
         overall = SquareStats()
         total_perfect = total_boards = 0
-        for name, boards in sets.items():
+        for name, (boards, set_mask) in sets.items():
             if not boards:
                 print(f"{name}: (no boards)")
                 continue
             stats, perfect = eval_boards(boards, predictor, geometry=geometry,
-                                         per_board=not grayscale)
+                                         mask=set_mask, per_board=not grayscale)
             for f in overall.__dataclass_fields__:
                 setattr(overall, f, getattr(overall, f) + getattr(stats, f))
             total_perfect += perfect

@@ -1,0 +1,41 @@
+# Run (h) — E7: run_f (pose-aware crop) retrained on occlusion-masked crops
+# (BR_CROP_MASK=gray). Identical to run_f in every other respect (same 11
+# styles, same holdout, same optimiser, same seed, same pose geometry) so the
+# only variable added on top of run_f is train/serve domain match for masking.
+#
+# Baselines to beat/match (run_f, unmasked):
+#   holdout chessr_vlab_wooden   0.894 (ties run_e; kept for the cascade)
+#   chesscog_transfer (unseen real photos)   run_e 0.819 for comparability
+styles: ["all"]
+require_mode: board
+holdout: chessr_vlab_wooden
+
+crop_geometry:
+  kind: pose
+  piece_height: 1.9
+  piece_radius: 0.5
+  focal_ratio: 1.0
+mask: gray
+
+model: resnet18
+init: imagenet
+shape_bias: true
+
+epochs: 20
+# 8, not 5 — see run_f.yaml: patience this low on a 40-minute run risks answering
+# nothing if the curve stalls mid-run.
+patience: 8
+batch_size: 48
+lr: 0.0005
+weight_decay: 0.05
+steps_per_epoch: 300
+warmup_frac: 0.05
+
+# fp32 only: on this Turing card (GTX 1650) fp16 autocast produces NaN in the
+# FORWARD pass (GradScaler cannot help — it only rescales the backward) and runs
+# 3x slower than fp32; bf16 is emulated and ~2.7x slower. Measured, not assumed.
+device: auto
+amp: false
+num_workers: 8
+seed: 0
+out_dir: "scratch/runs/run_h"

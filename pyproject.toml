@@ -124,6 +124,7 @@ testpaths = [
     "packages",
     "tools/video/tests",
     "tools/train/tests/test_calibrate_finetune.py",
+    "tools/train/tests/test_cropcache_mask.py",
     "tools/train/tests/test_finetune_crops.py",
 ]
 # `gpu` marks the tests that build a real ONNX InferenceSession and so take the

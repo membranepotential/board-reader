@@ -48,6 +48,11 @@ class Config:
     headroom: float = 0.15
     side_pad: float = 0.15
     crop_geometry: dict | None = None
+    # Occlusion-aware crop masking (E7): train on the same masked domain
+    # ``BR_CROP_MASK`` serves. "gray" | "blur" | None (unmasked, pre-E7 default).
+    # Threaded into the cache key (a masked cache never collides with an
+    # unmasked one) and recorded in the exported .onnx.meta.json.
+    mask: str | None = None
 
     # model
     model: str = "resnet18"  # resnet18 | resnet50 | dinov2
@@ -98,7 +103,10 @@ class Config:
         unknown = set(data) - set(known)
         if unknown:
             raise ValueError(f"unknown config keys: {sorted(unknown)}")
-        return cls(**known)
+        cfg = cls(**known)
+        if cfg.mask is not None and cfg.mask not in ("gray", "blur"):
+            raise ValueError(f"mask must be 'gray', 'blur', or null; got {cfg.mask!r}")
+        return cfg
 
     def dump(self, path: str | Path) -> None:
         Path(path).parent.mkdir(parents=True, exist_ok=True)

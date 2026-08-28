@@ -23,7 +23,7 @@ import torch
 import torch.nn as nn
 from augment import eval_transform, train_transform
 from config import Config
-from cropcache import CACHE_ROOT, build_cache
+from cropcache import CACHE_ROOT, build_cache, geo_cache_root
 from dataset import (
     CropDataset,
     class_counts_str,
@@ -82,15 +82,6 @@ def resolve_styles(cfg: Config) -> list[str]:
     return list(cfg.styles)
 
 
-def geo_cache_root(cfg: Config):
-    """Geometry-keyed cache dir so different geometries don't collide/reuse.
-    The original ``BboxGeometry(0.15, 0.15)`` maps to the default root (run (a)'s
-    cache), which predates the tagging scheme."""
-    geometry = cfg.geometry
-    if geometry == BboxGeometry(headroom=0.15, side_pad=0.15):
-        return CACHE_ROOT
-    return CACHE_ROOT / geometry_tag(geometry)
-
 
 def ensure_caches(names: list[str], cfg: Config) -> None:
     available = discover_styles()
@@ -99,7 +90,7 @@ def ensure_caches(names: list[str], cfg: Config) -> None:
         style = available[name]
         if name == "chessred" and cfg.max_boards is not None:
             style = chessred_style(max_boards=cfg.max_boards)
-        build_cache(style, out_root=root, size=cfg.size, geometry=cfg.geometry)
+        build_cache(style, out_root=root, size=cfg.size, geometry=cfg.geometry, mask=cfg.mask)
 
 
 @torch.inference_mode()
@@ -356,6 +347,8 @@ def main() -> None:
                     help="cap val to N crops (stratified). Screening only — a capped "
                          "val accuracy ranks candidates, it does not score them.")
     ap.add_argument("--out-dir", default=None)
+    ap.add_argument("--mask", choices=["gray", "blur"], default=None,
+                    help="override config occlusion mask (E7)")
     args = ap.parse_args()
     cfg = Config.load(args.config)
     if args.holdout is not None:
@@ -372,6 +365,8 @@ def main() -> None:
         cfg.val_max = args.val_max
     if args.out_dir is not None:
         cfg.out_dir = args.out_dir
+    if args.mask is not None:
+        cfg.mask = args.mask
     train(cfg)
 
 

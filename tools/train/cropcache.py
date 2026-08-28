@@ -42,9 +42,11 @@ from board_reader_core.protocol import CLASS_INDEX, CLASSES, parse_placement
 from board_reader_inference.squares import (
     BboxGeometry,
     CropGeometry,
+    OcclusionFill,
     PoseGeometry,
     crop_squares_photo,
     geometry_from_dict,
+    geometry_tag,
 )
 
 CACHE_ROOT = _bootstrap.ROOT / "data" / "external" / "_cropcache"
@@ -77,6 +79,10 @@ class CacheMeta:
     # Full geometry record. `headroom`/`side_pad` above stay for the caches built
     # before pose geometry existed; for those this is None and they are the truth.
     crop_geometry: dict | None = None
+    # Occlusion fill applied to BOARD-mode crops at build time (E7), or None for
+    # the pre-E7 unmasked caches. Missing in old meta.json -> None (default),
+    # which is the correct read: those caches predate masking entirely.
+    mask: str | None = None
 
     @property
     def geometry(self) -> CropGeometry:
@@ -107,12 +113,20 @@ def _pad_resize(img: np.ndarray, size: int) -> np.ndarray:
     return cv2.resize(img, (size, size), interpolation=cv2.INTER_AREA)
 
 
-def _board_crops(sample, size: int, geometry: CropGeometry):
-    """(crop, label_idx) pairs for one board-mode sample."""
+def _board_crops(
+    sample, size: int, geometry: CropGeometry, mask: OcclusionFill | None = None
+):
+    """(crop, label_idx) pairs for one board-mode sample.
+
+    ``mask`` mirrors the deployed occlusion-aware masking exactly (it IS
+    ``crop_squares_photo``'s own ``mask`` param — same closer-square selection,
+    same own-prism exclusion, same fill) so a cache built with ``mask="gray"``
+    matches the ``BR_CROP_MASK=gray`` serving domain pixel-for-pixel.
+    """
     img = cv2.imread(str(sample.image_path))
     if img is None:
         return None
-    crops = crop_squares_photo(img, sample.corners, geometry=geometry, size=size)
+    crops = crop_squares_photo(img, sample.corners, geometry=geometry, size=size, mask=mask)
     return list(zip(crops, _flatten_labels(sample.placement)))
 
 
@@ -170,21 +184,31 @@ def build_cache(
     geometry: CropGeometry = DEFAULT_CACHE_GEOMETRY,
     shard_size: int = DEFAULT_SHARD,
     force: bool = False,
+    mask: OcclusionFill | None = None,
 ) -> CacheMeta:
     """Crop every board of ``style`` and write shards + ``meta.json``.
 
     Idempotent: returns the existing meta if a complete cache is already present
     (unless ``force``).
+
+    ``mask``: occlusion-aware fill (E6/E7), applied only to BOARD-mode styles —
+    they carry per-sample ``corners``, which is what the occlusion geometry needs
+    to find closer neighbor prisms. CROP-mode styles (already-cut single-square
+    images, no corners) are built unmasked regardless of ``mask``; the caller is
+    warned once so this never silently no-ops.
     """
     out_dir = out_root / style.name
     meta_path = out_dir / "meta.json"
     n_samples = len(style)
+    effective_mask = mask if style.mode == BOARD else None
+    if mask is not None and style.mode != BOARD:
+        print(f"  {style.name}: crop-mode style (no board corners) — building unmasked despite mask={mask!r}")
     if meta_path.exists() and not force:
         with open(meta_path) as f:
             existing = CacheMeta(**json.load(f))
         # Reuse only if the source style is unchanged; a differing sample count
         # (e.g. a capped smoke cache vs a full run, or new images added) is stale.
-        if existing.n_samples == n_samples and existing.size == size:
+        if existing.n_samples == n_samples and existing.size == size and existing.mask == effective_mask:
             return existing
         print(f"  {style.name}: cache stale (had {existing.n_samples} samples, now {n_samples}); rebuilding")
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -199,7 +223,7 @@ def build_cache(
     unit = "boards" if style.mode == BOARD else "crops"
     for n, s in enumerate(samples, 1):
         pairs = (
-            _board_crops(s, size, geometry)
+            _board_crops(s, size, geometry, effective_mask)
             if style.mode == BOARD
             else _crop_sample(s, size)
         )
@@ -232,11 +256,29 @@ def build_cache(
         class_counts={c: class_counts.get(c, 0) for c in CLASSES},
         n_samples=len(samples),
         crop_geometry=geometry.to_dict(),
+        mask=effective_mask,
     )
     with open(meta_path, "w") as f:
         json.dump(meta.to_dict(), f, indent=2)
     return meta
 
+
+def geo_cache_root(cfg):  # cfg: config.Config — annotated loosely to keep this
+    # module torch-free AND config-import-free (config imports nothing heavy, but
+    # the dependency arrow cache<-config stays one-way).
+    """Geometry-keyed cache dir so different geometries don't collide/reuse.
+    The original ``BboxGeometry(0.15, 0.15)`` maps to the default root (run (a)'s
+    cache), which predates the tagging scheme. A ``mask`` (E7) is folded into the
+    tag too — a masked cache must never collide with (or be silently reused as)
+    an unmasked one, since the pixels differ."""
+    geometry = cfg.geometry
+    is_default = geometry == BboxGeometry(headroom=0.15, side_pad=0.15)
+    if is_default and cfg.mask is None:
+        return CACHE_ROOT
+    tag = "hr0.15_sp0.15" if is_default else geometry_tag(geometry)
+    if cfg.mask is not None:
+        tag = f"{tag}_mask{cfg.mask}"
+    return CACHE_ROOT / tag
 
 def load_meta(style_name: str, out_root: Path = CACHE_ROOT) -> CacheMeta:
     with open(out_root / style_name / "meta.json") as f:
@@ -268,6 +310,13 @@ def main() -> None:
              "(e.g. --pose 1.9 0.5). Overrides --headroom/--side-pad.",
     )
     ap.add_argument("--out-root", type=Path, default=CACHE_ROOT, help="cache root (geometry-keyed)")
+    ap.add_argument(
+        "--mask", choices=["gray", "blur"], default=None,
+        help="occlusion-aware fill (E6/E7), BOARD-mode styles only — matches "
+             "BR_CROP_MASK at inference. A masked cache must live under its own "
+             "--out-root (e.g. <geometry-tag>_mask<fill>); it never collides with "
+             "an unmasked one.",
+    )
     ap.add_argument("--force", action="store_true")
     args = ap.parse_args()
 
@@ -287,9 +336,9 @@ def main() -> None:
             from styles import chessred_style
 
             style = chessred_style(max_boards=args.max_boards)
-        print(f"caching {name} ({len(style)} boards) {geometry} -> {args.out_root}")
+        print(f"caching {name} ({len(style)} boards) {geometry} mask={args.mask} -> {args.out_root}")
         meta = build_cache(style, out_root=args.out_root, shard_size=args.shard_size,
-                           geometry=geometry, force=args.force)
+                           geometry=geometry, force=args.force, mask=args.mask)
         nz = {c: n for c, n in meta.class_counts.items() if n}
         print(f"  -> {meta.n_crops} crops in {len(meta.shards)} shards; classes: {nz}")
 

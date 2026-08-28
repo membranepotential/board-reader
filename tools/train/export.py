@@ -62,6 +62,12 @@ def export(ckpt_path: Path, out_path: Path, *, opset: int = 17) -> None:
         "side_pad": float(getattr(cfg.geometry, "side_pad", 0.0)),
         "square_size": SIZE,
     }
+    if cfg.mask is not None:
+        # Informational (E7): what occlusion fill the training crops were built
+        # with. TrainedEstimator does not read this back — masking is chosen at
+        # serve time via BR_CROP_MASK — but it lets a report line up a model
+        # with the domain it was trained on without re-deriving it from the run.
+        meta["occlusion_mask"] = cfg.mask
     meta_path = Path(str(out_path) + ".meta.json")
     meta_path.write_text(json.dumps(meta))
     print(f"wrote {meta_path}: {meta}")

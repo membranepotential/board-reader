@@ -1,0 +1,35 @@
+# Run (g) — E7: run_e retrained on occlusion-masked crops (BR_CROP_MASK=gray).
+# Identical to run_e in every other respect (same 11 styles, same holdout, same
+# optimiser, same seed) so the only variable is train/serve domain match: E6
+# showed the mechanism works at inference alone (gated, but "an OOD tax" on
+# squares masking fires without pathology); E7 retrains so the model has
+# actually seen gray occlusion rectangles.
+#
+# Baselines to beat/match (run_e, unmasked):
+#   holdout chessr_vlab_wooden   0.898 per-square
+#   chesscog_transfer (unseen real photos)   0.819
+styles: ["all"]
+require_mode: board
+holdout: chessr_vlab_wooden
+
+model: resnet18
+init: imagenet
+shape_bias: true
+
+headroom: 1.6
+side_pad: 0.15
+mask: gray
+
+epochs: 20
+patience: 5
+batch_size: 48
+lr: 0.0005
+weight_decay: 0.05
+steps_per_epoch: 300
+warmup_frac: 0.05
+
+device: auto
+amp: false
+num_workers: 8
+seed: 0
+out_dir: "scratch/runs/run_g"

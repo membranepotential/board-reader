@@ -20,6 +20,16 @@ angles and cost ~15 points of piece-type accuracy. The deployed geometry is
 **`headroom=1.6, side_pad=0.15, size=224`** — a whole standing piece. Never
 hard-code it on either side; let the sidecar carry it.
 
+Occlusion-aware crop **masking** (E7, `mask: gray|blur` in a run config /
+`--mask` on `cropcache.py` and `evaluate.py`) rides the same discipline: it is
+the training-side mirror of the deployed `BR_CROP_MASK` env var, applied via
+the same `crop_squares_photo(mask=...)` choke point (BOARD-mode styles only —
+masking needs a sample's `corners`). It is folded into the crop-cache's
+geometry-keyed directory name (`geo_cache_root`, `tools/train/train.py`) so a
+masked cache never collides with an unmasked one, and recorded as an
+informational `occlusion_mask` field in the exported `.onnx.meta.json` — the
+serving choice still lives in `BR_CROP_MASK`, not the sidecar.
+
 ## Layout
 
 | File | Role |
