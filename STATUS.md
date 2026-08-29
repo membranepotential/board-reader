@@ -117,7 +117,11 @@ confidences**. No moves, no legality, no PGN — those are the downstream applic
    Base-weighted attribution over bounding-prism membership. Plus detection
    follow-ups (`73efd60`, non-blocking). The 08-28 demotion A/B pins both sides
    of the `b` trade on this (c5's crop bleeding into b5).
-9. **Client-side session video** (user proposal 08-28): `MediaRecorder` on the
+9. **Step-back reevaluation ideas parked in [docs/ideas.md](docs/ideas.md)**
+   (user 08-29, "work on it some other time"): recommended sequence is DINOv3
+   ceiling probe → legality-constrained auto-labeling of game video →
+   detection-first (RF-DETR) prototype; SAM 3 as labeling tooling.
+10. **Client-side session video** (user proposal 08-28): `MediaRecorder` on the
    camera track, chunked upload during the session, stored beside the recording
    — edge/detector debugging plus trivial truth-authoring (~25–50 MB/take).
 

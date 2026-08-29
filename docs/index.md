@@ -50,6 +50,9 @@ reconstruction and PGN belong to whatever consumes the stream.
 - [[2026-08-29-bank-rematch|Bank rematch]] — masked banks and full-data training both
   NO-GO; the bank's value is session adaptation (exemplars only recordings hold), and
   a curated gain is again not a deployment verdict. The shipped stack stands
+- [[ideas]] — the 2026-08-29 step-back survey: data engines (legality-constrained
+  auto-labeling, PGN-aligned video) and architecture options (detection-first,
+  DINOv3, SAM 3), parked with a recommended sequence
 - [[youtube-streams]] — curated static-camera OTB footage for bring-up
 - `aspects.yaml` — which parts must stay in sync with which, and the contract between them
 
