@@ -53,6 +53,8 @@ reconstruction and PGN belong to whatever consumes the stream.
 - [[ideas]] — the 2026-08-29 step-back survey: data engines (legality-constrained
   auto-labeling, PGN-aligned video) and architecture options (detection-first,
   DINOv3, SAM 3), parked with a recommended sequence
+- [[viterbi-auto-labeling]] — the algorithm behind ideas §A: how sequence decoding
+  over the legal-move graph turns the ~92 % reader into a near-perfect labeler
 - [[youtube-streams]] — curated static-camera OTB footage for bring-up
 - `aspects.yaml` — which parts must stay in sync with which, and the contract between them
 
