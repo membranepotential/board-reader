@@ -1,9 +1,14 @@
-"""Export the official Meta DINOv2 ViT-S/14 to ONNX (DESIGN.md §4.6, D9).
+"""Export an official Meta DINO backbone (v2 or v3) to ONNX (DESIGN.md §4.6, D9).
 
-We deliberately download **official first-party weights** (`facebook/dinov2-small`,
-Meta's own HF org — Apache-2.0) and convert to ONNX **ourselves**, rather than pulling
-a third-party pre-converted artifact. The exported model emits the CLS embedding
-(384-d) used by the recognizer's centroid classifier.
+We deliberately download **official first-party weights** (`facebook/dinov2-small` /
+`facebook/dinov3-vits16-pretrain-lvd1689m`, Meta's own HF org) and convert to ONNX
+**ourselves**, rather than pulling a third-party pre-converted artifact. The exported
+model emits the pooled embedding used by the recognizer's centroid classifier.
+
+Geometry (patch size, embedding width, register-token count) is read from the model
+config, so the same script handles DINOv2 (patch 14, no registers) and DINOv3
+(patch 16, 4 register tokens — DINOv3 weights are license-gated on HF; accept it on
+the model page first).
 
 This is one-time export tooling, kept out of the lean inference runtime. Run it in an
 isolated environment with torch + transformers + onnx (see tools/README.md):
@@ -18,9 +23,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-EMBED_DIM = 384  # DINOv2 ViT-S/14 embedding width
 MODEL_ID = "facebook/dinov2-small"
-PATCH = 14  # ViT-S/**14**: a 224px crop becomes a 16x16 token grid
 
 
 def main() -> int:
@@ -36,9 +39,9 @@ def main() -> int:
              "cross-style on the same weights.",
     )
     ap.add_argument(
-        "--keep-columns", type=int, default=8,
-        help="--pooling central: how many of the 16 token columns to keep (8 = "
-             "the measured configuration)",
+        "--keep-columns", type=int, default=None,
+        help="--pooling central: how many token columns to keep (default: half the "
+             "grid — 8/16 on DINOv2, the measured configuration)",
     )
     args = ap.parse_args()
 
@@ -52,8 +55,16 @@ def main() -> int:
     model = AutoModel.from_pretrained(args.model)
     model.eval()
 
+    # Geometry comes from the checkpoint, not from constants: DINOv2 ViT-S/14 has
+    # patch 14 and no register tokens; DINOv3 ViT-S/16 has patch 16 and 4 register
+    # tokens sitting between CLS and the patch tokens in last_hidden_state.
+    patch: int = model.config.patch_size
+    embed_dim: int = model.config.hidden_size
+    n_prefix: int = 1 + getattr(model.config, "num_register_tokens", 0)
+    print(f"geometry: patch {patch}, embed {embed_dim}-d, {n_prefix} prefix token(s)")
+
     class ClsEmbedding(torch.nn.Module):
-        """Expose just the pooled CLS embedding (B, 384) — what the classifier wants."""
+        """Expose just the pooled CLS embedding (B, D) — what the classifier wants."""
 
         def __init__(self, m: torch.nn.Module) -> None:
             super().__init__()
@@ -74,14 +85,17 @@ def main() -> int:
         and the reason this export mode exists.
         """
 
-        def __init__(self, m: torch.nn.Module, *, grid: int, keep: int) -> None:
+        def __init__(self, m: torch.nn.Module, *, grid: int, keep: int, prefix: int) -> None:
             super().__init__()
             self.m = m
             self.grid = grid
             self.keep = keep
+            self.prefix = prefix
 
         def forward(self, pixel_values: torch.Tensor) -> torch.Tensor:
-            tokens = self.m(pixel_values=pixel_values).last_hidden_state[:, 1:, :]
+            # Drop ALL prefix tokens (CLS + any register tokens), not just CLS —
+            # DINOv3 puts 4 register tokens before the patch grid.
+            tokens = self.m(pixel_values=pixel_values).last_hidden_state[:, self.prefix :, :]
             # Reshape with a **-1 batch**: tracing a concrete `tokens.shape[0]`
             # bakes the export-time batch into the graph, and the model then
             # only ever accepts batches of that one size (it exported cleanly
@@ -93,21 +107,24 @@ def main() -> int:
     if args.pooling == "cls":
         wrapper = ClsEmbedding(model).eval()
     else:
-        grid = args.image_size // PATCH
-        if args.keep_columns > grid:
-            raise SystemExit(f"--keep-columns {args.keep_columns} > patch grid {grid}")
+        if args.image_size % patch:
+            raise SystemExit(f"--image-size {args.image_size} not divisible by patch {patch}")
+        grid = args.image_size // patch
+        keep = args.keep_columns if args.keep_columns is not None else grid // 2
+        if keep > grid:
+            raise SystemExit(f"--keep-columns {keep} > patch grid {grid}")
         print(
-            f"pooling: central {args.keep_columns}/{grid} token columns "
-            f"({args.image_size}px / patch {PATCH})"
+            f"pooling: central {keep}/{grid} token columns "
+            f"({args.image_size}px / patch {patch})"
         )
         wrapper = CentralColumnEmbedding(
-            model, grid=grid, keep=args.keep_columns
+            model, grid=grid, keep=keep, prefix=n_prefix
         ).eval()
     dummy = torch.randn(1, 3, args.image_size, args.image_size)
 
     with torch.no_grad():
         ref = wrapper(dummy)
-    assert ref.shape[-1] == EMBED_DIM, f"expected {EMBED_DIM}-d, got {tuple(ref.shape)}"
+    assert ref.shape[-1] == embed_dim, f"expected {embed_dim}-d, got {tuple(ref.shape)}"
 
     print(f"exporting -> {out} (opset {args.opset}, dynamic batch)")
     # `dynamo=False` pins the legacy TorchScript exporter, which honours
@@ -138,7 +155,7 @@ def main() -> int:
     if sidecar.exists():
         sidecar.unlink()
     print(
-        f"done: {out} ({out.stat().st_size / 1e6:.1f} MB), embedding dim {EMBED_DIM}, "
+        f"done: {out} ({out.stat().st_size / 1e6:.1f} MB), embedding dim {embed_dim}, "
         f"pooling {args.pooling}"
     )
     return 0
