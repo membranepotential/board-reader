@@ -19,7 +19,27 @@ confidences**. No moves, no legality, no PGN — those are the downstream applic
   pipeline live, bank rematch NO-GO — **the shipped stack stands**. Nothing
   running; RunPod volume standing ($2.10/mo), pods reaped, balance $4.45.
 
+- **08-31 new-style batch labeled + measured cold — DONE, nothing running**
+  (see Done). Follow-ups live in Next 11.
+
 ## Done (recent)
+
+- **08-31: a new board style measured cold — it transfers; the queen does not**
+  (docs/reports/2026-08-31-new-style-batch.md). 17 iPhone photos of an unseen
+  style (vinyl roll-up, plastic Staunton, outdoor) in
+  `data/own/2026-08-31_iphone/`: 15 start positions + 2 Ruy Lopez
+  (`0763`/`0764`). Split **5 calibrate** (→ `ground_truth.json`) / **12 held
+  out** (`data/eval/heldout-20260831/*.label.json`) — the split matters because
+  `build_exemplar_bank.py` reads `ground_truth.json`. Truth oriented without the
+  model (back-rank luminance, 27–62 grey margin; `a1`-dark chirality check;
+  eye-verified). **No bank write**, so all 16 labeled boards are cold.
+  Held-out **680/704 = 96.6 % per-square, ABOVE the curated set's 95.3 %** —
+  cuts against the standing cross-style-piece-type prior. But perfect boards are
+  1/11, from **one** systematic defect: `Q->K` ×13 / `q->k` ×8 on `d1`/`d8`
+  (21 of 41 errors) — both back-rank kings read as kings, and the decoder demotes
+  the *true* king on `img_0756`/`0758`. Reproduces the two-kings question on 13
+  fresh boards vs the 7-board ceiling that closed it (`8c42b83`). ECE 0.345.
+  `0760` corner-detect FAILed (unlabeled).
 
 - **08-29 (night): the rematch cycle closed — every challenger NO-GO, three
   mechanisms found** (docs/reports/2026-08-29-bank-rematch.md): masked bank
@@ -121,6 +141,16 @@ confidences**. No moves, no legality, no PGN — those are the downstream applic
    (user 08-29, "work on it some other time"): recommended sequence is DINOv3
    ceiling probe → legality-constrained auto-labeling of game video →
    detection-first (RF-DETR) prototype; SAM 3 as labeling tooling.
+11. **Follow-ups from the 08-31 new-style batch**
+   (docs/reports/2026-08-31-new-style-batch.md): (a) **calibrate the five and
+   re-measure** — the direct test of whether user calibration kills `Q->K` on a
+   fresh set; gated on the un-gated non-monotone bank write below, so run it as a
+   before/after on this batch, now the cleanest regression probe we have.
+   (b) **Reopen the two-kings tie-break** — 13 fresh boards beat the 7-board
+   ceiling that closed it. (c) Ask the user for **varied positions, not more
+   start positions**: every calibrate candidate is the start position, so each
+   piece type is only seen on its home square. (d) `0760` needs hand-picked
+   corners (`tools/corner_picker.html`).
 10. **Client-side session video** (user proposal 08-28): `MediaRecorder` on the
    camera track, chunked upload during the session, stored beside the recording
    — edge/detector debugging plus trivial truth-authoring (~25–50 MB/take).
