@@ -26,7 +26,7 @@ confidences**. No moves, no legality, no PGN — those are the downstream applic
 
 - **08-31 experiment wave toward board-level reliability (user-approved, 4 tracks)**:
   - two-kings-reopen — **CLOSED, shipped stands** (docs/reports/2026-08-31-two-kings-reopen.md): fresh challenger `p(K)−p(Q)` won stills then collapsed 08-13 22/31→0/31 in the replay gate — queen-mass polarity inverts between datasets, no safe λ; ceiling confirmed against 14 rules; `_kings_flip` docstring corrected (cascade, not bank, owns the d8 misread); bank measured 73%/66% OOD on stills at 0.70 blend weight
-  - calibrate-before-after — does calibrating the 08-31 five kill Q->K? — **unblocked, starting** (bank state free)
+  - calibrate-before-after — **CLOSED** (docs/reports/2026-08-31-calibrate-before-after.md): decoded Q->K killed 4->0 on the fresh style, ECE 0.345->0.229 — but 08-13 settled perfects 22->12 (total 35->25) while EVERY per-square metric rose. Non-monotone confirmed; bank writes must gate on 4-take settled-perfect rows; points at style-scoped banks. Deployed bank untouched.
   - dinov3-probe — frozen-ceiling rerun + bank embedder swap (ideas.md §2) — HF access granted, ONNX exports (cls+central) running; export tool generalized (`a6a572a`)
   - autolabel-engine — **plan landed**: docs/plans/2026-08-31-autolabel-engine.md (Viterbi decoder, 6 gates, ~7.5 d) + explainer docs/viterbi-auto-labeling.md — awaiting user review; Stage 0 (null-hypothesis train on hand-truth crops) is the cheap first step
   - yt-angle-search — **DONE, positive** (`d0f39bf`, docs/youtube-streams.md): ASMR chess niche reliably clears the 0.73 good band with full multi-hour games (@ASMRChess goldmine); broadcast conclusion stands; idea B (PGN-aligned labeling) un-parks — next: user picks a video to ingest via get-frames-from-yt
@@ -178,7 +178,11 @@ confidences**. No moves, no legality, no PGN — those are the downstream applic
 - **Bank writes are not monotone** — adding exemplars via `/calibrate` can regress
   squares on *other* boards (2026-08-06: a confirmed 64/64 board re-scored 63/64
   after two later writes; trained-alone still read it right, so the bank caused
-  it). No regression gate on bank writes exists. Open issue.
+  it). **Measured at full strength 2026-08-31**
+  (docs/reports/2026-08-31-calibrate-before-after.md): a five-board calibrate
+  raised every per-square metric and dropped settled perfects 35→25 via
+  cross-style contamination of the king margin. The gate must be the 4-take
+  settled-perfect rows; still unbuilt. Design lean: style-scoped banks.
 - **`verify_labels` cannot reject an all-empty placement** (`agree < 0.6 × 0` never
   fires) — a piece-filled photo labeled empty would embed piece pixels as `empty`
   exemplars. Pre-existing in live `/calibrate`, found 08-28 writing the rebuild
