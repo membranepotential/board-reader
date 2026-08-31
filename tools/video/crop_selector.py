@@ -92,6 +92,12 @@ class RectSelector:
     # cv2 calls this positionally with a fixed 5-argument signature; the last
     # two carry nothing we need now that the state lives on the instance.
     def on_mouse(self, event: int, x: int, y: int, _flags: int, _param: object) -> None:
+        # A drag released past the window edge reports coordinates outside the
+        # frame (observed: y=-6), which CropBox rejects after the user already
+        # made their selection. Clamp to the frame instead of crashing.
+        h, w = self.frame.shape[:2]
+        x = min(max(x, 0), w - 1)
+        y = min(max(y, 0), h - 1)
         if event == cv2.EVENT_LBUTTONDOWN:
             self.dragging = True
             self.origin = self.corner = (x, y)
