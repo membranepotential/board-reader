@@ -27,10 +27,22 @@ confidences**. No moves, no legality, no PGN — those are the downstream applic
 - **08-31 experiment wave COMPLETE — all 5 tracks closed, nothing running**
   (reports: docs/reports/2026-08-31-{two-kings-reopen,calibrate-before-after,dinov3-probe}.md,
   docs/youtube-streams.md, docs/plans/2026-08-31-autolabel-engine.md; summary
-  in Done). **User decisions open:** (a) review the autolabel plan → green-light
-  Stage 0 (null-hypothesis train, ~0.5 d + 1 cloud run); (b) shoot the next
-  iPhone batch as varied MID-GAME positions; (c) pick an ASMR video to ingest
-  via get-frames-from-yt (interactive crop).
+  in Done). Follow-ons all landed; nothing running:
+  - autolabel-stage0 — **CLOSED: NO-GO on the decoder**
+    (docs/reports/2026-08-31-autolabel-stage0.md). Corpus = 30 distinct
+    positions (not 73); hand-perfect labels move NO uncontaminated gate; the
+    naive +20-perfect gate win is memorization (100 % of gate boards within
+    5 frames of a trained image → Next 13). Decoder deferred until corpus
+    spread exists. Spend $0.43 total; volume `1heed8wd1u` staged+standing
+    ($1.40/mo). Curated eval set silently grew 5→10 boards (08-31 calibrate
+    five landed in ground_truth.json) — reconcile docs pins.
+  - kasparov-ingest — **DONE** (`43a2dbe`): i5kUm43nXcY in crops.csv at
+    924×712@720p, angle gate GOOD 0.894 (first good-band registry stream),
+    50 seed-0 frames in data/streams/frames/kasparov-karpov_i5kUm43nXcY/ —
+    next: user culls hand-occluded frames; PGN alignment waits for the engine
+  - **on the user now (the binding axis, per Stage 0):** record varied games —
+    mixed openings + mid-game positions, ideally a SECOND physical set and
+    SECOND camera; plus the varied-position iPhone batch (Next 11c)
 
 ## Done (recent)
 
@@ -177,6 +189,10 @@ confidences**. No moves, no legality, no PGN — those are the downstream applic
    start positions**: every calibrate candidate is the start position, so each
    piece type is only seen on its home square. (d) `0760` needs hand-picked
    corners (`tools/corner_picker.html`).
+13. **`gates.sh` contamination guard** — a candidate trained on a gate take's
+   frames can print a +20-perfect gate "win" that is pure memorization
+   (docs/reports/2026-08-31-autolabel-stage0.md). Detect training-style ∩
+   gate-session overlap (style `sources.json`) and refuse or label the row.
 12. **`replay.CONFIG_ENV` omits `BR_CROP_MASK`** — masked and unmasked replays
    of a take share a `config_digest` (found in the 08-31 two-kings replay gate:
    `e6-control` vs `e6-gray` both `cc530662`, scoring 0.9139 vs 0.9121). Add

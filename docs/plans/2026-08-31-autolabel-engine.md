@@ -1,5 +1,14 @@
 # Plan — legality-constrained auto-labeling (the data engine)
 
+> [!important] Stage 0 ran 2026-08-31 and returned **NO-GO on today's corpus**
+> ([[2026-08-31-autolabel-stage0]]): hand-perfect labels move no uncontaminated
+> gate, the corpus holds only **30 distinct positions** (not 73), and the
+> 4-take gate becomes a memorization readout for any candidate trained on its
+> sessions (100 % of gate boards within 5 frames of a trained image). Stages
+> 1–6 are **deferred until the corpus has real positional and stylistic
+> spread** — varied games, a second set, a second camera. The export path,
+> style layout, and staged volume survive; re-running Stage 0 later is cheap.
+
 _2026-08-31 · idea: [docs/ideas.md](../ideas.md) §A · position 2 of 3 in that note's recommended sequence · adjacent: [docs/measuring-accuracy.md](../measuring-accuracy.md), [docs/training-and-data.md](../training-and-data.md) · the algorithm explainer: [docs/viterbi-auto-labeling.md](../viterbi-auto-labeling.md)_
 
 A recorded take is not unlabeled data. The reader is ~92–97 % per-square and ~0–50 % per *board*, but the sequence of boards it emits is constrained by a graph so brutal that most single-frame ambiguity cannot survive it: from one position, only ~30 successors exist, and a persistent single-square misread almost never lands on one of them. This plan builds the offline decoder that exploits that, turning imperfect reads over a whole game into per-frame labels good enough to train on.

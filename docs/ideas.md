@@ -141,9 +141,12 @@ harness, cheap on the RunPod pipeline:
    ([[2026-08-31-dinov3-probe]]); banked as a fine-tune init.
 2. **Legality-constrained auto-labeling** (A, on own recordings first, C;
    YouTube second — and the 08-31 [[youtube-streams|ASMR-niche finding]] makes
-   B's PGN-aligned variant in-envelope too) — the only scalable source of real
-   labels. **Plan landed: [[2026-08-31-autolabel-engine]]**; Stage 0 is the
-   null-hypothesis test.
+   B's PGN-aligned variant in-envelope too). **Plan landed
+   ([[2026-08-31-autolabel-engine]]) and Stage 0 measured NO-GO on today's
+   corpus** ([[2026-08-31-autolabel-stage0]]): 30 distinct positions, no
+   uncontaminated gate moves. Deferred until the corpus has spread — the
+   prerequisite is now explicitly **recording varied games on more than one
+   set/camera**, which is idea C plus new hardware, not more engineering.
 3. **Detection-first prototype** (idea 1) — fine-tuned on synthetic + those
    labels, gated like every other challenger. SAM 3 (idea 3) slots in when A
    needs masks.

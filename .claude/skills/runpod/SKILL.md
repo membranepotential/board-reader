@@ -113,7 +113,21 @@ the PRO 6000 explicitly rather than re-pinning the volume.
 
 ### Re-detecting the pin (the 2026-08-31 method, ~2 commands)
 
-Stock moves; re-run this before recreating a volume, never for a routine sweep:
+> [!warning] The stock listing is near-worthless — probe by CREATE
+> Measured 2026-08-31 evening: `gpu list` showed "Low" (its highest observed
+> status) for four card types in EUR-IS-1 while every `pod create` failed, and
+> a 24-attempt probe across 8 volume+S3 DCs found exactly ONE creatable spec.
+> The only real capacity signal is a create attempt: probe with
+> create+instant-delete (~1¢ per hit, `scratchpad dc_probe.sh` pattern —
+> parse the id from `pod create -o json`, delete immediately, verify
+> `pod list` empty after). And when a DC is dry, a **60 s retry loop** wins:
+> stock churns in minutes — the 08-31 run landed on round 3 of a fast loop
+> after hours of 5-minutely failures. Loop rule: on failure, `grep` for
+> "no longer any instances" and ONLY then retry — any other error stops the
+> loop so it can never retry-spend.
+
+Steps 1–3 below still narrow the candidate set (volume + S3 support are hard
+constraints); just don't trust step 1's stock column:
 
 ```bash
 # 1. Which DCs stock which GPUs (NB: this view is secure-cloud-centric;
