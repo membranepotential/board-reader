@@ -24,15 +24,32 @@ confidences**. No moves, no legality, no PGN — those are the downstream applic
 - **08-31 new-style batch labeled + measured cold — DONE, nothing running**
   (see Done). Follow-ups live in Next 11.
 
-- **08-31 experiment wave toward board-level reliability (user-approved, 4 tracks)**:
-  - two-kings-reopen — **CLOSED, shipped stands** (docs/reports/2026-08-31-two-kings-reopen.md): fresh challenger `p(K)−p(Q)` won stills then collapsed 08-13 22/31→0/31 in the replay gate — queen-mass polarity inverts between datasets, no safe λ; ceiling confirmed against 14 rules; `_kings_flip` docstring corrected (cascade, not bank, owns the d8 misread); bank measured 73%/66% OOD on stills at 0.70 blend weight
-  - calibrate-before-after — **CLOSED** (docs/reports/2026-08-31-calibrate-before-after.md): decoded Q->K killed 4->0 on the fresh style, ECE 0.345->0.229 — but 08-13 settled perfects 22->12 (total 35->25) while EVERY per-square metric rose. Non-monotone confirmed; bank writes must gate on 4-take settled-perfect rows; points at style-scoped banks. Deployed bank untouched.
-  - dinov3-probe — frozen-ceiling rerun + bank embedder swap (ideas.md §2) — HF access granted, ONNX exports (cls+central) running; export tool generalized (`a6a572a`)
-  - autolabel-engine — **plan landed**: docs/plans/2026-08-31-autolabel-engine.md (Viterbi decoder, 6 gates, ~7.5 d) + explainer docs/viterbi-auto-labeling.md — awaiting user review; Stage 0 (null-hypothesis train on hand-truth crops) is the cheap first step
-  - yt-angle-search — **DONE, positive** (`d0f39bf`, docs/youtube-streams.md): ASMR chess niche reliably clears the 0.73 good band with full multi-hour games (@ASMRChess goldmine); broadcast conclusion stands; idea B (PGN-aligned labeling) un-parks — next: user picks a video to ingest via get-frames-from-yt
+- **08-31 experiment wave COMPLETE — all 5 tracks closed, nothing running**
+  (reports: docs/reports/2026-08-31-{two-kings-reopen,calibrate-before-after,dinov3-probe}.md,
+  docs/youtube-streams.md, docs/plans/2026-08-31-autolabel-engine.md; summary
+  in Done). **User decisions open:** (a) review the autolabel plan → green-light
+  Stage 0 (null-hypothesis train, ~0.5 d + 1 cloud run); (b) shoot the next
+  iPhone batch as varied MID-GAME positions; (c) pick an ASMR video to ingest
+  via get-frames-from-yt (interactive crop).
 
 ## Done (recent)
 
+- **08-31 (eve): the four-track experiment wave, all closed in one day.**
+  (1) Two-kings reopen: fresh challenger `p(K)−p(Q)` won stills, then
+  collapsed 08-13 22/31→0/31 in the replay gate — polarity inverts between
+  datasets, per-frame ceiling confirmed vs 14 rules; `_kings_flip` docstring
+  corrected (the cascade, not the bank, owns the d8 misread). (2)
+  Calibrate-before/after: decoded Q→K 4→0 on the fresh style, ECE
+  0.345→0.229, but settled perfects 35→25 while every per-square metric rose
+  — non-monotone bank writes confirmed with mechanism; gate on 4-take
+  settled-perfect rows; lean style-scoped banks. (3) DINOv3 probe: NO-GO as
+  frozen swap (~80→83 % n.s., central pooling is DINOv2-specific); banked as
+  fine-tune init, export tool generalized. (4) YouTube second search: ASMR
+  chess niche clears the 0.73 good band with multi-hour games — M2 low-angle
+  risk closable, idea B un-parks. (5) Auto-label engine plan + Viterbi
+  explainer landed. Plus: RunPod re-pinned EU-RO-1→EUR-IS-1 (US DCs carry no
+  4090s), `replay.CONFIG_ENV`/`BR_CROP_MASK` gap found (Next 12), 4 GPU
+  baseline replays banked (`tkr-shipped`), 4 learnings recorded.
 - **08-31: a new board style measured cold — it transfers; the queen does not**
   (docs/reports/2026-08-31-new-style-batch.md). 17 iPhone photos of an unseen
   style (vinyl roll-up, plastic Staunton, outdoor) in

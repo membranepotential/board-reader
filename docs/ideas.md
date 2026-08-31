@@ -94,7 +94,14 @@ one object with one base, not pixels contaminating three crops.
 - Cost: a genuine second pipeline, and the bank — our best asset — needs
   rethinking (likely a per-detection embedding bank instead of per-square).
 
-### 2. DINOv3 bank/backbone swap — the cheap probe, do first regardless
+### 2. DINOv3 bank/backbone swap — PROBED 2026-08-31: NO-GO as a swap
+
+> [!important] Measured ([[2026-08-31-dinov3-probe]]): the frozen cross-style
+> ceiling moves ~80 % → ~83 % (n.s., p = 0.137), central pooling does **not**
+> compose (DINOv2-specific), and the deployed same-style path gains nothing.
+> DINOv3 CLS is the first frozen encoder to cut piece-id errors rather than
+> trade them, so it is banked as a mildly better fine-tune *initialisation*
+> (exports kept in `models/`). The sequence below therefore starts at A.
 
 The ~80 % frozen ceiling and the shape-bias refutation were measured on
 **DINOv2**. [DINOv3](https://ai.meta.com/research/dinov3/) (Meta, Aug 2025)
@@ -130,10 +137,13 @@ frontier is behind us; don't chase it.
 A chain, not a menu — each stage independently gateable on the existing 4-take
 harness, cheap on the RunPod pipeline:
 
-1. **DINOv3 probe** (idea 2) — cheapest, may raise the ceiling under
-   everything else.
+1. ~~**DINOv3 probe** (idea 2)~~ — done 2026-08-31, NO-GO as a swap
+   ([[2026-08-31-dinov3-probe]]); banked as a fine-tune init.
 2. **Legality-constrained auto-labeling** (A, on own recordings first, C;
-   YouTube second) — the only scalable source of real labels.
+   YouTube second — and the 08-31 [[youtube-streams|ASMR-niche finding]] makes
+   B's PGN-aligned variant in-envelope too) — the only scalable source of real
+   labels. **Plan landed: [[2026-08-31-autolabel-engine]]**; Stage 0 is the
+   null-hypothesis test.
 3. **Detection-first prototype** (idea 1) — fine-tuned on synthetic + those
    labels, gated like every other challenger. SAM 3 (idea 3) slots in when A
    needs masks.
