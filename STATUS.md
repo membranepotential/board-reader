@@ -16,18 +16,20 @@ confidences**. No moves, no legality, no PGN — those are the downstream applic
   clickable simulations, not storyboards).
 
 - **08-28/29 improvement cycle CLOSED** (see Done): masking shipped, cloud
-  pipeline live, bank rematch NO-GO — **the shipped stack stands**. Nothing
-  running; RunPod volume standing ($2.10/mo), pods reaped, balance $4.45.
+  pipeline live, bank rematch NO-GO — **the shipped stack stands**. RunPod:
+  volume destroyed by user 08-31 (no standing costs), balance $14.41, DC
+  re-pinned EU-RO-1→EUR-IS-1 after availability survey (`fd5e104`; US DCs
+  carry no 4090s — US-NE-1 is the recorded US fallback).
 
 - **08-31 new-style batch labeled + measured cold — DONE, nothing running**
   (see Done). Follow-ups live in Next 11.
 
 - **08-31 experiment wave toward board-level reliability (user-approved, 4 tracks)**:
-  - two-kings-reopen — retest the d1/d8 tie-break on the 13 fresh boards — starting — next: replay + variant sweep
-  - calibrate-before-after — does calibrating the 08-31 five kill Q->K? — queued (serialized after two-kings; mutates bank state)
-  - dinov3-probe — frozen-ceiling rerun + bank embedder swap (ideas.md §2) — acquiring first-party weights
-  - autolabel-engine — legality-constrained auto-labeling (ideas.md §A) — plan doc first
-  - yt-angle-search — deeper hunt for in-envelope YouTube footage — research agent running
+  - two-kings-reopen — **CLOSED, shipped stands** (docs/reports/2026-08-31-two-kings-reopen.md): fresh challenger `p(K)−p(Q)` won stills then collapsed 08-13 22/31→0/31 in the replay gate — queen-mass polarity inverts between datasets, no safe λ; ceiling confirmed against 14 rules; `_kings_flip` docstring corrected (cascade, not bank, owns the d8 misread); bank measured 73%/66% OOD on stills at 0.70 blend weight
+  - calibrate-before-after — does calibrating the 08-31 five kill Q->K? — **unblocked, starting** (bank state free)
+  - dinov3-probe — frozen-ceiling rerun + bank embedder swap (ideas.md §2) — HF access granted, ONNX exports (cls+central) running; export tool generalized (`a6a572a`)
+  - autolabel-engine — **plan landed**: docs/plans/2026-08-31-autolabel-engine.md (Viterbi decoder, 6 gates, ~7.5 d) + explainer docs/viterbi-auto-labeling.md — awaiting user review; Stage 0 (null-hypothesis train on hand-truth crops) is the cheap first step
+  - yt-angle-search — **DONE, positive** (`d0f39bf`, docs/youtube-streams.md): ASMR chess niche reliably clears the 0.73 good band with full multi-hour games (@ASMRChess goldmine); broadcast conclusion stands; idea B (PGN-aligned labeling) un-parks — next: user picks a video to ingest via get-frames-from-yt
 
 ## Done (recent)
 
@@ -158,6 +160,10 @@ confidences**. No moves, no legality, no PGN — those are the downstream applic
    start positions**: every calibrate candidate is the start position, so each
    piece type is only seen on its home square. (d) `0760` needs hand-picked
    corners (`tools/corner_picker.html`).
+12. **`replay.CONFIG_ENV` omits `BR_CROP_MASK`** — masked and unmasked replays
+   of a take share a `config_digest` (found in the 08-31 two-kings replay gate:
+   `e6-control` vs `e6-gray` both `cc530662`, scoring 0.9139 vs 0.9121). Add
+   the mask to the digest env; small, wants its own tests.
 10. **Client-side session video** (user proposal 08-28): `MediaRecorder` on the
    camera track, chunked upload during the session, stored beside the recording
    — edge/detector debugging plus trivial truth-authoring (~25–50 MB/take).

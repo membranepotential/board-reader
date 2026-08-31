@@ -307,12 +307,15 @@ def _kings_flip(
     **That lever is at its ceiling, and the 08-13 take is not evidence it is
     broken.** Re-measured 2026-08-28 on the shipped cascade+bank
     (``run_e``/``run_f``, ``bank-baseline-20260828``, ``BR_CROP_MASK=gray``),
-    the take's d8 misread is a session-bank exemplar lock: the *false* king d8
+    the take's two squares' ``p(king)`` genuinely cross: the *false* king d8
     reads ``k`` at a stable 0.33-0.41 with a fat 0.17-0.24 margin, while the
-    *true* king e8 ranges 0.20-0.45 with a margin as thin as 0.003. So the two
-    squares' ``p(king)`` genuinely cross — this rule demotes d8 on 17 of 34
-    two-king events and e8 on the other 17. It is a coin flip because the
-    evidence is a coin flip, not because the rule reads it wrong; the
+    *true* king e8 ranges 0.20-0.45 with a margin as thin as 0.003 — this rule
+    demotes d8 on 17 of 34 two-king events and e8 on the other 17. (The 08-28
+    note blamed a session-bank exemplar lock; the 2026-08-31 per-member capture
+    corrected that: it is the *trained cascade* that is confidently wrong,
+    reading d8 as ``k`` at 0.97-0.99 while true e8 sits at 0.52-0.78.) It is a
+    coin flip because the evidence is a coin flip, not because the rule reads
+    it wrong; the
     :class:`~board_reader_inference.stabilize.BoardStabilizer` is what recovers
     the take (settled 22/31 perfect from a 15/31 prior, against a 29/31 ceiling
     if every demotion went to d8).
@@ -323,13 +326,19 @@ def _kings_flip(
     answer under square independence) collapses 08-13 to 2/31 settled;
     ``max-margin`` and ``neg-entropy`` buy 08-13 (27/31 and 22/31) by demoting
     the *more* confident king, which is anti-MAP — it wins only because this
-    take's bank lock happens to make the wrong king the confident one, and it
-    costs 20260827-175539 its settled perfects (5/12 -> 2/12, per-square 0.9609
-    -> 0.9440) and 20260828-111421 per-square accuracy (0.9266 -> 0.9096). Do
-    not re-open this on the 08-13 swap alone: a rule that fixes one take's
-    systematic misread and breaks two others is a fitted constant, not a
-    decoder. The remaining lever is recognition on d8 (or a temporal identity
-    prior above this pure function), never a different per-frame tie-break.
+    take's cascade misread happens to make the wrong king the confident one,
+    and it costs 20260827-175539 its settled perfects (5/12 -> 2/12, per-square
+    0.9609 -> 0.9440) and 20260828-111421 per-square accuracy (0.9266 ->
+    0.9096). Re-opened 2026-08-31 on 13 fresh boards of an unseen style (23 new
+    two-king events; scratch/experiments/two_kings_reopen): the best fresh-data
+    challenger, ``p(K) - p(Q)``, won the stills (+5 squares, +1 perfect, no
+    curated loss) and then collapsed 08-13 from 22/31 to **0/31** settled in
+    the replay gate — the queen-mass polarity *inverts* between datasets, and a
+    lambda sweep shows no safe amount of queen subtraction. The ceiling is
+    confirmed: a rule that fixes one dataset's systematic misread and breaks
+    another's is a fitted constant, not a decoder. The remaining lever is
+    recognition on d8 (or a temporal identity prior above this pure function),
+    never a different per-frame tie-break.
 
     The demoted square still goes to its most probable class among those that
     strictly reduce the total violation (so relieving KINGS cannot silently
