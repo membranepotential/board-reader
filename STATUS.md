@@ -22,6 +22,13 @@ confidences**. No moves, no legality, no PGN — those are the downstream applic
 - **08-31 new-style batch labeled + measured cold — DONE, nothing running**
   (see Done). Follow-ups live in Next 11.
 
+- **08-31 experiment wave toward board-level reliability (user-approved, 4 tracks)**:
+  - two-kings-reopen — retest the d1/d8 tie-break on the 13 fresh boards — starting — next: replay + variant sweep
+  - calibrate-before-after — does calibrating the 08-31 five kill Q->K? — queued (serialized after two-kings; mutates bank state)
+  - dinov3-probe — frozen-ceiling rerun + bank embedder swap (ideas.md §2) — acquiring first-party weights
+  - autolabel-engine — legality-constrained auto-labeling (ideas.md §A) — plan doc first
+  - yt-angle-search — deeper hunt for in-envelope YouTube footage — research agent running
+
 ## Done (recent)
 
 - **08-31: a new board style measured cold — it transfers; the queen does not**
