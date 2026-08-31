@@ -71,6 +71,57 @@ matching the whole-video gate.
 > frame players, not boards. The footage that *does* clear 0.73 is short CV-demo or
 > overhead-rig clips — `kg_whG0Ijh4` at 0.790, `B_3v5sqqU0Y` at 0.743 — not games. The
 > good band will have to come from our own camera.
+>
+> **Superseded 2026-08-31 for non-broadcast footage** — see
+> [the second search](#the-2026-08-31-second-search--the-asmr-niche-clears-the-good-band)
+> below: the finding still holds for tournament broadcasts, but a content niche the
+> first search never tried reliably clears 0.73 with full multi-hour games.
+
+## The 2026-08-31 second search — the ASMR niche clears the good band
+
+A second, wider sweep (33 queries incl. non-English and creator genres, 373
+candidates enumerated, 37 frame-screened with the same
+`detect_board_quad`/`quad_aspect` gate) re-confirmed the broadcast conclusion —
+every tournament/club/street-chess candidate stayed shallow — and found the
+exception: **the ASMR/relaxation chess niche films real boards from steady,
+steep overhead rigs**, in the good band, for 20 minutes to 11 hours at a time.
+
+Confirmed-good measurements (detector + visual sanity check):
+
+| video id | what | length | aspect |
+|---|---|---|---|
+| `i5kUm43nXcY` | Kasparov–Karpov analysis, wooden board | 35 m | **0.893** |
+| `6fTeS8ME59Y` | live game on a ChessUp2 electronic board | 75 m | **0.861** |
+| `k-bqM7c9gV4` | live game, ChessUp board | 65 m | **0.861** |
+| `hO2rg1jGPds` | **live 1v1 match** (vs StudyQueen, pt II) | 37 m | **0.845** |
+| `iyLN_WW9vcs` | Byrne–Fischer 1956 ("Game of the Century") replay | 44 m | **0.753** |
+| `b7aau4uPvbY` | Tal's world-championship run, replay | 51 m | **0.742** |
+| `IYB7EW0e4LA` | 3 h relaxation game | 3 h | 0.672 / detector false-neg on a clean steeper frame |
+| `-4r07BLX7bY` | ASMR chess-computer game | 49 m | 0.711 (degraded) |
+
+**Goldmine channel: ASMR Chess** (`@ASMRChess`,
+`UCR2-F1UWmLeNgKEjfYnLibQ`) — hundreds of videos on two fixed overhead rigs (a
+ChessUp2 and a plain wooden board), consistently in or near 0.73–0.89.
+**Per-video check still required:** some uploads on the channel (e.g.
+`RaWoz6jJQtw`) are 2D chess.com screen recordings, not physical boards.
+
+Three consequences:
+
+1. **The standing M2 risk above is closable** — recorded-game demos no longer
+   have to rest on degraded 0.63-band footage.
+2. **Idea B (PGN-aligned labeling, [[ideas]]) un-parks.** The angle audit was
+   what demoted YouTube to "envelope-extension only"; the historical-game
+   replays here are *in-envelope* footage of games whose PGNs are published
+   (Byrne–Fischer 1956, Tal's title games) — the label sequence is known
+   before decoding a single frame.
+3. **The honest nuance:** most of this is one narrator replaying a real game
+   solo, not two players competing. Real pieces, real board, real complete
+   game, steep steady camera — exactly what the recognition pipeline needs as
+   input; not a test of tournament-broadcast conditions, which remain
+   out-of-envelope.
+
+Probe frames from the screen live with the session scratchpad, not `data/` —
+re-pull via the ids above and `get-frames-from-yt` when one is adopted.
 
 ## What survives a culled stream
 
