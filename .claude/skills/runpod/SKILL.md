@@ -10,7 +10,7 @@ The local GTX 1650 is compute-bound at ~165 img/s and serialises every workstrea
 in the project. RunPod exists to break that. It is **not** a place to keep a
 machine.
 
-**The budget is real and small: the account holds ~$8 with no auto-recharge.** A
+**The budget is real and small: ~$14 as of 2026-08-31, no auto-recharge.** A
 pod left running overnight costs more than every experiment we have ever run.
 Read [Cost discipline](#cost-discipline) before creating anything.
 
@@ -84,34 +84,54 @@ after us. That is why the trap and `reap` (below) exist.
 
 Network volumes are **datacenter-locked** — `runpodctl` has no cross-DC transfer
 — so the datacenter choice pins our GPU pool for as long as the volume exists.
-**And not every DC supports volumes**: as of 2026-08-28 `EU-SE-1` (the original
-A6000 plan) does not — `network-volume create` rejects it and lists the DCs
-that qualify. Check that list before ever re-pinning.
+A viable DC must clear **three** constraints at once: it supports network
+volumes, it supports the S3 API (our staging path, §3), and it stocks our GPU
+tier. All three were measured 2026-08-31; the method to re-measure is below.
 
-**Pinned: `EU-RO-1`** — volume `board-reader` (20 GB) lives there. It carries
-two viable community GPUs, so a stockout on the cheap one has a same-DC answer:
+**Pinned: `EUR-IS-1`** (Reykjavík) — the only DC that had *both* our GPU tiers
+in stock at the 2026-08-31 exploration, plus volume + S3 support. The previous
+pin (`EU-RO-1`) is dead: its volume was destroyed 2026-08-31 (no standing
+volume exists — recreate in `EUR-IS-1` on next use, §2). US datacenters were
+explicitly surveyed and **none stocked consumer 4090-class cards**; the best US
+option is recorded below as the fallback pin.
 
-| GPU | VRAM | Price | Cloud | Stock | Role |
-|---|---|---|---|---|---|
-| RTX 4090 | 24 GB | **$0.34/hr** | COMMUNITY | Low | primary |
-| RTX PRO 6000 | 96 GB | $1.69/hr | COMMUNITY | Low | explicit escalation for VRAM-hungry runs (`rp --fallback-pro6000`) |
+| GPU | VRAM | Price | Cloud | Role |
+|---|---|---|---|---|
+| RTX 4090 | 24 GB | **$0.34/hr** | COMMUNITY | primary |
+| RTX PRO 6000 | 96 GB | $1.69/hr | COMMUNITY | explicit escalation for VRAM-hungry runs (`rp --fallback-pro6000`) |
+| RTX A4000 | 16 GB | $0.17/hr | COMMUNITY | cheap smoke-tests only (16 GB, Ampere) |
 
-Both are post-Ampere (Ada/Blackwell): native bf16 tensor cores, unlike the
-local Turing card where fp16 NaNs in the forward pass. 24 GB covers everything
-short of a large unfrozen backbone at 384 px; those runs escalate to the PRO
-6000 explicitly rather than re-pinning the volume.
+Runner-ups from the survey, if `EUR-IS-1` dries up: `EUR-NO-1` (4090 + 5090,
+volumes + S3) in Europe; **`US-NE-1`** if a US region is wanted (no 4090s, but
+PRO 6000 MIG 24 GB at $0.59/hr SECURE is a fine 24 GB Blackwell substitute,
+volumes + S3).
 
-Re-check before every session — stock moves:
+All pinned GPUs are post-Ampere (Ada/Blackwell): native bf16 tensor cores,
+unlike the local Turing card where fp16 NaNs in the forward pass. 24 GB covers
+everything short of a large unfrozen backbone at 384 px; those runs escalate to
+the PRO 6000 explicitly rather than re-pinning the volume.
+
+### Re-detecting the pin (the 2026-08-31 method, ~2 commands)
+
+Stock moves; re-run this before recreating a volume, never for a routine sweep:
 
 ```bash
+# 1. Which DCs stock which GPUs (NB: this view is secure-cloud-centric;
+#    community stock per-DC is not directly visible):
 runpodctl gpu list -o json | python3 -c "
-import json,sys
+import json,sys,collections
+by_dc = collections.defaultdict(list)
 for g in json.load(sys.stdin):
-    if g['gpuId'] in ('NVIDIA RTX A6000','NVIDIA A40'):
-        print(g['displayName'], g.get('communityPricePerHr'), g.get('securePricePerHr'))
-        for d in g.get('dataCenterAvailability') or []:
-            if d['stockStatus'] not in ('none', None): print('  ', d['dataCenterId'], d['stockStatus'])
+    for d in (g.get('dataCenterAvailability') or []):
+        if d.get('stockStatus') not in ('none', None):
+            by_dc[d['dataCenterId']].append((g['displayName'], d['stockStatus']))
+for dc, gs in sorted(by_dc.items(), key=lambda kv: -len(kv[1])):
+    print(dc, ':', ', '.join(f'{n}({s})' for n, s in gs))
 "
+# 2. Which DCs support volumes (the create error lists them; creates nothing):
+runpodctl network-volume create --name probe --size 10 --data-center-id XX-INVALID-9
+# 3. Which DCs support the S3 API: https://docs.runpod.io/storage/s3-api
+# Pin the intersection that carries the 4090 (or the best 24GB+ bf16 card).
 ```
 
 ## Pod requirements for this project
@@ -155,8 +175,11 @@ Size it for the caches actually needed, not for comfort — it bills at
 **$0.07/GB/month whether or not a pod is attached**.
 
 ```bash
-runpodctl network-volume create --name board-reader --size 20 --data-center-id EU-SE-1
+runpodctl network-volume create --name board-reader --size 20 --data-center-id EUR-IS-1
 ```
+
+(The 2026-08-28 volume in `EU-RO-1` was destroyed 2026-08-31 to stop the
+standing $0.07/GB/mo — data must be re-staged (§3) after recreating.)
 
 ### 3. Stage the data (once, over the S3 API — no pod at all)
 
@@ -167,9 +190,10 @@ MB) so `evaluate.py` can score candidates on the pod.
 
 RunPod exposes network volumes over an **S3-compatible API**
 (https://docs.runpod.io/storage/s3-api) — the bucket is the volume id, the
-endpoint is DC-specific (`https://s3api-eu-ro-1.runpod.io`). Uploading this way
-costs nothing, resumes (`aws s3 sync`), and does not depend on instance stock —
-which matters, because **EU-RO-1 has had zero CPU instances available** and
+endpoint is DC-specific (`https://s3api-eur-is-1.runpod.io` for the current
+pin). Uploading this way costs nothing, resumes (`aws s3 sync`), and does not
+depend on instance stock — which matters, because a DC can have **zero CPU
+instances available** (EU-RO-1 did) and
 `rp stage`'s CPU-pod path then cannot run at all. Auth is a *separate* S3 API
 key (console → Settings → S3 API Keys), stored in the keyring under
 `service runpod-s3 part access|secret`:
@@ -262,8 +286,8 @@ runpodctl gpu list                             # prices + per-DC stock
 runpodctl datacenter list                      # what each DC carries
 runpodctl network-volume list|create|delete
 runpodctl pod list                             # [] means nothing is burning
-runpodctl pod create --image <img> --gpu-id "NVIDIA RTX A6000" \
-  --cloud-type COMMUNITY --data-center-ids EU-SE-1 \
+runpodctl pod create --image <img> --gpu-id "NVIDIA GeForce RTX 4090" \
+  --cloud-type COMMUNITY --data-center-ids EUR-IS-1 \
   --network-volume-id <id> --public-ip --wait
 runpodctl pod logs <id>
 runpodctl pod delete <id>                      # ALWAYS this, never `pod stop`

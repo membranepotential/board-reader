@@ -24,7 +24,7 @@ case "$key" in
     echo '{"id":"user-stub","clientBalance":7.91,"spendLimit":80}'
     ;;
   "network-volume list")
-    echo '[{"dataCenterId":"EU-RO-1","id":"n102g25d6l","name":"board-reader","size":20}]'
+    echo '[{"dataCenterId":"EUR-IS-1","id":"n102g25d6l","name":"board-reader","size":20}]'
     ;;
   "pod list")
     # `pod list --name <x>` is the trap's orphan sweep; it finds nothing unless

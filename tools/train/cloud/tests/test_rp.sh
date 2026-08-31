@@ -91,7 +91,7 @@ hasnt "$LOG" "pod delete" "dry-run does not execute pod delete"
 has "$LOG" "network-volume list" "dry-run still runs the read-only preflight"
 
 DRYOUT="$(RP_STUB_LOG="$(mktemp)" PATH="$STUBS:$PATH" "$RP" --dry-run sweep configs/smoke.yaml 2>&1)"
-for want in "--cloud-type COMMUNITY" "NVIDIA GeForce RTX 4090" "--data-center-ids EU-RO-1" \
+for want in "--cloud-type COMMUNITY" "NVIDIA GeForce RTX 4090" "--data-center-ids EUR-IS-1" \
             "--network-volume-id n102g25d6l" "--public-ip" "--wait" "pod delete"; do
   if printf '%s' "$DRYOUT" | grep -qF -- "$want"; then
     ok "dry-run plan contains $want"

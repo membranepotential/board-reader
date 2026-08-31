@@ -27,10 +27,12 @@ set -euo pipefail
 # Configuration — everything site-specific lives here.
 # ---------------------------------------------------------------------------
 
-# Datacenter. Network volumes are DC-locked and EU-SE-1 (the original pick)
-# turned out not to support network volumes at all, so the volume — and
-# therefore the GPU pool — lives in EU-RO-1.
-DC="${BR_RP_DC:-EU-RO-1}"
+# Datacenter. Network volumes are DC-locked, so this pins the GPU pool.
+# EUR-IS-1 won the 2026-08-31 availability survey (only DC stocking both the
+# 4090 and the PRO 6000 fallback, with volume + S3 support); the EU-RO-1
+# volume was destroyed the same day. Re-detection method: skill runpod,
+# "Re-detecting the pin".
+DC="${BR_RP_DC:-EUR-IS-1}"
 VOLUME_NAME="${BR_RP_VOLUME:-board-reader}"
 
 # Primary GPU: RTX 4090, 24 GB, $0.34/hr COMMUNITY (verified via `gpu list`).

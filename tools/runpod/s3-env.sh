@@ -15,8 +15,12 @@ AWS_SECRET_ACCESS_KEY="$(secret-tool lookup service runpod-s3 part secret)" || {
   return 1 2>/dev/null || exit 1
 }
 export AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY
-export AWS_DEFAULT_REGION="${BR_RP_S3_REGION:-EU-RO-1}"
+export AWS_DEFAULT_REGION="${BR_RP_S3_REGION:-EUR-IS-1}"
 # The user's real ~/.aws (SSO profiles) must not hijack these calls.
 export AWS_CONFIG_FILE=/dev/null AWS_SHARED_CREDENTIALS_FILE=/dev/null
-export BR_RP_S3_ENDPOINT="${BR_RP_S3_ENDPOINT:-https://s3api-eu-ro-1.runpod.io}"
-export BR_RP_S3_BUCKET="${BR_RP_S3_BUCKET:-n102g25d6l}"
+export BR_RP_S3_ENDPOINT="${BR_RP_S3_ENDPOINT:-https://s3api-eur-is-1.runpod.io}"
+# The bucket IS the volume id. The EU-RO-1 volume (n102g25d6l) was destroyed
+# 2026-08-31; there is no default until a volume exists again — set it from
+# `runpodctl network-volume list` after recreating (skill runpod §2).
+export BR_RP_S3_BUCKET="${BR_RP_S3_BUCKET:-}"
+[ -n "$BR_RP_S3_BUCKET" ] || echo "warning: BR_RP_S3_BUCKET unset — no network volume exists; create one and set this to its id" >&2
