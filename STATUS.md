@@ -9,6 +9,15 @@ confidences**. No moves, no legality, no PGN — those are the downstream applic
 
 ## Now
 
+- **chessq-lite-probe — PAUSED 2026-10-09, resume first** (handoff:
+  [docs/plans/2026-10-09-chessqueries-handoff.md](docs/plans/2026-10-09-chessqueries-handoff.md)).
+  Lichess's new "From image" runs ChessQ Lite v4 (ChessQueries, arXiv
+  2608.30762): an end-to-end per-square recognizer on CPU that may answer all three
+  stall reasons (hardware, accuracy, data). Benchmark on our stills and gate takes
+  is written (`scratch/experiments/chessq-lite-probe/`) but **never run**, because
+  it was stopped to free the CPU. Next: run it (int8, CPU, ~10 min), then
+  go/no-go → Next 14.
+
 - **The 08-27 night wave is COMPLETE** (see Done). Estimator, scheduler,
   stabilizer, framing, recorder, harness all landed, reviewed, and
   replay-verified; suite 1048 Python + 417 vitest + 50 e2e, all green.
@@ -200,6 +209,14 @@ confidences**. No moves, no legality, no PGN — those are the downstream applic
 10. **Client-side session video** (user proposal 08-28): `MediaRecorder` on the
    camera track, chunked upload during the session, stored beside the recording
    — edge/detector debugging plus trivial truth-authoring (~25–50 MB/take).
+14. **ChessQueries as estimator / data engine** (handoff:
+   docs/plans/2026-10-09-chessqueries-handoff.md). In order: Lite benchmark vs
+   the shipped stack (bar: held-out 96.6 %, gate raw 88.5–96.0 %) → if it wins
+   cold, prototype it behind the inference node and run the replay gate →
+   full ViT-L (needs the user's OK to run third-party code, or our own loader) →
+   10-frame LoRA as a `/calibrate` replacement → their SLCC PGN-alignment
+   producer as our auto-label engine (supersedes Next 9's auto-labeling step).
+   License is PolyForm Noncommercial: fine for us, no commercial use.
 
 ## Open questions
 
