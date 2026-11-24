@@ -627,8 +627,10 @@ tail -f recordings/*/events.ndjson | jq -c '{seq, utc, changed_utc, placement, p
 
 Move a piece while it runs. Expected: `pending` names the move's squares for a read or
 two, then `placement` takes the new board and `changed_utc` jumps once, to the capture
-time of the first read that showed it (earlier than that event's `utc`), and stays put
-while the board holds; `utc` advances with every read.
+time of the first frame that showed it once your hand had left (earlier than that
+event's `utc`, and often earlier than the first read's: the node back-dates it by
+pixels over the frames it did not read), and stays put while the board holds; `utc`
+advances with every read.
 
 Each line also carries `evidence`: the **top-2 digest**, 64 squares in board
 order, each `[[class, p], [runner-up, p]]`. It is what survives dropping

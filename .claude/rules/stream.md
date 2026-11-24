@@ -4,6 +4,8 @@ paths:
   - 'packages/inference/src/board_reader_inference/stream/schedule.py'
   - 'packages/inference/src/board_reader_inference/stream/ingest.py'
   - 'packages/inference/src/board_reader_inference/stream/rules.py'
+  - 'packages/inference/src/board_reader_inference/stream/backdate.py'
+  - 'packages/inference/tests/stream/test_backdate.py'
   - 'packages/inference/tests/stream/test_stabilize.py'
   - 'packages/inference/tests/stream/test_schedule.py'
   - 'packages/inference/tests/stream/test_ingest_schedule.py'
@@ -24,3 +26,4 @@ paths:
 - Keep the settle window strictly between the burst-end spacing and the run's span (`spacing_s < SETTLE_SECONDS <= (burst_end_reads - 1) * spacing_s`, shipped 0.3 < 0.5 <= 0.6), never at or below the spacing, because in the 2026-11-24 round-2 sweep (simulated tail) a window that two reads can span let a hand settle on the gate takes in 19 of 30 configs, a three-read window in 2 of 30, both at 0.2 s spacing (a 0.4 s span). Size those reads against the edge forwarder's tail (`tail_s`, 1 s): the run must fit inside it, or each read after the first waits for a 1 fps keepalive frame (~1 s each on the 2026-11-24 live take).
 - Design a schedule change that depends on frames the recorded edge never sent (a forwarder tail, a new rate) with `scratch/experiments/latency2/sim.py`: it replays the recorded stream through the real `AdaptiveForwarder` and fills the old keepalive gaps with synthetic rest frames that borrow the nearest recorded frame's read; report numbers that rest on those synthetic reads as projected, not measured, because two synthetic frames can copy one hand frame's read and fake a quorum.
 - Read a board's `rules` on the event loop before the read goes to the worker thread (`FrameIngest._run` calls `self._rules(board_id)`, `serve` passes `CameraRegistry.rules`), and hand it to `BoardStabilizer.observe` per read, because the registry is event-loop state and a setting cached per worker would miss a change made on `/control`. Keep `free` as "count nothing" in `rules.excess`, not a second commit path in `_commit`, so both settings run the same debounce.
+- Push every arriving frame to its board's `FrameRing` (in `FrameIngest.submit` live, and for every recorded frame before the policy is asked in replay), and keep `changed_utc`'s back-dating on pixels, never on extra recognizer reads, because the search runs over exactly the frames the schedule declined (a ring fed only read frames back-dates nothing), and the user ruled a ChessQ search too costly; one confirming read was measured and changed no number (docs/reports/2026-11-24-changed-utc.md).

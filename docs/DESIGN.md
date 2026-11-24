@@ -430,8 +430,9 @@ and nothing is lost. `PositionEvent.from_square_dist` takes the settled board as
 optional `placement` and `with_placement` swaps one in; both derive `pending`, and
 `validate()` checks it, so `placement`, `pending` and `square_dist` cannot drift.
 `/estimate` publishes the read itself with no pending squares. `changed_utc` says
-when the settled board last changed (`BoardStabilizer.changed_ts`), so move times are
-recoverable from the stream. `events.ndjson` keeps
+when the settled board last changed (`BoardStabilizer.changed_ts`, back-dated by
+pixels over the frames the node received but did not read, `stream/backdate.py`), so
+move times are recoverable from the stream. `events.ndjson` keeps
 the read as the top row of each square's `evidence`, and `eval-session` still reads
 the older lines that carry `settled`.
 
@@ -605,13 +606,21 @@ every message in this section is `board_reader_core.schema`'s). One event per re
 
 - `utc` — the edge **capture** time of this read, RFC 3339 UTC with milliseconds and a `Z`.
 - `changed_utc` — when `placement` last changed, same format and clock: the capture
-  time of the earliest read that showed the board as it now stands (the start of the
-  run of reads that settled it; for a commit of several squares, the latest of their
-  run starts). It stays put while the board holds, and equals `utc` on `/estimate`.
-  Timestamp a move by the `changed_utc` of the first event that carries the new board:
-  on the gate takes it sits a median 1.45 s after the truth boundary (p90 2.76 s),
-  against 3.12 s (p90 4.32 s) for that event's `utc`; the motion burst's calm start was
-  worse in the tail and is not used
+  time of the earliest frame that showed the board as it now stands. The stabilizer
+  gives the earliest *read* (the start of the run of reads that settled it; for a
+  commit of several squares, the latest of their run starts); the node then
+  back-dates it over the frames it received but did not read (`stream/backdate.py`):
+  to the start of the unbroken run of frames, ending at that read, whose pixels on
+  the changed squares match that read and not the last read of the old board. A hand
+  over the square matches neither, so it stops the search. Pixels only, no extra
+  recognizer read; it runs inside the read, so the event that first carries the new
+  board already has the back-dated time. It stays put while the board holds, and
+  equals `utc` on `/estimate`. Timestamp a move by the `changed_utc` of the first
+  event that carries the new board: on the gate takes it sits a median 1.35 s after
+  the truth boundary (p90 2.74 s; 1.46 s before back-dating), on the live take with
+  the edge's burst tail 0.57 s (0.94 s before), against 3.12 s (p90 4.30 s) for that
+  event's `utc`. What remains is mostly a hand still on the moved piece. The motion
+  burst's calm start was worse in the tail and is not used
   ([report](reports/2026-11-24-changed-utc.md)). A replay derives it the same way.
 - `seq` — per-board monotonic, a non-negative integer; authoritative for ordering.
 - `orientation` — always `a1_bottom_left`, reserved. The placement is in the chess
