@@ -35,7 +35,7 @@ _MAKEFILE = _ROOT / "Makefile"
 # disagree about what the system is, which is exactly the bug this module
 # exists to catch.
 _RECOGNITION_KEYS = frozenset(
-    {"BR_MODEL", "BR_MODEL_B", "BR_MODEL_TUNED", "BR_CASCADE_TAU", "BR_CENTROIDS"}
+    {"BR_MODEL", "BR_MODEL_B", "BR_MODEL_TUNED", "BR_CASCADE_TAU", "BR_CENTROIDS", "BR_CHESSQ"}
 )
 
 # Everything else may legitimately differ, because it describes the *environment*

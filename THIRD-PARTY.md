@@ -63,6 +63,14 @@ The **backbone** is the exception: DINOv2 ViT-S/14 is **Apache-2.0** (code and w
 `tools/export_dinov2_onnx.py` converts the official Meta weights locally rather than
 pulling a third-party re-host.
 
+**ChessQ Lite** (the opt-in `BR_CHESSQ` estimator) is Lichess's board recognizer,
+distributed at [huggingface.co/joelseytre/chessq-lite](https://huggingface.co/joelseytre/chessq-lite)
+under the **PolyForm Noncommercial License 1.0.0**: personal and research use only,
+no commercial use. We download the release into the git-ignored `models/chessq/` and
+check its SHA-256 against the release descriptor; it is never committed or
+redistributed, and the code that loads it (`board_reader_inference.chessq`) contains
+none of its weights.
+
 The optional `init: sin` training path
 (`tools/train/configs/loso_resnet_sin.yaml`) expects a Stylized-ImageNet ResNet-50
 checkpoint from [rgeirhos/texture-vs-shape](https://github.com/rgeirhos/texture-vs-shape).

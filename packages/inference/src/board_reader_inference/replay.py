@@ -187,6 +187,7 @@ CONFIG_ENV = (
     "BR_SESSION_BANK",
     "BR_OCCUPANCY_BANK",
     "BR_CASCADE_TAU",
+    "BR_CHESSQ",
 )
 
 #: Frames between progress lines on stderr. A real replay is minutes of GPU work

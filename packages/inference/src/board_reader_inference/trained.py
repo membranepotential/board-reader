@@ -72,7 +72,7 @@ def preprocess(crops: list[np.ndarray]) -> np.ndarray:
     return np.ascontiguousarray(batch.transpose(0, 3, 1, 2))
 
 
-def _softmax(logits: np.ndarray) -> np.ndarray:
+def softmax(logits: np.ndarray) -> np.ndarray:
     z = logits - logits.max(axis=-1, keepdims=True)
     e = np.exp(z)
     return e / e.sum(axis=-1, keepdims=True)
@@ -245,7 +245,7 @@ class TrainedEstimator(_CropReader):
         logits = np.concatenate(outs, axis=0)
         if logits.shape != (len(crops), NUM_CLASSES):
             raise ValueError(f"model returned {logits.shape}, expected ({len(crops)}, {NUM_CLASSES})")
-        return _softmax(logits)
+        return softmax(logits)
 
     def square_dist(
         self,

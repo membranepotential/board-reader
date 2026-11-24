@@ -20,6 +20,15 @@ from four handlers and read from six, so every rule about *when* an estimator ma
 be replaced could only be exercised by driving HTTP. Here they are ordinary
 methods over ordinary state, and the gateway is left with routing and JSON.
 
+**One estimator is never swapped:** ChessQ (``BR_CHESSQ``,
+:class:`~board_reader_inference.chessq.ChessQEstimator`). It is not a trained
+member a bank could boost, so any swap would *replace* it with a bare exemplar
+bank — the operator asked for ChessQ and would silently get something else.
+:meth:`EstimatorSession.calibrate_from` refuses up front
+(:class:`CalibrationRefused`); the other three never fire (no trained member, no
+bank member, and ChessQ's photo path keeps routing out of ``Uncalibrated``), and
+:meth:`_swap` enforces it regardless.
+
 Session-bank persistence is OPT-IN via ``BR_SESSION_BANK=<path>``: every swap above
 persists there, and an autocalib-enabled server restores it on startup. Unset ->
 calibration lives in memory only and NOTHING is ever written. Opt-in is deliberate:
@@ -51,6 +60,7 @@ from board_reader_inference.centroid import (
     ExemplarClassifier,
     build_exemplars,
 )
+from board_reader_inference.chessq import ChessQEstimator
 from board_reader_inference.estimator import (
     CentroidEstimator,
     EnsembleEstimator,
@@ -174,7 +184,18 @@ class CalibrationRejected:
     rotated_fit: RotatedFit | None = None
 
 
-CalibrateOutcome = Calibration | CalibrationRejected
+@dataclass(frozen=True, slots=True)
+class CalibrationRefused:
+    """The active estimator is not calibratable: ChessQ (``BR_CHESSQ``) is serving.
+
+    A bank built now could only replace ChessQ, not boost it (see the module
+    docstring), so nothing is read, built or saved.
+    """
+
+    model: str | None  # the ChessQ model path, for the operator's error message
+
+
+CalibrateOutcome = Calibration | CalibrationRejected | CalibrationRefused
 
 
 class EstimatorSession:
@@ -405,8 +426,11 @@ class EstimatorSession:
         the new photo's exemplars are ADDED to it rather than replacing it — every
         calibration photo only grows the bank. Raises ``ValueError`` on an
         unusable placement/photo pair; returns :class:`CalibrationRejected` when
-        the photo does not show the claimed position at all.
+        the photo does not show the claimed position at all, and
+        :class:`CalibrationRefused` while ChessQ serves (before any work).
         """
+        if isinstance(self._estimator, ChessQEstimator):
+            return CalibrationRefused(model=self._estimator.model_path)
         guard = self._resolve_label_rotation(image, corners, placement)
         if isinstance(guard, CalibrationRejected):
             return guard
@@ -490,6 +514,10 @@ class EstimatorSession:
 
     def _swap(self, estimator: Estimator) -> None:
         """Make ``estimator`` the active one, announcing it. The only mutation here."""
+        if isinstance(self._estimator, ChessQEstimator):
+            # Every swap path is gated before this (module docstring); reaching it
+            # means a gate changed, and replacing ChessQ silently is the bug.
+            raise RuntimeError("the ChessQ estimator (BR_CHESSQ) is never swapped out")
         self._estimator = estimator
         if self._on_swap is not None:
             self._on_swap(estimator)

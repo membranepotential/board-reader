@@ -1209,6 +1209,38 @@ What to check:
 > Sparse policies and restamps join the default replay directory name, so a sweep's
 > rows never land on top of each other.
 
+### Option O — ChessQ Lite as the estimator (opt-in, `BR_CHESSQ`)
+
+`BR_CHESSQ=<model.onnx>` serves Lichess's ChessQ Lite instead of the shipped
+cascade + bank: one model reads the whole frame and finds the board itself
+([recognition pipeline](recognition-pipeline.md#selection-at-startup)). The
+weights are not in the repo; the V6 release goes to
+`models/chessq/cq-vit-s-644-v6-seed1-onnx-int8-r1.onnx` (see
+[the handoff](plans/2026-10-09-chessqueries-handoff.md)).
+
+1. Start the stack with ChessQ:
+   `BR_CHESSQ=models/chessq/cq-vit-s-644-v6-seed1-onnx-int8-r1.onnx make dev`.
+   The inference log prints `serving ChessQ from BR_CHESSQ=... (calibration
+   disabled; ignoring BR_MODEL, BR_MODEL_B, BR_SESSION_BANK)`. A wrong path stops the node at
+   startup with `FileNotFoundError: BR_CHESSQ=... does not name a model file`.
+2. Run `curl -s localhost:8000/healthz`. Expected: a `"chessq": {"model": ...}`
+   entry naming the file.
+3. Open `/camera` on the phone (Option J) and point it at a board. Expected: the
+   live page shows positions within ~1 s per read (ChessQ runs ~0.4 s on the
+   GPU, ~0.6–1.1 s on CPU).
+4. Press calibrate on `/camera` or `/snapshot`. Expected: HTTP 409, "calibration
+   is off while ChessQ serves", and the node keeps serving ChessQ (`/healthz`
+   still shows the `chessq` entry).
+5. Replay a take with ChessQ (Option N), with **only** `BR_CHESSQ` set:
+   `BR_CHESSQ=models/chessq/cq-vit-s-644-v6-seed1-onnx-int8-r1.onnx uv run
+   board-reader-inference replay recordings/20260828-111421 --policy burst-end
+   --name cq-v6 --score`. Expected: the manifest's `estimator` is
+   `ChessQEstimator` and its `env` lists `BR_CHESSQ`.
+
+Automated: `packages/inference/tests/test_chessq.py` (fake model; the one
+real-weights test is `gpu`-marked and runs under `make test-gpu`, skipping when the
+weights or the held-out still are absent).
+
 ---
 
 ## Quick health checks

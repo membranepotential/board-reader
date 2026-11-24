@@ -44,12 +44,14 @@ from board_reader_core.protocol import (
 from board_reader_core.recording import FrameRecorder
 from board_reader_core.wire import Frame, decode_jpeg
 
+from board_reader_inference.chessq import ChessQEstimator
 from board_reader_inference.estimator import CentroidEstimator, Estimator, StubEstimator
 from board_reader_inference.hub import PositionHub
 from board_reader_inference.ingest import FrameIngest
 from board_reader_inference.routing import PhotoRead, ReadView, Uncalibrated
 from board_reader_inference.schedule import EveryFrame, FramePolicy, parse_policy
 from board_reader_inference.session import (
+    CalibrationRefused,
     CalibrationRejected,
     EstimatorSession,
     booster_weight,
@@ -296,15 +298,41 @@ def _trained_component(model: str) -> TrainedReader | None:
     return CascadeEstimator(trained, TrainedEstimator(model_b), tau=_cascade_tau())
 
 
+#: The estimator settings ``BR_CHESSQ`` outranks, named at startup when also set.
+_CHESSQ_OUTRANKS = ("BR_MODEL", "BR_MODEL_B", "BR_MODEL_TUNED", "BR_CENTROIDS", "BR_SESSION_BANK")
+
+
+def _chessq_estimator(path: str) -> ChessQEstimator:
+    """``BR_CHESSQ=<path>`` -> ChessQ Lite, or a hard error when the file is missing.
+
+    No fresh-clone courtesy (unlike ``BR_MODEL``): the weights are never in the
+    repo, so setting the variable is always deliberate, and quietly serving the
+    cascade instead would be read as ChessQ's accuracy.
+    """
+    if not Path(path).is_file():
+        raise FileNotFoundError(f"BR_CHESSQ={path!r} does not name a model file")
+    outranked = [n for n in _CHESSQ_OUTRANKS if os.environ.get(n)]
+    note = f"; ignoring {', '.join(outranked)}" if outranked else ""
+    print(f"serving ChessQ from BR_CHESSQ={path!r} (calibration disabled{note})")
+    return ChessQEstimator(path)
+
+
 def _default_estimator(occupancy_est: CentroidEstimator | None = None) -> Estimator:
     """Pick the style (piece-type) estimator from the environment.
 
+    ``BR_CHESSQ=<path>`` -> ChessQ Lite (opt-in, :mod:`.chessq`), ahead of every
+    other setting: it reads the whole frame on its own, so a model, bank or
+    calibration beside it would not be part of the read (and calibration is
+    refused while it serves, :class:`~.session.CalibrationRefused`).
     ``BR_CENTROIDS=<path>`` -> that calibration. Unset but auto-calibration
     enabled (an occupancy estimator exists) -> restore the persisted session bank
     if a previous run calibrated one. Otherwise the M0 :class:`StubEstimator`.
     Resolved at import time so the uvicorn string-imported ``app`` honours it
     without a code change.
     """
+    chessq = os.environ.get("BR_CHESSQ")
+    if chessq:
+        return _chessq_estimator(chessq)
     path = os.environ.get("BR_CENTROIDS")
     if path:
         return _estimator_from_bank(path, share_from=occupancy_est)
@@ -530,6 +558,10 @@ def create_app(
                 "model_tuned": trained.tuned_path,
                 "weight": 0.5,
             }
+        # ChessQ is opt-in and outranks the whole default stack, so an operator
+        # needs to see it is the one reading before trusting a number.
+        if isinstance(session.estimator, ChessQEstimator):
+            health["chessq"] = {"model": session.estimator.model_path}
         return health
 
     @app.get("/boards/{board_id}")
@@ -884,6 +916,7 @@ def create_app(
         rather than replacing it — every calibration photo only grows the bank.
         Persistence is opt-in: the bank is written only when ``BR_SESSION_BANK``
         names a path (the curated ``BR_CENTROIDS`` file is never overwritten).
+        While ChessQ serves (``BR_CHESSQ``) calibration is refused with 409.
         """
         body = await request.body()
         try:
@@ -902,6 +935,18 @@ def create_app(
             )
         except ValueError as e:
             return JSONResponse({"error": str(e)}, status_code=400)
+        if isinstance(outcome, CalibrationRefused):
+            return JSONResponse(
+                {
+                    "error": (
+                        "calibration is off while ChessQ serves "
+                        f"(BR_CHESSQ={outcome.model!r}): it reads every piece set "
+                        "as shipped, and a calibration bank would replace it rather "
+                        "than add to it. Unset BR_CHESSQ to calibrate."
+                    )
+                },
+                status_code=409,
+            )
         if isinstance(outcome, CalibrationRejected):
             fit = outcome.rotated_fit
             if fit is not None:

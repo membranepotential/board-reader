@@ -129,6 +129,16 @@ everywhere, so cropping does not matter. `cq_bench.py` now also loads `.tflite`
 - The segment vote is a crude stand-in for the settled stream. The real comparison is
   the replay gate (next step).
 
+**Replay gate (2026-11-24): V6 passes on every take.** V6 now serves as the opt-in
+`ChessQEstimator` (`BR_CHESSQ`; no attractor demotion, `/calibrate` refused while it
+serves). Replayed through the live stack beside `tkr-shipped` on the four gate takes
+(same frames, same policy and settle), settled perfect boards go **35 → 71 of 109**,
+prior perfect 25 → 75, raw per-square .9169 → .9677. On 181802 the truth stops at
+seq 186 while the take runs on; scored only where truth exists, the total is 35 → 66
+of 81. The settled stream now trails raw on three takes: the debounce lags a reader
+that is already right. Hands still read as confidently empty squares, and the
+stabilizer absorbs them. Full report: [[2026-11-24-chessq-v6-replay-gate]].
+
 ### Next
 1. Wrap V6 (accuracy) and ChessCam v2 (speed) as estimators in the inference node, then
    run the replay gate against `tkr-shipped`.
