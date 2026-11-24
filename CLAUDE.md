@@ -16,7 +16,7 @@ pipeline, measuring accuracy, operating envelope, runbook).
    We never land a milestone that can't be demoed live. New behaviour ships with
    both automated tests **and** a path in [docs/TESTING.md](docs/TESTING.md). The
    walking skeleton (M0) exists precisely to make this true from day one.
-2. **Everything is tested.** No feature merges without tests. `make test` (~20 s) is
+2. **Everything is tested.** No feature merges without tests. `make test` (~16 s) is
    green before any commit **that changes something the suite covers**. Don't run
    it when nothing testable changed — a docs, comment, `Makefile` or `STATUS.md`
    edit is not a reason to spend a suite run. Logic-heavy code gets unit tests;
@@ -37,9 +37,9 @@ uv **workspace**; each `packages/*` member is independently deployable.
 | Package (`import`) | Role (DESIGN layer) | Depends on |
 |---|---|---|
 | `board-reader-core` (`board_reader_core`) | shared contract: L3 protocol §5, L1→L2 wire §4.5, sim helpers | numpy, opencv |
-| `board-reader-edge` (`board_reader_edge`) | the **edge** node ("Pi", L1): capture, static crop, forward | core only |
+| `board-reader-edge` (`board_reader_edge`) | the **edge** node ("Pi", L1): capture, static crop, forward (the phone's `/camera` page is the other edge) | core only |
 | `board-reader-inference` (`board_reader_inference`) | the **inference** node (L2): stateless recognizer (ChessQ) + WS gateway | core only |
-| `board-reader-viewer` (`board_reader_viewer`) | serves the live-position web UI | none (static) |
+| `board-reader-viewer` (`board_reader_viewer`) | serves the SvelteKit pages (live, `/snapshot`, `/camera`, `/control`) and relays `/api` + `/ws` to the inference node | none of ours |
 
 **Naming:** DESIGN.md calls L2 the "central / Jetson" node; in code it is
 **`inference`** (and the edge is the "Pi"). Same concepts, friendlier names.
@@ -65,7 +65,7 @@ then commit with `git commit -F msg -- <paths>`: a pathspec commit records workt
 deletions of tracked files and ignores the rest of the index. A brand-new file still
 needs `git add`, so run it in the same command as the commit.
 
-**Testing costs ~20 s. If it is costing you more, read
+**Testing costs ~16 s. If it is costing you more, read
 [docs/TESTING.md §0](docs/TESTING.md#0-read-this-first-the-60-second-version)** —
 it is the 60-second agent briefing: which command to run when, the four habits that
 waste the most time, what a hang means, and the one `/ingest` gotcha
@@ -78,6 +78,8 @@ make models                   # the ChessQ weights (pinned, SHA-256 checked) + t
 make test                     # the whole suite in parallel (-n auto), minus GPU, ~16s
 make test-gpu                 # the real-ONNX-session test (ChessQ V6 on a still); needs an idle GPU
 make test-all                 # everything, GPU included
+make test-front               # the frontend: Vitest + Playwright (not covered by `make test`)
+make lint                     # ruff, pinned in the dev group
 uv run pytest <path>[::<test>] -q   # one file/test while iterating — no `-n`, it costs more
 uv run pytest packages/core   # one package's tests
 uv run pytest                 # the whole suite SERIALLY (~23s) — prefer `make test`
@@ -116,16 +118,25 @@ one day), so a freshly-published package is never resolved there either. Bump on
 package deliberately via `minimumReleaseAgeExclude`, then re-run `pnpm install`
 and `pnpm test`.
 
-## Compound engineering (learnings)
+## Learnings and rules
 
-This project uses a shared, path-scoped learnings store (`.learnings.ndjson`).
+- **Recall learnings before you design; conventions go into the rules.** The
+  learnings store `.learnings.ndjson` is **frozen as of 2026-11-24: add nothing to
+  it.** Before designing or reviewing a change, run
+  `learnings recall --paths <files in scope>` (or `/recall`) for the research
+  verdicts and how-tos that still apply there.
+- A finding that is a standing convention for some paths (something every agent
+  working there must do or avoid, every time) goes into the matching
+  `.claude/rules/<area>.md` as a plain instruction with its reason, in the same
+  change; a new rules file gets `paths:` frontmatter. Claude Code loads a rules file
+  when an agent touches a matching file. Anything narrower belongs in the commit
+  message; an experiment's outcome belongs in `docs/reports/`.
+- When a learning turns out wrong or outdated, remove it with
+  `learnings forget --id <id>` (or `/forget`); it soft-deletes, so the line stays for
+  provenance. When a file move breaks an entry's paths, repair it with
+  `learnings rescope --id <id> --paths <new glob>` in the same change, never by
+  forgetting it. `learnings audit` must report 0 drifted entries.
+- **Never open `.learnings.ndjson` directly**: recall reads only what applies to your
+  paths, at a fraction of the tokens.
 
-- **Before** working in an area: `learnings recall` (or the `/recall` skill) to load
-  what we already know about it.
-- **After** a non-trivial change, before committing: capture durable, non-obvious
-  learnings with `learnings learn --text "..." --paths "<glob>"` (or `/learn`).
-  Learnings ship with the code that produced them.
-- Relevant skills: `/recall`, `/learn`, `/ce-plan`, `/ce-review`, `/ce-compound`.
-
-Keep DESIGN.md authoritative for *decisions*; keep learnings for *gotchas and
-how-tos* discovered while building.
+DESIGN.md stays authoritative for *decisions*.
