@@ -16,6 +16,7 @@ everywhere else, but here the *timing* is.
 from __future__ import annotations
 
 import asyncio
+import io
 import json
 import os
 import time
@@ -459,8 +460,8 @@ def _ingest_event_lines(frames: list[Frame], read) -> list[dict]:
         ingest = FrameIngest(
             read,
             PositionHub(),
-            on_event=lambda reading, frame: lines.append(
-                event_line(reading.event, frame, published_ts=None)
+            on_event=lambda reading, frame, rules: lines.append(
+                event_line(reading.event, frame, published_ts=None, rules=rules)
             ),
         )
         for frame in frames:
@@ -669,6 +670,8 @@ def test_the_replay_name_separates_policies_and_restamps(monkeypatch):
     assert default_name({}, settle=SettleConfig(seconds=1.0, min_reads=1)) == (
         "v1-dead-settle1s-1r-2w"
     )
+    assert default_name({}, rules="standard") == "v1-dead"
+    assert default_name({}, rules="free") == "v1-dead-rules-free"
 
 
 def test_the_config_digest_moves_only_for_a_non_default_settle():
@@ -692,6 +695,32 @@ def test_a_replay_settles_with_the_config_it_is_given(source):
     assert block["settle_seconds"] == 0.0
     assert block["settle_min_reads"] == 1
     assert block["stale_windows"] == SettleConfig().stale_windows
+
+
+def test_a_replay_settles_under_the_rules_it_is_given_and_records_them(source):
+    """``free`` turns the guard off in replay as on the node; the manifest and
+    every line say which setting ran, and a replay under another setting than
+    the live run's says so."""
+    phantom = "rnbqkbnr/pppppppp/1r6/8/8/8/PPPPPPPP/RNBQKBNR"  # 17 black pieces
+    read = ScriptedRead(dict.fromkeys(range(1, 8), phantom))
+    fast = SettleConfig(seconds=0.0, min_reads=1)
+    standard = _run(source, "standard", read, settle=fast)
+    assert {e["settled"]["placement"] for e in _events(standard)} == {START_PLACEMENT}
+    assert {e["rules"] for e in _events(standard)} == {"standard"}
+
+    free = _run(source, "free", ScriptedRead(dict.fromkeys(range(1, 8), phantom)),
+                settle=fast, rules="free")
+    assert _events(free)[-1]["settled"]["placement"] == phantom
+    assert {e["rules"] for e in _events(free)} == {"free"}
+    assert json.loads((free.path / "manifest.json").read_text())["replay"]["rules"] == "free"
+
+    # A live run that settled under free, replayed under standard, warns.
+    (source.path / EVENTS_NAME).write_text(json.dumps({"rules": "free"}) + "\n")
+    assert replay_mod.recorded_rules(source) == {"free"}
+    log = io.StringIO()
+    replay(source, source.path / "replays" / "warned", read=ScriptedRead({}),
+           reader="ScriptedRead", log=log)
+    assert "settled under ['free']" in log.getvalue()
 
 
 def test_the_manifest_records_the_policy_as_the_argument_that_rebuilds_it(metered):

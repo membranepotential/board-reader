@@ -59,7 +59,7 @@ def test_it_states_what_the_node_sends_every_key_present():
     # Defaulted keys are always sent; the optional blocks are left out when absent.
     assert {"stability", "status", "clock", "classes"} <= set(event["required"])
     assert "settled" not in event["required"]
-    assert set(defs["CameraConfig"]["required"]) == {"crop", "device", "resolution", "streaming"}
+    assert set(defs["CameraConfig"]["required"]) == {"crop", "device", "resolution", "streaming", "rules"}
     # The legacy corners parse in Python only; no edge sends them.
     assert "corners" not in defs["FrameHeader"]["properties"]
 

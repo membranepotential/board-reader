@@ -37,6 +37,8 @@ from functools import lru_cache
 
 import chess
 
+from board_reader_core.control import Rules
+
 #: A side starts with 16 pieces and can never gain one.
 MAX_PIECES = 16
 
@@ -98,3 +100,14 @@ def violation(placement: str) -> Violation:
         ),
         promotions=sum(max(0, _promotions(position, c) - PROMOTION_BUDGET) for c in colors),
     )
+
+
+def excess(placement: str, rules: Rules) -> int:
+    """How impossible ``placement`` is under ``rules``, as the guard compares it.
+
+    ``free`` counts nothing, so the guard never refuses a settle there: the board
+    holds whatever the reads converge to, extra material and variants included.
+    """
+    if rules == "free":
+        return 0
+    return violation(placement).total

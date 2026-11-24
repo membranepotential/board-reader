@@ -83,14 +83,18 @@ export type CropRect = Immutable<z.infer<typeof CropRect>>;
  *   session); `None` leaves the edge on its default rear camera.
  * * `resolution` — the capture resolution asked for.
  * * `streaming` — whether the edge streams frames to `/ingest`.
+ * * `rules` — which chess the board plays (`Rules`). The node reads it,
+ *   the edge ignores it.
  *
- * Omitted fields take their defaults, so `{}` is the default config.
+ * Omitted fields take their defaults, so `{}` is the default config, and a
+ * config saved before a field existed still loads.
  */
 export const CameraConfig = z.strictObject({
   crop: CropRect.nullable(),
   device: z.string().min(1).nullable(),
   resolution: z.enum(['720p', '1080p', '2160p']),
-  streaming: z.boolean()
+  streaming: z.boolean(),
+  rules: z.enum(['standard', 'free'])
 });
 export type CameraConfig = Immutable<z.infer<typeof CameraConfig>>;
 

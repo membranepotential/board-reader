@@ -66,6 +66,7 @@ from collections import deque
 from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass
 
+from board_reader_core.control import DEFAULT_RULES, Rules
 from board_reader_core.protocol import MotionUpdate, PositionEvent, square_evidence
 from board_reader_core.wire import Frame
 
@@ -87,7 +88,9 @@ from board_reader_inference.stream.stabilize import (
 log = logging.getLogger(__name__)
 
 
-def event_line(event: PositionEvent, frame: Frame, *, published_ts: float | None) -> dict:
+def event_line(
+    event: PositionEvent, frame: Frame, *, published_ts: float | None, rules: Rules
+) -> dict:
     """One published event as its ``events.ndjson`` line.
 
     ``square_dist`` is stripped — replaying ``frames.ndjson`` through the same
@@ -100,7 +103,10 @@ def event_line(event: PositionEvent, frame: Frame, *, published_ts: float | None
     board alike.
 
     The frame's own ``seq`` and ``capture_ts`` ride along too, so an event can be
-    joined back to the exact recorded frame it was estimated from.
+    joined back to the exact recorded frame it was estimated from, and so does
+    ``rules``, the board's setting when this read settled, so a replay can tell
+    which mode a live run used (``replay --rules``). A line without the key
+    predates the setting and settled under ``standard``.
 
     ``published_ts`` is this node's wall clock at publish, and ``None`` omits it:
     an offline replay (:mod:`board_reader_inference.measurement.replay`) never published
@@ -116,6 +122,7 @@ def event_line(event: PositionEvent, frame: Frame, *, published_ts: float | None
     line["evidence"] = square_evidence(event.square_dist)
     line["frame_seq"] = frame.seq
     line["capture_ts"] = frame.capture_ts
+    line["rules"] = rules
     if published_ts is not None:
         line["published_ts"] = published_ts
     return line
@@ -280,7 +287,11 @@ def prefer_frame(
 
 
 def _read_and_settle(
-    read: FrameRead, frame: Frame, stabilizer: BoardStabilizer, guard: OrientationGuard
+    read: FrameRead,
+    frame: Frame,
+    stabilizer: BoardStabilizer,
+    guard: OrientationGuard,
+    rules: Rules,
 ) -> FrameReading | Misoriented:
     """One estimate and its debounce, both off the event loop.
 
@@ -292,14 +303,14 @@ def _read_and_settle(
     and ``square_dist`` untouched) — safe here despite the worker thread because
     each board's worker estimates strictly one frame at a time, in order, which
     is exactly the stream a debounce needs. The guard relies on the same
-    one-at-a-time order.
+    one-at-a-time order. ``rules`` is the board's setting for this read.
     """
     reading = read(frame)
     dropped = guard.check(frame.seq, reading.direction)
     if dropped is not None:
         return dropped
     event = reading.event
-    event.settled = stabilizer.observe(event.placement, frame.capture_ts)
+    event.settled = stabilizer.observe(event.placement, frame.capture_ts, rules)
     return reading
 
 
@@ -339,9 +350,10 @@ class FrameIngest:
         read: FrameRead,
         hub: PositionHub,
         *,
-        on_event: Callable[[FrameReading, Frame], None] | None = None,
+        on_event: Callable[[FrameReading, Frame, Rules], None] | None = None,
         policy: Callable[[], FramePolicy] = EveryFrame,
         settle: SettleConfig = DEFAULT_SETTLE,
+        rules: Callable[[str], Rules] = lambda _board_id: DEFAULT_RULES,
     ) -> None:
         self._read = read
         self._hub = hub
@@ -354,9 +366,13 @@ class FrameIngest:
         self._policy = policy
         #: Each board's debounce is built with these knobs (``BR_SETTLE_*``).
         self._settle = settle
+        #: Which chess a board plays, asked on the event loop before each read is
+        #: settled — ``serve`` answers from the camera registry (``/control``), so
+        #: a change there applies from the board's next read.
+        self._rules = rules
         #: Called (on the event loop) for every published read, with the frame it
-        #: was estimated from — the gateway hangs its trial log and the camera's
-        #: direction off this.
+        #: was estimated from and the setting it settled under — the gateway hangs
+        #: its trial log and the camera's direction off this.
         self._on_event = on_event
         self._boards: dict[str, _BoardWorker] = {}
         self._warned_backstop: set[str] = set()
@@ -511,8 +527,9 @@ class FrameIngest:
                                 board_id, now - last_read,
                             )
                     last_read = now
+                    rules = self._rules(board_id)
                     outcome = await asyncio.to_thread(
-                        _read_and_settle, self._read, frame, stabilizer, guard
+                        _read_and_settle, self._read, frame, stabilizer, guard, rules
                     )
                 except asyncio.CancelledError:
                     raise
@@ -543,7 +560,7 @@ class FrameIngest:
                     try:
                         self._log_read(event, frame, previous, received)
                         if self._on_event is not None:
-                            self._on_event(outcome, frame)
+                            self._on_event(outcome, frame, rules)
                     except Exception:
                         log.exception(
                             "post-publish observer failed (board %s, seq %d)",

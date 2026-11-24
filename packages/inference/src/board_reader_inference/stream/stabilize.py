@@ -52,6 +52,7 @@ import os
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 
+from board_reader_core.control import DEFAULT_RULES, Rules
 from board_reader_core.protocol import (
     GRID,
     SettledBoard,
@@ -60,7 +61,7 @@ from board_reader_core.protocol import (
     square_name,
 )
 
-from board_reader_inference.stream.rules import violation
+from board_reader_inference.stream.rules import excess
 
 #: How long a square must read as the same new class before the settled board
 #: adopts it. With the shipped schedule's burst-end run (three reads 0.3 s apart,
@@ -163,9 +164,9 @@ def _from_env[T: (float, int)](
         raise ValueError(f"{name}={raw!r} is not a valid {parse.__name__}") from e
 
 
-def _excess(grid: list[list[str]]) -> int:
+def _excess(grid: list[list[str]], rules: Rules) -> int:
     """How impossible a board is, as the integer the guard keeps from rising."""
-    return violation(encode_placement(grid)).total
+    return excess(encode_placement(grid), rules)
 
 
 @dataclass
@@ -233,8 +234,15 @@ class BoardStabilizer:
         #: one can time out rather than wait on a partner that never arrives.
         self._ripe_since: dict[tuple[int, int], float] = {}
 
-    def observe(self, placement: str, ts: float) -> SettledBoard:
+    def observe(
+        self, placement: str, ts: float, rules: Rules = DEFAULT_RULES
+    ) -> SettledBoard:
         """Fold one read into the settled board and return the current settlement.
+
+        ``rules`` is the board's setting at this read (:data:`~board_reader_core.control.Rules`):
+        under ``free`` the guard counts nothing, so every ripe square commits. It
+        may change from one read to the next; the guard then judges this read's
+        commit by the new setting.
 
         Raises ``ValueError`` on an unparseable placement, like
         :func:`~board_reader_core.protocol.parse_placement`.
@@ -271,7 +279,7 @@ class BoardStabilizer:
                     ripe.append((r, c))
                     self._ripe_since.setdefault((r, c), ts)
 
-        for r, c in self._commit(grid, ripe, contested, ts):
+        for r, c in self._commit(grid, ripe, contested, ts, rules):
             self._settled[r][c] = grid[r][c]
             self._forget((r, c))
         return SettledBoard(
@@ -291,6 +299,7 @@ class BoardStabilizer:
         ripe: list[tuple[int, int]],
         contested: list[tuple[int, int]],
         ts: float,
+        rules: Rules,
     ) -> list[tuple[int, int]]:
         """Which of ``ripe`` (plus any dragged square) to adopt from ``grid``.
 
@@ -314,18 +323,18 @@ class BoardStabilizer:
         assert self._settled is not None
         if not ripe:
             return []
-        held_excess = _excess(self._settled)
+        held_excess = _excess(self._settled, rules)
         trial = [row[:] for row in self._settled]
         for r, c in ripe:
             trial[r][c] = grid[r][c]
-        if _excess(trial) <= held_excess:
+        if _excess(trial, rules) <= held_excess:
             return ripe
 
         taken = list(ripe)
         for r, c in self._by_evidence(ripe, contested):
             trial[r][c] = grid[r][c]
             taken.append((r, c))
-            if _excess(trial) <= held_excess:
+            if _excess(trial, rules) <= held_excess:
                 return taken
 
         timed_out = any(
@@ -333,7 +342,7 @@ class BoardStabilizer:
             for square in ripe
             if square in self._ripe_since
         )
-        if timed_out and _excess(grid) <= held_excess:
+        if timed_out and _excess(grid, rules) <= held_excess:
             # The same drag with the quorum waived. Its last step is the whole
             # contested set — this read, which the excess check above has already
             # cleared — so it cannot fall through, and it usually stops one or
@@ -345,7 +354,7 @@ class BoardStabilizer:
             for r, c in self._by_evidence(ripe, contested, quorum=False):
                 trial[r][c] = grid[r][c]
                 taken.append((r, c))
-                if _excess(trial) <= held_excess:
+                if _excess(trial, rules) <= held_excess:
                     break
             return taken
 
@@ -353,7 +362,7 @@ class BoardStabilizer:
         taken = []
         for r, c in self._by_evidence([], ripe):
             trial[r][c] = grid[r][c]
-            if _excess(trial) <= held_excess:
+            if _excess(trial, rules) <= held_excess:
                 taken.append((r, c))
             else:
                 trial[r][c] = self._settled[r][c]

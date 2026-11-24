@@ -29,6 +29,7 @@ def test_a_config_round_trips_through_its_wire_form():
         device="Back Ultra Wide Camera",
         resolution="2160p",
         streaming=True,
+        rules="free",
     )
     assert CameraConfig.from_dict(config.to_dict()) == config
 
@@ -36,11 +37,12 @@ def test_a_config_round_trips_through_its_wire_form():
 def test_omitted_fields_take_the_defaults_and_the_default_sends_the_whole_frame():
     config = CameraConfig.from_dict({})
     assert config == CameraConfig()
-    assert (config.crop, config.device, config.resolution, config.streaming) == (
+    assert (config.crop, config.device, config.resolution, config.streaming, config.rules) == (
         None,
         None,
         "1080p",
         False,
+        "standard",
     )
 
 
@@ -50,6 +52,7 @@ def test_omitted_fields_take_the_defaults_and_the_default_sends_the_whole_frame(
         {"streming": True},  # a typo must not silently do nothing
         {"resolution": "4k"},
         {"streaming": "yes"},
+        {"rules": "chess960"},  # not a mode the guard knows
         {"device": ""},
         {"device": 3},
         {"crop": {"x": 0, "y": 0, "w": 1}},

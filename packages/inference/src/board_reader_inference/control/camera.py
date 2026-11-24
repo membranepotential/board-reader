@@ -9,7 +9,8 @@ while the stream itself carries only the crop.
 The configs can outlive a restart: with ``BR_CAMERA_CONFIG=<path>`` set (``serve``
 sets it), every change is written to that JSON file and read back at startup, so a
 node restarted mid-game pushes the same crop, lens, resolution and streaming switch
-to the phone when it reconnects. Unset, everything is in memory. Reports, previews
+to the phone when it reconnects, and settles each board under the same rules. Unset,
+everything is in memory. Reports, previews
 and the board direction are always in memory: the phone and the recognizer send
 them again.
 
@@ -55,6 +56,7 @@ from fastapi import APIRouter, WebSocket
 from starlette.websockets import WebSocketDisconnect
 
 from board_reader_core.control import (
+    DEFAULT_RULES,
     BoardDirection,
     CameraConfig,
     CameraReport,
@@ -66,6 +68,7 @@ from board_reader_core.control import (
     PreviewMessage,
     PreviewsMessage,
     RefusedMessage,
+    Rules,
     StateMessage,
     WhiteSide,
     parse_control_message,
@@ -275,6 +278,14 @@ class CameraRegistry:
 
     def board(self, board_id: str) -> BoardCamera:
         return self._boards.setdefault(board_id, BoardCamera())
+
+    def rules(self, board_id: str) -> Rules:
+        """Which chess ``board_id`` plays, as its settle guard reads it.
+
+        A board nobody configured plays standard chess; asking does not create it.
+        """
+        board = self._boards.get(board_id)
+        return DEFAULT_RULES if board is None else board.config.rules
 
     def _tell_watchers(self, board: BoardCamera, message: ControlDown) -> None:
         for watcher in board.watchers:

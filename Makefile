@@ -229,13 +229,16 @@ models:
 # (145/156 raw, 140/156 settled, docs/reports/2026-11-24-latency-round2.md).
 GATE_NAME ?= gate
 GATE_BASE ?= sp03-settle05-7
+# Extra replay flags for every take, e.g. GATE_FLAGS="--rules free" to gate a board
+# whose settle guard is off.
+GATE_FLAGS ?=
 
 gate:
 	@test -f "$(BR_CHESSQ)" || { echo "!! $(BR_CHESSQ) missing — run 'make models'"; exit 2; }
 	@uv run python tools/gate_table.py --replay-args | while read -r take flags; do \
 	  echo "  replaying $$take as $(GATE_NAME)"; \
 	  BR_CHESSQ=$(BR_CHESSQ) uv run board-reader-inference replay "recordings/$$take" \
-	    --name $(GATE_NAME) --score $$flags > /dev/null || exit 1; \
+	    --name $(GATE_NAME) --score $$flags $(GATE_FLAGS) > /dev/null || exit 1; \
 	done
 	@uv run python tools/gate_table.py $(GATE_BASE) $(GATE_NAME)
 

@@ -207,6 +207,7 @@ def cmd_replay(args: argparse.Namespace) -> int:
             policy=policy,
             restamp=args.restamp_stability,
             settle=settle,
+            rules=args.rules,
             all_sessions=args.all_sessions,
             limit=args.limit,
         )
@@ -244,6 +245,9 @@ def cmd_replay(args: argparse.Namespace) -> int:
 
 
 def build_parser() -> argparse.ArgumentParser:
+    from typing import get_args
+
+    from board_reader_core.control import DEFAULT_RULES, Rules
 
     from board_reader_inference.measurement.evaluate import DEFAULT_PATHS
 
@@ -386,6 +390,15 @@ def build_parser() -> argparse.ArgumentParser:
         "falling through to the current read (env BR_SETTLE_STALE_WINDOWS; default "
         f"{SettleConfig().stale_windows}). Non-default settle values join the replay "
         "name, the manifest and the config digest",
+    )
+    r.add_argument(
+        "--rules",
+        choices=get_args(Rules),
+        default=DEFAULT_RULES,
+        help="which chess the settle guard assumes, as /control sets it per board: "
+        "standard refuses a settle that makes the board more impossible, free "
+        f"turns the guard off (default {DEFAULT_RULES}). A non-default value joins "
+        "the replay name. The source's events.ndjson records what the live run used",
     )
     r.add_argument(
         "--score",

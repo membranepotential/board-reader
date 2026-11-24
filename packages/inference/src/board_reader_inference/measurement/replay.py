@@ -123,10 +123,11 @@ import time
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TextIO
+from typing import TextIO, get_args
 
 import numpy as np
 
+from board_reader_core.control import DEFAULT_RULES, Rules
 from board_reader_core.recording import (
     EVENTS_NAME,
     FORMAT,
@@ -327,6 +328,7 @@ def default_name(
     policy: FramePolicy | None = None,
     restamp: bool = False,
     settle: SettleConfig = DEFAULT_SETTLE,
+    rules: Rules = DEFAULT_RULES,
 ) -> str:
     """The replay directory name for the current code and model environment.
 
@@ -342,8 +344,8 @@ def default_name(
     caller then says what they are measuring, which is better provenance than a
     hash could have been anyway.
 
-    ``policy``, ``restamp`` and ``settle`` join the name when they are not the
-    defaults, for the same reason the model stat does: they change what the run
+    ``policy``, ``restamp``, ``settle`` and ``rules`` join the name when they are
+    not the defaults, for the same reason the model stat does: they change what the run
     measures, and a sweep whose rows all land in one directory has measured its
     last row only.
     """
@@ -366,6 +368,8 @@ def default_name(
         name += "-restamped"
     if not settle.is_default:
         name += f"-{settle.slug}"
+    if rules != DEFAULT_RULES:
+        name += f"-rules-{rules}"
     return name
 
 
@@ -447,6 +451,8 @@ class ReplayResult:
     restamp: bool = False
     #: The debounce the settled stream ran with.
     settle: SettleConfig = DEFAULT_SETTLE
+    #: Which chess the settle guard assumed (``--rules``).
+    rules: Rules = DEFAULT_RULES
 
 
 def replay(
@@ -459,6 +465,7 @@ def replay(
     policy: FramePolicy | None = None,
     restamp: bool = False,
     settle: SettleConfig = DEFAULT_SETTLE,
+    rules: Rules = DEFAULT_RULES,
     all_sessions: bool = False,
     limit: int | None = None,
     log: TextIO | None = sys.stderr,
@@ -467,7 +474,10 @@ def replay(
 
     ``reader`` names what reads (the recognizer's class), for the manifest;
     ``settle`` configures the debounce (``serve`` reads the same knobs from
-    ``BR_SETTLE_*``).
+    ``BR_SETTLE_*``); ``rules`` is the board's setting for every read, where the
+    live node reads it from ``/control`` per read. The source's own
+    ``events.ndjson`` says which setting the live run used; a replay under
+    another one warns, since its settled row then measures a different guard.
 
     The estimate and debounce are :func:`~board_reader_inference.stream.ingest._read_and_settle`
     — the ingest worker's own body — and the stabilizer is fed the frame's
@@ -524,6 +534,13 @@ def replay(
     # seq restart that separates two sessions.
     guard = OrientationGuard()
     stats = ReplayStats()
+    recorded = recorded_rules(recording)
+    if recorded - {rules}:
+        _say(
+            log,
+            f"warning: the live run settled under {sorted(recorded)} and this replay "
+            f"under {rules!r}; pass --rules to reproduce it",
+        )
     decode = _decoder(recording)
     total = sum(sessions[i].frames for i in chosen)
     if limit is not None:
@@ -577,7 +594,7 @@ def replay(
                     header=entry.header, jpeg=jpeg, received_ts=entry.received_ts
                 ).frame()
                 try:
-                    outcome = _read_and_settle(read, frame, stabilizer, guard)
+                    outcome = _read_and_settle(read, frame, stabilizer, guard, rules)
                 except Exception as e:  # one bad frame is not the end of the stream
                     stats.frames_failed += 1
                     _say(log, f"  seq {entry.seq}: estimation failed ({e})")
@@ -592,7 +609,8 @@ def replay(
                     continue
                 event = outcome.event
                 events.write(
-                    json.dumps(event_line(event, frame, published_ts=None)) + "\n"
+                    json.dumps(event_line(event, frame, published_ts=None, rules=rules))
+                    + "\n"
                 )
                 stats.frames_estimated += 1
                 if stats.frames_estimated % PROGRESS_EVERY == 0:
@@ -616,10 +634,32 @@ def replay(
         policy=policy.name,
         restamp=restamp,
         settle=settle,
+        rules=rules,
     )
     _link_source(out, recording)
     _write_manifest(result, recording, policy, reader)
     return result
+
+
+def recorded_rules(recording: Recording) -> set[Rules]:
+    """The settings a recording's live reads settled under, from its ``events.ndjson``.
+
+    A line without ``rules`` predates the setting and settled under ``standard``;
+    a recording with no events says nothing (an empty set).
+    """
+    path = recording.path / EVENTS_NAME
+    if not path.exists():
+        return set()
+    seen: set[Rules] = set()
+    with path.open(encoding="utf-8") as fh:
+        for line in fh:
+            try:
+                value = json.loads(line).get("rules", DEFAULT_RULES)
+            except (json.JSONDecodeError, AttributeError):
+                continue
+            if value in get_args(Rules):
+                seen.add(value)
+    return seen
 
 
 def _per_session_policies(policy: FramePolicy, sessions: int) -> list[FramePolicy]:
@@ -797,6 +837,7 @@ def _write_manifest(
                     # ``frames.frames_restamped`` with the other counters.
                     "restamp_stability": result.restamp,
                     **result.settle.to_dict(),
+                    "rules": result.rules,
                     "sessions": [s.to_dict() for s in sessions],
                     "sessions_replayed": result.replayed,
                     "frames": result.stats.to_dict(),
@@ -833,6 +874,8 @@ def render(result: ReplayResult) -> str:
     detail = ", ".join(f"{n} {what}" for n, what in skipped if n)
     if detail:
         lines.append(f"skipped:   {detail}")
+    if result.rules != DEFAULT_RULES:
+        lines.append(f"rules:     {result.rules} (the settle guard is off)")
     if not result.settle.is_default:
         lines.append(
             f"settle:    {result.settle.seconds:g} s, >= {result.settle.min_reads} reads, "
@@ -870,6 +913,7 @@ def run(
     policy: FramePolicy | None = None,
     restamp: bool = False,
     settle: SettleConfig = DEFAULT_SETTLE,
+    rules: Rules = DEFAULT_RULES,
     log: TextIO | None = sys.stderr,
 ) -> ReplayResult:
     """Open ``source``, build the environment's recognizer, and replay through it.
@@ -886,7 +930,9 @@ def run(
     chosen_name = (
         check_name(name)
         if name
-        else default_name(policy=policy or EveryFrame(), restamp=restamp, settle=settle)
+        else default_name(
+            policy=policy or EveryFrame(), restamp=restamp, settle=settle, rules=rules
+        )
     )
     recognizer = build_from_env()
     return replay(
@@ -898,6 +944,7 @@ def run(
         policy=policy,
         restamp=restamp,
         settle=settle,
+        rules=rules,
         all_sessions=all_sessions,
         limit=limit,
         log=log,

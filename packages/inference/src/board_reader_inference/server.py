@@ -38,6 +38,7 @@ from fastapi import FastAPI, Query, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
 
+from board_reader_core.control import Rules
 from board_reader_core.protocol import PositionEvent
 from board_reader_core.recording import FrameRecorder
 from board_reader_core.wire import Frame, decode_jpeg
@@ -163,22 +164,23 @@ def create_app(
     # each board's camera config here and the node pushes it to the phone.
     cameras = CameraRegistry()
 
-    def _on_published(reading: FrameReading, frame: Frame) -> None:
+    def _on_published(reading: FrameReading, frame: Frame, rules: Rules) -> None:
         """Observers of every published live read (on the event loop).
 
         The board's direction goes to the camera registry, which tells /control
         which side White sits on. Only reads the orientation guard let through
         get here, and replay never does: it is a live-camera fact.
         """
-        _record_published(reading.event, frame)
+        _record_published(reading.event, frame, rules)
         if reading.direction is not None:
             cameras.observe_direction(frame.board_id, reading.direction, frame.capture_ts)
 
-    def _record_published(event: PositionEvent, frame: Frame) -> None:
+    def _record_published(event: PositionEvent, frame: Frame, rules: Rules) -> None:
         """One compact line per published event into the session's events.ndjson."""
         if recorder is None or not recorder.active:
             return
-        if not recorder.record_event(event_line(event, frame, published_ts=time.time())):
+        line = event_line(event, frame, published_ts=time.time(), rules=rules)
+        if not recorder.record_event(line):
             print(f"frame recording stopped: {recorder.stopped_reason}")
 
     # Streaming ingress (WP-G1/G2): frames are read off the event loop by
@@ -194,6 +196,8 @@ def create_app(
         on_event=_on_published,
         policy=_frame_policy(),
         settle=settle,
+        # Each board settles under its own /control setting, read per read.
+        rules=cameras.rules,
     )
     # Latest-wins raw-frame retention, one entry per board, in-memory only (no
     # disk write, unbounded board count — mirrors the hub's own retention). This

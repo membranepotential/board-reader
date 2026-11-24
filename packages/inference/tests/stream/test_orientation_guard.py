@@ -123,7 +123,7 @@ def test_the_ingest_worker_drops_counts_and_logs_a_turned_read(caplog):
         ingest = FrameIngest(
             _scripted({0: 90.0, 1: -90.0, 2: 91.0}),
             PositionHub(),
-            on_event=lambda reading, frame: published.append(reading),
+            on_event=lambda reading, frame, rules: published.append(reading),
         )
         for seq in range(3):
             ingest.submit(_frame(seq))

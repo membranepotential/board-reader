@@ -146,11 +146,16 @@ export const RESOLUTIONS: Readonly<Record<Resolution, FrameSize>> = {
   '2160p': { width: 3840, height: 2160 }
 };
 
+export type Rules = CameraConfig['rules'];
+/** Which chess a board plays, for the node's settle guard (`control.Rules`). */
+export const RULES_NAMES: readonly Rules[] = CameraConfig.shape.rules.options;
+
 export const DEFAULT_CAMERA_CONFIG: CameraConfig = {
   crop: null,
   device: null,
   resolution: '1080p',
-  streaming: false
+  streaming: false,
+  rules: 'standard'
 };
 
 // ---- the /ingest ack -------------------------------------------------------------

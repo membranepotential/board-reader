@@ -4,7 +4,8 @@
    *
    * The phone (/camera) only films and streams. This page chooses what it films: the
    * crop rectangle on its full-frame preview, the lens, the resolution, and whether it
-   * streams. The node holds that config per board and pushes it to the phone.
+   * streams. The node holds that config per board and pushes it to the phone. The
+   * same config says which chess the board plays (`rules`), which only the node reads.
    *
    * One socket per board (`ControlLink`): the node pushes the camera state on connect
    * and on every change, the phone's preview, the latest received frame and a health
@@ -12,14 +13,14 @@
    * also what tells the phone to stop sending previews nobody sees.
    *
    * The crop is edited locally and only sent on Save, so a pushed state never yanks
-   * a rectangle out from under the pointer. The lens, resolution and stream toggle
-   * are sent the moment they change. Each `configure` is the whole config, built from
+   * a rectangle out from under the pointer. The lens, resolution, rules and stream
+   * toggle are sent the moment they change. Each `configure` is the whole config, built from
    * the last one this page knows — applied here at once, so a second change made
    * before the node's answer arrives builds on the first instead of undoing it.
    */
   import { onMount } from 'svelte';
   import { resolve } from '$app/paths';
-  import { RESOLUTION_NAMES, type Resolution } from '#lib/protocol/index.ts';
+  import { RESOLUTION_NAMES, RULES_NAMES, type Resolution, type Rules } from '#lib/protocol/index.ts';
   import type {
     CameraConfig,
     ControlDown,
@@ -37,6 +38,12 @@
   import { formatAge } from '#lib/control/status.ts';
   import { CAMERA_MOVED_COPY, whiteSideCopy } from '#lib/control/direction.ts';
   import CropEditor from '#lib/components/control/CropEditor.svelte';
+
+  /** How each setting of `rules` reads in the select. */
+  const RULES_LABEL: Readonly<Record<Rules, string>> = {
+    standard: 'standard chess',
+    free: 'free (extra pieces, variants)'
+  };
 
   /** `null` until mounted: the board comes from `?board=`, which prerendering cannot read. */
   let boardId = $state<string | null>(null);
@@ -250,6 +257,23 @@
           <option value={name}>{name}</option>
         {/each}
       </select>
+    </label>
+    <label>
+      rules
+      <select
+        value={config?.rules}
+        disabled={locked}
+        onchange={(e) => send({ rules: e.currentTarget.value as Rules })}
+      >
+        {#each RULES_NAMES as name (name)}
+          <option value={name}>{RULES_LABEL[name]}</option>
+        {/each}
+      </select>
+      <span class="hint">
+        {config?.rules === 'free'
+          ? 'the settled board shows whatever the reads agree on'
+          : 'a settle that would make the board impossible waits'}
+      </span>
     </label>
     <button
       type="button"
@@ -472,6 +496,10 @@
     gap: 4px;
     font-size: 13px;
     color: #9aa3ad;
+  }
+  .hint {
+    font-size: 12px;
+    color: #6f7782;
   }
   .stream {
     font-weight: 600;

@@ -29,6 +29,7 @@ interface Config {
   device: string | null;
   resolution: '720p' | '1080p' | '2160p';
   streaming: boolean;
+  rules: 'standard' | 'free';
 }
 
 interface FrameSize {
@@ -45,7 +46,7 @@ interface Direction {
 const SETTLED: Direction = { degrees: 89, white_side: 'left', camera_moved: false };
 
 class FakeControlNode {
-  config: Config = { crop: { x: 0.2, y: 0.2, w: 0.5, h: 0.6 }, device: null, resolution: '1080p', streaming: false };
+  config: Config = { crop: { x: 0.2, y: 0.2, w: 0.5, h: 0.6 }, device: null, resolution: '1080p', streaming: false, rules: 'standard' };
   readonly configures: Config[] = [];
 
   constructor(readonly frame: FrameSize) {}
@@ -176,6 +177,21 @@ test('the stream toggle starts and stops the phone', async ({ page }) => {
   await expect.poll(() => node.configures.at(-1)?.streaming).toBe(false);
   // The crop is not touched by a toggle.
   expect(node.configures.at(-1)?.crop).toEqual({ x: 0.2, y: 0.2, w: 0.5, h: 0.6 });
+});
+
+test('the rules select switches the board to free and back', async ({ page }) => {
+  const node = await FakeControlNode.install(page);
+  await page.goto('/control');
+
+  const rules = page.getByLabel('rules');
+  await expect(rules).toHaveValue('standard');
+  await rules.selectOption('free');
+  await expect.poll(() => node.configures.at(-1)?.rules).toBe('free');
+  // A configure is the whole config: the stream and the crop ride along unchanged.
+  expect(node.configures.at(-1)).toMatchObject({ streaming: false, resolution: '1080p' });
+
+  await rules.selectOption('standard');
+  await expect.poll(() => node.configures.at(-1)?.rules).toBe('standard');
 });
 
 test('an upright phone is called out', async ({ page }) => {

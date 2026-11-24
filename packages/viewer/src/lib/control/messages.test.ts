@@ -9,7 +9,7 @@ const REPORT: CameraReport = {
   frame: { width: 1920, height: 1080 },
   ingest: 'streaming'
 };
-const CONFIG = { crop: { x: 0.1, y: 0.2, w: 0.5, h: 0.6 }, device: 'Back Camera', resolution: '1080p', streaming: true };
+const CONFIG = { crop: { x: 0.1, y: 0.2, w: 0.5, h: 0.6 }, device: 'Back Camera', resolution: '1080p', streaming: true, rules: 'standard' };
 const text = (message: unknown): string => JSON.stringify(message);
 const phoneDown = (raw: string) => parseWire(PhoneDown, raw);
 const controlDown = (raw: string) => parseWire(ControlDown, raw);

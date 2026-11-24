@@ -237,7 +237,7 @@ def test_settled_rides_the_stream_and_holds_through_a_one_read_flicker():
         ingest = FrameIngest(
             lambda frame: frame_reader(StubRecognizer(placements[frame.seq]))(frame),
             hub,
-            on_event=lambda reading, frame: events.append(reading.event),
+            on_event=lambda reading, frame, rules: events.append(reading.event),
         )
         for seq in range(3):
             ingest.submit(_frame(seq=seq))
@@ -246,6 +246,35 @@ def test_settled_rides_the_stream_and_holds_through_a_one_read_flicker():
         assert [e.settled.placement for e in events] == [START_PLACEMENT] * 3
         assert events[1].settled.pending == ("e4", "e2")  # board order: rank 8 first
         assert events[2].settled.pending == ()
+
+    asyncio.run(run())
+
+
+def test_each_board_settles_under_its_own_rules_read_per_read():
+    """The worker asks for the board's setting before every read, so a board
+    switched to ``free`` settles a 17th piece that a ``standard`` board refuses,
+    and the setting each read used is handed to the observers (the recorder)."""
+    phantom = "rnbqkbnr/pppppppp/1r6/8/8/8/PPPPPPPP/RNBQKBNR"  # 17 black pieces
+
+    async def run():
+        placements = [START_PLACEMENT, phantom, phantom]
+        setting = {"variant": "free", "game": "standard"}
+        seen: dict[str, list] = {"variant": [], "game": []}
+        ingest = FrameIngest(
+            lambda frame: frame_reader(StubRecognizer(placements[frame.seq]))(frame),
+            PositionHub(),
+            on_event=lambda reading, frame, rules: seen[frame.board_id].append(
+                (reading.event.settled.placement, rules)
+            ),
+            rules=setting.__getitem__,
+        )
+        for board in setting:
+            for seq in range(3):
+                ingest.submit(_frame(board_id=board, seq=seq))
+                await asyncio.wait_for(ingest.drain(), timeout=2.0)
+        await ingest.close()
+        assert seen["variant"][-1] == (phantom, "free")
+        assert seen["game"][-1] == (START_PLACEMENT, "standard")
 
     asyncio.run(run())
 

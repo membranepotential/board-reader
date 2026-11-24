@@ -358,7 +358,7 @@ def test_a_declined_frame_publishes_nothing_at_all():
         ingest = FrameIngest(
             est.estimate,
             hub,
-            on_event=lambda reading, frame: events.append(reading.event),
+            on_event=lambda reading, frame, rules: events.append(reading.event),
             policy=SHIPPED,
         )
         for seq in range(10):  # one capture second: the floor is 3

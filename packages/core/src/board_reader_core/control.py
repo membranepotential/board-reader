@@ -82,6 +82,14 @@ RESOLUTIONS: dict[Resolution, tuple[int, int]] = {
 }
 DEFAULT_RESOLUTION: Resolution = "1080p"
 
+#: Which chess the board plays, for the settle guard on the inference node.
+#: ``standard`` keeps a settled board from becoming more impossible than it is
+#: (two kings of a colour, more than 16 pieces of a side, more promoted pieces than
+#: pawns can have made); ``free`` settles whatever the reads say, for a position
+#: with extra material or a variant. The raw read is the same either way.
+Rules = Literal["standard", "free"]
+DEFAULT_RULES: Rules = "standard"
+
 #: The smallest side a crop may have, as a fraction of the frame. Below this the
 #: rectangle is a slip of the mouse, not a board.
 MIN_CROP_SIDE = 0.05
@@ -152,14 +160,18 @@ class CameraConfig(Wire):
       session); ``None`` leaves the edge on its default rear camera.
     * ``resolution`` — the capture resolution asked for.
     * ``streaming`` — whether the edge streams frames to ``/ingest``.
+    * ``rules`` — which chess the board plays (:data:`Rules`). The node reads it,
+      the edge ignores it.
 
-    Omitted fields take their defaults, so ``{}`` is the default config.
+    Omitted fields take their defaults, so ``{}`` is the default config, and a
+    config saved before a field existed still loads.
     """
 
     crop: CropRect | None = None
     device: Text | None = None
     resolution: Resolution = DEFAULT_RESOLUTION
     streaming: StrictBool = False
+    rules: Rules = DEFAULT_RULES
 
 
 @wire

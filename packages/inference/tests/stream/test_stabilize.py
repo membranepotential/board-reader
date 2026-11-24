@@ -247,6 +247,24 @@ def test_an_impossible_read_is_never_adopted():
     assert settled.pending == ("b6",)
 
 
+def test_free_rules_settle_an_impossible_read_like_any_other():
+    """``free`` turns the guard off for a board that holds extra material or plays
+    a variant: the same phantom 17th piece now settles once it spans the window."""
+    stab = BoardStabilizer(SettleConfig(seconds=0.0))
+    stab.observe(START_PLACEMENT, 0.0, "free")
+    stab.observe(PHANTOM_B6, 1.0, "free")
+    assert stab.observe(PHANTOM_B6, 5.0, "free").placement == PHANTOM_B6
+
+
+def test_the_guard_follows_the_setting_from_one_read_to_the_next():
+    """The node reads the board's setting per read, so switching back to
+    ``standard`` mid-stream guards the very next commit."""
+    stab = BoardStabilizer(SettleConfig(seconds=0.0))
+    stab.observe(START_PLACEMENT, 0.0, "free")
+    stab.observe(PHANTOM_B6, 1.0, "free")
+    assert stab.observe(PHANTOM_B6, 5.0, "standard").placement == START_PLACEMENT
+
+
 def test_an_impossible_first_board_is_still_escapable():
     """The first read is adopted wholesale even if it is impossible. The rule is
     *never less possible*, not *never commit*, so the stream still recovers."""
@@ -298,7 +316,7 @@ def _noisy_stream(rng, reads: int, *, classes: str, churn: int):
 class _UnguardedStabilizer(BoardStabilizer):
     """The pre-fix rule: commit every ripe square, coherence be damned."""
 
-    def _commit(self, grid, ripe, contested, ts):
+    def _commit(self, grid, ripe, contested, ts, rules):
         return ripe
 
 
@@ -327,7 +345,7 @@ def _excess_rises(build) -> bool:
             stab = build(window)
             previous = None
             for placement, ts in _noisy_stream(rng, 60, classes="pqkPQK1", churn=3):
-                excess = _excess(parse_placement(stab.observe(placement, ts).placement))
+                excess = _excess(parse_placement(stab.observe(placement, ts).placement), "standard")
                 if previous is not None and excess > previous:
                     return True
                 previous = excess
@@ -356,8 +374,8 @@ def test_the_property_stream_exercises_every_commit_path():
     seen: set[str] = set()
     original = BoardStabilizer._commit
 
-    def spy(self, grid, ripe, contested, ts):
-        taken = original(self, grid, ripe, contested, ts)
+    def spy(self, grid, ripe, contested, ts, rules):
+        taken = original(self, grid, ripe, contested, ts, rules)
         if ripe:
             if taken == ripe:
                 seen.add("uncontested")

@@ -212,6 +212,7 @@ def test_published_events_land_in_the_session_beside_their_frames(recorded):
     assert first["capture_ts"] >= 1000.0
     assert first["published_ts"] > 0
     assert first["settled"]["placement"] == first["placement"]  # the debounce is recorded
+    assert first["rules"] == "standard"  # the setting it settled under, for replay
 
 
 def test_a_refused_frame_is_counted_and_the_socket_survives():

@@ -6,7 +6,7 @@ import pytest
 
 from board_reader_core.protocol import START_PLACEMENT
 
-from board_reader_inference.stream.rules import Violation, violation
+from board_reader_inference.stream.rules import Violation, excess, violation
 
 MIDGAME = "r2qk2r/1b1pbppp/p1n1p3/1ppnP3/5B2/1BNP1N2/PPP2PPP/R2Q1RK1"
 
@@ -80,3 +80,10 @@ def test_the_piece_count_binds_only_alongside_a_king_error():
     )
     # With one king, 17 pieces cannot be reached without breaking the budget.
     assert violation(_army("K" + "P" * 9 + "NNBBRRQ")).promotions > 0
+
+
+def test_free_rules_count_nothing():
+    """``free`` is the switch that turns the guard off: no board is impossible."""
+    two_kings = _army("KK")
+    assert excess(two_kings, "standard") == violation(two_kings).total == 1
+    assert excess(two_kings, "free") == 0

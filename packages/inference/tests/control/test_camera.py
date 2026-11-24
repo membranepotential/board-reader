@@ -54,6 +54,8 @@ CONFIG = {
     "resolution": "2160p",
     "streaming": True,
 }
+#: ``CONFIG`` as the node sends it: every key, the defaulted ``rules`` included.
+SENT_CONFIG = {**CONFIG, "rules": "standard"}
 
 
 # ---- the registry -------------------------------------------------------------------
@@ -177,6 +179,23 @@ def test_a_corrupt_config_file_is_ignored_with_a_warning(config_file, caplog):
     assert CameraRegistry().board("phone").config == CameraConfig(streaming=True)
 
 
+def test_a_config_saved_before_the_rules_existed_loads_as_standard(config_file):
+    """A config file from before the switch has no ``rules`` key: still standard."""
+    config_file.parent.mkdir(parents=True)
+    config_file.write_text(json.dumps({"boards": {"phone": CONFIG}}))
+    registry = CameraRegistry()
+    assert registry.board("phone").config == CameraConfig.from_dict(CONFIG)
+    assert registry.rules("phone") == "standard"
+
+
+def test_the_rules_are_per_board_and_survive_a_restart(config_file):
+    CameraRegistry().configure("variant", CameraConfig(rules="free"))
+    restarted = CameraRegistry()
+    assert restarted.rules("variant") == "free"
+    assert restarted.rules("phone") == "standard"  # never configured: standard
+    assert "phone" not in restarted._boards  # asking did not create the board
+
+
 def test_without_the_env_var_nothing_is_written(tmp_path, monkeypatch):
     monkeypatch.delenv(CAMERA_CONFIG_ENV, raising=False)
     monkeypatch.chdir(tmp_path)
@@ -291,8 +310,8 @@ def test_a_config_set_on_control_is_pushed_to_the_phone():
             assert json.loads(phone.receive_text()) == {"type": "previews", "on": True}
 
             control.send_text(json.dumps({"type": "configure", "config": CONFIG}))
-            assert json.loads(phone.receive_text()) == {"type": "config", "config": CONFIG}
-            assert _until(control, "state")["config"] == CONFIG
+            assert json.loads(phone.receive_text()) == {"type": "config", "config": SENT_CONFIG}
+            assert _until(control, "state")["config"] == SENT_CONFIG
 
         # The last page closed: the phone stops spending uplink on previews.
         assert json.loads(phone.receive_text()) == {"type": "previews", "on": False}
@@ -304,7 +323,7 @@ def test_a_reconnecting_phone_hears_the_config_again():
             control.send_text(json.dumps({"type": "configure", "config": CONFIG}))
             _until(control, "state")
         with client.websocket_connect("/boards/phone/camera") as phone:
-            assert json.loads(phone.receive_text()) == {"type": "config", "config": CONFIG}
+            assert json.loads(phone.receive_text()) == {"type": "config", "config": SENT_CONFIG}
 
 
 def test_the_phones_preview_reaches_the_control_page():

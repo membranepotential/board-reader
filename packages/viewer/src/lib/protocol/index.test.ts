@@ -111,7 +111,8 @@ describe('a camera config off the wire', () => {
     crop: { x: 0.1, y: 0.2, w: 0.5, h: 0.6 },
     device: 'Back Camera',
     resolution: '2160p',
-    streaming: true
+    streaming: true,
+    rules: 'free'
   };
 
   it('reads what board_reader_core.control writes', () => {
@@ -124,7 +125,8 @@ describe('a camera config off the wire', () => {
     ['a crop missing a side', { ...config, crop: { x: 0, y: 0, w: 1 } }],
     ['a crop that ends past the frame (cropInside)', { ...config, crop: { x: 0.6, y: 0, w: 0.5, h: 1 } }],
     ['a streaming flag that is not a boolean', { ...config, streaming: 'yes' }],
-    ['a device that is not a label', { ...config, device: 3 }]
+    ['a device that is not a label', { ...config, device: 3 }],
+    ['rules the node does not know', { ...config, rules: 'chess960' }]
   ])('refuses %s', (_label, raw) => {
     expect(parseWire(CameraConfig, raw).ok).toBe(false);
   });
