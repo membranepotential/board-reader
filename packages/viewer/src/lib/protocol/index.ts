@@ -194,15 +194,10 @@ export const WARN_LOW_LIGHT = 'low_light';
 export const LOW_LIGHT_MEAN = 55.0;
 
 /**
- * How the UI reads the two per-event scalars. Both are interpretations of the
- * protocol rather than of any one page, and every page that shows a "moving" chip
- * or rings a doubtful square must agree with the others.
- *
- * `stability` under `MOVING_BELOW` reads as "moving" (DESIGN D3 — a hint, never a
- * gate); a square whose max class probability is under `LOW_CONFIDENCE` stops
- * asserting a piece and carries a ring.
+ * How the UI reads a square's confidence, an interpretation of the protocol rather
+ * than of any one page: a square whose max class probability is under
+ * `LOW_CONFIDENCE` stops asserting a piece.
  */
-export const MOVING_BELOW = 0.7;
 export const LOW_CONFIDENCE = 0.5;
 
 // ---- HTTP replies (`board_reader_inference.server`) --------------------------------
