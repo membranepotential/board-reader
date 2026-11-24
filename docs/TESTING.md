@@ -10,7 +10,7 @@ Two layers, both required by the project's "user-testable from the start" princi
 
 ## 0. Read this first (the 60-second version)
 
-The suite is **fast — ~16 s for all ~859 tests**. If testing is costing you more
+The suite is **fast — ~16 s for all ~860 tests**. If testing is costing you more
 than that, you are doing one of the things in this section. Read it before you run
 anything; do not read the remaining 600 lines unless you are adding a test.
 
@@ -23,12 +23,12 @@ uv run pytest packages/inference/tests/test_server.py -q    # one file, while it
 
 | Want | Run | Cost (measured 2026-11-24, one suite at a time) |
 |---|---|---|
-| The gate (before committing) | `make test` | **~16 s** — all ~859 |
+| The gate (before committing) | `make test` | **~16 s** — all ~860 |
 | One file / one test | `uv run pytest <path>[::<test>] -q` | 1–8 s |
-| One package | `uv run pytest packages/<pkg> -q` | core 9 s (115) · edge 4 s (81) · viewer 11 s (58) · inference 12 s (459) |
+| One package | `uv run pytest packages/<pkg> -q` | core 1 s (128) · edge 1 s (85) · inference 11 s (495). The viewer has no Python tests: it is Vitest and Playwright (`make test-front`) |
 | Recognition changes only | `make test-gpu` | a few s, **needs an idle GPU** |
 
-The rest of the ~859 are `tests/` (48) and `tools/video/tests` (98). A package runs
+The rest of the ~860 are `tests/` (54) and `tools/video/tests` (98). A package runs
 *serially*, so scoping to `packages/inference` costs about as much as `make test`.
 Narrow to a file, or just run the gate.
 
@@ -131,7 +131,7 @@ What's covered today — the main files (`git ls-files 'packages/*/tests/*.py'
 | **Read scheduling** | `packages/inference/tests/stream/test_schedule.py` | **burst detection matches the forwarder's hysteresis; the keepalive floor survives a dead, stuck, absent or NaN meter and a backwards clock; no config spelling switches it off; a new move cancels the last one's owed reads; spec strings round-trip** |
 | **Scheduling, live** | `packages/inference/tests/stream/test_ingest_schedule.py` | **the policy is observed on every arriving frame and asked at the drain, so a burst-end read gets `prefer_frame`'s sharper contender; per-board isolation; a frozen `capture_ts` falls back to the node's own keepalive; `BR_SCHEDULE` reaches the socket and `every-frame` restores the old gateway** |
 | **Camera control** | `packages/core/tests/test_control.py`, `packages/inference/tests/control/test_camera.py` | **the config, report and socket messages refuse malformed input; the registry pushes a config to every phone and every control page, previews are wanted exactly while a page watches, a reconnecting phone hears its config again; with `BR_CAMERA_CONFIG` set the configs survive a restart (written atomically), a corrupt file is ignored with a warning, unset writes nothing, and `serve` sets the default; the board direction is the median of the latest reads, names the nearest side, flags a moved camera once the angle settled and resets on a new crop, lens or resolution; over the real sockets a config reaches the phone, a preview and the last streamed frame reach the page, a health tick arrives with the direction, and a bad message is refused without closing the socket** |
-| Viewer | `packages/viewer/tests/test_viewer_server.py`, `test_proxy.py` | the four prerendered pages served; `/api` and `/ws` reach the relay; no page names an absolute origin; the client log |
+| Viewer | Vitest, not this suite: `packages/viewer/ui/server/*.test.ts`, `src/routes/api/**/server.test.ts` (see *Frontend* below) | the `/api` relay forwards verbatim and names an unreachable node; the `/ws` relay; the cached TLS certificate; the banner; the client log |
 | **Layer split** | `tests/test_layer_separation.py` | edge/inference never import each other |
 | **Deploy parity** | `tests/test_deploy_parity.py` | compose and `make dev` serve the same recognizer |
 | **End-to-end** | `tests/test_end_to_end.py`, `test_m2_stream.py` | real uvicorn + edge client + viewer WS; the adaptive stream |
@@ -179,8 +179,8 @@ and that changing the crop alone does not open one.
 camera-moved warning, both from the health tick.
 
 `pnpm test:e2e` drives the pages in a real Chromium (`tests/*.spec.ts`), against
-the **built** app — `vite build` then `vite preview`, because the bundle is what the
-Python viewer serves. There is no inference node behind it: every `/api/…` call and the
+the **built** app — `vite build`, then the real viewer server
+(`node server/main.ts`), so what is driven is what ships. There is no inference node behind it: every `/api/…` call and the
 `/ws/viewer` socket is stubbed per test (`tests/helpers/node.ts`), so these need neither
 a GPU nor a model. They cover what neither other layer can reach — a chessground board
 that laid out with no pieces on it, a rail button 31 px tall on a phone, an
@@ -192,28 +192,27 @@ collapsed. Each of those has shipped here at least once.
 > actual target device for `/camera` and `/snapshot` — is still only testable by hand;
 > see §2's phone walkthrough.
 
-`pnpm dev` runs the Vite dev server with `/api` and `/ws` proxied to a *running*
-Python viewer (`BR_VIEWER_ORIGIN`, default `http://127.0.0.1:8080` — see
-`vite.config.ts`), so the dev loop exercises the same relay production uses rather
-than mocking it:
+`pnpm dev` runs the Vite dev server (hot reload) against a *running* inference node:
+the `/api` routes relay to `BR_INFERENCE_HTTP` and Vite's proxy stands in for the
+`/ws` relay, reaching `BR_INFERENCE_WS`'s origin (default `ws://localhost:8000` — see
+`vite.config.ts`):
 
 ```bash
 uv run board-reader-inference serve --port 8000 &   # terminal 1: gateway
-uv run board-reader-viewer --port 8080 &             # terminal 1: viewer, relays to it
 cd packages/viewer/ui && pnpm dev                    # terminal 2: frontend -> http://localhost:5173
 ```
 
 `make ui` (`pnpm build` under the hood) is the production build instead of the dev
-server: it prerenders all four routes straight into
-`packages/viewer/src/board_reader_viewer/web/` — see the note at the top of §2.
+server: it builds the app into `packages/viewer/ui/build/`, which the viewer server
+(`server/main.ts`) serves — see the note at the top of §2.
 
 ---
 
 ## 2. The live demo (what a user runs)
 
 > [!note] Build the UI once
-> `board-reader-viewer` serves a prerendered SvelteKit build and refuses to start
-> without one (`packages/viewer/src/board_reader_viewer/web/` is generated and
+> The viewer server (`node packages/viewer/ui/server/main.ts`) serves a SvelteKit build
+> and refuses to start without one (`packages/viewer/ui/build/` is generated and
 > gitignored, so a fresh checkout has none). Docker's own `ui-build` stage handles
 > Option A; every local-process option below needs `make ui` run once first (and
 > again after any change under `packages/viewer/ui/`).
@@ -282,12 +281,12 @@ paces output to the stream's own capture time.
 
 ### Option B — Local processes (no Docker)
 
-Three terminals, all `uv run`:
+Three terminals:
 
 ```bash
-uv run board-reader-inference serve --port 8000     # 1: gateway
-uv run board-reader-viewer --port 8080              # 2: UI  -> open http://localhost:8080
-uv run board-reader-edge feed                       # 3: synthetic feed (30 frames)
+uv run board-reader-inference serve --port 8000          # 1: gateway
+node packages/viewer/ui/server/main.ts --port 8080       # 2: UI  -> open http://localhost:8080
+uv run board-reader-edge feed                            # 3: synthetic feed (30 frames)
 ```
 
 `feed` exits after 30 frames by default; use `--synthetic 0` to stream forever, or
@@ -346,7 +345,7 @@ BR_SAVE_UPLOADS=data/uploads \
   uv run board-reader-inference serve --host 0.0.0.0 --port 8000
 
 # 2. Serve the viewer on the LAN:
-uv run board-reader-viewer --host 0.0.0.0 --port 8080
+node packages/viewer/ui/server/main.ts --host 0.0.0.0 --port 8080
 
 # 3. On the phone (same Wi-Fi), open  http://<this-machine's-LAN-IP>:8080/snapshot
 ```
@@ -458,8 +457,9 @@ control socket, and the phone applies it; capture, crop, motion and adaptive
 forwarding all still happen in the phone's browser. Nothing polls: the server logs
 show one line per socket when it opens, not one per message.
 
-`make dev` sets all of this up — it starts inference plus **two** binds of the
-viewer, serves the **same recognizer `docker compose up` does** (it prints what it
+`make dev` sets all of this up — it starts inference plus the viewer on **two**
+ports (http :8080 and https :8443, one `node packages/viewer/ui/server/main.ts --host
+0.0.0.0 --tls-port 8443` process), serves the **same recognizer `docker compose up` does** (it prints what it
 serves, or a `!!` line when the ChessQ weights are missing and the stub serves), and
 prints the URL for each page:
 
@@ -487,15 +487,15 @@ By hand, if you want different ports:
 BR_CHESSQ=models/chessq/cq-vit-s-644-v6-seed1-onnx-fp32.onnx \
   uv run board-reader-inference serve --host 0.0.0.0
 
-# 2. Viewer with TLS — getUserMedia requires a secure context on a phone:
+# 2. Viewer with a TLS port — getUserMedia requires a secure context on a phone:
 BR_INFERENCE_WS=ws://localhost:8000/viewer BR_INFERENCE_HTTP=http://localhost:8000 \
-uv run board-reader-viewer --host 0.0.0.0 --port 8443 --ssl
+node packages/viewer/ui/server/main.ts --host 0.0.0.0 --port 8080 --tls-port 8443
 # it prints the https://<lan-ip>:8443/camera URLs to type on the phone,
 # and the /control URL to open on this machine
 
 # 3. On the phone: open the printed URL, accept the self-signed certificate once.
-#    (Android over USB instead: `adb reverse tcp:8443 tcp:8443`, then plain
-#    http://localhost:8443/camera — localhost is a secure context, no cert.)
+#    (Android over USB instead: `adb reverse tcp:8080 tcp:8080`, then plain
+#    http://localhost:8080/camera — localhost is a secure context, no cert.)
 ```
 
 **The session, step by step:**
