@@ -229,9 +229,11 @@ export type MotionUpdate = Immutable<z.infer<typeof MotionUpdate>>;
  * misread still being debounced.
  *
  * `utc` is this read's capture time. `changed_utc` is when `placement`
- * last changed: the capture time of the earliest read that showed the board as
- * it now stands (the start of the run of reads that settled it), in the same
- * format and on the same edge clock. It stays put while the board holds, so a
+ * last changed: the capture time of the earliest frame that showed the board as
+ * it now stands, in the same format and on the same edge clock. The stabilizer
+ * gives the earliest read (the start of the run of reads that settled it); the
+ * node back-dates that over the frames it received but did not read, by their
+ * pixels on the changed squares. It stays put while the board holds, so a
  * consumer timestamps a move by the `changed_utc` of the first event that
  * carries the new board, not by that event's `utc` (which is the read that
  * finished settling it, a settle window or more later). For a one-shot read it
