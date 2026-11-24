@@ -23,7 +23,6 @@ import {
   type Board8,
   type Grid8,
   type PieceSymbol,
-  type SquareDist,
   type SquareKey
 } from '../protocol';
 
@@ -97,37 +96,6 @@ export function squareKey(row: number, col: number): SquareKey {
     throw new RangeError(`(${row}, ${col}) is off an ${GRID}x${GRID} board`);
   }
   return `${file}${rank}`;
-}
-
-/**
- * Per-square max probability — the confidence a low-confidence ring is drawn from.
- *
- * A missing distribution reads as 1.0 (fully confident) rather than 0: an event
- * that carries no `square_dist` is not an event that doubts every square, and
- * ringing all 64 would be a louder lie than saying nothing.
- */
-export function squareConfidence(
-  dist: SquareDist | null | undefined,
-  row: number,
-  col: number
-): number {
-  const scores = dist?.[row]?.[col];
-  if (scores === undefined) return 1;
-  return Math.max(...scores);
-}
-
-/** Squares whose confidence is under `threshold`, in row-major (rank 8 first) order. */
-export function lowConfidenceSquares(
-  dist: SquareDist | null | undefined,
-  threshold: number
-): SquareKey[] {
-  const low: SquareKey[] = [];
-  for (let r = 0; r < GRID; r++) {
-    for (let c = 0; c < GRID; c++) {
-      if (squareConfidence(dist, r, c) < threshold) low.push(squareKey(r, c));
-    }
-  }
-  return low;
 }
 
 /** Squares where `next` disagrees with `previous` — the change diff, and nothing more. */

@@ -3,7 +3,7 @@
    * board-reader · live positions — the Svelte port of
    * `board_reader_viewer/static/index.html`.
    *
-   * Every board's bookkeeping — the sanitized grid, low-confidence squares,
+   * Every board's bookkeeping — the sanitized grid, pending squares, motion,
    * change rings, staleness, events/sec, reconnect-with-backoff — already lives
    * in `PositionStream` (`$lib/stores/positions.svelte`); this page is wiring: one
    * `<BoardCard>` per board, in a stable order, plus the connection chip.

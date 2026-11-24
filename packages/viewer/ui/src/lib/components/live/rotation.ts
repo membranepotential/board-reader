@@ -10,7 +10,7 @@
  * 90°-turned picture, and `Board.svelte` dropped that prop already (unused,
  * see its doc comment) rather than half-support a rotation it cannot do.
  * Turning the whole rendered card (grid, coordinates, pieces and the
- * confidence/change rings alike) by a multiple of 90° is instead a CSS
+ * pending/change rings alike) by a multiple of 90° is instead a CSS
  * `transform: rotate()` on the wrapper in `BoardCard.svelte` — the placement
  * itself, always calibrated to white's view (DESIGN §4.5, `a8` first), is
  * never touched. At 90°/270° the coordinate labels and piece sprites turn

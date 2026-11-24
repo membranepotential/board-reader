@@ -4,14 +4,15 @@
  * owns the fade timing and hands this a ready-to-draw list, so this is a pure
  * mapping from the store's readout to chessground's `DrawShape` vocabulary.
  *
- * A yellow ring marks a square under the confidence threshold; a red ring one
- * the prior decoder relabelled to make the board possible (the drawn piece is
- * the decoder's, not the estimator's); a dashed amber ring one the settled
- * board hasn't adopted yet (a move in flight, or a misread still being
- * debounced — the drawn piece is still whatever was last settled there); a
- * green ring on a square that just changed, fading to pale — all outlines,
- * never fills, so they read as annotations on the board rather than as the
- * board itself.
+ * A red ring marks a square the prior decoder relabelled to make the board
+ * possible (the drawn piece is the decoder's, not the estimator's); a dashed
+ * amber ring one the settled board hasn't adopted yet (a move in flight, or a
+ * misread still being debounced — the drawn piece is still whatever was last
+ * settled there); a green ring a square the settled board just changed, fading
+ * to pale — all outlines, never fills, so they read as annotations on the board
+ * rather than as the board itself. There is no confidence ring: the recognizer
+ * reports ~1.0 on its wrong squares too, so a threshold on it almost never fired
+ * and said nothing when it did.
  */
 
 import type { DrawShape } from '@lichess-org/chessground/draw';
@@ -40,13 +41,11 @@ export function pendingShapes(pending: readonly SquareKey[]): DrawShape[] {
 }
 
 export function boardShapes(
-  low: readonly SquareKey[],
   rings: readonly ChangeRing[],
   flipped: readonly SquareKey[] = [],
   pending: readonly SquareKey[] = []
 ): DrawShape[] {
-  const shapes: DrawShape[] = low.map((square) => ({ orig: square, brush: 'yellow' }));
-  for (const square of flipped) shapes.push({ orig: square, brush: 'red' });
+  const shapes: DrawShape[] = flipped.map((square) => ({ orig: square, brush: 'red' }));
   shapes.push(...pendingShapes(pending));
   for (const ring of rings) {
     shapes.push({ orig: ring.square, brush: ring.phase === 'fresh' ? 'green' : 'paleGreen' });

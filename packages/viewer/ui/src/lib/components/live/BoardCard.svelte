@@ -1,11 +1,18 @@
 <script lang="ts">
   /**
    * One board's card on the live page — ported from index.html's `ensureCard` /
-   * `render`, minus the DOM bookkeeping: `PositionStream` already
-   * derives the sanitized grid, low-confidence squares, change rings, staleness
-   * and events/sec (see `$lib/stores/positions.svelte`), so this component only
-   * lays them out and owns the UI-only state index.html kept per card (whether
-   * whether the preview is open and the display rotation).
+   * `render`, minus the DOM bookkeeping: `PositionStream` already derives the
+   * sanitized grid, change rings, pending squares, motion, staleness and
+   * events/sec (see `$lib/stores/positions.svelte`), so this component only lays
+   * them out and owns the UI-only state index.html kept per card (whether the
+   * preview is open and the display rotation).
+   *
+   * What it does NOT show, on purpose: a confidence bar or confidence rings (the
+   * recognizer reports ~1.0 on its wrong squares too — /snapshot's inspector keeps
+   * the per-square numbers), and the read frame's stability (the node reads after
+   * motion ends, so that one always says "at rest"). Motion comes from the node's
+   * per-frame motion messages instead, and the chip is absent when the node sends
+   * none.
    *
    * Stale = the reading is old, so it stops asserting itself — except the `.live`
    * row, which is exempt: how stale it is, is exactly what you want to read on a
@@ -14,7 +21,6 @@
    */
   import Board from '$lib/board/Board.svelte';
   import { gridToFen } from '$lib/board/fen';
-  import { MOVING_BELOW } from '$lib/protocol';
   import { RATE_WINDOW_MS, STALE_MS, formatAge } from '$lib/stores/liveness';
   import type { BoardLiveness, BoardState } from '$lib/stores/positions.svelte';
   import FramePreview from './FramePreview.svelte';
@@ -62,20 +68,28 @@
 
   const event = $derived(board.event);
   const placement = $derived(gridToFen(board.grid));
-  const shapes = $derived(boardShapes(board.low, liveness.rings, board.flipped, board.pending));
-
-  const moving = $derived(event.stability !== null && event.stability < MOVING_BELOW);
-  const motionLabel = $derived(
-    event.stability === null ? 'motion unknown' : moving ? 'moving' : 'at rest'
-  );
-  const motionClass = $derived(event.stability === null ? 'unknown' : moving ? 'moving' : 'rest');
+  const shapes = $derived(boardShapes(liveness.rings, board.flipped, board.pending));
+  const motion = $derived(liveness.motion);
 </script>
 
 <div class="board-card" class:stale={liveness.stale}>
   <h2>
     <span>board {board.id}</span>
     <span class="chips">
-      <span class="motion-chip {motionClass}">{motionLabel}</span>
+      {#if motion.kind === 'moving'}
+        <span
+          class="motion-chip moving"
+          title="the camera sees motion on the board (a hand, or a piece in flight); the next read waits until it stops"
+        >
+          moving
+        </span>
+      {:else if motion.kind === 'still'}
+        <span class="motion-chip still" title="the camera sees no motion on the board">still</span>
+      {:else if motion.kind === 'stale'}
+        <span class="motion-chip unknown" title="no motion message from the node for a few seconds">
+          motion ?
+        </span>
+      {/if}
       {#if liveness.stale}
         <span class="stale-chip" title="no event for over {STALE_MS / 1000}s">stale</span>
       {/if}
@@ -105,9 +119,8 @@
           ↻ {rotation}°
         </button>
         <span class="legend">
-          <span><i class="lo"></i>low confidence</span>
           <span><i class="ch"></i>just changed</span>
-          <span><i class="pd"></i>pending</span>
+          <span><i class="pd"></i>not settled yet</span>
         </span>
       </div>
 
@@ -120,14 +133,6 @@
           · seq <code>{event.seq}</code>
         </div>
         <div>placement: <code class="pl">{event.placement}</code></div>
-        <div>
-          confidence
-          <div class="bar conf"><i style="width: {Math.round((event.confidence ?? 0) * 100)}%"></i></div>
-        </div>
-        <div>
-          stability
-          <div class="bar stab"><i style="width: {Math.round((event.stability ?? 0) * 100)}%"></i></div>
-        </div>
         <div>utc <code>{event.utc}</code> · clock <code>{event.clock}</code></div>
       </div>
     </div>
@@ -277,9 +282,6 @@
     vertical-align: -1px;
     margin-right: 4px;
   }
-  .legend .lo {
-    background: #ffcf33;
-  }
   .legend .ch {
     background: #5ad17a;
   }
@@ -303,22 +305,6 @@
   }
   .pl {
     word-break: break-all;
-  }
-  .bar {
-    height: 6px;
-    border-radius: 3px;
-    background: #2b2f37;
-    overflow: hidden;
-  }
-  .bar > i {
-    display: block;
-    height: 100%;
-  }
-  .bar.conf > i {
-    background: #5ad17a;
-  }
-  .bar.stab > i {
-    background: #6aa8ff;
   }
   code {
     color: #c8cdd4;

@@ -1,7 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
 import { PositionStream } from './positions.svelte';
-import { NUM_CLASSES, START_PLACEMENT } from '../protocol';
+import { START_PLACEMENT } from '../protocol';
 import { FLASH_MS, STALE_MS } from './liveness';
+import { MOTION_STALE_MS } from './positions-motion';
 
 function event(over: Record<string, unknown> = {}): Record<string, unknown> {
   return {
@@ -15,6 +16,10 @@ function event(over: Record<string, unknown> = {}): Record<string, unknown> {
     status: 'ok',
     ...over
   };
+}
+
+function motion(over: Record<string, unknown> = {}): Record<string, unknown> {
+  return { type: 'motion', board_id: 'phone', moving: false, stability: 1, ts: 1000, ...over };
 }
 
 /** A stream driven by an explicit clock, so nothing here waits on real time. */
@@ -80,16 +85,34 @@ describe('PositionStream', () => {
     expect(Object.keys(stream.board('phone')!.changedAt)).toEqual([]);
   });
 
-  it('rings the squares under the confidence floor', () => {
-    const dist = Array.from({ length: 8 }, () =>
-      Array.from({ length: 8 }, () =>
-        Array.from({ length: NUM_CLASSES }, (_, i) => (i === 0 ? 0.9 : 0.1 / (NUM_CLASSES - 1)))
-      )
-    );
-    dist[2]![3] = Array.from({ length: NUM_CLASSES }, () => 1 / NUM_CLASSES);
+  it('reads motion from its own messages: none until one arrives, then moving or still', () => {
+    const clock = { now: 0 };
+    const stream = streamAt(clock);
+    stream.ingest(event({ stability: 0.1 })); // the READ frame's stability is not motion
+    const board = stream.board('phone')!;
+    expect(stream.liveness(board).motion).toEqual({ kind: 'none' });
+
+    stream.ingestMotion(motion({ moving: true, stability: 0.3 }));
+    expect(stream.liveness(board).motion).toEqual({ kind: 'moving', stability: 0.3 });
+    stream.ingestMotion(motion({ moving: false, stability: 0.98 }));
+    expect(stream.liveness(board).motion).toEqual({ kind: 'still', stability: 0.98 });
+  });
+
+  it('a motion message that stops arriving goes stale instead of claiming "moving"', () => {
+    const clock = { now: 0 };
+    const stream = streamAt(clock);
+    stream.ingest(event());
+    stream.ingestMotion(motion({ moving: true }));
+    clock.now = MOTION_STALE_MS + 1;
+    stream.ingest(event({ seq: 2 })); // reads may keep coming; motion is judged on its own
+    expect(stream.liveness(stream.board('phone')!).motion).toEqual({ kind: 'stale' });
+  });
+
+  it('keeps the two message kinds apart', () => {
     const stream = streamAt({ now: 0 });
-    stream.ingest(event({ square_dist: dist }));
-    expect(stream.board('phone')?.low).toEqual(['d6']);
+    expect(stream.ingest(motion())).toBeNull(); // a motion message is not a board
+    expect(stream.boards).toHaveLength(0);
+    expect(stream.ingestMotion(event())).toBeNull(); // nor is a position event motion
   });
 
   it('reads a 1 fps keepalive as 1.0 ev/s and goes stale when it stops', () => {
@@ -147,6 +170,26 @@ describe('PositionStream', () => {
     vi.advanceTimersByTime(10_000);
     expect(sockets).toHaveLength(3);
     vi.useRealTimers();
+  });
+
+  it('routes both message kinds off one socket', () => {
+    let socket: { onmessage: ((m: MessageEvent) => void) | null } = { onmessage: null };
+    const stream = new PositionStream({
+      url: 'ws://test/ws/viewer',
+      clock: () => 0,
+      socketFactory: () => {
+        socket = { onmessage: null };
+        return Object.assign(socket, { close: () => {} }) as unknown as WebSocket;
+      }
+    });
+    stream.start();
+    socket.onmessage?.({ data: JSON.stringify(event()) } as MessageEvent);
+    socket.onmessage?.({ data: JSON.stringify(motion({ moving: true })) } as MessageEvent);
+    socket.onmessage?.({ data: 'not json' } as MessageEvent);
+    const board = stream.board('phone')!;
+    expect(stream.boards).toHaveLength(1);
+    expect(stream.liveness(board).motion.kind).toBe('moving');
+    stream.stop();
   });
 
   it('reports staleness against the ticker, not against event.utc', () => {

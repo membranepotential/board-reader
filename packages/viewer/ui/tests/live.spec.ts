@@ -14,6 +14,11 @@ import { FakeViewerSocket, positionEvent, START_PLACEMENT } from './helpers/node
 /** `STALE_MS` in `$lib/stores/liveness`, plus room for the 200 ms ticker. */
 const PAST_STALE_MS = 5000 + 1500;
 
+/** The node's per-frame motion message on `/ws/viewer` (`$lib/stores/positions-motion`). */
+function motionMessage(over: Record<string, unknown> = {}): Record<string, unknown> {
+  return { type: 'motion', board_id: 'phone', moving: false, stability: 1, ts: 1000, ...over };
+}
+
 test('the page opens the viewer socket and renders a card per board', async ({ page }) => {
   const socket = await FakeViewerSocket.install(page);
   await page.goto('/');
@@ -79,7 +84,8 @@ test('a card that stops receiving events goes stale, and its .live row stays leg
   const socket = await FakeViewerSocket.install(page);
   await page.goto('/');
   // Mid-move when the stream dies: the motion chip must not pulse "moving" forever.
-  socket.send(positionEvent({ stability: 0.3 }));
+  socket.send(positionEvent());
+  socket.send(motionMessage({ moving: true, stability: 0.3 }));
 
   const card = page.locator('.board-card');
   await expect(card).toHaveCount(1);
@@ -102,6 +108,50 @@ test('a card that stops receiving events goes stale, and its .live row stays leg
   expect(
     await card.locator('.motion-chip').evaluate((el) => getComputedStyle(el).animationName)
   ).toBe('none');
+});
+
+test('the motion chip follows the motion messages and is absent without them', async ({
+  page
+}) => {
+  const socket = await FakeViewerSocket.install(page);
+  await page.goto('/');
+  // A read whose own frame was moving says nothing about motion now: no chip.
+  socket.send(positionEvent({ stability: 0.2 }));
+  const card = page.locator('.board-card');
+  await expect(card).toHaveCount(1);
+  await expect(card.locator('.motion-chip')).toHaveCount(0);
+
+  socket.send(motionMessage({ moving: true, stability: 0.4 }));
+  await expect(card.locator('.motion-chip')).toHaveText('moving');
+  socket.send(motionMessage({ moving: false, stability: 0.99 }));
+  await expect(card.locator('.motion-chip')).toHaveText('still');
+});
+
+test('a card shows pending squares as dashed rings and no confidence readouts', async ({
+  page
+}) => {
+  const socket = await FakeViewerSocket.install(page);
+  await page.goto('/');
+  // e2-e4 read once: the settled board still holds the start position, e2/e4 pending.
+  const E4 = 'rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR';
+  socket.send({
+    ...positionEvent({ placement: E4 }),
+    settled: { placement: START_PLACEMENT, pending: ['e4', 'e2'] }
+  });
+  const card = page.locator('.board-card');
+  await expect(card.locator('piece')).toHaveCount(32);
+  await expect(card.locator('cg-container svg [stroke-dasharray]')).toHaveCount(2);
+  await expect(card.locator('.legend')).toContainText('not settled yet');
+
+  await expect(card.locator('.bar')).toHaveCount(0);
+  await expect(card.locator('.legend')).not.toContainText('confidence');
+
+  // Settled: the dashed rings go, the change rings take over.
+  socket.send({
+    ...positionEvent({ seq: 2, placement: E4 }),
+    settled: { placement: E4, pending: [] }
+  });
+  await expect(card.locator('cg-container svg [stroke-dasharray]')).toHaveCount(0);
 });
 
 test('the rotate button turns the board and remembers the choice per board', async ({ page }) => {

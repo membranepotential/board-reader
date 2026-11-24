@@ -15,8 +15,8 @@
  */
 
 import { VIEWER_SOCKET, wsUrl } from '../api';
-import { changedSquares, fenToGrid, lowConfidenceSquares, type BoardGrid } from '../board/fen';
-import { LOW_CONFIDENCE, parsePositionEvent, type PositionEvent, type SquareKey } from '../protocol';
+import { changedSquares, fenToGrid, type BoardGrid } from '../board/fen';
+import { parsePositionEvent, type PositionEvent, type SquareKey } from '../protocol';
 import {
   changeRings,
   eventsPerSecond,
@@ -25,8 +25,23 @@ import {
   withinWindow,
   type ChangeRing
 } from './liveness';
+import {
+  motionReadout,
+  parseMotionMessage,
+  type MotionMessage,
+  type MotionReadout,
+  type MotionSample
+} from './positions-motion';
 
 export type ConnectionState = 'connecting' | 'live' | 'disconnected';
+
+function parseJson(raw: string): unknown {
+  try {
+    return JSON.parse(raw) as unknown;
+  } catch {
+    return undefined;
+  }
+}
 
 /**
  * The prior's flip squares, kept only when they name real squares — the wire is
@@ -61,8 +76,6 @@ export interface BoardState {
    * the operator stares at; else the raw placement itself.
    */
   readonly grid: BoardGrid;
-  /** Squares currently under `LOW_CONFIDENCE`. */
-  readonly low: readonly SquareKey[];
   /** Squares the prior decoder relabelled to make the board possible. */
   readonly flipped: readonly SquareKey[];
   /** Squares the settled board hasn't adopted yet — a move in flight, or a
@@ -82,6 +95,8 @@ export interface BoardLiveness {
   readonly stale: boolean;
   readonly eventsPerSecond: number;
   readonly rings: readonly ChangeRing[];
+  /** Is the camera seeing motion right now — from the per-frame motion messages. */
+  readonly motion: MotionReadout;
 }
 
 export interface PositionStreamOptions {
@@ -107,6 +122,8 @@ export const RECONNECT_MAX_MS = 8000;
  */
 export class PositionStream {
   #boards = $state<Record<string, BoardState>>({});
+  /** Per board, the last per-frame motion sample — kept apart from the reads. */
+  #motion = $state<Record<string, MotionSample>>({});
   #connection = $state<ConnectionState>('connecting');
   /** Advanced by the ticker; every age, rate and ring fade is derived from it. */
   #now = $state(0);
@@ -148,7 +165,8 @@ export class PositionStream {
       ageMs,
       stale: isStale(ageMs),
       eventsPerSecond: eventsPerSecond(withinWindow(board.stamps, now)),
-      rings: changeRings(board.changedAt, now)
+      rings: changeRings(board.changedAt, now),
+      motion: motionReadout(this.#motion[board.id], now)
     };
   }
 
@@ -201,7 +219,6 @@ export class PositionStream {
       id: event.board_id,
       event,
       grid,
-      low: lowConfidenceSquares(event.square_dist, LOW_CONFIDENCE),
       flipped: flippedSquares(event),
       pending: pendingSquares(event),
       changedAt,
@@ -209,6 +226,20 @@ export class PositionStream {
       stamps: [...withinWindow(previous?.stamps ?? [], now), now]
     };
     return event;
+  }
+
+  /**
+   * Fold one per-frame motion message in (see `./positions-motion`). Anything else —
+   * a position event, garbage — returns `null` and changes nothing.
+   */
+  ingestMotion(raw: unknown): MotionMessage | null {
+    const message = parseMotionMessage(raw);
+    if (message === null) return null;
+    const now = this.#clock();
+    this.#now = now;
+    const { moving, stability } = message;
+    this.#motion[message.board_id] = { moving, stability, at: now };
+    return message;
   }
 
   #connect(): void {
@@ -225,7 +256,10 @@ export class PositionStream {
     };
     socket.onmessage = (message: MessageEvent) => {
       if (socket !== this.#socket) return;
-      if (typeof message.data === 'string') this.ingest(message.data);
+      if (typeof message.data !== 'string') return;
+      const data = parseJson(message.data);
+      // One stream, two message kinds: per-frame motion, and position events.
+      if (this.ingestMotion(data) === null) this.ingest(data);
     };
     socket.onerror = () => socket.close();
     socket.onclose = () => {
