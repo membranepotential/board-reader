@@ -202,14 +202,14 @@ def test_default_name_tracks_the_model_environment(monkeypatch, tmp_path):
     """The default replay name separates model configurations, not runs.
 
     Re-running the same code against the same models must land in the same
-    directory (it supersedes its own answer); pointing BR_MODEL somewhere else —
+    directory (it supersedes its own answer); pointing BR_CHESSQ somewhere else —
     or retraining the model that path names, in place — must land beside it, or
     one score silently overwrites another's.
     """
     monkeypatch.setattr(replay_mod, "git_describe", lambda: "g1a2b3c4")
     model = tmp_path / "model.onnx"
     model.write_bytes(b"weights")
-    monkeypatch.setenv("BR_MODEL", str(model))
+    monkeypatch.setenv("BR_CHESSQ", str(model))
 
     first = default_name()
     assert first.startswith("g1a2b3c4-")
@@ -217,12 +217,12 @@ def test_default_name_tracks_the_model_environment(monkeypatch, tmp_path):
 
     other = tmp_path / "other.onnx"
     other.write_bytes(b"weights")
-    monkeypatch.setenv("BR_MODEL", str(other))
+    monkeypatch.setenv("BR_CHESSQ", str(other))
     assert default_name() != first  # a different model file
 
-    # Retrained in place: same path, same size, new bytes. models/run_e/model.onnx
-    # is a path and not a version, so the stat has to be part of the identity.
-    monkeypatch.setenv("BR_MODEL", str(model))
+    # Retrained in place: same path, same size, new bytes. A model file is a path
+    # and not a version, so the stat has to be part of the identity.
+    monkeypatch.setenv("BR_CHESSQ", str(model))
     model.write_bytes(b"retrain")
     os.utime(model, ns=(1, 2))
     assert default_name() != first
@@ -317,13 +317,13 @@ def test_replay_directory_is_scoreable_and_leaves_the_source_alone(source, tmp_p
 
 def test_manifest_records_the_provenance(source, monkeypatch):
     """A replay that cannot say what produced it is not evidence of anything."""
-    monkeypatch.setenv("BR_MODEL", "models/run_e/model.onnx")
+    monkeypatch.setenv("BR_CHESSQ", "models/chessq/cq.onnx")
     result = _run(source, "provenance")
     manifest = json.loads((result.path / "manifest.json").read_text())
     block = manifest["replay"]
     assert block["source"] == str(source.path)
     assert block["board_id"] == "phone"
-    assert block["env"]["BR_MODEL"]["value"] == "models/run_e/model.onnx"
+    assert block["env"]["BR_CHESSQ"]["value"] == "models/chessq/cq.onnx"
     assert block["policy"] == "every-frame"
     assert block["estimator"] == "ScriptedEstimator"
     assert block["frames"]["frames_estimated"] == 8
@@ -492,11 +492,9 @@ def test_cli_replay_and_score(tmp_path, monkeypatch, capsys):
     Also pins the exit codes, since this is a benchmarking command that will end
     up in scripts: 0 scored, 2 for a recording with no truth to score against.
     """
-    for name in (
-        "BR_MODEL", "BR_MODEL_B", "BR_MODEL_TUNED", "BR_CHESSQ",
-    ):
-        monkeypatch.delenv(name, raising=False)
-    # Cwd-relative writes have cost real user state before; nothing here should write outside tmp_path, and this makes that true.
+    monkeypatch.delenv("BR_CHESSQ", raising=False)
+    # Cwd-relative writes have cost real user state before; nothing here should
+    # write outside tmp_path, and this makes that true.
     monkeypatch.chdir(tmp_path)
     _write_recording(tmp_path / "recordings", frames=4)
     recording = tmp_path / "recordings" / "src"
@@ -508,7 +506,7 @@ def test_cli_replay_and_score(tmp_path, monkeypatch, capsys):
     replayed = recording / "replays" / "cli"
     # The environment names no model, so the stack the harness builds is the
     # walking skeleton — the same one `serve` would run with this environment.
-    assert type(build_estimator()).__name__ == "StubEstimator"
+    assert build_estimator().recognizer.name == "stub"
     assert (replayed / EVENTS_NAME).read_text().count("\n") == 4
 
     # No truth in the source: --score says so and exits 2 rather than pretending.
@@ -666,10 +664,7 @@ def test_the_manifest_records_the_policy_as_the_argument_that_rebuilds_it(metere
 
 
 def test_cli_policy_and_restamp_flags(tmp_path, monkeypatch, capsys):
-    for name in (
-        "BR_MODEL", "BR_MODEL_B", "BR_MODEL_TUNED", "BR_CHESSQ",
-    ):
-        monkeypatch.delenv(name, raising=False)
+    monkeypatch.delenv("BR_CHESSQ", raising=False)
     monkeypatch.chdir(tmp_path)
     _write_metered_recording(tmp_path / "recordings", moving=range(40, 50))
     recording = tmp_path / "recordings" / "metered"
@@ -813,10 +808,7 @@ def test_the_manifest_records_the_restamp_FLAG_not_a_count(metered):
 def test_cli_reports_a_damaged_recording_instead_of_replaying_it(
     tmp_path, monkeypatch, capsys
 ):
-    for name in (
-        "BR_MODEL", "BR_MODEL_B", "BR_MODEL_TUNED", "BR_CHESSQ",
-    ):
-        monkeypatch.delenv(name, raising=False)
+    monkeypatch.delenv("BR_CHESSQ", raising=False)
     monkeypatch.chdir(tmp_path)
     _write_metered_recording(tmp_path / "recordings", moving=range(40, 50))
     recording = tmp_path / "recordings" / "metered"

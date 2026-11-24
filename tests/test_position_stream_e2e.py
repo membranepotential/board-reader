@@ -14,9 +14,9 @@ consumer landed, the only way to observe a run was to watch a browser, so "we ca
 take a stream from a board and emit a stream of positions" was a claim no test
 could reach.
 
-Recognition here is deliberately easy — a lite-embedder centroid classifier on
-synthetic renders, which is exact — and the feed is settled frames only (no hand,
-no transitions). Neither recognition accuracy nor burst behaviour is on trial;
+Recognition here is deliberately easy — a template match on synthetic renders
+(``tests/_sim_recognizer.py``), which is exact — and the feed is settled frames
+only (no hand, no transitions). Neither recognition accuracy nor burst behaviour is on trial;
 those have their own suites. What is on trial is that the positions *travel* and
 that the capture reproduces them.
 """
@@ -32,27 +32,24 @@ import time
 
 import httpx
 import uvicorn
+from _sim_recognizer import SimRecognizer
 
 from board_reader_core.protocol import START_PLACEMENT, PositionEvent
-from board_reader_core.sim import SAMPLE_GAME_PLACEMENTS, render_board
+from board_reader_core.sim import SAMPLE_GAME_PLACEMENTS
 
 from board_reader_edge.adapter import FileEdgeAdapter
 from board_reader_edge.client import stream_to_gateway
 from board_reader_edge.source import GameSource
-from board_reader_inference.centroid import build_centroids
-from board_reader_inference.embed import LiteEmbedder
-from board_reader_inference.estimator import CentroidEstimator
 from board_reader_inference.hub import PositionHub
 from board_reader_inference.positions import stream_to
+from board_reader_inference.recognizer import RecognizerEstimator
 from board_reader_inference.server import create_app
-from board_reader_inference.squares import crop_squares
 
 PLACEMENTS = SAMPLE_GAME_PLACEMENTS[:4]
 # Two frames per position is the smallest feed that still proves the point: the
 # stream has to carry each position and the capture has to show them in order.
-# Everything above that is the same assertion, paid for again — and every frame
-# costs 64 embeddings. Small squares for the same reason; the lite embedder reads
-# the synthetic render exactly at this size.
+# Everything above that is the same assertion, paid for again. Small squares for
+# the same reason.
 FRAMES_PER_POSITION = 2
 SQUARE_PX = 32
 
@@ -61,19 +58,6 @@ def _free_port() -> int:
     with socket.socket() as s:
         s.bind(("127.0.0.1", 0))
         return s.getsockname()[1]
-
-
-def _lite_estimator() -> CentroidEstimator:
-    """A real estimator that reads pixels — calibrated on the synthetic start board.
-
-    One frame of the start position contains all 13 classes, so a single
-    calibration covers the whole vocabulary.
-    """
-    embedder = LiteEmbedder()
-    crops = crop_squares(render_board(START_PLACEMENT, square_px=SQUARE_PX), inset=0.1)
-    return CentroidEstimator(
-        embedder, build_centroids(embedder, crops, START_PLACEMENT), inset=0.1
-    )
 
 
 class _ServerThread:
@@ -156,7 +140,7 @@ async def _wait_drained(port: int, sent: int, timeout: float = 10.0) -> None:
 def test_a_frame_stream_becomes_a_capturable_position_stream(tmp_path):
     port = _free_port()
     capture = tmp_path / "run.ndjson"
-    app = create_app(_lite_estimator(), PositionHub())
+    app = create_app(RecognizerEstimator(SimRecognizer()), PositionHub())
 
     with _ServerThread(port, app):
         _wait_healthy(port)

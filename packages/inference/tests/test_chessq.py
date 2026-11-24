@@ -183,16 +183,15 @@ def test_routes_through_photo_path_with_original_pixels():
 
 @pytest.fixture
 def chessq_env(tmp_path, monkeypatch):
-    """``BR_CHESSQ`` naming a (fake) model file, beside the whole default stack."""
+    """``BR_CHESSQ`` naming a (fake) model file."""
     model = tmp_path / "cq.onnx"
     model.write_bytes(b"not loaded: _onnx_logits_fn is patched")
     monkeypatch.setattr(chessq_mod, "_onnx_logits_fn", lambda path: _fake_model(START_PLACEMENT))
     monkeypatch.setenv("BR_CHESSQ", str(model))
-    monkeypatch.setenv("BR_MODEL", str(tmp_path / "run_e.onnx"))
     return model
 
 
-def test_br_chessq_outranks_every_other_estimator_setting(chessq_env):
+def test_br_chessq_serves_chessq_from_its_file(chessq_env):
     est = build_from_env()
     assert isinstance(est, RecognizerEstimator)
     assert isinstance(est.recognizer, ChessQRecognizer)

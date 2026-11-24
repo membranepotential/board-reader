@@ -15,7 +15,7 @@ from board_reader_core.protocol import CLASSES, START_PLACEMENT, parse_placement
 from board_reader_core.sim import render_board
 from board_reader_core.wire import Frame
 
-from board_reader_inference.estimator import Estimator, StubEstimator
+from board_reader_inference.estimator import Estimator
 from board_reader_inference.recognizer import (
     ORIENTATION,
     RecognizerEstimator,
@@ -69,9 +69,10 @@ def test_adapter_is_an_estimator_on_the_photo_path_that_ignores_corners():
     assert est.estimate(_frame()).placement == MIDGAME
 
 
-def test_build_from_env_without_br_chessq_keeps_the_old_tiers(monkeypatch):
-    for name in ("BR_CHESSQ", "BR_MODEL", "BR_MODEL_B", "BR_MODEL_TUNED"):
-        monkeypatch.delenv(name, raising=False)
+def test_build_from_env_without_br_chessq_serves_the_stub_loudly(monkeypatch, capsys):
+    monkeypatch.delenv("BR_CHESSQ", raising=False)
     est = build_from_env()
-    assert isinstance(est, StubEstimator)
-    assert est.placement == START_PLACEMENT
+    assert isinstance(est.recognizer, StubRecognizer)
+    assert est.recognizer.placement == START_PLACEMENT
+    assert "BR_CHESSQ is unset" in (est.fallback or "")
+    assert "STUB recognizer" in capsys.readouterr().err

@@ -26,9 +26,8 @@ rgb-imagenet-f32-bilinear-ignore-exif-v1``, and the reference port in
   (plan decision D10: ignore for now).
 
 **Not calibrated.** The distribution is the model's softmax, unchanged: the
-black-bishop demotion in :func:`~board_reader_inference.estimator.read_event` was
-measured on our own trained stack's distribution, and its absolute margin means
-nothing on a different model.
+black-bishop demotion the old crop-classifier stack applied was measured on that
+stack's distribution, and its absolute margin means nothing on a different model.
 
 License: the weights are PolyForm Noncommercial 1.0.0 (THIRD-PARTY.md); they live
 under the gitignored ``models/`` and are never committed.

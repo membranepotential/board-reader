@@ -146,12 +146,7 @@ def cmd_eval_session(args: argparse.Namespace) -> int:
         print(truth_skeleton(recording))
         return 2
     try:
-        report = run(
-            recording,
-            json_out=args.json,
-            export_dir=args.export_crops,
-            every=args.every,
-        )
+        report = run(recording, json_out=args.json)
     except (TruthError, ValueError) as e:
         print(f"cannot score {recording.path}: {e}", file=sys.stderr)
         return 2
@@ -375,12 +370,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     r.set_defaults(func=cmd_replay)
 
-    from board_reader_inference.trial import DEFAULT_EVERY, REPORT_NAME, TRUTH_NAME
+    from board_reader_inference.trial import REPORT_NAME, TRUTH_NAME
 
     t = sub.add_parser(
         "eval-session",
         help="score a recorded live session against its truth.json (raw vs prior "
-        "vs settled), and export labeled crops from it",
+        "vs settled)",
     )
     t.add_argument(
         "recording",
@@ -390,19 +385,6 @@ def build_parser() -> argparse.ArgumentParser:
     t.add_argument(
         "--json",
         help=f"write the full report JSON here instead of <recording>/{REPORT_NAME}",
-    )
-    t.add_argument(
-        "--export-crops",
-        dest="export_crops",
-        help="also cut per-square training crops from the scored frames into this "
-        "directory, labeled from truth (a labels_normalized.json style)",
-    )
-    t.add_argument(
-        "--every",
-        type=int,
-        default=DEFAULT_EVERY,
-        help=f"export crops from every Nth scored frame (default {DEFAULT_EVERY}); "
-        "consecutive frames of a still board are near-duplicates",
     )
     t.set_defaults(func=cmd_eval_session)
     return p

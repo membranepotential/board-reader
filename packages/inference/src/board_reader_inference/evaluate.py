@@ -1,4 +1,4 @@
-"""Whole-board evaluation of the **deployed** estimator stack.
+"""Whole-board evaluation of the **deployed** recognizer.
 
 Two things this measures that nothing else did:
 
@@ -7,18 +7,16 @@ Two things this measures that nothing else did:
 is not a position. Whole-board correctness is the number that decides whether a
 photo can be read, so it is the headline here and per-square is a diagnostic.
 
-**What actually serves.** ``tools/train/evaluate.py`` scores the trained model
-alone, in the training venv. This runs the estimator :func:`recognizer.build_from_env`
-builds from the environment — ensemble, bank blend and all — so the number
-belongs to the thing the snapshot page talks to. The configuration is printed
-above every report, because an accuracy figure without its estimator is a rumour.
+**What actually serves.** This runs the recognizer :func:`recognizer.build_from_env`
+builds from the environment, so the number belongs to the thing the snapshot page
+talks to. The recognizer is printed above every report, because an accuracy figure
+without its model is a rumour.
 
 Truth comes from :mod:`.labels` (operator-confirmed labels and the curated
 ``ground_truth.json``). A recognizer (DESIGN D10, :mod:`.recognizer`) reads the
 whole photo, resolves the orientation itself and is scored only on chess-frame
 labels; a corner-frame label cannot say which way its board really faces, so it
-is skipped and counted. The pre-D10 estimators read through the label's corners
-and are scored in that frame, with orientation held fixed.
+is skipped and counted.
 
 **Frame diagnostic.** Every board also records the quarter-turn under which its
 read agrees best with its truth (:func:`.labels.best_rotation`). A non-zero turn
@@ -31,8 +29,8 @@ numbers, with squares fixed and squares broken kept apart, because a repair that
 trades one right square for one wrong one is not an improvement.
 
     uv run board-reader-inference eval
-    BR_MODEL=models/run_e/model.onnx uv run board-reader-inference eval data/uploads
-    ... eval --prior data/uploads       # does the hard-constraint decode help?
+    uv run board-reader-inference eval data/uploads
+    ... eval --no-prior data/uploads    # the raw recognizer, without the decode
 """
 
 from __future__ import annotations
@@ -48,15 +46,13 @@ import numpy as np
 from board_reader_core.protocol import (
     CLASSES,
     GRID,
-    NUM_CLASSES,
     parse_placement,
     square_name,
 )
-from board_reader_core.wire import Frame
 
 from board_reader_inference.labels import LabeledBoard, best_rotation
 from board_reader_inference.prior import PriorDecode, decode
-from board_reader_inference.recognizer import RecognizerEstimator
+from board_reader_inference.recognizer import Recognizer
 
 #: Reliability-diagram resolution. Ten bins over [0, 1] is the conventional
 #: choice and keeps each row readable at the ~640-square scale we evaluate at.
@@ -403,8 +399,7 @@ class Report:
     bins: list[Bin] = field(default_factory=list)
     ece: float = 0.0
     warnings: list[str] = field(default_factory=list)
-    #: Labels found but not scorable by this estimator (corner-frame truth under a
-    #: recognizer, or no corners under a corner-frame estimator), by board id.
+    #: Labels found but not scorable (corner-frame truth), by board id.
     skipped: list[str] = field(default_factory=list)
     #: Populated only with ``--prior``: the same boards re-scored after the
     #: hard-constraint decoder. Empty means the decoder was not run at all, which
@@ -664,85 +659,20 @@ class Report:
         return "\n".join(lines)
 
 
-def describe_estimator(est: object) -> str:
-    """A one-line identity for whatever stack is about to be measured."""
-    if isinstance(est, RecognizerEstimator):
-        return describe_estimator(est.recognizer)
-    name = type(est).__name__
-    primary, booster = getattr(est, "primary", None), getattr(est, "booster", None)
-    if primary is not None and booster is not None:
-        w = float(getattr(est, "weight", 0.5))
-        return (
-            f"{describe_estimator(primary)} x{w:.2f}"
-            f" + {describe_estimator(booster)} x{1 - w:.2f}"
-        )
-    bits: list[str] = []
-    model_path = getattr(est, "model_path", None)
-    if model_path:
-        bits.append(str(model_path))
-    classifier = getattr(est, "classifier", None)
-    if classifier is not None:
-        exemplars = getattr(classifier, "exemplars", None)
-        if exemplars is not None:
-            bits.append(f"{int(np.asarray(exemplars).shape[0])} exemplars")
-        bits.append(str(getattr(classifier, "backbone", "?")))
-    headroom = getattr(est, "headroom", None)
-    if headroom is not None:
-        bits.append(f"hr={float(headroom):g} sp={float(getattr(est, 'side_pad', 0)):g}")
-    return f"{name}({', '.join(bits)})" if bits else name
+def describe(recognizer: Recognizer) -> str:
+    """A one-line identity for the recognizer about to be measured."""
+    name = type(recognizer).__name__
+    return f"{name}({recognizer.model_path})" if recognizer.model_path else name
 
 
-def has_bank(est: object) -> bool:
-    """Whether a per-set exemplar bank is part of the stack (contamination risk)."""
-    if getattr(est, "classifier", None) is not None:
-        return True
-    return any(
-        has_bank(m)
-        for m in (getattr(est, "primary", None), getattr(est, "booster", None))
-        if m is not None
-    )
-
-
-def scorable(estimator: object, board: LabeledBoard) -> bool:
-    """Whether ``board``'s truth is in the frame ``estimator`` reads in.
-
-    A recognizer reads the chess frame, so only chess-frame truth scores it; a
-    pre-D10 estimator reads the frame the corners define, so it needs corners.
-    """
-    if isinstance(estimator, RecognizerEstimator):
-        return board.frame == "chess"
-    return board.corners is not None
-
-
-def read_board(estimator: object, board: LabeledBoard) -> np.ndarray:
-    """Run the estimator over one labeled photo -> its (8, 8, 13) distribution.
-
-    A recognizer reads the whole photo (no corners).
-    """
+def read_board(recognizer: Recognizer, board: LabeledBoard) -> np.ndarray:
+    """Run the recognizer over one labeled photo -> its (8, 8, 13) distribution."""
     import cv2
 
-    if isinstance(estimator, RecognizerEstimator):
-        image = cv2.imread(str(board.image), cv2.IMREAD_COLOR)
-        if image is None:
-            raise ValueError(f"could not read {board.image}")
-        return np.asarray(estimator.recognizer.read(image), dtype=np.float32)
-    if board.corners is None:
-        raise ValueError(f"{board.board_id} has no corners to read through")
-    photo_fn = getattr(estimator, "estimate_photo", None)
-    if not callable(photo_fn):
-        raise ValueError(
-            f"{type(estimator).__name__} has no photo path; evaluation needs an "
-            "estimator that reads original photos with corners (set BR_MODEL "
-            ")"
-        )
     image = cv2.imread(str(board.image), cv2.IMREAD_COLOR)
     if image is None:
         raise ValueError(f"could not read {board.image}")
-    event = photo_fn(
-        Frame(board_id=board.board_id, seq=0, capture_ts=0.0, image=image),
-        board.corners,
-    )
-    return np.asarray(event.square_dist, dtype=np.float32).reshape(GRID, GRID, NUM_CLASSES)
+    return np.asarray(recognizer.read(image), dtype=np.float32)
 
 
 def score_board(board: LabeledBoard, dist: np.ndarray) -> BoardResult:
@@ -839,7 +769,7 @@ def reliability(
 
 
 def evaluate(
-    estimator: object,
+    recognizer: Recognizer,
     boards: list[LabeledBoard],
     *,
     prior: bool = True,
@@ -861,9 +791,9 @@ def evaluate(
     hits: list[np.ndarray] = []
     dists: list[np.ndarray] = []
     truth_indices: list[np.ndarray] = []
-    skipped = [b.board_id for b in boards if not scorable(estimator, b)]
-    for board in (b for b in boards if scorable(estimator, b)):
-        dist = read_board(estimator, board)
+    skipped = [b.board_id for b in boards if b.frame != "chess"]
+    for board in (b for b in boards if b.frame == "chess"):
+        dist = read_board(recognizer, board)
         result = score_board(board, dist)
         results.append(result)
         if prior:
@@ -881,19 +811,14 @@ def evaluate(
         np.concatenate(hits) if hits else np.empty(0, dtype=bool),
     )
     warnings: list[str] = []
-    if skipped and isinstance(estimator, RecognizerEstimator):
+    if skipped:
         warnings.append(
             f"{len(skipped)} corner-frame label(s) skipped: their truth does not say "
             "which way the board faces (tools/migrate_labels_to_chess_frame.py)"
         )
-    if has_bank(estimator):
-        warnings.append(
-            "a calibration bank is active — boards it was built from are NOT held "
-            "out, and score far above what this stack achieves on an unseen set"
-        )
     return Report(
         boards=results,
-        estimator=describe_estimator(estimator),
+        estimator=describe(recognizer),
         bins=bins,
         ece=ece,
         warnings=warnings,
@@ -914,21 +839,21 @@ DEFAULT_PATHS = ("data/eval", "data/uploads")
 def run(
     paths: list[str] | None = None,
     *,
-    estimator: object | None = None,
+    recognizer: Recognizer | None = None,
     prior: bool = True,
     temperature: bool = False,
     json_out: str | None = None,
 ) -> Report:
-    """Load labels, build the deployed estimator if none was injected, report."""
+    """Load labels, build the deployed recognizer if none was injected, report."""
     from board_reader_inference.labels import load_labels
 
     candidates = [p for p in (paths or DEFAULT_PATHS) if Path(p).exists()]
     boards = load_labels(candidates)
-    if estimator is None:
+    if recognizer is None:
         from board_reader_inference.recognizer import build_from_env
 
-        estimator = build_from_env()
-    report = evaluate(estimator, boards, prior=prior, temperature=temperature)
+        recognizer = build_from_env().recognizer
+    report = evaluate(recognizer, boards, prior=prior, temperature=temperature)
     if json_out:
         Path(json_out).write_text(json.dumps(report.to_dict(), indent=2))
     return report

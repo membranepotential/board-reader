@@ -17,7 +17,6 @@ from board_reader_core.protocol import (
     CLASS_INDEX,
     GRID,
     NUM_CLASSES,
-    START_PLACEMENT,
     dist_from_placement,
     parse_placement,
 )
@@ -25,16 +24,14 @@ from board_reader_core.sim import render_board
 from board_reader_core.wire import encode_jpeg
 
 from board_reader_inference.evaluate import (
-    describe_estimator,
     error_kind,
     evaluate,
-    has_bank,
     reliability,
     run,
     score_board,
 )
 from board_reader_inference.labels import LabeledBoard, save_label
-from board_reader_inference.squares import BboxGeometry
+from board_reader_inference.recognizer import StubRecognizer
 
 MIDGAME = "r2qk2r/1b1pbppp/p1n1p3/1ppnP3/5B2/1BNP1N2/PPP2PPP/R2Q1RK1"
 CORNERS = np.array([[0, 0], [100, 0], [100, 100], [0, 100]], dtype=np.float32)
@@ -58,10 +55,17 @@ def _board(board_id: str = "b0", placement: str = MIDGAME, image=None) -> Labele
     return LabeledBoard(
         board_id=board_id,
         image=image if image is not None else _PHOTO,
-        frame="corners",
-        corners=CORNERS,
+        frame="chess",
+        corners=None,
         placement=placement,
         source="confirmed",
+    )
+
+
+def _corner_frame_board(board_id: str) -> LabeledBoard:
+    return LabeledBoard(
+        board_id=board_id, image=_PHOTO, frame="corners", corners=CORNERS,
+        placement=MIDGAME, source="confirmed",
     )
 
 
@@ -79,28 +83,25 @@ def _dist_with(placement: str, overrides: dict[str, tuple[str, float]]) -> np.nd
     return dist
 
 
-class FakeEstimator:
-    """Answers with a canned distribution per board id — no model, no weights."""
+class FakeRecognizer:
+    """Answers with the canned distributions in order, one per read — no model.
 
-    crop_mode = "photo"
-    headroom = 1.6
-    side_pad = 0.15
-    square_size = 224
+    A recognizer is handed pixels, not a board id, so the fake hands out its
+    distributions in the order the boards are read (``evaluate`` reads them in
+    the order given).
+    """
+
+    name = "fake"
+    frame = "chess"
+    model_path = None
 
     def __init__(self, dists: dict[str, np.ndarray]) -> None:
-        self.dists = dists
-        self.seen: list[str] = []
+        self._dists = iter(dists.values())
+        self.reads = 0
 
-    def estimate_photo(self, frame, corners):
-        from board_reader_core.protocol import PositionEvent
-
-        self.seen.append(frame.board_id)
-        return PositionEvent.from_square_dist(
-            board_id=frame.board_id,
-            seq=frame.seq,
-            utc="1970-01-01T00:00:00Z",
-            square_dist=self.dists[frame.board_id],
-        )
+    def read(self, image: np.ndarray) -> np.ndarray:
+        self.reads += 1
+        return next(self._dists)
 
 
 # ---- error taxonomy ----------------------------------------------------------
@@ -169,7 +170,7 @@ def test_report_headline_counts_boards_not_squares():
         "two_off": _dist_with(MIDGAME, {"g1": ("B", 0.9), "d2": ("P", 0.9)}),
     }
     boards = [_board(k) for k in dists]
-    report = evaluate(FakeEstimator(dists), boards)
+    report = evaluate(FakeRecognizer(dists), boards)
 
     assert report.perfect_boards == 1
     assert len(report.boards) == 3
@@ -186,7 +187,7 @@ def test_report_headline_counts_boards_not_squares():
 
 def test_report_is_json_serialisable_and_round_trips_the_numbers(tmp_path):
     dists = {"one_off": _dist_with(MIDGAME, {"g1": ("B", 0.9)})}
-    report = evaluate(FakeEstimator(dists), [_board("one_off")])
+    report = evaluate(FakeRecognizer(dists), [_board("one_off")])
     out = json.loads(json.dumps(report.to_dict()))
     assert out["boards"] == 1 and out["perfect_boards"] == 0
     assert out["correct_squares"] == 63
@@ -194,7 +195,7 @@ def test_report_is_json_serialisable_and_round_trips_the_numbers(tmp_path):
 
 
 def test_empty_input_reports_rather_than_crashes():
-    report = evaluate(FakeEstimator({}), [])
+    report = evaluate(FakeRecognizer({}), [])
     assert report.boards == [] and report.perfect_boards == 0
     assert "no labeled boards" in report.render()
 
@@ -233,7 +234,7 @@ def test_perfectly_calibrated_input_has_near_zero_ece():
 def test_a_confidently_wrong_board_shows_up_as_a_gap_not_an_average():
     """The 2026-08-06 field failure: two white kings, no black king, at 0.97."""
     broken = _dist_with(MIDGAME, {"e8": ("K", 0.97), "g1": ("K", 0.97)})
-    report = evaluate(FakeEstimator({"broken": broken}), [_board("broken")])
+    report = evaluate(FakeRecognizer({"broken": broken}), [_board("broken")])
     assert not report.boards[0].perfect
     assert report.boards[0].confidence > 0.85  # the board still looks confident
     top = [b for b in report.bins if b.lo >= 0.9]
@@ -246,7 +247,7 @@ def test_report_separates_confidence_of_right_and_wrong_boards():
         "clean": dist_from_placement(MIDGAME, confidence=0.9),
         "broken": _dist_with(MIDGAME, {"e8": ("K", 0.97)}),
     }
-    report = evaluate(FakeEstimator(dists), [_board(k) for k in dists])
+    report = evaluate(FakeRecognizer(dists), [_board(k) for k in dists])
     rendered = report.render()
     assert "board confidence:" in rendered
     assert "perfect" in rendered and "imperfect" in rendered
@@ -276,7 +277,7 @@ def _dist_with_runner_up(
 def test_the_prior_is_on_by_default_because_it_is_what_serves():
     """The harness scores what /estimate serves, and the decode now serves."""
     dists = {"two_kings": _dist_with(MIDGAME, {"e8": ("K", 0.6)})}
-    report = evaluate(FakeEstimator(dists), [_board("two_kings")])
+    report = evaluate(FakeRecognizer(dists), [_board("two_kings")])
     assert report.prior != []
     assert "hard-constraint prior" in report.render()
 
@@ -284,7 +285,7 @@ def test_the_prior_is_on_by_default_because_it_is_what_serves():
 def test_the_prior_can_be_isolated_away():
     """``--no-prior`` still gives the raw estimator on its own."""
     dists = {"two_kings": _dist_with(MIDGAME, {"e8": ("K", 0.6)})}
-    report = evaluate(FakeEstimator(dists), [_board("two_kings")], prior=False)
+    report = evaluate(FakeRecognizer(dists), [_board("two_kings")], prior=False)
     assert report.prior == []
     assert "hard-constraint prior" not in report.render()
 
@@ -292,7 +293,7 @@ def test_the_prior_can_be_isolated_away():
 def test_the_prior_fixes_a_two_king_board_and_says_which_square():
     """e8 truly holds a black king; the estimator calls it white at a thin margin."""
     dist = _dist_with_runner_up(MIDGAME, "e8", ("K", 0.50), ("k", 0.45))
-    report = evaluate(FakeEstimator({"b": dist}), [_board("b")], prior=True)
+    report = evaluate(FakeRecognizer({"b": dist}), [_board("b")], prior=True)
 
     assert report.perfect_boards == 0 and report.correct == 63
     (p,) = report.prior
@@ -308,7 +309,7 @@ def test_the_prior_can_break_a_square_it_was_right_about():
     """The failure mode that must stay visible: a hallucinated second king that is
     *more* confident than the real one drags the real one out instead."""
     dist = _dist_with(MIDGAME, {"e8": ("k", 0.40), "a5": ("k", 0.90)})
-    report = evaluate(FakeEstimator({"b": dist}), [_board("b")], prior=True)
+    report = evaluate(FakeRecognizer({"b": dist}), [_board("b")], prior=True)
 
     (p,) = report.prior
     assert [f.square for f in p.decode.flips] == ["e8"]
@@ -319,7 +320,7 @@ def test_the_prior_can_break_a_square_it_was_right_about():
 
 def test_a_board_with_nothing_to_repair_is_reported_as_untouched():
     report = evaluate(
-        FakeEstimator({"b": dist_from_placement(MIDGAME)}), [_board("b")], prior=True
+        FakeRecognizer({"b": dist_from_placement(MIDGAME)}), [_board("b")], prior=True
     )
     (p,) = report.prior
     assert p.decode.flips == () and p.changes == ()
@@ -331,7 +332,7 @@ def test_a_board_with_nothing_to_repair_is_reported_as_untouched():
 
 def test_the_prior_block_prints_both_scores_and_every_flip():
     dist = _dist_with_runner_up(MIDGAME, "e8", ("K", 0.50), ("k", 0.45))
-    report = evaluate(FakeEstimator({"b": dist}), [_board("b")], prior=True)
+    report = evaluate(FakeRecognizer({"b": dist}), [_board("b")], prior=True)
     rendered = report.render()
     assert "hard-constraint prior" in rendered
     assert "PERFECT BOARDS   0/1 -> 1/1" in rendered
@@ -343,7 +344,7 @@ def test_the_prior_block_prints_both_scores_and_every_flip():
 
 def test_the_prior_survives_json_round_tripping():
     dist = _dist_with_runner_up(MIDGAME, "e8", ("K", 0.50), ("k", 0.45))
-    report = evaluate(FakeEstimator({"b": dist}), [_board("b")], prior=True)
+    report = evaluate(FakeRecognizer({"b": dist}), [_board("b")], prior=True)
     out = json.loads(json.dumps(report.to_dict()))
     assert out["prior"]["fixed"] == 1 and out["prior"]["broken"] == 0
     assert out["prior"]["per_board"][0]["flips"][0]["square"] == "e8"
@@ -362,53 +363,12 @@ def test_the_prior_never_rewrites_what_the_estimator_serves():
     """DESIGN D1: the decode is a value beside the read, not a correction to it."""
     dist = _dist_with_runner_up(MIDGAME, "e8", ("K", 0.50), ("k", 0.45))
     before = dist.copy()
-    report = evaluate(FakeEstimator({"b": dist}), [_board("b")], prior=True)
+    report = evaluate(FakeRecognizer({"b": dist}), [_board("b")], prior=True)
     assert np.array_equal(dist, before)
     assert report.boards[0].predicted != report.prior[0].decode.placement
 
 
 # ---- provenance and the contamination warning --------------------------------
-
-
-def test_describe_estimator_names_the_model_and_the_bank():
-    from board_reader_inference.estimator import EnsembleEstimator
-    from board_reader_inference.trained import TrainedEstimator
-
-    def logits(batch):
-        return np.zeros((batch.shape[0], NUM_CLASSES), dtype=np.float32)
-
-    trained = TrainedEstimator(logits, geometry=BboxGeometry(1.6, 0.15))
-    trained.model_path = "models/d16/model.onnx"
-    ensemble = EnsembleEstimator(trained, FakeEstimator({}), weight=0.3)
-    described = describe_estimator(ensemble)
-    assert "models/d16/model.onnx" in described
-    assert "x0.30" in described and "x0.70" in described
-
-
-def test_bank_backed_stacks_are_flagged_as_contaminated():
-    """A bank scores near-perfectly on the boards it was built from; a report that
-    does not say so is the exact mistake this harness exists to stop repeating."""
-
-    class WithBank(FakeEstimator):
-        class classifier:
-            exemplars = np.zeros((4096, 8), dtype=np.float32)
-            backbone = "dinov2"
-
-    assert has_bank(WithBank({}))
-    assert not has_bank(FakeEstimator({}))
-    report = evaluate(WithBank({"b0": dist_from_placement(MIDGAME)}), [_board()])
-    assert report.warnings and "NOT held out" in report.warnings[0]
-    assert "warning:" in report.render()
-
-
-def test_evaluation_refuses_an_estimator_with_no_photo_path():
-    from board_reader_inference.estimator import StubEstimator
-
-    with pytest.raises(ValueError, match="no photo path"):
-        evaluate(StubEstimator(START_PLACEMENT), [_board()])
-
-
-# ---- end to end over real files ----------------------------------------------
 
 
 def test_run_loads_labels_from_disk_and_reads_the_photos(tmp_path):
@@ -417,36 +377,19 @@ def test_run_loads_labels_from_disk_and_reads_the_photos(tmp_path):
     (tmp_path / f"{stem}.jpg").write_bytes(encode_jpeg(render_board(MIDGAME)))
     save_label(
         tmp_path, stem,
-        frame="corners", placement=MIDGAME, corners="0,0,100,0,100,100,0,100",
+        frame="chess", placement=MIDGAME, corners=None,
         predicted=MIDGAME, corrections=1, autorotated=0,
     )
-    est = FakeEstimator({stem: _dist_with(MIDGAME, {"g1": ("B", 0.9)})})
-    report = run([str(tmp_path)], estimator=est, json_out=str(tmp_path / "out.json"))
+    est = FakeRecognizer({stem: _dist_with(MIDGAME, {"g1": ("B", 0.9)})})
+    report = run([str(tmp_path)], recognizer=est, json_out=str(tmp_path / "out.json"))
 
-    assert est.seen == [stem]
+    assert est.reads == 1
     assert len(report.boards) == 1 and report.correct == 63
     assert json.loads((tmp_path / "out.json").read_text())["correct_squares"] == 63
 
 
-def test_run_undoes_autorotation_so_truth_survives_the_orientation_guess(tmp_path):
-    """A read confirmed after a 180-degree autorotate is stored in the corner frame;
-    re-reading it in that frame must score perfect."""
-    from board_reader_inference.labels import rotate_placement
-
-    stem = "20260806-210118-0000-estimate"
-    (tmp_path / f"{stem}.jpg").write_bytes(encode_jpeg(render_board(MIDGAME)))
-    shown = rotate_placement(MIDGAME, 2)
-    save_label(
-        tmp_path, stem, frame="corners", placement=shown, corners="0,0,100,0,100,100,0,100",
-        predicted=shown, corrections=0, autorotated=180,
-    )
-    est = FakeEstimator({stem: dist_from_placement(MIDGAME)})
-    report = run([str(tmp_path)], estimator=est)
-    assert report.perfect_boards == 1
-
-
 def test_run_on_a_directory_with_nothing_labeled_is_not_an_error(tmp_path):
-    report = run([str(tmp_path)], estimator=FakeEstimator({}))
+    report = run([str(tmp_path)], recognizer=FakeRecognizer({}))
     assert report.boards == []
 
 
@@ -487,10 +430,9 @@ def _chess_board(board_id: str = "c0") -> LabeledBoard:
 
 
 def test_a_recognizer_reads_chess_labels_whole_and_skips_corner_frame_ones():
-    from board_reader_inference.recognizer import RecognizerEstimator, StubRecognizer
-
-    est = RecognizerEstimator(StubRecognizer(MIDGAME))
-    report = evaluate(est, [_chess_board(), _board("legacy")], prior=False)
+    report = evaluate(
+        StubRecognizer(MIDGAME), [_chess_board(), _corner_frame_board("legacy")], prior=False
+    )
     assert [b.board_id for b in report.boards] == ["c0"]
     assert report.perfect_boards == 1 and report.skipped == ["legacy"]
     assert any("corner-frame label(s) skipped" in w for w in report.warnings)
@@ -500,16 +442,8 @@ def test_a_recognizer_reads_chess_labels_whole_and_skips_corner_frame_ones():
 
 def test_a_turned_read_is_flagged_by_the_frame_diagnostic():
     from board_reader_inference.labels import rotate_placement
-    from board_reader_inference.recognizer import RecognizerEstimator, StubRecognizer
 
-    est = RecognizerEstimator(StubRecognizer(rotate_placement(MIDGAME, 2)))
-    report = evaluate(est, [_chess_board()], prior=False)
+    report = evaluate(StubRecognizer(rotate_placement(MIDGAME, 2)), [_chess_board()], prior=False)
     assert report.boards[0].rotation == 2
     assert report.to_dict()["rotated_boards"] == [{"board_id": "c0", "rotation": 180}]
     assert "TURNED: c0 180°" in report.render()
-
-
-def test_a_corner_frame_estimator_skips_labels_without_corners():
-    est = FakeEstimator({"b0": _dist_with(MIDGAME, {})})
-    report = evaluate(est, [_board(), _chess_board()], prior=False)
-    assert [b.board_id for b in report.boards] == ["b0"] and report.skipped == ["c0"]

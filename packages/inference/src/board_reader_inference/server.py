@@ -53,10 +53,6 @@ from board_reader_inference.squares import (
     crop_squares_photo,
     square_boxes,
 )
-from board_reader_inference.trained import (
-    AveragedEstimator,
-    CascadeEstimator,
-)
 
 log = logging.getLogger(__name__)
 
@@ -312,34 +308,13 @@ def create_app(
         }
         if recorder is not None:
             health["recording"] = recorder.stats()
-        # The cascade's whole economic claim is "the second model runs on under a
-        # third of squares". Ride it on liveness so an operator can check the
-        # claim against their own boards instead of trusting the experiment.
-        trained = est
-        if isinstance(trained, CascadeEstimator):
-            health["cascade"] = {
-                "tau": trained.tau,
-                "model": trained.primary.model_path,
-                "model_b": trained.secondary.model_path,
-                **trained.metrics.as_dict(),
-            }
-        # Which board a tuned model was calibrated for is not knowable from here,
-        # but *that* one is in the average — and which base it is averaged with —
-        # is exactly what an operator needs to see before trusting a reading.
-        if isinstance(trained, AveragedEstimator):
-            health["tuned"] = {
-                "model": trained.model_path,
-                "model_tuned": trained.tuned_path,
-                "weight": 0.5,
-            }
         # Which recognizer reads, from which file — and, when the weights were
         # missing, that the stub is serving instead and why (D2: degrade loudly).
-        active = est
-        if isinstance(active, RecognizerEstimator):
+        if isinstance(est, RecognizerEstimator):
             health["recognizer"] = {
-                "name": active.recognizer.name,
-                "model": active.recognizer.model_path,
-                **({"fallback": active.fallback} if active.fallback else {}),
+                "name": est.recognizer.name,
+                "model": est.recognizer.model_path,
+                **({"fallback": est.fallback} if est.fallback else {}),
             }
         return health
 

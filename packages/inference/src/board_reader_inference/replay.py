@@ -166,13 +166,7 @@ REPLAYS_DIR = "replays"
 #: The environment that decides which estimator gets built (``server``'s builder
 #: reads exactly these). Recorded in the manifest and digested into the default
 #: replay name, so two model configurations never overwrite each other's scores.
-CONFIG_ENV = (
-    "BR_MODEL",
-    "BR_MODEL_B",
-    "BR_MODEL_TUNED",
-    "BR_CASCADE_TAU",
-    "BR_CHESSQ",
-)
+CONFIG_ENV = ("BR_CHESSQ",)
 
 #: Frames between progress lines on stderr. A real replay is minutes of GPU work
 #: and silence for minutes is indistinguishable from a hang.
@@ -285,7 +279,7 @@ def config_env() -> dict[str, dict]:
     was built from, which is the question asked six weeks later when a replay
     does not reproduce ("was the model the same file?"). Both feed
     :func:`config_digest`, deliberately: models are retrained **in place** here
-    (``models/run_e/model.onnx`` is a path, not a version), and a digest over the
+    (a model file is a path, not a version), and a digest over the
     paths alone would let a retrain silently overwrite its predecessor's score
     with a different model's. The cost is a fresh directory after a no-op copy
     that only moved an mtime, which is the cheap half of the trade.

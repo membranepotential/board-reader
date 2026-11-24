@@ -11,12 +11,11 @@ from __future__ import annotations
 
 import json
 
-import numpy as np
 import pytest
 
 from board_reader_core.protocol import GRID, START_PLACEMENT, parse_placement
 from board_reader_core.recording import FrameRecorder, Recording
-from board_reader_core.sim import render_board, simulate_angled_view
+from board_reader_core.sim import render_board
 from board_reader_core.wire import Frame
 
 from board_reader_inference.cli import main
@@ -29,7 +28,6 @@ from board_reader_inference.trial import (
     Stream,
     TruthError,
     TruthSegment,
-    export_crops,
     load_truth,
     read_events,
     run,
@@ -109,6 +107,15 @@ def _session(tmp_path, events: list[dict], frames: list[tuple[dict, bytes]] = ()
     return Recording(recorder.path)
 
 
+def _photo_frames(n: int, placement: str = START_PLACEMENT) -> list[tuple[dict, bytes]]:
+    """``n`` recorded frames of ``placement``, one second apart."""
+    photo = render_board(placement)
+    return [
+        Frame(board_id="phone", seq=seq, capture_ts=1786642427.0 + seq, image=photo).encode()
+        for seq in range(n)
+    ]
+
+
 def _truth(**over) -> SessionTruth:
     return SessionTruth(
         board_id=over.pop("board_id", "phone"),
@@ -160,8 +167,6 @@ def test_load_truth_reads_segments_and_defaults_the_guard(tmp_path):
     assert truth.starts == (0, 130)
     assert truth.guard_seqs == DEFAULT_GUARD_SEQS
     assert truth.boundaries == 1
-    # The placement is parsed once, at load, into the grid the export labels from.
-    assert truth.segments[0].grid[0][0] == "r"
 
 
 @pytest.mark.parametrize(
@@ -344,79 +349,6 @@ def test_report_renders_and_serialises(tmp_path):
     }
     assert [s["stream"] for s in doc["streams"]] == ["raw", "prior", "settled"]
     json.dumps(doc)  # the --json path must not choke on a Counter or a Path
-
-
-# --------------------------------------------------------------------------- #
-# Crop export
-# --------------------------------------------------------------------------- #
-
-
-def _photo_frames(n: int, placement: str = START_PLACEMENT) -> list[tuple[dict, bytes]]:
-    photo, quad = simulate_angled_view(render_board(placement))
-    out = []
-    for seq in range(n):
-        header, jpeg = Frame(
-            board_id="phone",
-            seq=seq,
-            capture_ts=1786642427.0 + seq,
-            image=photo,
-            corners=np.asarray(quad, dtype=np.float32),
-        ).encode()
-        out.append((header, jpeg))
-    return out
-
-
-def test_export_writes_a_style_tools_train_can_load(tmp_path):
-    events = [_event(seq, START_PLACEMENT, prior=START_PLACEMENT) for seq in range(4)]
-    recording = _session(tmp_path / "rec", events, _photo_frames(4))
-    report = score_session(recording, _truth(segments=(TruthSegment(0, START_PLACEMENT),)))
-
-    out = tmp_path / "style"
-    export = export_crops(recording, report.truth, report.reads, out, every=2, size=32)
-
-    assert (export.frames, export.crops) == (2, 128)
-    assert export.style == "style_phone"
-    assert export.skipped_no_corners == 0
-    # Half a start-position board is empty, and each side has exactly one king.
-    assert export.class_counts["empty"] == 64
-    assert export.class_counts["k"] == 2
-
-    records = json.loads((out / "labels_normalized.json").read_text())
-    assert len(records) == 128
-    # The crop-level schema tools/train/styles.py detects, and a real file behind it.
-    assert set(records[0]) == {"image", "piece", "chess_set"}
-    assert records[0]["chess_set"] == "phone"
-    by_image = {r["image"]: r["piece"] for r in records}
-    assert by_image["crops/000000_e8_k.jpg"] == "k"
-    assert by_image["crops/000000_e4_empty.jpg"] == "empty"
-    assert all((out / image).exists() for image in by_image)
-
-    meta = json.loads((out / "export.json").read_text())
-    assert meta["geometry"]["kind"] == "bbox"  # what cut them, or they are unusable
-    assert meta["square_size"] == 32
-
-
-def test_export_skips_frames_that_carry_no_corners(tmp_path):
-    events = [_event(0, START_PLACEMENT, prior=START_PLACEMENT)]
-    header, jpeg = Frame(
-        board_id="phone", seq=0, capture_ts=1.0, image=render_board()
-    ).encode()
-    recording = _session(tmp_path / "rec", events, [(header, jpeg)])
-    report = score_session(recording, _truth(segments=(TruthSegment(0, START_PLACEMENT),)))
-    export = export_crops(recording, report.truth, report.reads, tmp_path / "style", size=32)
-    assert (export.crops, export.skipped_no_corners) == (0, 1)
-
-
-def test_export_rejects_a_nonsense_subsample(tmp_path):
-    recording = _session(tmp_path / "rec", [_event(0, START_PLACEMENT)])
-    report = score_session(recording, _truth(segments=(TruthSegment(0, START_PLACEMENT),)))
-    with pytest.raises(ValueError, match="every"):
-        export_crops(recording, report.truth, report.reads, tmp_path / "s", every=0)
-
-
-# --------------------------------------------------------------------------- #
-# CLI
-# --------------------------------------------------------------------------- #
 
 
 def test_cli_prints_a_fillable_skeleton_when_truth_is_missing(tmp_path, capsys):
@@ -610,181 +542,6 @@ def test_an_unwritable_report_does_not_cost_the_score(tmp_path):
 
     assert report.written_to is None
     assert report.events_scored == 6
-
-
-# --------------------------------------------------------------------------- #
-# The attractor guard
-# --------------------------------------------------------------------------- #
-#
-# The black-bishop demotion (estimator.demote_attractor) is safe because correct
-# 'b' reads sit ABOVE the margin it fires below. That gap is a property of the
-# takes it was fitted on, not a guarantee, so every scored session measures it.
-
-
-def _bishops(*margins: float) -> list:
-    """A digest for the start position with c8/f8 read 'b' at the given margins."""
-    rivals = {
-        name: ("r", round(0.30 + m, 4), 0.30)
-        for name, m in zip(("c8", "f8"), margins)
-    }
-    return _digest(START_PLACEMENT, **rivals)
-
-
-def test_attractor_guard_measures_how_close_the_correct_bishops_came(tmp_path):
-    """The stat: how much room this session's correctly-read black bishops kept
-    above the firing band, and how many squares were read that way."""
-    events = [
-        _event(0, START_PLACEMENT, prior=START_PLACEMENT, evidence=_bishops(0.31, 0.25)),
-        _event(10, START_PLACEMENT, prior=START_PLACEMENT, evidence=_bishops(0.40, 0.28)),
-    ]
-    guard = score_session(_session(tmp_path, events), _truth()).attractor
-
-    assert guard.correct == 4  # c8 and f8, twice
-    assert guard.lost_in_band == 0
-    assert guard.min_margin == pytest.approx(0.25, abs=1e-6)
-    assert guard.headroom == pytest.approx(0.05, abs=1e-6)
-    assert not guard.at_risk
-
-
-def test_attractor_guard_warns_when_the_gap_the_rule_rests_on_closes(tmp_path):
-    """The assertion the report asked for instead of a footnote: a correct 'b'
-    this close to the threshold means the next take may sit under it, and the
-    demotion would then eat correct squares with nothing to show for it."""
-    events = [
-        _event(0, START_PLACEMENT, prior=START_PLACEMENT, evidence=_bishops(0.30, 0.22)),
-    ]
-    report = score_session(_session(tmp_path, events), _truth())
-
-    assert report.attractor.min_margin == pytest.approx(0.22, abs=1e-6)
-    assert report.attractor.at_risk
-    assert report.to_dict()["attractor_guard"]["at_risk"] is True
-    assert report.to_dict()["attractor_guard"]["headroom"] == pytest.approx(0.02, abs=1e-4)
-    assert "WARNING" in report.render()
-    assert "eats correct squares" in report.render()
-
-
-def test_attractor_guard_is_quiet_when_the_bishops_are_clear(tmp_path):
-    events = [
-        _event(0, START_PLACEMENT, prior=START_PLACEMENT, evidence=_bishops(0.31, 0.30)),
-    ]
-    report = score_session(_session(tmp_path, events), _truth())
-
-    assert not report.attractor.at_risk
-    assert "WARNING" not in report.render()
-    assert "closest to the band 0.300" in report.render()
-
-
-def test_attractor_guard_bounds_what_the_rule_may_have_taken(tmp_path):
-    """A truth-'b' square read as its runner-up inside the band either WAS demoted
-    or was already wrong — the digest is post-rule and cannot separate the two, so
-    it is reported as an upper bound rather than a count."""
-    # c8 read 'r' with 'b' second, 0.10 apart: inside the band.
-    read = "rnrqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR"
-    events = [
-        _event(0, read, prior=read, evidence=_digest(read, c8=("b", 0.35, 0.25))),
-    ]
-    report = score_session(_session(tmp_path, events), _truth())
-
-    assert report.attractor.lost_in_band == 1
-    assert report.attractor.correct == 1  # f8 still read 'b'
-    assert "at most 1 correct square taken" in report.render()
-
-
-def test_a_square_going_inside_the_band_is_a_warning_however_wide_the_survivors(tmp_path):
-    """min_margin is CENSORED at the threshold — a surviving 'b' is by definition
-    one the rule declined to fire on — so the squares that actually went can never
-    move it. Here one truth-'b' goes at 0.10 while the other survives by 0.60: a
-    headroom-only alarm would call that +0.400 of room and say nothing."""
-    read = "rnrqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR"
-    events = [
-        _event(
-            0,
-            read,
-            prior=read,
-            evidence=_digest(read, c8=("b", 0.35, 0.25), f8=("r", 0.70, 0.10)),
-        ),
-    ]
-    report = score_session(_session(tmp_path, events), _truth())
-    guard = report.attractor
-
-    assert guard.lost_in_band == 1
-    assert guard.min_margin == pytest.approx(0.60, abs=1e-6)  # wide, and irrelevant
-    assert guard.at_risk and report.to_dict()["attractor_guard"]["at_risk"] is True
-    assert "WARNING" in report.render()
-    assert "went to the runner-up inside the band" in report.render()
-
-
-def test_attractor_guard_is_loudest_when_no_correct_bishop_survives(tmp_path):
-    """Total collapse: every truth-'b' on the board went to its runner-up inside
-    the band, so there is no survivor to measure a headroom against. That is the
-    failure the guard exists to catch — it must never render as 'no b on the
-    board this session'."""
-    read = "rnrqkrnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR"
-    events = [
-        _event(
-            0,
-            read,
-            prior=read,
-            evidence=_digest(read, c8=("b", 0.35, 0.25), f8=("b", 0.33, 0.30)),
-        ),
-    ]
-    report = score_session(_session(tmp_path, events), _truth())
-    guard = report.attractor
-    rendered = report.render()
-
-    assert guard.correct == 0 and guard.min_margin is None
-    assert guard.lost_in_band == 2 and guard.at_risk
-    assert report.to_dict()["attractor_guard"]["at_risk"] is True
-    assert "WARNING" in rendered and "NONE survived" in rendered
-    assert "no 'b' on the board" not in rendered
-
-
-def test_attractor_guard_says_so_when_the_board_holds_no_black_bishop(tmp_path):
-    """The genuinely empty case, kept distinct from the collapse above: no
-    truth-'b' square was scored at all, so there is nothing to warn about."""
-    no_bishops = "rn1qk1nr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR"
-    truth = _truth(segments=(TruthSegment(0, no_bishops),))
-    events = [
-        _event(0, no_bishops, prior=no_bishops, evidence=_digest(no_bishops)),
-    ]
-    report = score_session(_session(tmp_path, events), truth)
-
-    assert report.attractor.correct == 0 and report.attractor.lost_in_band == 0
-    assert not report.attractor.at_risk
-    assert "no 'b' on the board this session" in report.render()
-    assert "WARNING" not in report.render()
-
-
-def test_attractor_guard_reads_only_the_squares_that_were_scored(tmp_path):
-    """Guard-window reads are excluded from the score, so they cannot raise a
-    warning either — a hand over the board is not evidence about bishops."""
-    events = [
-        _event(0, START_PLACEMENT, prior=START_PLACEMENT, evidence=_bishops(0.35, 0.35)),
-        # Inside the boundary guard after the seq-100 move: not scored at all.
-        _event(102, E4, prior=E4, evidence=_digest(E4, c8=("r", 0.31, 0.30))),
-    ]
-    report = score_session(_session(tmp_path, events), _truth())
-
-    assert report.excluded_guard == 1
-    assert report.attractor.correct == 2
-    assert report.attractor.min_margin == pytest.approx(0.35, abs=1e-6)
-    assert not report.attractor.at_risk
-
-
-def test_attractor_guard_says_nothing_without_a_digest(tmp_path):
-    """Old recordings carry no top-2 digest; the guard has nothing to read and
-    must not imply the gap was measured and found wide."""
-    report = score_session(_session(tmp_path, FLIPFLOP_EVENTS), _truth())
-
-    assert report.attractor.min_margin is None and report.attractor.correct == 0
-    assert report.attractor.headroom is None and not report.attractor.at_risk
-    assert report.to_dict()["attractor_guard"]["min_margin"] is None
-    assert "attractor:" not in report.render()
-
-
-# --------------------------------------------------------------------------- #
-# The truth-frame check (DESIGN D10)
-# --------------------------------------------------------------------------- #
 
 
 def test_reads_in_the_truths_frame_pass_the_frame_check(tmp_path):

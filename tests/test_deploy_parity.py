@@ -35,13 +35,10 @@ _MAKEFILE = _ROOT / "Makefile"
 # the two entry points: a difference here means the demo and the dev path
 # disagree about what the system is, which is exactly the bug this module
 # exists to catch.
-_RECOGNITION_KEYS = frozenset(
-    {"BR_MODEL", "BR_MODEL_B", "BR_MODEL_TUNED", "BR_CASCADE_TAU", "BR_CHESSQ"}
-)
+_RECOGNITION_KEYS = frozenset({"BR_CHESSQ"})
 
-# The pre-D10 stack's settings. The default config of either entry point sets none
-# of them: BR_CHESSQ outranks them all, so one set beside it would be a dead knob
-# that reads as if it mattered.
+# The deleted crop-classifier stack's settings. Nothing reads them any more, so one
+# left in either entry point would be a dead knob that reads as if it mattered.
 _LEGACY_KEYS = frozenset(
     {
         "BR_MODEL",

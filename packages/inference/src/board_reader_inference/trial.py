@@ -42,12 +42,8 @@ the majority is not 0° — a truth file written in another frame, or a recogniz
 misreading the orientation.
 
 Scoring reads only ``events.ndjson`` — no model, no GPU, a fraction of a second.
-``--export-crops`` is the other half: it goes back to the recorded JPEGs and cuts
-per-square training crops labelled from the same truth, in the layout
-``tools/train`` discovers (``labels_normalized.json``).
 
     board-reader-inference eval-session recordings/20260813-193308
-    board-reader-inference eval-session recordings/ --export-crops data/external/trial
 """
 
 from __future__ import annotations
@@ -69,14 +65,8 @@ from board_reader_core.protocol import (
 )
 from board_reader_core.recording import EVENTS_NAME, Recording
 
-from board_reader_inference.estimator import ATTRACTOR, ATTRACTOR_MARGIN
 from board_reader_inference.evaluate import square_errors
 from board_reader_inference.labels import best_rotation
-from board_reader_inference.squares import (
-    DEFAULT_GEOMETRY,
-    CropGeometry,
-    crop_squares_photo,
-)
 from board_reader_inference.stabilize import (
     SETTLE_MIN_READS,
     SETTLE_SECONDS,
@@ -97,21 +87,6 @@ REPORT_NAME = "report.json"
 #: window. ~1.5 s at the 08-13 trial's 7.5 fps.
 DEFAULT_GUARD_SEQS = 12
 
-#: Keep every Nth scored frame when exporting crops. A trial publishes several
-#: reads a second off a board that changes every few *minutes*, so consecutive
-#: frames are near-duplicates and a session would otherwise dump tens of
-#: thousands of them.
-DEFAULT_EVERY = 5
-
-#: Crop size and geometry for the export. This is the deployed cut — ``run_e``'s
-#: sidecar is ``headroom=1.6, side_pad=0.15, square_size=224`` — so exported crops
-#: are the same pixels the served model sees.
-EXPORT_SIZE = 224
-
-#: The manifest ``tools/train/styles.py`` discovers, and the record of what cut it.
-MANIFEST_NAME = "labels_normalized.json"
-EXPORT_META_NAME = "export.json"
-
 SQUARES = GRID * GRID
 
 
@@ -130,15 +105,11 @@ class TruthSegment:
 
     from_seq: int
     placement: str
-    #: ``placement`` parsed once — the export cuts 64 crops per frame off it.
-    grid: tuple[tuple[str, ...], ...] = field(init=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         if self.from_seq < 0:
             raise TruthError(f"from_seq must be >= 0, got {self.from_seq}")
-        object.__setattr__(
-            self, "grid", tuple(tuple(row) for row in parse_placement(self.placement))
-        )
+        parse_placement(self.placement)  # a malformed board fails at load, not mid-score
 
 
 @dataclass(frozen=True)
@@ -683,117 +654,6 @@ def score_evidence(reads: list[ScoredRead], truth: SessionTruth) -> EvidenceScor
     return score
 
 
-#: How close the correct black bishops may come to the demotion's firing band
-#: before this scorer says so. 0.05 is a fifth of the gap the rule was shipped on
-#: (lowest correct-``b`` margin 0.210 vs a 0.20 threshold on the hardest of the
-#: four takes), so a session that trips it has closed most of that headroom.
-ATTRACTOR_GUARD_HEADROOM = 0.05
-
-
-@dataclass
-class AttractorGuard:
-    """Is the black-bishop demotion still eating only *wrong* squares?
-
-    The rule (:func:`board_reader_inference.estimator.demote_attractor`) is safe
-    because of a **gap**, not a mean: across the four takes it was fitted on, the
-    lowest margin at which a top-1 ``b`` was actually RIGHT is 0.210, and the rule
-    only fires below 0.20. Nothing enforces that gap. A new set, room or lighting
-    could close it, and then the rule starts eating correct squares *silently* —
-    so it is asserted on every scored session rather than left as a note in a
-    report (docs/reports/2026-08-27-evidence-rerank.md §9.1).
-
-    **What is observable.** The digest is recorded downstream of the rule, and a
-    demotion is a swap: the demoted ``b`` stays in the top two at the same margin,
-    just second. So a scored square still read ``b`` is exactly a square the rule
-    declined to fire on, and :attr:`min_margin` — the smallest margin over the
-    ``b`` squares read correctly — is how much room this session's correct black
-    bishops kept above the firing band. Post-rule that number cannot be below
-    :data:`~board_reader_inference.estimator.ATTRACTOR_MARGIN`; how far *above* is
-    the measurement.
-
-    :attr:`lost_in_band` is the other side, and it is an **upper bound**, not a
-    count: a truth-``b`` square read as something else with ``b`` the runner-up
-    inside the band either was demoted by the rule, or was already wrong with
-    ``b`` second. The digest cannot separate the two — pre-rule top-1 is not
-    recorded — so it is reported as "at most this many". Upper bound or not, it is
-    the *direct* evidence that squares are going, and :attr:`min_margin` can never
-    show it: see :attr:`at_risk`.
-    """
-
-    #: Scored squares whose truth is ``b`` and which were read ``b``.
-    correct: int
-    #: Truth-``b`` squares read as their runner-up's class, inside the firing band.
-    lost_in_band: int
-    #: The smallest margin among :attr:`correct` squares; ``None`` if there were none.
-    min_margin: float | None
-
-    @property
-    def headroom(self) -> float | None:
-        """How far the closest correct ``b`` sat above the firing threshold."""
-        return None if self.min_margin is None else self.min_margin - ATTRACTOR_MARGIN
-
-    @property
-    def at_risk(self) -> bool:
-        """True when this session says the gap has narrowed — or that it is gone.
-
-        Two independent triggers, and the second is the load-bearing one:
-        :attr:`min_margin` is **censored at** :data:`ATTRACTOR_MARGIN` by
-        construction (a surviving ``b`` is by definition one the rule declined to
-        fire on), so no square the rule actually took can ever move it. It reports
-        narrowing among the survivors; :attr:`lost_in_band` is the direct evidence
-        that squares are already going, and it needs no survivor to exist at all —
-        a total collapse has ``correct == 0`` and ``min_margin is None``, and that
-        is the loudest case there is, not a quiet one.
-        """
-        head = self.headroom
-        return self.lost_in_band > 0 or (
-            head is not None and head < ATTRACTOR_GUARD_HEADROOM
-        )
-
-    def to_dict(self) -> dict:
-        return {
-            "attractor": ATTRACTOR,
-            "margin": ATTRACTOR_MARGIN,
-            "correct": self.correct,
-            "lost_in_band": self.lost_in_band,
-            "min_margin": None if self.min_margin is None else round(self.min_margin, 4),
-            "headroom": None if self.headroom is None else round(self.headroom, 4),
-            "at_risk": self.at_risk,
-        }
-
-
-def score_attractor_guard(reads: list[ScoredRead], truth: SessionTruth) -> AttractorGuard:
-    """Measure the margin gap the black-bishop demotion's safety rests on.
-
-    Over the guard-included scored squares whose truth is the attractor class,
-    read off the recorded (post-rule) digest. See :class:`AttractorGuard`.
-    """
-    grids = [parse_placement(s.placement) for s in truth.segments]
-    correct = lost = 0
-    margins: list[float] = []
-    for read in reads:
-        digest = read.event.evidence
-        if digest is None:
-            continue
-        grid = grids[read.segment]
-        for r in range(GRID):
-            for c in range(GRID):
-                if grid[r][c] != ATTRACTOR:
-                    continue
-                square = digest[r * GRID + c]
-                top, p1 = square[0]
-                runner, p2 = square[1] if len(square) > 1 else ("empty", 0.0)
-                margin = p1 - p2
-                if top == ATTRACTOR:
-                    correct += 1
-                    margins.append(margin)
-                elif runner == ATTRACTOR and margin < ATTRACTOR_MARGIN:
-                    lost += 1
-    return AttractorGuard(
-        correct=correct, lost_in_band=lost, min_margin=min(margins) if margins else None
-    )
-
-
 @dataclass
 class Timing:
     """What the session cost in time — the rates a placement score cannot show.
@@ -866,34 +726,8 @@ def measure_timing(
 
 
 @dataclass
-class CropExport:
-    """What ``--export-crops`` wrote."""
-
-    directory: Path
-    style: str
-    geometry: CropGeometry
-    every: int
-    frames: int
-    crops: int
-    class_counts: Counter
-    skipped_no_corners: int
-
-    def to_dict(self) -> dict:
-        return {
-            "directory": str(self.directory),
-            "style": self.style,
-            "geometry": self.geometry.to_dict(),
-            "every": self.every,
-            "frames": self.frames,
-            "crops": self.crops,
-            "class_counts": dict(self.class_counts.most_common()),
-            "skipped_no_corners": self.skipped_no_corners,
-        }
-
-
-@dataclass
 class SessionReport:
-    """A whole trial, scored — and the reads that were scored, for the export."""
+    """A whole trial, scored — and the reads that were scored."""
 
     session: str
     board_id: str
@@ -907,10 +741,8 @@ class SessionReport:
     prior_missing: int
     settled_derived: bool
     evidence: EvidenceScore
-    attractor: AttractorGuard
     timing: Timing
     frame: TruthFrame
-    export: CropExport | None = None
     #: Where :func:`run` wrote the JSON, once it has.
     written_to: Path | None = None
 
@@ -938,9 +770,7 @@ class SessionReport:
             "truth_frame": self.frame.to_dict(),
             "streams": [s.to_dict() for s in self.streams],
             "evidence": self.evidence.to_dict(),
-            "attractor_guard": self.attractor.to_dict(),
             "timing": self.timing.to_dict(),
-            "export": self.export.to_dict() if self.export else None,
         }
 
     # -- rendering ---------------------------------------------------------- #
@@ -1033,59 +863,6 @@ class SessionReport:
             lines.append(f"    {c.pair:<14}{c.n:>5}{c.truth_ranked:>13}{margin:>15}")
         return lines
 
-    def _render_attractor(self) -> list[str]:
-        g = self.attractor
-        if not self.evidence.recorded:
-            return []  # no digest, no margins — the guard has nothing to read
-        head = f"attractor: {ATTRACTOR!r} demoted below margin {ATTRACTOR_MARGIN:.2f}"
-        if not g.correct and not g.lost_in_band:
-            return ["", f"{head} — no {ATTRACTOR!r} on the board this session"]
-
-        taken = (
-            f", at most {g.lost_in_band} correct square"
-            f"{'s' if g.lost_in_band > 1 else ''} taken"
-            if g.lost_in_band
-            else ""
-        )
-        lines = ["", head + taken]
-        if g.min_margin is None:
-            # Every truth-'b' square on the board went to its runner-up inside the
-            # band. There is no survivor left to measure a headroom against, which
-            # is the total-collapse case — never report it as nothing to see.
-            lines.append(
-                f"  correct {ATTRACTOR!r} reads       0 · NONE survived: every "
-                f"{ATTRACTOR!r} on the board went to its runner-up inside the band"
-            )
-        else:
-            lines.append(
-                f"  correct {ATTRACTOR!r} reads {g.correct:>7} · closest to the band "
-                f"{g.min_margin:.3f} (headroom {g.headroom:+.3f})"
-            )
-        if g.lost_in_band:
-            lines += [
-                f"  ! WARNING {g.lost_in_band} truth-{ATTRACTOR!r} square(s) went to "
-                f"the runner-up inside the band: either the demotion ate them or they "
-                "were already wrong with "
-                f"{ATTRACTOR!r} second.",
-                "            The digest is post-rule and cannot separate the two, so "
-                "that is an upper bound — but this set no longer shows the clean gap "
-                "the rule was shipped on.",
-            ]
-        if g.headroom is not None and g.headroom < ATTRACTOR_GUARD_HEADROOM:
-            lines += [
-                f"  ! WARNING the gap the demotion rests on is closing: a correct "
-                f"{ATTRACTOR!r} read at margin {g.min_margin:.3f} is within "
-                f"{ATTRACTOR_GUARD_HEADROOM:.2f} of the {ATTRACTOR_MARGIN:.2f} that "
-                "fires it.",
-                "            Below it the rule eats correct squares silently.",
-            ]
-        if g.at_risk:
-            lines.append(
-                "            Re-check the constant against this set before trusting "
-                "the score (docs/reports/2026-08-27-evidence-rerank.md §9.1)."
-            )
-        return lines
-
     def _render_timing(self) -> list[str]:
         t = self.timing
         lines = ["", "timing"]
@@ -1138,22 +915,8 @@ class SessionReport:
         lines += self._render_streams()
         lines += self._render_errors()
         lines += self._render_evidence()
-        lines += self._render_attractor()
         lines += self._render_timing()
         lines += self._render_segments()
-        if self.export is not None:
-            e = self.export
-            lines += [
-                "",
-                f"crops:     {e.crops} from {e.frames} frame(s) (every {e.every}th scored) "
-                f"-> {e.directory}",
-                f"           style {e.style!r}, geometry {e.geometry.to_dict()}"
-                + (
-                    f", {e.skipped_no_corners} frame(s) skipped (no corners)"
-                    if e.skipped_no_corners
-                    else ""
-                ),
-            ]
         if self.written_to is not None:
             lines += ["", f"report:    {self.written_to}"]
         return "\n".join(lines)
@@ -1229,100 +992,11 @@ def score_session(recording: Recording, truth: SessionTruth) -> SessionReport:
         prior_missing=prior_missing,
         settled_derived=settled_derived,
         evidence=score_evidence(reads, truth),
-        attractor=score_attractor_guard(reads, truth),
         # Timed over every event this board published, not just the scored ones:
         # a guard-excluded read still cost the estimator the same work.
         timing=measure_timing(recording, truth.board_id, mine),
         frame=score_truth_frame(reads, truth),
     )
-
-
-# --------------------------------------------------------------------------- #
-# Crop export
-# --------------------------------------------------------------------------- #
-
-
-def export_crops(
-    recording: Recording,
-    truth: SessionTruth,
-    reads: list[ScoredRead],
-    out_dir: str | Path,
-    *,
-    every: int = DEFAULT_EVERY,
-    geometry: CropGeometry = DEFAULT_GEOMETRY,
-    size: int = EXPORT_SIZE,
-) -> CropExport:
-    """Cut per-square training crops from the scored frames, labelled from truth.
-
-    Written as a crop-level ``labels_normalized.json`` style — the schema
-    ``tools/train/styles.py`` discovers under ``data/external`` and
-    ``tools/train/cropcache.py`` turns into shards. Only *scored* reads are
-    eligible, so nothing a guard window excluded can be labelled with a board
-    that was not there yet.
-
-    ``geometry`` defaults to the deployed cut (``run_e``'s sidecar), and is
-    recorded in ``export.json`` beside the manifest, because a crop is only
-    reusable if what cut it is known.
-    """
-    import cv2
-
-    if every < 1:
-        raise ValueError(f"--every must be >= 1, got {every}")
-    out = Path(out_dir)
-    crops_dir = out / "crops"
-    crops_dir.mkdir(parents=True, exist_ok=True)
-
-    wanted = {r.event.frame_seq: r for r in reads[::every]}
-    records: list[dict] = []
-    class_counts: Counter = Counter()
-    frames = skipped = 0
-    for recorded in recording.frames(board_id=truth.board_id):
-        read = wanted.pop(recorded.seq, None)
-        if read is None:
-            continue
-        frame = recorded.frame()
-        if frame.corners is None:
-            skipped += 1
-            continue
-        grid = truth.segments[read.segment].grid
-        squares = crop_squares_photo(
-            frame.image, frame.corners, geometry=geometry, size=size
-        )
-        for i, crop in enumerate(squares):
-            r, c = divmod(i, GRID)
-            cls = grid[r][c]
-            name = f"{recorded.seq:06d}_{square_name(r, c)}_{cls}.jpg"
-            cv2.imwrite(str(crops_dir / name), crop)
-            records.append(
-                {"image": f"crops/{name}", "piece": cls, "chess_set": truth.board_id}
-            )
-            class_counts[cls] += 1
-        frames += 1
-
-    (out / MANIFEST_NAME).write_text(json.dumps(records, indent=1), encoding="utf-8")
-    export = CropExport(
-        directory=out,
-        # What tools/train will call it: <manifest dir>_<chess_set>.
-        style=f"{out.name}_{truth.board_id}",
-        geometry=geometry,
-        every=every,
-        frames=frames,
-        crops=len(records),
-        class_counts=class_counts,
-        skipped_no_corners=skipped,
-    )
-    (out / EXPORT_META_NAME).write_text(
-        json.dumps(
-            {
-                "source_recording": str(recording.path),
-                "square_size": size,
-                **export.to_dict(),
-            },
-            indent=2,
-        ),
-        encoding="utf-8",
-    )
-    return export
 
 
 # --------------------------------------------------------------------------- #
@@ -1335,20 +1009,14 @@ def run(
     *,
     truth: SessionTruth | None = None,
     json_out: str | None = None,
-    export_dir: str | None = None,
-    every: int = DEFAULT_EVERY,
 ) -> SessionReport:
-    """Score ``recording`` against its ``truth.json``, optionally exporting crops.
+    """Score ``recording`` against its ``truth.json``.
 
     The full report is always written as JSON — to ``json_out`` when given, else
     to :data:`REPORT_NAME` inside the recording. Failing to write it is not
     failing to score: the rendered report still returns.
     """
     report = score_session(recording, truth or load_truth(recording.path / TRUTH_NAME))
-    if export_dir and report.reads:
-        report.export = export_crops(
-            recording, report.truth, report.reads, export_dir, every=every
-        )
     report.written_to = Path(json_out) if json_out else recording.path / REPORT_NAME
     try:
         report.written_to.write_text(

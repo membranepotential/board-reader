@@ -10,17 +10,15 @@ implementing this protocol.
 :func:`event_from_dist` is the one place a recognizer's distribution becomes a
 :class:`~board_reader_core.protocol.PositionEvent`.
 
-Until Phase B of the simplification plan removes the crop-classifier stack, the
-gateway still speaks :class:`~.estimator.Estimator`, so a recognizer serves through
-:class:`RecognizerEstimator`, and :func:`build_from_env` falls back to the old
-estimator tiers (:mod:`.legacy`) when ``BR_CHESSQ`` is unset.
+The gateway still speaks :class:`~.estimator.Estimator`, so a recognizer serves
+through :class:`RecognizerEstimator`.
 
 **Missing weights degrade, loudly** (plan decision D2). ``BR_CHESSQ`` is set by
 both entry points, but the weights are never in git, so a fresh clone has none.
 Then the stub recognizer serves — the walking skeleton's fixed start position —
 with a startup banner and a ``fallback`` reason on ``/healthz``, so ``docker
 compose up`` still works and nobody mistakes the stub for a read. ``make models``
-fetches the weights.
+fetches the weights. ``BR_CHESSQ`` unset serves the stub the same way.
 """
 
 from __future__ import annotations
@@ -85,10 +83,8 @@ class StubRecognizer:
 def event_from_dist(frame: Frame, square_dist: np.ndarray) -> PositionEvent:
     """A recognizer's distribution for ``frame`` as its (always ``ok``) event.
 
-    No calibration is applied: the black-bishop demotion of
-    :func:`~.estimator.read_event` was fitted on the crop-classifier stack's
-    distribution and was never measured on a recognizer's. ``status`` is ``ok``
-    whatever the board looks like (DESIGN D1).
+    The distribution is published as the recognizer produced it, uncalibrated.
+    ``status`` is ``ok`` whatever the board looks like (DESIGN D1).
     """
     return PositionEvent.from_square_dist(
         board_id=frame.board_id,
@@ -134,44 +130,32 @@ class RecognizerEstimator:
 
 def read_frame(estimator: Estimator) -> BoardFrame:
     """The frame ``estimator``'s placements are in: the recognizer's own (chess), or
-    the frame the frame's corners define for every pre-D10 estimator."""
+    the frame the frame's corners define for any other estimator."""
     if isinstance(estimator, RecognizerEstimator):
         return estimator.recognizer.frame
     return "corners"
 
 
-#: The estimator settings ``BR_CHESSQ`` outranks, named at startup when also set.
-_CHESSQ_OUTRANKS = ("BR_MODEL", "BR_MODEL_B", "BR_MODEL_TUNED")
+def _stub(reason: str) -> RecognizerEstimator:
+    """The stub recognizer, announced: a fixed start position is not a read."""
+    print(
+        f"!! {reason}\n!! serving the STUB recognizer: a fixed start position, "
+        "not a read of the board",
+        file=sys.stderr,
+    )
+    return RecognizerEstimator(StubRecognizer(), fallback=reason)
 
 
-def _chessq(path: str) -> RecognizerEstimator:
-    """``BR_CHESSQ=<path>`` -> ChessQ Lite, or the stub, loudly, without the file."""
-    if not Path(path).is_file():
-        reason = f"BR_CHESSQ={path!r} does not name a model file; run `make models`"
-        print(
-            f"!! {reason}\n!! serving the STUB recognizer: a fixed start position, "
-            "not a read of the board",
-            file=sys.stderr,
-        )
-        return RecognizerEstimator(StubRecognizer(), fallback=reason)
-    outranked = [n for n in _CHESSQ_OUTRANKS if os.environ.get(n)]
-    note = f"; ignoring {', '.join(outranked)}" if outranked else ""
-    print(f"serving ChessQ from BR_CHESSQ={path!r}{note}")
-    return RecognizerEstimator(ChessQRecognizer(path))
+def build_from_env() -> RecognizerEstimator:
+    """The recognizer the environment asks for.
 
-
-def build_from_env() -> Estimator:
-    """The estimator the environment asks for.
-
-    ``BR_CHESSQ=<path>`` -> ChessQ Lite through :class:`RecognizerEstimator`, ahead
-    of every other setting, or the stub recognizer when the file is missing
-    (module docstring). Otherwise the old tiers (:func:`.legacy.legacy_estimator`),
-    until Phase B removes them.
+    ``BR_CHESSQ=<path>`` -> ChessQ Lite; the stub, loudly, when the variable is
+    unset or names no file (module docstring).
     """
     path = os.environ.get("BR_CHESSQ")
-    if path:
-        return _chessq(path)
-    # Imported here: the old tiers import the estimator module, which imports this one.
-    from board_reader_inference.legacy import legacy_estimator
-
-    return legacy_estimator()
+    if not path:
+        return _stub("BR_CHESSQ is unset; set it to a model file (`make models`)")
+    if not Path(path).is_file():
+        return _stub(f"BR_CHESSQ={path!r} does not name a model file; run `make models`")
+    print(f"serving ChessQ from BR_CHESSQ={path!r}")
+    return RecognizerEstimator(ChessQRecognizer(path))
