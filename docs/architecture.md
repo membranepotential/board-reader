@@ -16,7 +16,7 @@ import rules below are enforced by a test, not by convention.
 | `board-reader-core` (`board_reader_core`) | the shared contract: L3 protocol, L1→L2 wire, camera control contract (pydantic models, with their JSON Schema in `schema`), recording format, sim helpers | numpy, opencv, pydantic |
 | `board-reader-edge` (`board_reader_edge`) | the **edge** node ("Pi", L1): capture, static crop, forward | core only |
 | `board-reader-inference` (`board_reader_inference`) | the **inference** node (L2): stateless recognizer + gateway | core only |
-| `packages/viewer/ui` (Node) | the viewer: a SvelteKit app whose pages are prerendered, with `/api/*` and `/api/client-log` as routes, served by `server/main.ts`, which adds the `/ws/*` relay and the TLS port — `src/routes/api`, `server/{main,ws,tls}.ts`; pages `/`, `/camera`, `/control`, `/snapshot` | nothing |
+| `packages/viewer` (Node) | the viewer: a SvelteKit app whose pages are prerendered, with `/api/*` and `/api/client-log` as routes, served by `server/main.ts`, which adds the `/ws/*` relay and the TLS port — `src/routes/api`, `server/{main,ws,tls}.ts`; pages `/`, `/camera`, `/control`, `/snapshot` | nothing |
 
 > [!danger] The separation rule
 > `edge` and `inference` **never import each other**. They communicate solely over the
@@ -209,7 +209,7 @@ node same-origin: the HTTP API through the catch-all route `/api/[...path]`, eve
 socket through `server/ws.ts` (`/ws/<path>` → `/<path>`, so `/ws/ingest`, `/ws/viewer`,
 `/ws/boards/{id}/camera` and `/ws/boards/{id}/control` need no viewer change).
 `--tls-port` serves the same app over a cached self-signed certificate. The SvelteKit 3
-app builds to `packages/viewer/ui/build/` (`make ui`). `BR_INFERENCE_WS` /
+app builds to `packages/viewer/build/` (`make ui`). `BR_INFERENCE_WS` /
 `BR_INFERENCE_HTTP` address the *viewer's* hop to the node and never reach the browser.
 
 One origin is what lets a single certificate cover everything a phone needs, and
@@ -221,7 +221,7 @@ the node still runs CORS middleware — nothing in this repo now depends on it.
 ## The frontend: one typed library, four routes
 
 The four pages are a SvelteKit 3 / Svelte 5 (runes) / TypeScript-strict app
-(`packages/viewer/ui`), prerendered and built to `packages/viewer/ui/build/` (`make ui`,
+(`packages/viewer`), prerendered and built to `packages/viewer/build/` (`make ui`,
 or `pnpm build`) — generated and gitignored, not a source. `server/main.ts` refuses to
 start if that directory is missing (see `docs/TESTING.md`).
 

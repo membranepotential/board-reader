@@ -5,7 +5,7 @@ node never share code, only the wire contract in ``board_reader_core``. We check
 two ways — statically (no forbidden imports in source) and structurally (the
 package manifests declare no cross-dependency).
 
-The viewer is a Node server (``packages/viewer/ui/server``), so it cannot import a
+The viewer is a Node server (``packages/viewer/server``), so it cannot import a
 Python package at all; what is checked for it is that the server stays network glue
 built on Node alone.
 """
@@ -81,7 +81,7 @@ def test_core_does_not_depend_on_any_sibling():
     assert "board-reader-inference" not in core_deps
 
 
-_VIEWER = _PKGS / "viewer" / "ui"
+_VIEWER = _PKGS / "viewer"
 _TS_IMPORT = re.compile(r"""^\s*(?:import|export)\b[^'"]*?from\s+['"]([^'"]+)['"]""", re.M)
 
 
@@ -89,7 +89,7 @@ def test_the_viewer_server_imports_only_node_its_siblings_and_runtime_deps():
     """The custom server (``server/*.ts``) runs outside the SvelteKit bundle, from the
     image's pruned ``node_modules``: every import must be a ``node:`` built-in, a
     sibling module, or a package declared under ``dependencies`` (devDependencies are
-    pruned). A frontend module (``$lib``, ``../src``) here would make the relay a
+    pruned). A frontend module (``#lib``, ``../src``) here would make the relay a
     participant in the protocol rather than a pipe, and break the image at startup."""
     import json
 

@@ -1,10 +1,10 @@
 ---
 paths:
-  - 'packages/viewer/ui/tests/**'
-  - 'packages/viewer/ui/playwright.config.ts'
+  - 'packages/viewer/tests/**'
+  - 'packages/viewer/playwright.config.ts'
 ---
 
-# The Playwright suite (packages/viewer/ui/tests)
+# The Playwright suite (packages/viewer/tests)
 
 - Fake the phone camera with `tests/helpers/camera.ts`'s `drawnBoardCamera`, which returns a fresh `source.clone()` of the canvas stream per `getUserMedia` call and patches each clone track's `getSettings().deviceId`, because the page stops the outgoing tracks before every reopen, so handing back one shared stream after a lens or resolution switch returns a stopped track and the stall watchdog reopens 6 s later, which looks like a page bug.
 - Use the drawn-canvas camera, not Chromium's `--use-fake-device`, for anything clock-driven, because its `requestAnimationFrame` draw loop is what keeps `video.currentTime` advancing for the stall watchdog.

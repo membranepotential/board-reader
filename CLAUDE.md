@@ -39,7 +39,7 @@ uv **workspace**; each `packages/*` member is independently deployable.
 | `board-reader-core` (`board_reader_core`) | shared contract: L3 protocol §5, L1→L2 wire §4.5, sim helpers | numpy, opencv |
 | `board-reader-edge` (`board_reader_edge`) | the **edge** node ("Pi", L1): capture, static crop, forward (the phone's `/camera` page is the other edge) | core only |
 | `board-reader-inference` (`board_reader_inference`) | the **inference** node (L2): stateless recognizer (ChessQ) + WS gateway | core only |
-| `packages/viewer/ui` (Node, not Python) | the **viewer**: a SvelteKit app (live, `/snapshot`, `/camera`, `/control`) served by `server/main.ts`, which relays `/api/*` + `/ws/*` to the inference node and serves TLS for `/camera` | no Python package; Node built-ins at runtime |
+| `packages/viewer` (Node, not Python) | the **viewer**: a SvelteKit app (live, `/snapshot`, `/camera`, `/control`) served by `server/main.ts`, which relays `/api/*` + `/ws/*` to the inference node and serves TLS for `/camera` | no Python package; Node built-ins at runtime |
 
 **Naming:** DESIGN.md calls L2 the "central / Jetson" node; in code it is
 **`inference`** (and the edge is the "Pi"). Same concepts, friendlier names.
@@ -87,16 +87,16 @@ make gate GATE_NAME=<new>     # replay the seven gate takes; table against sp03-
 
 # Run locally (one terminal): inference + the viewer on http :8080 and https :8443
 # (one Node process; /camera on a phone needs the secure one). `make dev` depends on
-# `ui`, so this alone is only needed after touching packages/viewer/ui/ without
+# `ui`, so this alone is only needed after touching packages/viewer/ without
 # wanting the rest of the stack.
-make ui                       # build the SvelteKit app -> packages/viewer/ui/build/
+make ui                       # build the SvelteKit app -> packages/viewer/build/
 make dev                      # ChessQ V6 fp32 on the GPU; `make dev-cpu` serves int8 on the CPU
 
 # Or by hand, without Docker (two terminals):
 BR_CHESSQ=models/chessq/cq-vit-s-644-v6-seed1-onnx-fp32.onnx \
   uv run board-reader-inference serve          # gateway on :8000 (int8 file on a CPU)
 uv run board-reader-edge feed                  # synthetic feed -> :8000
-node packages/viewer/ui/server/main.ts --port 8080   # UI on :8080 -> open it (after `make ui`)
+node packages/viewer/server/main.ts --port 8080   # UI on :8080 -> open it (after `make ui`)
 
 # Run the whole thing on Docker (the canonical demo):
 docker compose up --build                      # then open http://localhost:8080
@@ -112,7 +112,7 @@ compromised) releases are never resolved. To take newer deps, bump that date
 deliberately and re-run `uv sync`, then `uv run pytest`. Python deps go through
 `uv` only.
 
-The UI (`packages/viewer/ui`) mirrors this on the npm side: `pnpm-workspace.yaml`
+The UI (`packages/viewer`) mirrors this on the npm side: `pnpm-workspace.yaml`
 sets `minimumReleaseAge: 10080` (minutes = 7 days; pnpm 11's own default is 1440,
 one day), so a freshly-published package is never resolved there either. Bump one
 package deliberately via `minimumReleaseAgeExclude`, then re-run `pnpm install`

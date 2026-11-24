@@ -7,7 +7,7 @@
 #
 # Data flow:  edge --(WS frames)--> inference --(WS position events)--> viewer --> browser
 # The browser only ever talks to `viewer`, which relays the node's sockets and HTTP
-# API (packages/viewer/ui/server/relay.ts). One origin, so the demo works unchanged
+# API (packages/viewer/server/ws.ts and the /api routes). One origin, so the demo works unchanged
 # over https and behind a tunnel.
 
 services:

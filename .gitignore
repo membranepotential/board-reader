@@ -55,8 +55,8 @@ docs/commit-rewrite-pre.bundle
 # OS / editor
 .DS_Store
 
-# Frontend: node deps and the generated build. The viewer lives in packages/viewer/ui/;
-# `make ui` builds it into packages/viewer/ui/build/. Generated — never committed.
+# Frontend: node deps and the generated build. The viewer lives in packages/viewer/;
+# `make ui` builds it into packages/viewer/build/. Generated — never committed.
 node_modules/
 
 # Secrets (RUNPOD_API_KEY etc) — repo is public

@@ -36,7 +36,7 @@ _ROOT = Path(__file__).resolve().parent.parent
 _COMPOSE = _ROOT / "compose.yaml"
 _MAKEFILE = _ROOT / "Makefile"
 
-#: The viewer's entry point (packages/viewer/ui/server/main.ts), run by Node.
+#: The viewer's entry point (packages/viewer/server/main.ts), run by Node.
 _VIEWER_ENTRY = "server/main.ts"
 
 # The env family that decides *how boards are read*. These must agree between

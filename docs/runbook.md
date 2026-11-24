@@ -49,7 +49,7 @@ docker compose up --build                 # then open http://localhost:8080
 
 ```bash
 uv run board-reader-inference serve       # gateway  :8000
-make ui && node packages/viewer/ui/server/main.ts --port 8080   # UI :8080 -> open it
+make ui && node packages/viewer/server/main.ts --port 8080   # UI :8080 -> open it
 uv run board-reader-edge feed             # synthetic feed
 uv run board-reader-edge feed --video clip.mp4 --throttle   # or a real clip
 ```
@@ -155,9 +155,9 @@ Read it as *positions only*: the tail diffs consecutive placements for legibilit
 smooths nothing, so a flickering square shows a transition on every frame. See
 [[architecture#Temporal consistency — the layer nobody has built]].
 
-**Viewer node** — a Node server, `node packages/viewer/ui/server/main.ts` (Node 22.18
+**Viewer node** — a Node server, `node packages/viewer/server/main.ts` (Node 22.18
 or newer runs the TypeScript directly), serving the build `make ui` writes to
-`packages/viewer/ui/build/`. It refuses to start without that build and says what to run.
+`packages/viewer/build/`. It refuses to start without that build and says what to run.
 
 | Flag | Effect |
 |---|---|
@@ -172,7 +172,7 @@ or newer runs the TypeScript directly), serving the build `make ui` writes to
 | `BR_CLIENT_LOG_DIR` | Where the phone's trial notes (`POST /api/client-log`) are appended, one NDJSON file per viewer start (default `client-logs`; empty drops them). |
 
 The viewer logs its startup banner and one line per relay or server error, nothing per
-request. `pnpm dev` in `packages/viewer/ui` (Vite, hot reload) relays `/api` and `/ws` to
+request. `pnpm dev` in `packages/viewer` (Vite, hot reload) relays `/api` and `/ws` to
 the same two variables, so it works against a running node.
 
 > [!note] Neither reaches the browser

@@ -13,13 +13,13 @@ follow from that, and both matter before you redistribute anything:
 
 ## 1. The viewer UI bundle is GPL-3.0-or-later
 
-`packages/viewer/ui` depends on **[`@lichess-org/chessground`](https://github.com/lichess-org/chessground)**
+`packages/viewer` depends on **[`@lichess-org/chessground`](https://github.com/lichess-org/chessground)**
 (`GPL-3.0-or-later`) for board rendering, and pulls in its stylesheets — which embed
 the **cburnett** piece sprites (`GPLv2+`, © Colin M.L. Burnett, per
 [lila's COPYING.md](https://github.com/lichess-org/lila/blob/master/COPYING.md)) as
 data URIs.
 
-`make ui` links these into `packages/viewer/ui/build/`. That output
+`make ui` links these into `packages/viewer/build/`. That output
 is a combined work:
 
 - **Our source stays Apache-2.0.** Apache-2.0 is one-way compatible with GPLv3, so our
@@ -31,7 +31,7 @@ is a combined work:
 - **The repository itself carries no GPL code.** The bundle is git-ignored; the sources
   here only reference the package by name.
 
-Nothing outside `packages/viewer/ui` touches chessground. `board-reader-core`,
+Nothing outside `packages/viewer` touches chessground. `board-reader-core`,
 `board-reader-edge` and `board-reader-inference` have **no GPL dependencies** and are
 plain Apache-2.0 — the wire protocol and the estimator are reusable without any
 copyleft obligation.

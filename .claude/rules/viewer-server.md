@@ -1,10 +1,10 @@
 ---
 paths:
-  - 'packages/viewer/ui/server/**'
-  - 'packages/viewer/ui/src/routes/api/**'
-  - 'packages/viewer/ui/src/hooks.server.ts'
-  - 'packages/viewer/ui/src/env.ts'
-  - 'packages/viewer/ui/vite.config.ts'
+  - 'packages/viewer/server/**'
+  - 'packages/viewer/src/routes/api/**'
+  - 'packages/viewer/src/hooks.server.ts'
+  - 'packages/viewer/src/env.ts'
+  - 'packages/viewer/vite.config.ts'
   - 'docker/viewer.Dockerfile'
 ---
 

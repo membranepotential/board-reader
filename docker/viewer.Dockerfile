@@ -8,7 +8,7 @@
 # node_modules/, .svelte-kit/ and build/ out of it, so pnpm installs for the image's
 # own platform from the lockfile.
 ARG NODE_VERSION=24.19.0
-# The pnpm that wrote packages/viewer/ui/pnpm-lock.yaml (lockfileVersion 9.0),
+# The pnpm that wrote packages/viewer/pnpm-lock.yaml (lockfileVersion 9.0),
 # installed explicitly: package.json carries no `packageManager` field for corepack.
 ARG PNPM_VERSION=12.5.1
 
@@ -17,9 +17,9 @@ ARG PNPM_VERSION
 ENV CI=true
 RUN npm install --global "pnpm@${PNPM_VERSION}"
 WORKDIR /app
-COPY packages/viewer/ui/package.json packages/viewer/ui/pnpm-lock.yaml packages/viewer/ui/pnpm-workspace.yaml ./
+COPY packages/viewer/package.json packages/viewer/pnpm-lock.yaml packages/viewer/pnpm-workspace.yaml ./
 RUN pnpm install --frozen-lockfile
-COPY packages/viewer/ui ./
+COPY packages/viewer ./
 RUN pnpm build \
     && rm server/*.test.ts \
     && pnpm prune --prod

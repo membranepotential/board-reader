@@ -81,7 +81,7 @@ from board_reader_core.recording import FrameEntry
 #: Stability under this starts a burst; it must climb back over
 #: :data:`EXIT_BURST` and stay there for :data:`EXIT_HOLD_S` to end one.
 #: Mirrored value for value from the browser edge's ``AdaptiveForwarder``
-#: (``packages/viewer/ui/src/lib/edge/motion.ts``) — those are the thresholds that
+#: (``packages/viewer/src/lib/edge/motion.ts``) — those are the thresholds that
 #: decided which frames were *sent*, so segmenting the arriving stream by any
 #: other pair would describe bursts that never happened.
 ENTER_BURST = 0.7
@@ -629,7 +629,7 @@ def policy_slug(policy: FramePolicy) -> str:
 # --------------------------------------------------------------------------- #
 
 #: Meter constants, mirrored from :mod:`board_reader_edge.motion` (itself mirrored
-#: in ``packages/viewer/ui/src/lib/edge/motion.ts``). The three meters are one
+#: in ``packages/viewer/src/lib/edge/motion.ts``). The three meters are one
 #: algorithm in three places on purpose: the edge/inference split (DESIGN §4,
 #: pinned by ``tests/test_layer_separation.py``) forbids this package from
 #: importing the edge's, and the browser's is in another language entirely. Any

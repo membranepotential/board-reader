@@ -2,7 +2,7 @@
 
 ``board_reader_core.schema.json_schema()`` is the one source of truth for every
 message the browser sends or receives. This tool turns it into
-``packages/viewer/ui/src/lib/protocol/generated.ts``: one zod 4 schema per ``$defs``
+``packages/viewer/src/lib/protocol/generated.ts``: one zod 4 schema per ``$defs``
 entry, and its (deeply readonly) type under the same name. ``make protocol`` runs it;
 ``tests/test_protocol_ts.py`` fails when the committed file is not what it writes.
 
@@ -32,7 +32,7 @@ from pathlib import Path
 from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
-OUT = ROOT / "packages" / "viewer" / "ui" / "src" / "lib" / "protocol" / "generated.ts"
+OUT = ROOT / "packages" / "viewer" / "src" / "lib" / "protocol" / "generated.ts"
 
 Schema = Mapping[str, Any]
 

@@ -14,5 +14,5 @@ docs/
 # docker/viewer.Dockerfile installs from the lockfile instead.
 **/node_modules/
 **/.svelte-kit/
-packages/viewer/ui/build/
-packages/viewer/ui/test-results/
+packages/viewer/build/
+packages/viewer/test-results/

@@ -3,7 +3,7 @@
 #   make dev     start inference + the viewer (http + https); Ctrl-C stops both
 #   make dev-cpu the same stack with the GPU hidden — for when the card is
 #                also driving your screens (see CUDA_ENV below)
-#   make ui      build the SvelteKit viewer (packages/viewer/ui/build/)
+#   make ui      build the SvelteKit viewer (packages/viewer/build/)
 #   make models  fetch the recognizer weights (pinned, SHA-256 verified)
 #   make stop    stop anything left running
 #   make test     the suite in parallel, minus the GPU tests
@@ -12,10 +12,10 @@
 #   make gate     replay the seven gate takes and print them against sp03-settle05-7
 #   make protocol regenerate the viewer's wire types from the Python models
 #
-# `dev` depends on `ui`, unconditionally: the viewer (packages/viewer/ui/server/main.ts)
-# refuses to start if packages/viewer/ui/build/ is missing, and that directory is
+# `dev` depends on `ui`, unconditionally: the viewer (packages/viewer/server/main.ts)
+# refuses to start if packages/viewer/build/ is missing, and that directory is
 # generated + gitignored, so a fresh checkout has none. Rebuilding it
-# on every `make dev` also means an edit under packages/viewer/ui/ is never served
+# on every `make dev` also means an edit under packages/viewer/ is never served
 # stale — there is no separate "did the UI change" check to fall out of date.
 #
 # The env below is the *deployed* config, not a convenience default: BR_CHESSQ
@@ -27,7 +27,7 @@
 #
 # The viewer is one Node process on two ports, and either port serves every page.
 # Every page is same-origin: the viewer relays the whole inference API under /api and
-# the sockets under /ws (packages/viewer/ui/server/relay.ts), so nothing the browser
+# the sockets under /ws (packages/viewer/server/ws.ts and the /api routes), so nothing the browser
 # fetches names a second host, and there is no mixed content to block. It prints its
 # own banner with the URLs to open once both ports listen.
 #
@@ -106,11 +106,11 @@ VIEWER_PORT     ?= 8080
 VIEWER_TLS_PORT ?= 8443
 
 # Builds the SvelteKit app (adapter-node, every page prerendered) into
-# packages/viewer/ui/build/, which server/main.ts serves. `--frozen-lockfile` matches
+# packages/viewer/build/, which server/main.ts serves. `--frozen-lockfile` matches
 # `uv sync --frozen`'s discipline on the Python side: this installs exactly
 # pnpm-lock.yaml, never a resolution that drifts from what is committed.
 ui:
-	cd packages/viewer/ui && pnpm install --frozen-lockfile && pnpm build
+	cd packages/viewer && pnpm install --frozen-lockfile && pnpm build
 
 dev: ui
 	@test -f "$(BR_CHESSQ)" \
@@ -126,7 +126,7 @@ dev: ui
 	inference=$$!; \
 	BR_INFERENCE_HTTP=http://127.0.0.1:$(INFERENCE_PORT) \
 	BR_INFERENCE_WS=ws://127.0.0.1:$(INFERENCE_PORT)/viewer \
-	  node packages/viewer/ui/server/main.ts --host 0.0.0.0 \
+	  node packages/viewer/server/main.ts --host 0.0.0.0 \
 	    --port $(VIEWER_PORT) --tls-port $(VIEWER_TLS_PORT) & \
 	viewer=$$!; \
 	trap 'kill $$inference $$viewer 2>/dev/null; \
@@ -176,7 +176,7 @@ test:
 	@echo "   (frontend not covered here — run 'make test-front')"
 
 # The frontend's two test layers. `make test` is the Python suite only, and most of
-# what the viewer does now lives in packages/viewer/ui — these are not optional.
+# what the viewer does now lives in packages/viewer — these are not optional.
 #
 #   test-ui   Vitest: the library maths, the stores, and the viewer server — relay,
 #             TLS certificate, client log — against real sockets (~2s)
@@ -184,12 +184,12 @@ test:
 #             inference node — no GPU, no model. It runs `vite build` first and serves
 #             the result with the real viewer server, so what is driven is what ships.
 test-ui:
-	cd packages/viewer/ui && pnpm install --frozen-lockfile && pnpm test
+	cd packages/viewer && pnpm install --frozen-lockfile && pnpm test
 
 # `playwright install` is a one-off on a fresh checkout: Playwright pins its own
 # Chromium build and refuses to run against another.
 test-e2e:
-	cd packages/viewer/ui && pnpm install --frozen-lockfile && \
+	cd packages/viewer && pnpm install --frozen-lockfile && \
 	  pnpm exec playwright install chromium && pnpm test:e2e
 
 test-front: test-ui test-e2e
@@ -243,7 +243,7 @@ gate:
 # `uvx`, so every checkout and every agent lints with the same ruleset — a gate
 # whose rules drift by machine is not a gate. Config and the reasoning behind
 # each selected/ignored rule live in pyproject.toml's [tool.ruff.lint].
-# The viewer's wire types and zod validators (packages/viewer/ui/src/lib/protocol/
+# The viewer's wire types and zod validators (packages/viewer/src/lib/protocol/
 # generated.ts) are generated from the pydantic models in packages/core, the one
 # source of truth for every message both ends speak. Run this after changing a
 # model; tests/test_protocol_ts.py fails in `make test` until you do.
@@ -263,4 +263,4 @@ lint-fix:
 # The bracket keeps the pattern from matching this recipe's own command line.
 # Verified, not assumed — see tools/stop.sh for why "stopped" used to be a lie.
 stop:
-	@tools/stop.sh "[b]oard-reader-inference serve" "[v]iewer/ui/server/main.ts"
+	@tools/stop.sh "[b]oard-reader-inference serve" "[v]iewer/server/main.ts"

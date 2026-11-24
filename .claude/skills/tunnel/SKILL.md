@@ -15,7 +15,7 @@ real cert means no self-signed interstitial to accept on the phone.
 
 Tunnel **8080 only** — the plain-HTTP viewer bind. All three pages are
 same-origin: every inference endpoint they touch is relayed by the viewer itself
-(`/api` by `packages/viewer/ui/src/routes/api/[...path]`, `/ws` by `packages/viewer/ui/server/ws.ts`), so the browser never needs
+(`/api` by `packages/viewer/src/routes/api/[...path]`, `/ws` by `packages/viewer/server/ws.ts`), so the browser never needs
 to reach `:8000`, and nothing is injected into the HTML that could hardcode a LAN
 address.
 
@@ -84,7 +84,7 @@ pgrep -f "cloudflared tunnel" >/dev/null && pkill -9 -f "cloudflared tunnel"
 `cloudflared` does not always go down on SIGTERM — verify rather than assume, or
 you leave a public URL onto the user's camera running unattended. Same for the
 stack itself: `make stop`, then confirm with
-`pgrep -f "board-reader-inference|viewer/ui/server/main.ts"`.
+`pgrep -f "board-reader-inference|viewer/server/main.ts"`.
 
 The hostname dies with the process and is never reissued. Every restart hands out
 a different one, so treat the URL as single-session and re-scrape it each time.

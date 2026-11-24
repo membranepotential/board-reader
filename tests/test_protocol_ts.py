@@ -1,6 +1,6 @@
 """The TypeScript wire types stay what the Python models say (``tools/gen_protocol.py``).
 
-``packages/viewer/ui/src/lib/protocol/generated.ts`` is generated from
+``packages/viewer/src/lib/protocol/generated.ts`` is generated from
 ``board_reader_core.schema``; these tests fail when it is stale, when the schema
 names a check the TypeScript side lacks, and when pydantic judges a shared sample
 differently from its label. ``generated.test.ts`` runs the same samples through the
@@ -25,7 +25,7 @@ from board_reader_core.wiremodel import CHECK_KEYWORD, parse
 
 _ROOT = Path(__file__).resolve().parents[1]
 _TOOL = _ROOT / "tools" / "gen_protocol.py"
-_TS = _ROOT / "packages" / "viewer" / "ui" / "src" / "lib" / "protocol"
+_TS = _ROOT / "packages" / "viewer" / "src" / "lib" / "protocol"
 
 
 def _load():

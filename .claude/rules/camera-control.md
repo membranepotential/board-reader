@@ -1,11 +1,11 @@
 ---
 paths:
-  - 'packages/viewer/ui/src/routes/camera/**'
-  - 'packages/viewer/ui/src/routes/control/**'
-  - 'packages/viewer/ui/src/lib/components/camera/**'
-  - 'packages/viewer/ui/src/lib/components/control/**'
-  - 'packages/viewer/ui/src/lib/control/**'
-  - 'packages/viewer/ui/src/lib/edge/**'
+  - 'packages/viewer/src/routes/camera/**'
+  - 'packages/viewer/src/routes/control/**'
+  - 'packages/viewer/src/lib/components/camera/**'
+  - 'packages/viewer/src/lib/components/control/**'
+  - 'packages/viewer/src/lib/control/**'
+  - 'packages/viewer/src/lib/edge/**'
   - 'packages/core/src/board_reader_core/control.py'
   - 'packages/inference/src/board_reader_inference/control/camera.py'
 ---

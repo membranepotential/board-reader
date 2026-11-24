@@ -53,7 +53,7 @@ make dev                                       # inference + viewer, ChessQ serv
 # or by hand:
 BR_CHESSQ=models/chessq/cq-vit-s-644-v6-seed1-onnx-fp32.onnx \
   uv run board-reader-inference serve          # gateway  :8000 (GPU file; int8 for CPU)
-node packages/viewer/ui/server/main.ts --port 8080   # UI :8080 (after `make ui`)
+node packages/viewer/server/main.ts --port 8080   # UI :8080 (after `make ui`)
 uv run board-reader-edge feed                  # synthetic feed
 uv run board-reader-inference positions        # tail the position stream (headless)
 make test                                      # the test suite
@@ -66,7 +66,7 @@ packages/
   core/        board_reader_core      — shared L3 protocol + L1→L2 wire + sim
   edge/        board_reader_edge      — the "Pi": capture & forward frames
   inference/   board_reader_inference — stateless per-frame recognizer + WS gateway
-  viewer/ui/   the viewer (Node)      — the SvelteKit pages + server/main.ts, the relay to inference
+  viewer/      the viewer (Node)      — the SvelteKit pages + server/main.ts, the relay to inference
 docker/        the Python image (edge, inference) and viewer.Dockerfile; compose.yaml wires all three
 tools/         offline tooling: model fetch, replay gate table, label migration, video capture
 docs/          DESIGN.md (decisions) + an Obsidian-linked doc set (index.md)
@@ -81,7 +81,7 @@ Apache-2.0 — see [LICENSE](LICENSE).
 
 Two carve-outs, both spelled out in **[THIRD-PARTY.md](THIRD-PARTY.md)**:
 
-- **The built viewer bundle is GPL-3.0-or-later.** `packages/viewer/ui` links
+- **The built viewer bundle is GPL-3.0-or-later.** `packages/viewer` links
   [chessground](https://github.com/lichess-org/chessground) (GPL-3.0-or-later) and its
   cburnett sprites (GPLv2+), so whatever `make ui` produces is a combined GPL work.
   Our source stays Apache-2.0, and `core`/`edge`/`inference` carry no GPL dependency

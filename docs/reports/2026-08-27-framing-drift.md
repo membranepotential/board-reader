@@ -7,7 +7,7 @@ Frames: `recordings/2026 08-27 * /frames.ndjson` + `jpeg/`. Detector:
 ## 0. Two corrections to the premise, up front
 
 **(a) The client does not stamp a fixed quad — it tracks it every frame.**
-`packages/viewer/ui/src/lib/geometry/tracker.ts` is a pyramidal-LK plane tracker;
+`packages/viewer/src/lib/geometry/tracker.ts` is a pyramidal-LK plane tracker;
 the corners on the wire are its output, refreshed per frame. So the failure is not
 "a stale quad while the phone moved". It is **tracker drift**: the tracked quad
 slides off a board that is standing still. That is why re-detection is the fix and

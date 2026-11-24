@@ -3,7 +3,7 @@
 # pins the resolver, and holds shared dev tooling. See docs/DESIGN.md.
 
 [tool.uv.workspace]
-# Explicit, not `packages/*`: packages/viewer is a Node package (packages/viewer/ui),
+# Explicit, not `packages/*`: packages/viewer is a Node package,
 # and a glob would demand a pyproject.toml there.
 members = ["packages/core", "packages/edge", "packages/inference"]
 

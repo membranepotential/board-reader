@@ -12,14 +12,14 @@ confidences**. No moves, no legality, no PGN — those belong to the downstream 
 - **regroup + 7-take gate DONE** (`a758020`..`f90efc0`): inference in recognition/ stream/ control/ measurement/,
   tests mirror it, import-direction test; gate events identical. 7-take base `sp03-settle05-7`: 341/361 raw,
   315/361 settled perfect.
-- **protocol** — Python half DONE (`1b52a3b`..`88103f1`, strict header `d2793ea`; gate identical);
-  TS half (generator, `protocol.generated.ts`, drift test) running.
+- **protocol DONE** (`1b52a3b`..`df5c93f`, strict header `d2793ea`): pydantic models in core → JSON Schema →
+  `tools/gen_protocol.py` → `lib/protocol/generated.ts` (zod 4); drift + shared-sample tests; gate identical.
+- **viewer move DONE**: `packages/viewer/ui` → `packages/viewer`, `$lib` → `#lib` (package.json `imports`).
 - **latency2+liveview DONE** (`5c1b9a0`, `8ea0057`; report `8664336`): tail 1 s, 3 reads × 0.3 s, settle
   0.5 s; gate settled 138/154 → 140/156, 0 hand leaks; live view: motion chip + pending rings, no conf bars.
   OPEN: a hand resting still settles (meter sees rest) — needs a direct hand signal.
 - **viewer-svelte DONE** (`ba87f7e`, `8d7091f`, `aac0484`): SvelteKit 3.3 on Node — `/api` as routes, short
-  `server/{main,ws,tls}.ts` for the socket relay + TLS; Python viewer deleted. Open: `$lib`→`#lib` rename
-  (kit 3 deprecates the alias); `serve` ignored `BR_RECORD_DIR` in the agent's smoke (check).
+  `server/{main,ws,tls}.ts` for the socket relay + TLS; Python viewer deleted. Open: `serve` ignored `BR_RECORD_DIR` in the agent's smoke (check).
 - **read-path DONE** (`57b145c`, `7be3a41`): motion updates on /viewer, direction guard (0 drops, gate identical).
 - **control DONE** (`d916df6`, `cc0233d`, `5b54d74`): camera config persisted (`BR_CAMERA_CONFIG`, default
   `data/camera-config.json`); /control shows "White sits on …" + camera-moved warning.
@@ -46,9 +46,6 @@ confidences**. No moves, no legality, no PGN — those belong to the downstream 
   (`/run/media/felix/archive/board-reader/`, symlinked; mount it before using them).
 
 ## Next
-
-- **After protocol TS lands:** `git mv packages/viewer/ui packages/viewer` (the folder holds only ui/) +
-  `$lib`→`#lib` rename in one change; update Makefile, compose, Dockerfile, CLAUDE.md, rule globs, docs.
 
 1. **User re-test** (TESTING Option J): verify bursts open on the iPhone (expect ~2 s from the hand
    leaving), then score the take (build its truth).
