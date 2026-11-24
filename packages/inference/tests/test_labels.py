@@ -340,3 +340,19 @@ def test_best_rotation_survives_misread_squares_and_prefers_zero_on_ties():
     grid[0][0], grid[4][4] = "q", "empty"  # two squares misread as well
     assert best_rotation(MIDGAME, encode_placement(grid)) == 2
     assert best_rotation("8/8/8/8/8/8/8/8", "8/8/8/8/8/8/8/8") == 0
+
+
+def test_load_labels_skips_backups_in_hidden_directories(tmp_path):
+    """The chess-frame migration keeps originals in ``.pre-chess-frame/``; a scan
+    must never read those superseded copies in place of the live labels."""
+    photo = tmp_path / "board.jpg"
+    photo.write_bytes(b"x")
+    entry = {"placement": MIDGAME, "source": str(photo)}
+    (tmp_path / "ground_truth.json").write_text(json.dumps({"b": {**entry, "frame": "chess"}}))
+    backup = tmp_path / ".pre-chess-frame"
+    backup.mkdir()
+    (backup / "ground_truth.json").write_text(
+        json.dumps({"b": {**entry, "corners_a8_h8_h1_a1": [[0, 0], [1, 0], [1, 1], [0, 1]]}})
+    )
+    [board] = load_labels([tmp_path])
+    assert board.frame == "chess"

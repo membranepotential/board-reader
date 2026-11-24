@@ -259,12 +259,23 @@ def _boards_from_ground_truth(path: Path) -> list[LabeledBoard]:
     return boards
 
 
+def _visible(root: Path, pattern: str) -> list[Path]:
+    """``root.rglob(pattern)``, sorted, minus anything under a hidden directory."""
+    return sorted(
+        path
+        for path in root.rglob(pattern)
+        if not any(part.startswith(".") for part in path.relative_to(root).parts[:-1])
+    )
+
+
 def load_labels(paths: list[str] | list[Path]) -> list[LabeledBoard]:
     """Collect labeled boards from files and directories, de-duplicated by id.
 
     A directory is searched recursively for ``*.label.json`` and for any
-    ``ground_truth.json``. A file is read as whichever of the two shapes its name
-    says. Order is stable (sorted by board id) so two runs are comparable.
+    ``ground_truth.json``, skipping hidden directories (backups such as
+    ``.pre-chess-frame/`` hold superseded copies of the same boards). A file is
+    read as whichever of the two shapes its name says. Order is stable (sorted by
+    board id) so two runs are comparable.
     """
     found: dict[str, LabeledBoard] = {}
 
@@ -275,9 +286,9 @@ def load_labels(paths: list[str] | list[Path]) -> list[LabeledBoard]:
     for raw in paths:
         p = Path(raw)
         if p.is_dir():
-            for label in sorted(p.rglob(f"*{LABEL_SUFFIX}")):
+            for label in _visible(p, f"*{LABEL_SUFFIX}"):
                 take(_board_from_label(label))
-            for gt in sorted(p.rglob("ground_truth.json")):
+            for gt in _visible(p, "ground_truth.json"):
                 for board in _boards_from_ground_truth(gt):
                     take(board)
         elif p.name.endswith(LABEL_SUFFIX):

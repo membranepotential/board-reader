@@ -115,3 +115,18 @@ live under `data/streams/` (git-ignored), kept for local/personal research use o
 the same footing as `data/external/chessred`. The end-to-end operator workflow (when to
 ask the user for a crop, which frame-extraction mode to use) is documented in the
 `get-frames-from-yt` Claude Code skill (`.claude/skills/get-frames-from-yt/`).
+
+## `gate_table.py` — the four-take replay gate as one table
+
+Reads `recordings/<take>/replays/<name>/report.json` for two replay names on the
+four gate takes and prints `base→candidate` per take plus a pooled total. `make gate
+GATE_NAME=<new>` replays the takes through `BR_CHESSQ` and prints it against
+`cq-v6`. See [measuring accuracy](../docs/measuring-accuracy.md).
+
+## `migrate_labels_to_chess_frame.py` — corner-frame labels → chess frame (D10)
+
+One-off. `migrate <dir>` turns each corner-frame `*.label.json` by the quarter-turn
+ChessQ agrees with, only when a margin, a back-rank-pawn check, the truth's own
+plausibility and the old autorotate all agree; anything else is listed and left.
+`mark <files|dirs>` adds `frame: "chess"` to truth that already is. Dry run unless
+`--apply`; originals go to `.pre-chess-frame/` beside each file.

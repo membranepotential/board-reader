@@ -130,3 +130,37 @@ Rescored (`eval-session` on the existing replay directories, no re-read):
 
 The 15-board "truth-covered" table above is superseded. The settle lag remains the
 largest loss (92 raw vs 84 settled).
+
+## Update 2026-11-24 (Phase A, step 4): the chess frame
+
+ChessQ reads the chess frame (DESIGN D10), so the labels and truths it is scored on
+were checked, and migrated where they were not.
+
+- **`data/uploads` labels (27, corner frame):** migrated by
+  `tools/migrate_labels_to_chess_frame.py` (rotation only, never a square). 26/27
+  passed every check: the turn under which ChessQ agrees best with the label beats
+  the runner-up by 18–46 squares (threshold 8), the truth's own plausibility rule
+  picks the same turn on all 26, and on the 19 whose read had been autorotated the
+  old turn agrees too (8 needed 0°, 8 needed 90°, 9 needed 180°, 2 needed 270°).
+  **Left for a human:** `20260806-235526-0005-estimate` — the turn is clear (90°,
+  margin 33, agrees with the old autorotate) but the chess-frame truth puts a white
+  pawn on f1 and holds two black kings (d3, g8), so the label itself looks wrong.
+  Originals are in `data/uploads/.pre-chess-frame/`.
+- **Eval stills:** all 21 (`ground_truth.json` 10, `heldout-20260831` 11) read best
+  unturned (margin ≥ 30) and are now marked `frame: "chess"`; originals in
+  `.pre-chess-frame/` beside each.
+- **ChessQ on all chess-frame labels** (`eval data/eval data/uploads --no-prior`):
+  47 boards, 47/47 read in the truth's frame, 41/47 perfect, 3002/3008 squares.
+- **The three non-gate takes** (replay `cq-v6`, burst-end, settle 2.5 s / 2 reads, no
+  restamp — as the gate treats its 08-27 takes). Every scored raw read agrees with
+  its truth unturned, so these truths are chess-frame:
+
+| take | raw reads unturned | raw per-sq | raw perfect | prior perfect | settled perfect |
+|---|---|---|---|---|---|
+| 20260827-163352 | 11/11 | 1.000 | 11/11 | 11/11 | 5/11 |
+| 20260827-170333 | 28/28 | .9816 | 18/28 | 18/28 | 13/28 |
+| 20260827-172736 | 50/50 | .9738 | 29/50 | 29/50 | 24/50 |
+
+163352 published only 12 reads: it was recorded with the broken motion meter, and
+burst-end on its unrestamped `stability` schedules few reads. The settle lag above
+shows here too (raw 58 vs settled 42 perfect of 89).
