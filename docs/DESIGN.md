@@ -7,7 +7,7 @@
 > legality, or game history — that is the application layer's job, downstream and
 > out of scope.
 
-**Status:** Draft v0.5 · **Date:** 2026-06-16, amended 2026-11-24 (D10: ChessQ is the core recognizer) · **Author:** Felix Peppert (with research synthesis)
+**Status:** Draft v0.5 · **Date:** 2026-06-16, amended 2026-11-24 (D10: ChessQ is the core recognizer; D11: the edge is a dumb camera) · **Author:** Felix Peppert (with research synthesis)
 
 ### Core philosophy (read this first)
 
@@ -51,9 +51,10 @@ constraints that recover accuracy.
 6. **Board detection runs on the edge** (it's cheap and the camera/board geometry
    is local). The edge sends **rectified board crops**; the central node need not
    re-localize.
-   **Amended 2026-11-24 (D10), pending the framing measurement:** the recognizer
-   finds the board itself, so the edge sends the frame or a plain ROI box, with no
-   detection and no rectification.
+   **Amended 2026-11-24 (D10, D11):** the recognizer finds the board itself, so the
+   edge does no detection and no rectification. It sends a plain rectangle crop that
+   the control UI chose (D11), because the framing measurement showed the board must
+   fill at least half of the image width.
 7. **Recognition model:** **DINOv2 embeddings** + a lightweight classifier head;
    default works with no per-board training, optionally refined by calibration.
    **Superseded 2026-11-24 (D10):** ChessQ Lite V6, an end-to-end whole-frame
@@ -233,9 +234,11 @@ This replaces the old "only send one settled frame" gate — we no longer hide
 transitions, but we still avoid streaming full 30 fps continuously, preserving
 the many-boards-per-Jetson goal. Each frame is stamped with capture time + seq.
 
-**Amended 2026-11-24 (D10), pending the framing measurement (plan step 13):** the
-adaptive forwarding stays; the detection and rectification go. The edge sends the
-whole frame or a plain ROI box, and which of the two is decided by measurement.
+**Amended 2026-11-24 (D10, D11):** the adaptive forwarding stays; the detection and
+rectification go. The framing measurement (plan step 13,
+[reports/2026-11-24-chessq-framing.md](reports/2026-11-24-chessq-framing.md)) ruled
+out the whole wide frame (a board at 35 % of the width collapses perfect boards), so
+the edge sends a plain rectangle crop, set from the control UI (D11).
 
 ### D5 — Authoritative timestamp at capture, sync via chrony/NTP
 Read the sensor capture timestamp on the edge and convert to wall-clock via a
@@ -332,8 +335,43 @@ note pointing here.
 | #15, §4.4.1, §5 `orientation`, §9 | chess frame, resolved per frame by the recognizer | Phase A (now) |
 | D8, §4.4 | hands: burst-end scheduling + debounce, not confidence | Phase A (now) |
 | WP-B, §4.2, §4.3 | recognition = one whole-frame read, no square crops | Phase A–B (steps 2, 8–10) |
-| #6, D4, §4.2, §4.5 `corners` and `/detect`, WP-A | edge sends the frame or an ROI box; no detection, no rectification | Python side done 2026-11-24 (`--roi`; `/detect`, rectifier, `core.boarddetect` removed); /camera in Phase C |
+| #6, D4, §4.2, §4.5 `corners` and `/detect`, WP-A | edge sends the frame or an ROI box; no detection, no rectification | Phase C, done 2026-11-24 (D11: `/camera` is a dumb camera configured from `/control`; the Python edge takes `--roi`; `/detect`, the rectifier and `core.boarddetect` removed) |
 | §5 `settled` window | settle values retuned for a reader whose raw stream is right | Phase D (plan steps 16–18) |
+
+
+### D11 — The edge is a dumb camera; the control UI owns its configuration (2026-11-24)
+
+**Status:** accepted (user, 2026-11-24). Plan:
+[plans/2026-11-24-simplify-around-chessq.md](plans/2026-11-24-simplify-around-chessq.md),
+"Phase C becomes dumb camera". (Not the plan's own decision D11, which is the licence.)
+
+**Context.** With ChessQ finding the board itself (D10), the edge's corner tracker,
+labelled corners and re-detection have nothing left to feed. What still matters is the
+framing: the board must fill at least half of the sent image's width, and an upright
+(portrait) frame costs about a quarter of perfect boards
+([reports/2026-11-24-chessq-framing.md](reports/2026-11-24-chessq-framing.md)). A phone
+held over a board is the worst place to set that up.
+
+**Decision.**
+- **The phone only films and streams.** `/camera` is a viewfinder with a status line
+  and no controls.
+- **Everything is configured from the control UI on the laptop** (`/control` on the
+  viewer): the crop rectangle drawn on the phone's full-frame preview, the lens, the
+  capture resolution, and streaming on/off.
+- **The config is pushed to the edge and applied there.** The inference node holds it
+  per board, in memory, and the phone pulls it on its report poll
+  (`POST /boards/{id}/camera/report`, every 500 ms; the reply is the config; the
+  contract is `board_reader_core.control`). The phone still crops to the rectangle and
+  runs motion and sharpness on the crop, so the L1→L2 wire (§4.5) and the
+  edge/inference split are unchanged: frames arrive already cropped, as before.
+- **Portrait is reported, not blocked.** The phone streams in either orientation, and
+  the control UI warns.
+- **The Python edge** takes a static `--roi x,y,w,h` (the same `CropRect`); wiring it to
+  the control channel is later work.
+
+**Rejected.** Cropping on the node from whole frames: it changes the wire contract and
+takes motion measurement off the crop. An operator rectangle on the phone itself: the
+phone is the wrong place for setup.
 
 ---
 
@@ -384,7 +422,8 @@ note pointing here.
 > **Amended 2026-11-24 (D10).** L2 is now `FrameIngest` → `recognizer.read(image)`
 > → `PositionEvent` → `prior` (advisory) → `BoardStabilizer` → hub. The `estimator`
 > below is the recognizer; there are no calibration centroids. The edge
-> `localizer` goes once the framing measurement is in (Phase C).
+> `localizer` is gone (Phase C): the edge crops to the rectangle the control UI set
+> (D11) and measures motion on that crop.
 
 **L2 Central vision** (the "Jetson"; Docker container) — **stateless per board**
 except for cached model + optional calibration centroids:
@@ -433,8 +472,8 @@ only a **viewer** that renders the latest placement directly.
 > recognizer resolves the board and its orientation on every frame, and the
 > reported frame is always the chess frame. The bump/reposition split below,
 > the tracker and the re-detection fallback serve the corner-labelled pipeline;
-> they go with it once the framing measurement settles plan decision D1
-> (Phase C). Until then they still run on `/camera`.
+> they went with it in Phase C (D11). A moved camera now needs only its
+> rectangle redrawn on `/control`; nothing on the edge tries to follow the board.
 
 "The camera moved" is really **two different events** with different handling. The
 distinction matters because the CV layer fixes its board orientation at setup
@@ -575,11 +614,9 @@ A clean gap is recoverable; a confident lie corrupts the consumer's state.
   Lichess analysis/editor links are assembled client-side from the placement).
   `POST /detect` proposes the surface corners automatically (geometry only —
   orientation stays an operator decision, per decision #15).
-- **Detection code placement.** Board detection conceptually runs on the edge
-  (D4); the algorithm lives in `board_reader_core.boarddetect` so the browser-edge
-  snapshot path (which cannot run OpenCV cheaply) can delegate it to the
-  inference node's `/detect`, while the real Pi edge imports the same module
-  locally. Core still imports neither node.
+- **Detection code placement.** *Historical (removed in Phase C, D11):* the
+  algorithm lived in `board_reader_core.boarddetect` so the browser edge could
+  delegate it to `/detect`.
 - **Per-board inbox queue** — bounded; frames latest-wins at rest, burst-grouped
   during motion; control messages prioritized. The backpressure valve.
 - **Pre-filter** — cheap server-side hygiene only (dedup, sharpness floor, reject
@@ -599,7 +636,9 @@ sent, ignored by the recognizer. `/detect` goes with the edge detection, pending
 framing measurement (Phase C). **Done 2026-11-24** (dumb camera): `/detect`, the
 edge rectifier and `board_reader_core.boarddetect` are removed; the edge sends the
 frame or a static `--roi` crop. The detector survives only as an offline QC tool,
-`tools/video/boarddetect.py`, for `check_angle.py`.
+`tools/video/boarddetect.py`, for `check_angle.py`. New in Phase C: the camera
+control channel, `GET`/`PUT /boards/{id}/camera`, `POST /boards/{id}/camera/report`
+and `POST`/`GET /boards/{id}/camera/preview` (D11).
 
 ### 4.6 Recognition model (DINOv2, calibration optional)
 
@@ -966,7 +1005,7 @@ Jetson.
 ## 8. Work packages
 
 > **Amended 2026-11-24 (D10).** WP-A shrinks to capture framing (whole frame or ROI
-> box, pending the framing measurement). WP-B is replaced by the `Recognizer` seam
+> box set from the control UI, D11). WP-B is replaced by the `Recognizer` seam
 > (B3/B4's confidence and eval work stays). WP-E is removed.
 
 **WP-A · Edge: board detection & rectification**
