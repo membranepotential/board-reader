@@ -18,6 +18,8 @@ import os
 import sys
 
 DEFAULT_RECORD_DIR = "recordings"
+#: Beside the other machine-local state under ``data/`` (git-ignored).
+DEFAULT_CAMERA_CONFIG = "data/camera-config.json"
 
 
 def cmd_serve(args: argparse.Namespace) -> int:
@@ -34,6 +36,13 @@ def cmd_serve(args: argparse.Namespace) -> int:
     # server always records, a test app never writes unless it asks to.
     if args.record_dir:
         os.environ["BR_RECORD_DIR"] = args.record_dir
+
+    # Every served run keeps each board's camera config (crop, lens, resolution,
+    # streaming) on disk, so a node restarted mid-game resumes the stream instead
+    # of pushing the default (streaming off). Here rather than in `create_app` for
+    # the same reason as BR_RECORD_DIR: a test app never writes unless it asks.
+    # `BR_CAMERA_CONFIG=` (empty) keeps the configs in memory only.
+    os.environ.setdefault("BR_CAMERA_CONFIG", DEFAULT_CAMERA_CONFIG)
 
     # Every served run schedules its reads (D3/D4): the node estimates at the end
     # of each move plus a 2 s keepalive floor, rather than every frame that

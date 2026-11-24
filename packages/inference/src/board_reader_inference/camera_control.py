@@ -4,8 +4,13 @@ The node holds, per ``board_id``, what the control UI chose for that board's cam
 (:class:`~board_reader_core.control.CameraConfig`), the last thing the camera said
 about itself (:class:`~board_reader_core.control.CameraReport`) and the latest
 full-frame preview, so the control UI can show the camera's whole field of view
-while the stream itself carries only the crop. Everything is in memory: a restart
-forgets the config, and the control UI sets it again.
+while the stream itself carries only the crop.
+
+The configs can outlive a restart: with ``BR_CAMERA_CONFIG=<path>`` set (``serve``
+sets it), every change is written to that JSON file and read back at startup, so a
+node restarted mid-game pushes the same crop, lens, resolution and streaming switch
+to the phone when it reconnects. Unset, everything is in memory. Reports and previews
+are always in memory: the phone sends them again.
 
 The registry is the single source of truth, and it **pushes**: every change is
 posted at once to every socket that cares, over two WebSockets per board (the
@@ -29,10 +34,13 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 import logging
+import os
 import time
-from collections.abc import Callable, Coroutine
+from collections.abc import Callable, Coroutine, Mapping
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, ClassVar, Protocol
 
 from fastapi import APIRouter, WebSocket
@@ -62,6 +70,9 @@ MAX_PREVIEW_BYTES = 1_000_000
 
 #: How often a control page hears the health tick (and the latest received frame).
 HEALTH_EVERY_S = 1.0
+
+#: Where each board's config is kept across restarts; unset or empty, nowhere.
+CAMERA_CONFIG_ENV = "BR_CAMERA_CONFIG"
 
 
 class _Message(Protocol):
@@ -97,6 +108,56 @@ class Mailbox[M: _Message]:
         return self.take_nowait()
 
 
+# ---- the configs on disk --------------------------------------------------------------
+
+
+def load_configs(path: Path) -> dict[str, CameraConfig]:
+    """Each board's config as ``save_configs`` wrote it; ``{}`` if there is none.
+
+    A file that does not parse in full is ignored with a WARNING, never half
+    applied: the node then starts with the defaults (streaming off), the same as a
+    node that never had a file.
+    """
+    try:
+        text = path.read_text()
+    except FileNotFoundError:
+        return {}
+    except OSError as e:
+        log.warning("ignoring the camera config %s: %s", path, e)
+        return {}
+    try:
+        raw = json.loads(text)
+        if not isinstance(raw, dict) or set(raw) != {"boards"} or not isinstance(raw["boards"], dict):
+            raise ValueError('expected {"boards": {<board id>: <config>}}')
+        return {
+            str(board_id): CameraConfig.from_dict(config)
+            for board_id, config in raw["boards"].items()
+        }
+    except ValueError as e:
+        log.warning("ignoring the corrupt camera config %s: %s", path, e)
+        return {}
+
+
+def save_configs(path: Path, configs: Mapping[str, CameraConfig]) -> None:
+    """Write every board's config to ``path`` at once: a temporary file, then a rename.
+
+    A crash mid-write leaves the old file whole, never a truncated one.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    body = {"boards": {board_id: config.to_dict() for board_id, config in configs.items()}}
+    tmp = path.with_name(f".{path.name}.tmp")
+    tmp.write_text(json.dumps(body, indent=2) + "\n")
+    os.replace(tmp, path)
+
+
+def _config_path() -> Path | None:
+    raw = os.environ.get(CAMERA_CONFIG_ENV)
+    return Path(raw) if raw else None
+
+
+# ---- the registry --------------------------------------------------------------------------
+
+
 @dataclass(slots=True)
 class BoardCamera:
     config: CameraConfig = field(default_factory=CameraConfig)
@@ -116,10 +177,17 @@ class CameraRegistry:
 
     A board exists from the first time anyone asks. Methods are synchronous and run
     on the event loop; they only post to mailboxes, and each socket's own task sends.
+
+    With ``BR_CAMERA_CONFIG`` set, the configs are read from that file here and
+    written back on every change (see the module docstring).
     """
 
     def __init__(self) -> None:
-        self._boards: dict[str, BoardCamera] = {}
+        self._path = _config_path()
+        saved = {} if self._path is None else load_configs(self._path)
+        self._boards: dict[str, BoardCamera] = {
+            board_id: BoardCamera(config=config) for board_id, config in saved.items()
+        }
 
     def board(self, board_id: str) -> BoardCamera:
         return self._boards.setdefault(board_id, BoardCamera())
@@ -179,9 +247,26 @@ class CameraRegistry:
 
     def configure(self, board_id: str, config: CameraConfig) -> None:
         board = self.board(board_id)
+        changed = config != board.config
         board.config = config
+        if changed:
+            self._save()
         self._tell_phones(board, ConfigMessage(config))
         self._tell_watchers(board, board.state())
+
+    def _save(self) -> None:
+        if self._path is None:
+            return
+        configured = {
+            board_id: board.config
+            for board_id, board in self._boards.items()
+            if board.config != CameraConfig()
+        }
+        try:
+            save_configs(self._path, configured)
+        except OSError as e:
+            # The config still applies; only the next restart forgets it.
+            log.warning("cannot save the camera config to %s: %s", self._path, e)
 
 
 # ---- what the node says about itself on the health tick ----------------------------

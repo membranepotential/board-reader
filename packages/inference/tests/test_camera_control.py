@@ -9,8 +9,11 @@ from __future__ import annotations
 
 import base64
 import json
+import logging
+import os
 
 import numpy as np
+import pytest
 from starlette.testclient import TestClient, WebSocketTestSession
 
 from board_reader_core.control import (
@@ -27,6 +30,7 @@ from board_reader_core.sim import render_board
 from board_reader_core.wire import Frame, encode_jpeg
 
 from board_reader_inference.camera_control import (
+    CAMERA_CONFIG_ENV,
     CameraRegistry,
     StreamSample,
     frame_rate,
@@ -132,6 +136,71 @@ def test_the_frame_rate_is_measured_between_two_ticks():
     assert frame_rate(StreamSample(10, 100.0), StreamSample(2, 101.0)) is None
 
 
+# ---- the configs survive a restart ----------------------------------------------------
+
+
+@pytest.fixture
+def config_file(tmp_path, monkeypatch):
+    path = tmp_path / "state" / "camera-config.json"
+    monkeypatch.setenv(CAMERA_CONFIG_ENV, str(path))
+    return path
+
+
+def test_a_restarted_node_pushes_the_config_it_had(config_file):
+    config = CameraConfig.from_dict(CONFIG)
+    CameraRegistry().configure("phone", config)
+    assert config_file.exists()
+    assert not list(config_file.parent.glob(".*.tmp")), "the temporary file was renamed"
+
+    restarted = CameraRegistry()
+    phone = restarted.connect_phone("phone")
+    assert phone.take_nowait()[0] == ConfigMessage(config)
+    assert restarted.board("other").config == CameraConfig()
+
+
+def test_a_corrupt_config_file_is_ignored_with_a_warning(config_file, caplog):
+    config_file.parent.mkdir(parents=True)
+    bad = {"boards": {"phone": {**CONFIG, "resolution": "8k"}}}
+    for text in ("{not json", json.dumps(bad), json.dumps({"phone": CONFIG})):
+        config_file.write_text(text)
+        with caplog.at_level(logging.WARNING):
+            registry = CameraRegistry()
+        assert registry.board("phone").config == CameraConfig()
+        assert "corrupt camera config" in caplog.text
+        caplog.clear()
+
+    # The next change replaces the corrupt file with a whole one.
+    registry.configure("phone", CameraConfig(streaming=True))
+    assert CameraRegistry().board("phone").config == CameraConfig(streaming=True)
+
+
+def test_without_the_env_var_nothing_is_written(tmp_path, monkeypatch):
+    monkeypatch.delenv(CAMERA_CONFIG_ENV, raising=False)
+    monkeypatch.chdir(tmp_path)
+    CameraRegistry().configure("phone", CameraConfig.from_dict(CONFIG))
+    assert list(tmp_path.rglob("*")) == []
+    assert CameraRegistry().board("phone").config == CameraConfig()
+
+
+def test_serve_keeps_the_configs_on_disk_by_default(monkeypatch):
+    import uvicorn
+
+    from board_reader_inference import cli
+
+    # A private environment: monkeypatch cannot restore a key the code under test sets.
+    env = dict(os.environ)
+    env.pop(CAMERA_CONFIG_ENV, None)
+    monkeypatch.setattr(os, "environ", env)
+    monkeypatch.setattr(uvicorn, "run", lambda *a, **k: None)
+
+    cli.cmd_serve(cli.build_parser().parse_args(["serve", "--no-record"]))
+    assert env[CAMERA_CONFIG_ENV] == cli.DEFAULT_CAMERA_CONFIG
+
+    env[CAMERA_CONFIG_ENV] = ""
+    cli.cmd_serve(cli.build_parser().parse_args(["serve", "--no-record"]))
+    assert env[CAMERA_CONFIG_ENV] == "", "an operator's choice (memory only) outranks it"
+
+
 # ---- the sockets ---------------------------------------------------------------------
 
 
@@ -226,3 +295,4 @@ def test_the_health_tick_and_the_last_streamed_frame_reach_the_control_page():
             frame = _until(control, "frame")
             assert (frame["seq"], frame["width"], frame["height"]) == (7, 400, 300)
             assert base64.b64decode(frame["jpeg"]) == jpeg
+
