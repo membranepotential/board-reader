@@ -152,11 +152,11 @@ replay invariant above.
 | D4 | Prior repair | Keep (cheap safety net; the stabilizer needs `tally`/`violation`) |
 | D5 | Calibration | Remove; any adaptation is an offline LoRA → new ONNX |
 | D6 | Old model assets | Archive to the HDD, outside the repo |
-| D7 | Training + RunPod tooling | User decision |
+| D7 | Training + RunPod tooling | **User 2026-11-24: delete both** (`tools/train`, `tools/runpod`, the runpod skill) |
 | D8 | Protocol `orientation`, statuses | Keep, documented as reserved |
 | D9 | Env naming | Keep `BR_CHESSQ` |
 | D10 | Model `direction` output | Ignore for now |
-| D11 | PolyForm NC licence as the core | User decision |
+| D11 | PolyForm NC licence as the core | **User 2026-11-24: accepted** |
 | D12 | Settle gate metric | Settled perfect + latency + a hand-leak constraint |
 
 ## Risks
