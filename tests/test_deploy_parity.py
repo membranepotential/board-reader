@@ -55,7 +55,7 @@ _LEGACY_KEYS = frozenset(
 # justification rather than a name.
 _ENVIRONMENT_SPECIFIC: dict[str, str] = {
     "BR_SAVE_UPLOADS": (
-        "make dev only. Calibrate frames are saved into the working tree to grow "
+        "make dev only. Snapshot photos are saved into the working tree to grow "
         "the eval corpus; a container should not write into the repo."
     ),
     "BR_ALLOW_ORIGINS": (

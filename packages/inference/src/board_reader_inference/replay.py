@@ -667,9 +667,8 @@ def _default_board(recording: Recording) -> str:
 def _index_line(entry: FrameEntry) -> str:
     """One ``frames.ndjson`` line for the thin copy beside the replay.
 
-    ``eval-session`` reads the index for its timing block and (with
-    ``--export-crops``) for the JPEG paths, so a replay needs one — but only for
-    the frames it replayed, and never a copy of the pixels: the paths stay
+    ``eval-session`` reads the index for its timing block, so a replay needs one —
+    but only for the frames it replayed, and never a copy of the pixels: the paths stay
     relative and resolve through the ``jpeg`` symlink into the source. The
     recorded ``bytes`` field is the one thing not carried over (the reader parses
     it away); the bytes themselves are one symlink hop away.

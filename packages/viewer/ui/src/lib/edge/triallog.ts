@@ -5,7 +5,7 @@
  * logs what *arrived*, but "the camera froze", "the socket never connected" and
  * "every frame was refused" all look identical from there — silence. This logger
  * notes the page's own lifecycle (socket status, camera track events, stall
- * recovery, calibrate/detect outcomes), batches the notes, and posts them to the
+ * recovery, detect outcomes), batches the notes, and posts them to the
  * viewer's `/api/client-log` sink, which appends them beside the server's own
  * records. Same-origin and relative like every other request the page makes.
  *

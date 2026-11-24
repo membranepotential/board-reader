@@ -308,10 +308,8 @@ export function lichessUrls(placement: string, stm: SideToMove): {
  *
  * The correction panel is the only place a human ever states what a board REALLY holds,
  * and until this existed that answer died with the page. Keeping it is what makes an
- * uncontaminated eval set possible at all: every other labelled board we own was fed
- * into the calibration bank, which is why the bank scores 64/64 on exactly the boards it
- * was built from and 43/64 on the one it never saw. Confirmed labels are scoring data
- * only — the node never fits on them.
+ * uncontaminated eval set possible at all. Confirmed labels are scoring data only — the
+ * node never fits on them.
  *
  *  - `no-retention` — the node kept no photo (`BR_SAVE_UPLOADS` unset), so a labelling
  *    would have no image to belong to. Shown and explained, never hidden: an absent

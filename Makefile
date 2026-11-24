@@ -146,7 +146,7 @@ dev-cpu: dev
 # Deliberately *not* in pyproject's addopts — worker startup makes a single
 # focused `uv run pytest path::test` slower, and interleaves its output.
 #
-# `-m "not gpu"` deselects the two tests that build a real ONNX InferenceSession.
+# `-m "not gpu"` deselects the tests that build a real ONNX InferenceSession.
 # They pass on an idle machine and fail on a busy one — a training run or a
 # second agent session exhausts the GPU arena, session creation dies, and the
 # memory pressure has been seen taking unrelated OpenCV allocations down with

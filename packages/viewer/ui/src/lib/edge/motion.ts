@@ -85,7 +85,7 @@ export const MOTION_DEFAULTS: MotionMeterOptions = {
  * against, and an unknown board reports at rest — which matches D3's "stability is
  * a hint, never a gate". It also means a bare stability gate passes on frame one,
  * before autoexposure and autofocus have settled: anything that wants an
- * exemplar-grade frame (automatic detection, calibration) must add its own settle
+ * clean frame (automatic detection) must add its own settle
  * delay rather than trusting this number alone.
  */
 export class MotionMeter {

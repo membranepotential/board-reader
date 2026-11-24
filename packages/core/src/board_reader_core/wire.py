@@ -22,7 +22,7 @@ import cv2
 import numpy as np
 
 FRAME = "frame"  # header "type" discriminator on the ingress socket
-CONTROL = "control"  # reserved for hello/set_corners/calibrate (later milestones)
+CONTROL = "control"  # reserved for hello/control messages (later milestones)
 
 
 def encode_jpeg(image: np.ndarray, quality: int = 90) -> bytes:

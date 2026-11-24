@@ -323,7 +323,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--name",
         help=f"name the replay directory (<recording>/{REPLAYS_DIR}/<name>, one "
         "path component); default: the git description plus a digest of the "
-        "BR_MODEL* environment, so the same code and models replay into the same "
+        "BR_CHESSQ environment, so the same code and models replay into the same "
         "place — offered only on a CLEAN tree, since two sets of uncommitted "
         "changes would replay into one directory and overwrite each other",
     )
