@@ -32,6 +32,7 @@
   import { WHOLE_FRAME } from '$lib/control/crop';
   import { FRAMING_COPY, framingWarnings } from '$lib/control/framing';
   import { formatAge } from '$lib/control/status';
+  import { CAMERA_MOVED_COPY, whiteSideCopy } from '$lib/control/direction';
   import CropEditor from '$lib/components/control/CropEditor.svelte';
 
   /** `null` until mounted: the board comes from `?board=`, which prerendering cannot read. */
@@ -135,6 +136,7 @@
   const connected = $derived(camera?.phone_connected ?? false);
   const portrait = $derived(frame !== null && frame.height > frame.width);
   const locked = $derived(config === null || !up);
+  const direction = $derived(health?.direction ?? null);
 </script>
 
 <svelte:document onvisibilitychange={onVisibilityChange} />
@@ -197,6 +199,9 @@
       {#each warnings as warning (warning.kind)}
         <p class="warn" data-warning={warning.kind}>{FRAMING_COPY[warning.kind]}</p>
       {/each}
+      {#if direction?.camera_moved}
+        <p class="moved" role="alert" data-warning="camera-moved">{CAMERA_MOVED_COPY}</p>
+      {/if}
     </figure>
 
     <figure>
@@ -268,6 +273,15 @@
       </dd>
       <dt>phone stream</dt>
       <dd>{report?.ingest ?? '—'}</dd>
+      <dt>board direction</dt>
+      <dd class="direction" class:bad={direction?.camera_moved}>
+        {#if direction === null}
+          —
+        {:else}
+          {whiteSideCopy(direction.white_side)}
+          <span class="degrees">({Math.round(direction.degrees)}°)</span>
+        {/if}
+      </dd>
       <dt>frames/s received</dt>
       <dd>{health?.fps == null ? '—' : health.fps.toFixed(1)}</dd>
       <dt>last frame</dt>
@@ -428,6 +442,16 @@
     font-size: 13px;
     margin: 6px 0;
   }
+  .moved {
+    margin: 10px 0;
+    padding: 8px 10px;
+    border: 1px solid #5a2a2a;
+    border-radius: 6px;
+    background: #3a2020;
+    color: #ff9a9a;
+    font-size: 13px;
+    font-weight: 600;
+  }
 
   .panel {
     flex: 0 1 300px;
@@ -472,7 +496,8 @@
   dd.bad {
     color: #ff8f8f;
   }
-  .fallback {
+  .fallback,
+  .degrees {
     color: #9aa3ad;
   }
 </style>

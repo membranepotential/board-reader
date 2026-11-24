@@ -9,8 +9,13 @@ while the stream itself carries only the crop.
 The configs can outlive a restart: with ``BR_CAMERA_CONFIG=<path>`` set (``serve``
 sets it), every change is written to that JSON file and read back at startup, so a
 node restarted mid-game pushes the same crop, lens, resolution and streaming switch
-to the phone when it reconnects. Unset, everything is in memory. Reports and previews
-are always in memory: the phone sends them again.
+to the phone when it reconnects. Unset, everything is in memory. Reports, previews
+and the board direction are always in memory: the phone and the recognizer send
+them again.
+
+The registry also follows each board's **direction** in the image, from the
+recognizer's reads (:meth:`CameraRegistry.observe_direction`): which side White sits
+on, and whether the camera moved since the angle settled.
 
 The registry is the single source of truth, and it **pushes**: every change is
 posted at once to every socket that cares, over two WebSockets per board (the
@@ -36,8 +41,11 @@ import asyncio
 import contextlib
 import json
 import logging
+import math
 import os
+import statistics
 import time
+from collections import deque
 from collections.abc import Callable, Coroutine, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -47,6 +55,7 @@ from fastapi import APIRouter, WebSocket
 from starlette.websockets import WebSocketDisconnect
 
 from board_reader_core.control import (
+    BoardDirection,
     CameraConfig,
     CameraReport,
     ConfigMessage,
@@ -58,6 +67,7 @@ from board_reader_core.control import (
     PreviewsMessage,
     RefusedMessage,
     StateMessage,
+    WhiteSide,
     parse_control_message,
     parse_phone_message,
 )
@@ -155,6 +165,79 @@ def _config_path() -> Path | None:
     return Path(raw) if raw else None
 
 
+# ---- which way the board lies ------------------------------------------------------------
+
+#: The running angle is the median of this many latest reads, so one or two odd
+#: reads (a hand over the board) do not move it.
+DIRECTION_READS = 5
+#: The angle settles once that many reads span at least this many seconds of
+#: capture time, so a burst of reads of one scene cannot settle it alone.
+DIRECTION_SETTLE_S = 2.0
+#: A running angle this far from the settled one means the camera moved. ChessQ
+#: reads a fixed camera within about 2 degrees.
+CAMERA_MOVED_DEGREES = 15.0
+
+#: The angle at which White sits on each side (DESIGN D11; :class:`BoardDirection`).
+_SIDES: dict[WhiteSide, float] = {"bottom": 0.0, "left": 90.0, "top": 180.0, "right": -90.0}
+
+
+def _wrap(degrees: float) -> float:
+    """``degrees`` folded into (-180, 180]."""
+    folded = math.remainder(degrees, 360.0)
+    return 180.0 if folded == -180.0 else folded
+
+
+def white_side(degrees: float) -> WhiteSide:
+    """The side White sits on for a board direction: the nearest of the four."""
+    return min(_SIDES, key=lambda side: abs(_wrap(degrees - _SIDES[side])))
+
+
+@dataclass(frozen=True, slots=True)
+class _Read:
+    degrees: float
+    ts: float
+
+
+@dataclass(slots=True)
+class DirectionTrack:
+    """One board's direction: the latest reads and the angle they settled on."""
+
+    reads: deque[_Read] = field(default_factory=lambda: deque(maxlen=DIRECTION_READS))
+    settled: float | None = None
+
+    def observe(self, degrees: float, ts: float) -> None:
+        self.reads.append(_Read(_wrap(degrees), ts))
+        if self.settled is None and len(self.reads) == DIRECTION_READS:
+            stamps = [read.ts for read in self.reads]
+            if max(stamps) - min(stamps) >= DIRECTION_SETTLE_S:
+                self.settled = self.running()
+
+    def running(self) -> float | None:
+        """The median of the latest reads, taken around the newest so it never wraps."""
+        if not self.reads:
+            return None
+        newest = self.reads[-1].degrees
+        offset = statistics.median(_wrap(read.degrees - newest) for read in self.reads)
+        return _wrap(newest + offset)
+
+    def view(self) -> BoardDirection | None:
+        running = self.running()
+        if running is None:
+            return None
+        moved = (
+            self.settled is not None
+            and abs(_wrap(running - self.settled)) > CAMERA_MOVED_DEGREES
+        )
+        return BoardDirection(
+            degrees=round(running, 1), white_side=white_side(running), camera_moved=moved
+        )
+
+
+def _reframed(old: CameraConfig, new: CameraConfig) -> bool:
+    """Whether ``new`` changes what the camera films (not just whether it streams)."""
+    return (old.crop, old.device, old.resolution) != (new.crop, new.device, new.resolution)
+
+
 # ---- the registry --------------------------------------------------------------------------
 
 
@@ -163,6 +246,7 @@ class BoardCamera:
     config: CameraConfig = field(default_factory=CameraConfig)
     report: CameraReport | None = None
     preview: PreviewMessage | None = None
+    direction: DirectionTrack = field(default_factory=DirectionTrack)
     phones: set[Mailbox[PhoneDown]] = field(default_factory=set)
     watchers: set[Mailbox[ControlDown]] = field(default_factory=set)
 
@@ -247,6 +331,8 @@ class CameraRegistry:
 
     def configure(self, board_id: str, config: CameraConfig) -> None:
         board = self.board(board_id)
+        if _reframed(board.config, config):
+            board.direction = DirectionTrack()
         changed = config != board.config
         board.config = config
         if changed:
@@ -267,6 +353,20 @@ class CameraRegistry:
         except OSError as e:
             # The config still applies; only the next restart forgets it.
             log.warning("cannot save the camera config to %s: %s", self._path, e)
+
+    # ---- the recognizer --------------------------------------------------------------
+
+    def observe_direction(self, board_id: str, degrees: float, ts: float) -> None:
+        """One live read's board direction (see :class:`BoardDirection` for the angle).
+
+        ``ts`` is the frame's capture time (seconds); it only decides when the angle
+        has been read long enough to settle. Control pages hear the result on their
+        next health tick.
+        """
+        self.board(board_id).direction.observe(degrees, ts)
+
+    def direction(self, board_id: str) -> BoardDirection | None:
+        return self.board(board_id).direction.view()
 
 
 # ---- what the node says about itself on the health tick ----------------------------
@@ -446,6 +546,7 @@ def router(
                         refused=node.refused,
                         frame_age_s=None if frame is None else max(0.0, now - frame.received_at),
                         fps=frame_rate(sample, current),
+                        direction=registry.direction(board_id),
                     )
                 )
                 sample = current

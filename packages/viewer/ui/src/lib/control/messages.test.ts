@@ -55,12 +55,32 @@ describe('the control socket, down', () => {
   });
 
   it('reads the health tick, with nothing yet streamed', () => {
-    const health = { recognizer: 'chessq', fallback: null, received: 0, refused: 0, frame_age_s: null, fps: null };
+    const health = {
+      recognizer: 'chessq',
+      fallback: null,
+      received: 0,
+      refused: 0,
+      frame_age_s: null,
+      fps: null,
+      direction: null
+    };
     expect(parseControlDown(text({ type: 'health', ...health }))).toEqual({
       ok: true,
       value: { type: 'health', health }
     });
     expect(parseControlDown(text({ type: 'health', ...health, fps: 'fast' })).ok).toBe(false);
+  });
+
+  it('reads which way the board lies, and refuses a side it does not know', () => {
+    const health = { recognizer: 'chessq', fallback: null, received: 9, refused: 0, frame_age_s: 0.4, fps: 3 };
+    const direction = { degrees: 89.5, white_side: 'left', camera_moved: true };
+    expect(parseControlDown(text({ type: 'health', ...health, direction }))).toEqual({
+      ok: true,
+      value: { type: 'health', health: { ...health, direction } }
+    });
+    const sideways = { ...direction, white_side: 'east' };
+    expect(parseControlDown(text({ type: 'health', ...health, direction: sideways })).ok).toBe(false);
+    expect(parseControlDown(text({ type: 'health', ...health })).ok).toBe(false); // direction is required
   });
 });
 

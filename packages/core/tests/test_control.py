@@ -8,6 +8,7 @@ import json
 import pytest
 
 from board_reader_core.control import (
+    BoardDirection,
     CameraConfig,
     CameraReport,
     ConfigMessage,
@@ -158,9 +159,12 @@ def test_every_message_down_names_its_type():
     state = json.loads(StateMessage(config, None, phone_connected=False).to_json())
     assert state == {"type": "state", "config": config.to_dict(), "report": None,
                      "phone_connected": False}
-    health = json.loads(HealthMessage("chessq", None, 3, 0, None, None).to_json())
+    health = json.loads(HealthMessage("chessq", None, 3, 0, None, None, None).to_json())
     assert health["type"] == "health"
-    assert (health["frame_age_s"], health["fps"]) == (None, None)
+    assert (health["frame_age_s"], health["fps"], health["direction"]) == (None, None, None)
+    turned = BoardDirection(degrees=89.0, white_side="left", camera_moved=False)
+    health = json.loads(HealthMessage("chessq", None, 3, 0, 0.5, 4.0, turned).to_json())
+    assert health["direction"] == {"degrees": 89.0, "white_side": "left", "camera_moved": False}
 
 
 def test_a_preview_carries_its_jpeg_as_base64():

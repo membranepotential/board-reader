@@ -36,6 +36,14 @@ interface FrameSize {
   height: number;
 }
 
+interface Direction {
+  degrees: number;
+  white_side: 'bottom' | 'left' | 'top' | 'right';
+  camera_moved: boolean;
+}
+
+const SETTLED: Direction = { degrees: 89, white_side: 'left', camera_moved: false };
+
 class FakeControlNode {
   config: Config = { crop: { x: 0.2, y: 0.2, w: 0.5, h: 0.6 }, device: null, resolution: '1080p', streaming: false };
   readonly configures: Config[] = [];
@@ -59,7 +67,11 @@ class FakeControlNode {
     });
   }
 
-  static async install(page: Page, frame: FrameSize = { width: 1920, height: 1080 }): Promise<FakeControlNode> {
+  static async install(
+    page: Page,
+    frame: FrameSize = { width: 1920, height: 1080 },
+    direction: Direction | null = SETTLED
+  ): Promise<FakeControlNode> {
     const node = new FakeControlNode(frame);
     // A PNG under a JPEG data URL still draws: browsers sniff the bytes.
     const picture = checkerboardPng(320, 180).toString('base64');
@@ -82,7 +94,8 @@ class FakeControlNode {
           received: 12,
           refused: 0,
           frame_age_s: 0.5,
-          fps: 4.2
+          fps: 4.2,
+          direction
         })
       );
     });
@@ -171,4 +184,16 @@ test('an upright phone is called out', async ({ page }) => {
 
   await expect(page.locator('[data-warning="portrait-phone"]')).toBeVisible();
   await expect(page.getByText('(portrait)')).toBeVisible();
+});
+
+test('the side White sits on is shown, and a moved camera is called out', async ({ page }) => {
+  await FakeControlNode.install(page);
+  await page.goto('/control');
+  await expect(page.getByText('White sits on the left')).toBeVisible();
+  await expect(page.locator('[data-warning="camera-moved"]')).toHaveCount(0);
+
+  await FakeControlNode.install(page, undefined, { degrees: 1, white_side: 'bottom', camera_moved: true });
+  await page.reload();
+  await expect(page.getByText('White sits at the bottom')).toBeVisible();
+  await expect(page.locator('[data-warning="camera-moved"]')).toContainText('The camera moved');
 });

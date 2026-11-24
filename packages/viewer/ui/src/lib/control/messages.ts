@@ -44,6 +44,22 @@ export interface ReceivedFrame extends Picture {
   readonly seq: number;
 }
 
+/** Which edge of the image White's back rank lies along. */
+export type WhiteSide = 'bottom' | 'left' | 'top' | 'right';
+
+/**
+ * Which way the board lies in the camera's image, as the recognizer reads it.
+ *
+ * `degrees` is the direction of e1->e8: 0 White at the bottom, 90 White on the left,
+ * 180 White at the top, -90 White on the right. `camera_moved` says the angle drifted
+ * well away from where it settled after the last crop, lens or resolution change.
+ */
+export interface BoardDirection {
+  readonly degrees: number;
+  readonly white_side: WhiteSide;
+  readonly camera_moved: boolean;
+}
+
 /** The node's own facts, about once a second; ages and rates on the node's clock. */
 export interface NodeHealth {
   readonly recognizer: string;
@@ -55,6 +71,8 @@ export interface NodeHealth {
   readonly frame_age_s: number | null;
   /** Frames per second since the previous tick; `null` when not measurable. */
   readonly fps: number | null;
+  /** `null` before the first read that has one. */
+  readonly direction: BoardDirection | null;
 }
 
 /** What the node sends the phone. */
@@ -75,6 +93,7 @@ export type ControlDown =
 
 const INGEST_STATES = ['idle', 'connecting', 'streaming', 'reconnecting'] as const satisfies
   readonly IngestState[];
+const WHITE_SIDES = ['bottom', 'left', 'top', 'right'] as const satisfies readonly WhiteSide[];
 
 function num(value: unknown): number | null {
   return typeof value === 'number' && Number.isFinite(value) ? value : null;
@@ -141,6 +160,17 @@ function parseState(raw: Record<string, unknown>): ParseResult<CameraState> {
   return ok({ config: config.value, report, phone_connected: phone });
 }
 
+/** A direction, `null` for none, `undefined` for one that does not parse. */
+function parseDirection(raw: unknown): BoardDirection | null | undefined {
+  if (raw === null) return null;
+  if (!isRecord(raw)) return undefined;
+  const degrees = num(raw['degrees']);
+  const side = WHITE_SIDES.find((s) => s === raw['white_side']);
+  const moved = raw['camera_moved'];
+  if (degrees === null || side === undefined || typeof moved !== 'boolean') return undefined;
+  return { degrees, white_side: side, camera_moved: moved };
+}
+
 function parseHealth(raw: Record<string, unknown>): ParseResult<NodeHealth> {
   const recognizer = raw['recognizer'];
   const fallback = raw['fallback'];
@@ -148,17 +178,19 @@ function parseHealth(raw: Record<string, unknown>): ParseResult<NodeHealth> {
   const refused = num(raw['refused']);
   const age = nullableNum(raw['frame_age_s']);
   const fps = nullableNum(raw['fps']);
+  const direction = parseDirection(raw['direction']);
   if (
     typeof recognizer !== 'string' ||
     (fallback !== null && typeof fallback !== 'string') ||
     received === null ||
     refused === null ||
     age === undefined ||
-    fps === undefined
+    fps === undefined ||
+    direction === undefined
   ) {
     return err('the health message is malformed');
   }
-  return ok({ recognizer, fallback, received, refused, frame_age_s: age, fps });
+  return ok({ recognizer, fallback, received, refused, frame_age_s: age, fps, direction });
 }
 
 function parseRefused(raw: Record<string, unknown>): ParseResult<{ type: 'refused'; reason: string }> {

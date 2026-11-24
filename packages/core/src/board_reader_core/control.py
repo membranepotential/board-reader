@@ -455,6 +455,34 @@ class FrameMessage:
         )
 
 
+#: Which edge of the image White's back rank lies along.
+WhiteSide = Literal["bottom", "left", "top", "right"]
+
+
+@dataclass(frozen=True, slots=True)
+class BoardDirection:
+    """Which way the board lies in the camera's image, as the recognizer reads it.
+
+    ``degrees`` is the direction of the board's e1->e8 axis in the image, counted
+    so that 0 means White sits at the bottom (e1->e8 points up), 90 White on the
+    left (e1->e8 points right), 180 (or -180) White at the top and -90 White on the
+    right; ``white_side`` is the nearest of those four. ``camera_moved`` says the
+    angle has drifted well away from where it settled after the last crop, lens or
+    resolution change: the camera (or the board) was moved.
+    """
+
+    degrees: float
+    white_side: WhiteSide
+    camera_moved: bool
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "degrees": self.degrees,
+            "white_side": self.white_side,
+            "camera_moved": self.camera_moved,
+        }
+
+
 @dataclass(frozen=True, slots=True)
 class HealthMessage:
     """Node -> control page, about once a second: the recognizer and the stream.
@@ -474,6 +502,8 @@ class HealthMessage:
     frame_age_s: float | None
     #: Frames per second received since the previous health message, if measurable.
     fps: float | None
+    #: How the board lies in the image; ``None`` before the first read with one.
+    direction: BoardDirection | None
 
     def to_json(self) -> str:
         return json.dumps(
@@ -485,6 +515,7 @@ class HealthMessage:
                 "refused": self.refused,
                 "frame_age_s": self.frame_age_s,
                 "fps": self.fps,
+                "direction": None if self.direction is None else self.direction.to_dict(),
             }
         )
 
