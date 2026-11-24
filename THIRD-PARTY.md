@@ -60,11 +60,6 @@ research use, not for commercial use, and not ours to redistribute.** See
 hold no weights), `data/`, `scratch/`, `recordings/` and `*.onnx` never enter the
 repository. Keep it that way.
 
-The **backbone** is the exception: DINOv2 ViT-S/14 is **Apache-2.0** (code and weights,
-[facebookresearch/dinov2](https://github.com/facebookresearch/dinov2)) and
-`tools/export_dinov2_onnx.py` converts the official Meta weights locally rather than
-pulling a third-party re-host.
-
 **ChessQ Lite V6** — **the core recognizer** since 2026-11-24 (`BR_CHESSQ`, set by
 `compose.yaml` and `make dev`; DESIGN D10) — is Lichess's board recognizer,
 distributed at [huggingface.co/joelseytre/chessq-lite](https://huggingface.co/joelseytre/chessq-lite)
@@ -82,11 +77,6 @@ whole, whatever the Apache-2.0 source allows on its own.
   contract, the licence name), and `make models` needs it on a fresh clone.
 - **Code:** the module that loads the model (`board_reader_inference.chessq`) is our
   own Apache-2.0 code and contains none of its weights.
-
-The optional `init: sin` training path
-(`tools/train/configs/loso_resnet_sin.yaml`) expects a Stylized-ImageNet ResNet-50
-checkpoint from [rgeirhos/texture-vs-shape](https://github.com/rgeirhos/texture-vs-shape).
-It is not redistributed here; fetch it yourself into the git-ignored `scratch/weights/`.
 
 ## 3. Recorded footage
 

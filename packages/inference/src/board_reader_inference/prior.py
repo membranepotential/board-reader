@@ -320,8 +320,8 @@ def _kings_flip(
     the take (settled 22/31 perfect from a 15/31 prior, against a 29/31 ceiling
     if every demotion went to d8).
 
-    Three alternatives were scored across all four gate takes (the same
-    ``tools/train/gates.sh`` replays) and every one of them is worse:
+    Three alternatives were scored across all four gate takes (replays of the
+    then-shipped stack) and every one of them is worse:
     ``margin`` (the pre-faaa4ed MAP rule, and the true maximum-likelihood
     answer under square independence) collapses 08-13 to 2/31 settled;
     ``max-margin`` and ``neg-entropy`` buy 08-13 (27/31 and 22/31) by demoting

@@ -62,9 +62,6 @@ LEARNINGS_STORE = Path(".learnings.ndjson")
 # fingerprint that will never resolve and must not be reported forever.
 KNOWN_NON_COMMITS = frozenset(
     {
-        "2a0d100e",  # torchvision checkpoint suffix, Stylized-ImageNet ResNet-50
-        "99b5c721",  # ChessReD archive checksum (tools/build_exemplar_bank_chessred.py)
-        "b2900b69a90f",  # ChessReD archive checksum, long form
         "cc530662",  # replay config_digest of the tkr-shipped baselines (replay.py)
         "ef8db2c",  # lichess-org/lila commit the ChessQ handoff cites (not ours)
         "89d75e34",  # ChessQ Lite v4 int8 SHA-256 prefix (ChessQ handoff)

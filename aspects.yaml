@@ -176,25 +176,6 @@ aspects:
       manual demo/field procedures that make each milestone observable.
     files: ["docs/TESTING.md"]
 
-  training:
-    description: >-
-      tools/train — the offline multi-style piece-classifier harness (styles,
-      crop cache, leave-style-out splits, augmentation, run observability,
-      export) and its run configs. Runs on its own torch interpreter (system
-      python, not the workspace venv); not part of any deployable package.
-    files: ["tools/train/**", "tools/build_exemplar_bank*.py", "tools/rebuild_session_bank.py", "tools/README.md"]
-    affects:
-      - aspect: inference
-        role: >-
-          Training and serving must cut identical crops. A change to the crop
-          geometry, class order, or preprocessing on the training side must be
-          carried by the model's .onnx.meta.json sidecar and honoured by
-          TrainedEstimator — a silent mismatch decapitates crops.
-      - aspect: docs
-        role: >-
-          A change to the data contract, style registry, or run recipe must be
-          reflected in the training/data note.
-
   capture-tooling:
     description: >-
       tools/video — downloads a YouTube chess broadcast, records an operator's

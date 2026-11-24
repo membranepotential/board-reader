@@ -111,22 +111,11 @@ known-local-folder = [
 
 [tool.pytest.ini_options]
 # tools/video joins the workspace suite (it needs only numpy+cv2, which core
-# already pulls in); tools/train does not — it imports torch, and the workspace
-# stays torch-free by design (CLAUDE.md). Specific files from tools/train/tests are
-# named explicitly rather than the directory: calibrate_finetune.py's frame-loading
-# and session-clustering layer (and finetune_crops.py's export-dir/label-loading
-# and empty-cap layer) are deliberately stdlib-only (torch is imported inside the
-# functions that need it), and the ≥3-session gate each enforces is a product rule
-# that must not be able to rot unnoticed between torch-venv runs. Their sibling
-# test_dataset.py does import torch and stays out.
+# already pulls in).
 testpaths = [
     "tests",
     "packages",
     "tools/video/tests",
-    "tools/train/tests/test_calibrate_finetune.py",
-    "tools/train/tests/test_cache_style_resolution.py",
-    "tools/train/tests/test_cropcache_mask.py",
-    "tools/train/tests/test_finetune_crops.py",
 ]
 # `gpu` marks the tests that build a real ONNX InferenceSession and so take the
 # CUDA execution provider. They are correctness tests, not perf tests — but they

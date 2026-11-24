@@ -219,7 +219,7 @@ Naming: `<id>_<mmss>_full.png` (raw 1920×1080 frame) and `<id>_<mmss>_board.png
 (cropped to the physical board). Pulled with `yt-dlp -f 137 --download-sections` (just
 the needed seconds, not the full multi-hour stream) + `ffmpeg -frames:v 1`. These frames
 were not retained and would need re-pulling before reuse — the corners below were picked
-by hand with `tools/corner_picker.html` (load the frame, click the 4 board corners), back
+by hand with a corner-tap page (`tools/corner_picker.html`, since removed), back
 when the naive Canny/contour detector in use at the time could not localise these
 cluttered broadcast frames.
 
@@ -245,4 +245,3 @@ broadcast angles are the norm for table-level chess coverage, not the exception.
 
 - [[operating-envelope]] — the camera-angle thresholds this audit is measured against
 - `tools/README.md` — the `tools/video/` toolset and its two-interpreter split
-- `tools/corner_picker.html` — manual corner-tap tool for validating rectification by hand

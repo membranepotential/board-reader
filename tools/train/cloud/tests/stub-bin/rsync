@@ -1,5 +1,0 @@
-#!/usr/bin/env bash
-# Stub rsync: log and succeed. rp only cares that it ran with the right endpoint.
-set -uo pipefail
-printf 'rsync %s\n' "$*" >>"${RP_STUB_LOG:?RP_STUB_LOG unset}"
-exit 0
