@@ -3,16 +3,17 @@
  * RIGHT NOW, independent of the reads.
  *
  * A position event's own `stability` is the stability of the frame that was READ,
- * and the node reads after motion ends (the burst-end schedule), so it says 'at
- * rest' on nearly every event. Motion is therefore its own small message, sent by
- * the node for every frame it receives:
+ * and the node reads after motion ends (the burst-end schedule), so it says "at
+ * rest" on nearly every event. Motion is therefore its own small message on the
+ * same stream, sent by the node per ingested frame (at most ~5/s per board, and
+ * always on a moving <-> rest transition):
  *
  *     {"type": "motion", "board_id": "phone", "moving": true, "stability": 0.42, "ts": 17955.3}
  *
- * `moving` is the edge's burst state for that frame, `stability` its meter reading
- * and `ts` its capture time (edge clock — shown, never compared with ours). The
- * message is optional: a node that does not send it leaves the readout `none`, and
- * the card shows no motion chip at all rather than a guess.
+ * `moving` is whether the node sees the board moving at that frame, `stability`
+ * the frame's meter reading and `ts` its capture time (edge clock, never compared
+ * with ours). The message is optional: a node that does not send it leaves the
+ * readout `none`, and the card shows no motion chip at all rather than a guess.
  */
 
 import { isRecord } from '../protocol';
@@ -50,8 +51,9 @@ export type MotionReadout =
 
 /**
  * The edge sends at least one frame a second at rest (its keepalive), and the node
- * one motion message per frame, so three silent seconds mean the signal is gone,
- * not that the board is still.
+ * a motion message per ingested frame (rate-capped), so three silent seconds mean
+ * the signal is gone, not that the board is still. Position events carry no `type`
+ * key; only `type: "motion"` is routed here.
  */
 export const MOTION_STALE_MS = 3000;
 
