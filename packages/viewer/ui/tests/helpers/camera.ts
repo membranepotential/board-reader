@@ -4,7 +4,7 @@
  * Chromium's `--use-fake-device-for-media-stream` gives one rolling pattern at a size
  * the spec cannot choose. The specs that measure the crop, the preview or portrait
  * framing swap `getUserMedia` for a canvas `captureStream` instead: a board drawn at
- * a known place, in a frame of a known size.
+ * a known place, in a frame of a known size. `crossHand` sends a hand across it.
  */
 
 import { expect, type Page } from '@playwright/test';
@@ -36,6 +36,14 @@ export async function drawnBoardCamera(
       const bx = (frame.width - side) / 2;
       const by = (frame.height - side) / 2;
       let tick = 0;
+      /** When the hand set off (`crossHand`); it takes HAND_MS to cross the board. */
+      let handFrom: number | null = null;
+      const HAND_MS = 1500;
+      Object.defineProperty(window, '__crossHand', {
+        value: () => {
+          handFrom = performance.now();
+        }
+      });
 
       const draw = () => {
         ctx.fillStyle = 'rgb(128,128,128)';
@@ -46,6 +54,13 @@ export async function drawnBoardCamera(
             ctx.fillStyle = (r + c) % 2 === 0 ? 'rgb(51,51,51)' : 'rgb(204,204,204)';
             ctx.fillRect(bx + c * cell, by + r * cell, cell + 1, cell + 1);
           }
+        }
+        const crossed = handFrom === null ? 1 : (performance.now() - handFrom) / HAND_MS;
+        if (crossed < 1) {
+          ctx.fillStyle = 'rgb(40,30,25)';
+          ctx.beginPath();
+          ctx.arc(bx + side * (0.1 + 0.8 * crossed), by + side * 0.55, side * 0.12, 0, 2 * Math.PI);
+          ctx.fill();
         }
         // One pixel that changes every frame: a canvas that never changes produces
         // no new frames, and a video whose `currentTime` stands still is exactly
@@ -93,6 +108,11 @@ export async function drawnBoardCamera(
     },
     { frame, lenses: LENSES }
   );
+}
+
+/** Send a hand across the drawn board, once, over 1.5 s. */
+export async function crossHand(page: Page): Promise<void> {
+  await page.evaluate(() => (window as unknown as { __crossHand: () => void }).__crossHand());
 }
 
 /**

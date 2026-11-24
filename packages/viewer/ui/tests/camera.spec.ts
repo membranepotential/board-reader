@@ -15,6 +15,7 @@ import {
   LANDSCAPE,
   PORTRAIT,
   cameraRequests,
+  crossHand,
   drawnBoardCamera,
   jpegSize,
   liveViewfinder
@@ -143,6 +144,30 @@ test.describe('a dumb camera', () => {
     const sent = node.frames.length;
     await page.waitForTimeout(1500);
     expect(node.frames.length).toBe(sent);
+  });
+});
+
+test.describe('the motion meter', () => {
+  test.use({ viewport: LANDSCAPE });
+
+  test('a hand crossing the board opens a burst; moving the crop alone does not', async ({ page }) => {
+    const node = await openCamera(page);
+    node.config = { ...node.config, crop: { x: 0.2, y: 0.1, w: 0.6, h: 0.8 }, streaming: true };
+    await expect.poll(() => node.headers.length, { timeout: 8_000 }).toBeGreaterThan(1);
+
+    // A new crop is a new picture, not motion: the meter rebases instead of reading
+    // the switch as one frame of whole-field change.
+    node.config = { ...node.config, crop: { x: 0.25, y: 0.15, w: 0.55, h: 0.75 } };
+    await expect.poll(() => node.frames.at(-1), { timeout: 8_000 }).toEqual([704, 540]);
+    await page.waitForTimeout(1500);
+    expect(node.headers.filter((header) => header['burst_id'] !== null)).toEqual([]);
+
+    await crossHand(page);
+    await expect
+      .poll(() => node.headers.find((header) => header['burst_id'] !== null), { timeout: 5_000 })
+      .toMatchObject({ burst_id: 'phone:b0' });
+    const burst = node.headers.filter((header) => header['burst_id'] === 'phone:b0');
+    expect(Math.min(...burst.map((header) => header['stability'] as number))).toBeLessThan(0.7);
   });
 });
 

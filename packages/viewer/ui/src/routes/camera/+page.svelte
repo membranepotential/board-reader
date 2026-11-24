@@ -24,7 +24,14 @@
   import { onMount } from 'svelte';
 
   import { reportCamera, sendPreview } from '$lib/api';
-  import { AdaptiveForwarder, CAPTURE_FPS, MotionMeter, MOTION_DEFAULTS, sampleThumbnail } from '$lib/edge/motion';
+  import {
+    AdaptiveForwarder,
+    CAPTURE_FPS,
+    MotionMeter,
+    MOTION_DEFAULTS,
+    MOTION_OVERSAMPLE,
+    sampleThumbnail
+  } from '$lib/edge/motion';
   import type { ForwardDecision } from '$lib/edge/motion';
   import { IngestClient } from '$lib/edge/ingest';
   import { tenengrad, toGray } from '$lib/edge/sharpness';
@@ -107,12 +114,16 @@
   });
 
   const MOTION_SIDE = MOTION_DEFAULTS.downscale;
+  /** The canvas the crop is drawn on before `sampleThumbnail` area-averages it. */
+  const MOTION_DRAW_SIDE = MOTION_SIDE * MOTION_OVERSAMPLE;
 
   let stream: MediaStream | null = null;
   /** What the open camera was asked for — a config is applied once, not every poll. */
   let capture: Capture = { device: null, resolution: DEFAULT_CAMERA_CONFIG.resolution };
   let streaming = false;
   let motionCtx: CanvasRenderingContext2D | null = null;
+  /** The box the meter's last thumbnail came from; `null` after a camera (re)open. */
+  let meteredBox: PixelBox | null = null;
   let sharpCanvas: HTMLCanvasElement | null = null;
   let sharpCtx: CanvasRenderingContext2D | null = null;
   let sendCanvas: HTMLCanvasElement | null = null;
@@ -162,11 +173,24 @@
     if (motionCtx === null || video === undefined) return null;
     // Motion is measured on the CROP: the rest of the frame (resting hands,
     // background, exposure hunting) is not the board and would only dilute it.
-    motionCtx.drawImage(video, box.x, box.y, box.w, box.h, 0, 0, MOTION_SIDE, MOTION_SIDE);
-    const { data } = motionCtx.getImageData(0, 0, MOTION_SIDE, MOTION_SIDE);
+    // Drawn oversampled and area-averaged in JS: a canvas downscale straight to
+    // MOTION_SIDE keeps the sensor noise and buries a hand under it (MOTION_OVERSAMPLE).
+    motionCtx.drawImage(video, box.x, box.y, box.w, box.h, 0, 0, MOTION_DRAW_SIDE, MOTION_DRAW_SIDE);
     // A fresh array per frame: `MotionMeter` RETAINS what it is given as the next
     // frame's reference, so a reused buffer would read as perfectly still.
-    return sampleThumbnail(data, MOTION_SIDE * MOTION_SIDE);
+    return sampleThumbnail(motionCtx.getImageData(0, 0, MOTION_DRAW_SIDE, MOTION_DRAW_SIDE), MOTION_SIDE);
+  }
+
+  /** A new crop or a reopened camera is a new picture, not motion in the old one. */
+  function rebaseMeterOn(box: PixelBox): void {
+    const same =
+      meteredBox !== null &&
+      meteredBox.x === box.x &&
+      meteredBox.y === box.y &&
+      meteredBox.w === box.w &&
+      meteredBox.h === box.h;
+    if (!same) meter.rebase();
+    meteredBox = box;
   }
 
   function frameTick(): void {
@@ -177,6 +201,7 @@
     if (box === null) return;
     const thumbnail = grabThumbnail(box);
     if (thumbnail === null) return;
+    rebaseMeterOn(box);
     // The meter sees EVERY sampled frame, streaming or not — dropping frames
     // upstream would make stability lie.
     const decision = streaming
@@ -334,6 +359,7 @@
       audio: false
     });
     stream = next;
+    meteredBox = null;
     const track = next.getVideoTracks()[0];
     track?.addEventListener('ended', () => {
       if (stream !== next) return; // a replaced lens's tracks end too
@@ -457,8 +483,8 @@
     port = location.port || (location.protocol === 'https:' ? '443' : '80');
     boardId = boardIdFrom(location.search);
     const [motionCanvas, motion] = canvas2d();
-    motionCanvas.width = MOTION_SIDE;
-    motionCanvas.height = MOTION_SIDE;
+    motionCanvas.width = MOTION_DRAW_SIDE;
+    motionCanvas.height = MOTION_DRAW_SIDE;
     motionCtx = motion;
     [sharpCanvas, sharpCtx] = canvas2d();
     [previewCanvas, previewCtx] = canvas2d();

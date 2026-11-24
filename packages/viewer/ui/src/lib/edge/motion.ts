@@ -14,6 +14,8 @@
  * that would break this: see `sampleThumbnail`.
  */
 
+import { toGray } from './sharpness';
+
 /** Sampled far faster than anything is forwarded — the meter must see every frame. */
 export const CAPTURE_FPS = 20;
 
@@ -141,22 +143,63 @@ export class MotionMeter {
     this.stability = 1;
     this.floor = null;
   }
+
+  /**
+   * The next thumbnail starts a new reference (and scores 1.0, as any first frame),
+   * keeping the learned floor. For a change of WHAT is sampled — a new crop, a reopened
+   * camera — rather than of the scene: differencing across it would read the
+   * switch as one frame of whole-field motion and open a burst for nothing.
+   */
+  rebase(): void {
+    this.prev = null;
+  }
 }
 
 /**
- * RGBA thumbnail bytes -> gray in [0,1], with cv2's BGR2GRAY weights so a given
- * scene scores the same here as on the edge.
+ * Each thumbnail pixel is the mean of a `MOTION_OVERSAMPLE²` block of the image the
+ * page draws, so the browser thumbnail is an AREA average like the edge's
+ * `cv2.INTER_AREA`. Drawing a ~950 px crop straight to 32×32 is not one: a canvas
+ * downscale samples a few source pixels per output pixel, keeps the sensor noise,
+ * and on the 2026-11-24 take that put the resting difference at ~0.02 — about 8×
+ * an area average. The learned floor sat there, a hand never reached the
+ * tolerance above it, and no move opened a burst. At 8× (a 256² readback) the
+ * resting difference measured within 20 % of `INTER_AREA` on that take's frames.
+ */
+export const MOTION_OVERSAMPLE = 8;
+
+/** A canvas readback (an `ImageData`): RGBA bytes, row-major, `width × height`. */
+export interface RgbaImage {
+  readonly data: ArrayLike<number>;
+  readonly width: number;
+  readonly height: number;
+}
+
+/**
+ * A canvas readback -> a `side × side` gray thumbnail in [0,1]: luma by
+ * `toGray`'s cv2 BGR2GRAY weights, then the mean of each block, so a scene scores
+ * the same here as on the edge. Each side of `image` must be a whole multiple of
+ * `side` (the page draws at `side × MOTION_OVERSAMPLE`).
  *
  * A fresh array every call, deliberately: `MotionMeter.update` keeps what it is
  * given as the next frame's reference, and handing back one reused buffer is the
  * exact aliasing failure that once made the tracker report a confident lock on a
- * frozen quad. It is 1 kB per frame.
+ * frozen quad. It is 4 kB per frame.
  */
-export function sampleThumbnail(rgba: ArrayLike<number>, pixels: number): Float32Array {
-  const out = new Float32Array(pixels);
-  for (let i = 0, p = 0; i < out.length; i++, p += 4) {
-    out[i] = (0.299 * rgba[p]! + 0.587 * rgba[p + 1]! + 0.114 * rgba[p + 2]!) / 255;
+export function sampleThumbnail(image: RgbaImage, side: number): Float32Array {
+  const { width, height } = image;
+  if (side < 1 || width % side !== 0 || height % side !== 0) {
+    throw new RangeError(`a ${width}×${height} image does not divide into ${side}×${side} blocks`);
   }
+  const gray = toGray(image.data, new Float32Array(width * height));
+  const bw = width / side;
+  const bh = height / side;
+  const out = new Float32Array(side * side);
+  for (let y = 0; y < height; y++) {
+    const row = Math.floor(y / bh) * side;
+    for (let x = 0; x < width; x++) out[row + Math.floor(x / bw)]! += gray[y * width + x]!;
+  }
+  const area = bw * bh;
+  for (let i = 0; i < out.length; i++) out[i]! /= area;
   return out;
 }
 
