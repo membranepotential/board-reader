@@ -47,8 +47,10 @@ from typing import TextIO
 
 from board_reader_core.protocol import (
     GRID,
+    MotionUpdate,
     PositionEvent,
     parse_placement,
+    parse_viewer_message,
     square_name,
 )
 
@@ -153,6 +155,7 @@ async def follow(
 
     ``limit`` stops after that many *yielded* events (events filtered out by
     ``board_id`` do not count) — it is what makes this testable and scriptable.
+    Motion updates are skipped: they are display state, not positions.
     A malformed event raises: it would be our own egress violating our own
     protocol, and swallowing that would hide a real bug.
     """
@@ -161,9 +164,9 @@ async def follow(
     yielded = 0
     async with websockets.connect(url, max_size=None) as ws:
         async for raw in ws:
-            event = PositionEvent.from_json(
-                raw if isinstance(raw, str) else raw.decode()
-            )
+            event = parse_viewer_message(raw if isinstance(raw, str) else raw.decode())
+            if isinstance(event, MotionUpdate):
+                continue
             if board_id is not None and event.board_id != board_id:
                 continue
             yield event

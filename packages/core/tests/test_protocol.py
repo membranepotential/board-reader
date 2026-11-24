@@ -13,11 +13,13 @@ from board_reader_core.protocol import (
     NUM_CLASSES,
     START_PLACEMENT,
     ClockState,
+    MotionUpdate,
     PositionEvent,
     dist_from_placement,
     encode_placement,
     iso_utc,
     parse_placement,
+    parse_viewer_message,
     placement_from_dist,
     position_confidence,
     square_evidence,
@@ -313,3 +315,20 @@ def test_evidence_ties_break_the_same_way_every_run():
     once = square_evidence(flat)
     assert once == square_evidence(flat)
     assert [c for c, _ in once[0]] == list(CLASSES[:EVIDENCE_TOP_K])
+
+
+def test_viewer_messages_parse_by_their_type():
+    """A position event has no `type`; a motion update says `motion`."""
+    event = PositionEvent.from_square_dist(
+        board_id="A1", seq=2, utc=iso_utc(0.0), square_dist=dist_from_placement(START_PLACEMENT)
+    )
+    assert "type" not in event.to_dict()
+    assert parse_viewer_message(event.to_json()).placement == START_PLACEMENT
+    motion = MotionUpdate(board_id="A1", moving=False, stability=0.93, ts=1_700_000_000.25)
+    assert motion.to_dict() == {
+        "type": "motion", "board_id": "A1", "moving": False, "stability": 0.93,
+        "ts": 1_700_000_000.25,
+    }
+    assert parse_viewer_message(motion.to_json()) == motion
+    with pytest.raises(ValueError, match="unknown /viewer message type"):
+        parse_viewer_message('{"type": "gossip"}')

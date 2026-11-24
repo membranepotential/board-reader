@@ -100,7 +100,7 @@ def test_the_live_stream_carries_the_repair_beside_the_raw_read():
         ingest = FrameIngest(
             frame_reader(StubRecognizer(TWO_WHITE_KINGS)),
             hub,
-            on_event=lambda event, frame: published.append((event, frame)),
+            on_event=lambda reading, frame: published.append((reading.event, frame)),
         )
         ingest.submit(
             Frame(

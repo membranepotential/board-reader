@@ -1,9 +1,10 @@
 """The recognizer seam (DESIGN D10): a whole frame in, a chess-frame distribution out.
 
-A :class:`Recognizer` reads one BGR frame and returns the ``(8, 8, 13)``
-``square_dist`` of the board in it, **in the chess frame** (rank 8 first, file a
-first, as in FEN). It finds the board and its orientation by itself, so it takes
-no corners, crops nothing and is never calibrated. ChessQ Lite
+A :class:`Recognizer` reads one BGR frame and returns a :class:`Recognition`: the
+``(8, 8, 13)`` ``square_dist`` of the board in it, **in the chess frame** (rank 8
+first, file a first, as in FEN), and the board's ``direction`` in the image when
+the model reports one. It finds the board and its orientation by itself, so it
+takes no corners, crops nothing and is never calibrated. ChessQ Lite
 (:mod:`.chessq`) is the core implementation; another model is one more file
 implementing this protocol.
 
@@ -24,6 +25,7 @@ from __future__ import annotations
 import os
 import sys
 from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
@@ -38,18 +40,41 @@ from board_reader_core.protocol import (
 )
 from board_reader_core.wire import Frame
 
-from board_reader_inference.chessq import ChessQRecognizer
-
 #: The ``orientation`` every recognizer event carries. Reserved since D10: the
 #: placement is always in the chess frame, so this never varies.
 ORIENTATION = "a1_bottom_left"
 
-#: One frame in, its position event out — what a read *is*, for every caller.
-FrameRead = Callable[[Frame], PositionEvent]
+
+
+@dataclass(frozen=True, slots=True)
+class Recognition:
+    """What a recognizer read off one frame.
+
+    ``direction`` is the bearing of the e1 -> e8 vector in the image, in degrees
+    clockwise from straight up, in ``(-180, 180]``: 0 means White sits at the
+    bottom of the picture, 90 that White sits on the left. ``None`` when the
+    recognizer does not report it (the stub) or reported nothing usable.
+    """
+
+    square_dist: np.ndarray
+    direction: float | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class FrameReading:
+    """One frame's read: its position event and the board's direction (see
+    :class:`Recognition`), which rides beside the event, never in it."""
+
+    event: PositionEvent
+    direction: float | None = None
+
+
+#: One frame in, its read out — what a read *is*, for every caller.
+FrameRead = Callable[[Frame], FrameReading]
 
 
 class Recognizer(Protocol):
-    """A whole frame -> its board's ``(8, 8, 13)`` distribution, chess frame."""
+    """A whole frame -> its board's chess-frame :class:`Recognition`."""
 
     @property
     def name(self) -> str: ...
@@ -57,7 +82,7 @@ class Recognizer(Protocol):
     @property
     def model_path(self) -> str | None: ...
 
-    def read(self, image: np.ndarray) -> np.ndarray: ...
+    def read(self, image: np.ndarray) -> Recognition: ...
 
 
 class StubRecognizer:
@@ -80,10 +105,10 @@ class StubRecognizer:
     ) -> None:
         self.placement = placement
         self.fallback = fallback
-        self._dist = dist_from_placement(placement, confidence)
+        self._recognition = Recognition(dist_from_placement(placement, confidence))
 
-    def read(self, image: np.ndarray) -> np.ndarray:
-        return self._dist
+    def read(self, image: np.ndarray) -> Recognition:
+        return self._recognition
 
 
 def event_from_dist(frame: Frame, square_dist: np.ndarray) -> PositionEvent:
@@ -111,8 +136,11 @@ def frame_reader(recognizer: Recognizer) -> FrameRead:
     ignored — the recognizer finds the board itself.
     """
 
-    def read(frame: Frame) -> PositionEvent:
-        return event_from_dist(frame, recognizer.read(frame.image))
+    def read(frame: Frame) -> FrameReading:
+        recognition = recognizer.read(frame.image)
+        return FrameReading(
+            event_from_dist(frame, recognition.square_dist), recognition.direction
+        )
 
     return read
 
@@ -138,5 +166,8 @@ def build_from_env() -> Recognizer:
         return _stub("BR_CHESSQ is unset; set it to a model file (`make models`)")
     if not Path(path).is_file():
         return _stub(f"BR_CHESSQ={path!r} does not name a model file; run `make models`")
+    # Here, not at the top: chessq builds this module's Recognition.
+    from board_reader_inference.chessq import ChessQRecognizer
+
     print(f"serving ChessQ from BR_CHESSQ={path!r}")
     return ChessQRecognizer(path)

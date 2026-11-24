@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import ast
 import json
+from collections.abc import Callable
 from pathlib import Path
 
 import numpy as np
@@ -19,6 +20,7 @@ from board_reader_core.protocol import (
     CLASS_INDEX,
     CLASSES,
     START_PLACEMENT,
+    PositionEvent,
     parse_placement,
 )
 from board_reader_core.sim import render_board
@@ -30,6 +32,7 @@ from board_reader_inference.chessq import (
     CHESSQ_CLASSES,
     INPUT_PX,
     ChessQRecognizer,
+    direction_degrees,
     preprocess_frame,
     square_dist_from_logits,
 )
@@ -62,17 +65,23 @@ def test_class_order_is_the_published_contract() -> None:
     assert "".join([".", "P", "N", "B", "R", "Q", "K", "p", "n", "b", "r", "q", "k"]) == CHESSQ_CLASSES
 
 
-def _served(model) -> FrameRead:
-    """ChessQ over ``model`` as the gateway reads frames with it."""
-    return frame_reader(ChessQRecognizer(model))
+def _served(model) -> Callable[[Frame], PositionEvent]:
+    """ChessQ over ``model`` as the gateway reads frames with it: the event."""
+    read: FrameRead = frame_reader(ChessQRecognizer(model))
+    return lambda frame: read(frame).event
 
 
-def _fake_model(placement: str):
+#: The direction output of a board seen from White's left (e8 to the right),
+#: what every recorded take reads: (cos, sin) = (0, 1), 90 degrees.
+FROM_THE_SIDE = np.array([[0.0, 1.0]], dtype=np.float32)
+
+
+def _fake_model(placement: str, direction: np.ndarray = FROM_THE_SIDE):
     seen: list[np.ndarray] = []
 
-    def run(batch: np.ndarray) -> np.ndarray:
+    def run(batch: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         seen.append(batch)
-        return _logits_for(placement)
+        return _logits_for(placement), direction
 
     run.seen = seen  # type: ignore[attr-defined]
     return run
@@ -110,6 +119,26 @@ def test_logits_map_onto_protocol_squares_and_classes():
     np.testing.assert_array_equal(np.array(CLASSES)[dist.argmax(-1)], grid)
 
 
+@pytest.mark.parametrize(
+    ("cos_sin", "degrees"),
+    [
+        ((1.0, 0.0), 0.0),  # e8 straight up: White at the bottom
+        ((0.0, 1.0), 90.0),  # e8 to the right: White on the left
+        ((0.0, -1.0), -90.0),  # a quarter turn the other way
+        ((-1.0, 0.0), 180.0),  # upside down
+        ((0.05, 0.98), 87.08),  # an unnormalised read off a recorded take
+    ],
+)
+def test_direction_is_degrees_clockwise_from_up(cos_sin, degrees):
+    out = direction_degrees(np.array([cos_sin], dtype=np.float32))
+    assert out == pytest.approx(degrees, abs=0.01)
+
+
+def test_a_direction_with_no_length_or_a_nan_reports_none():
+    assert direction_degrees(np.zeros((1, 2), dtype=np.float32)) is None
+    assert direction_degrees(np.array([[np.nan, 1.0]], dtype=np.float32)) is None
+
+
 def test_logits_of_the_wrong_shape_are_refused():
     with pytest.raises(ValueError, match="ChessQ returned"):
         square_dist_from_logits(np.zeros((64, 13), dtype=np.float32))
@@ -118,7 +147,7 @@ def test_logits_of_the_wrong_shape_are_refused():
 def test_recognizer_reads_in_the_chess_frame():
     recognizer = ChessQRecognizer(_fake_model(RUY_LOPEZ))
     assert (recognizer.name, recognizer.model_path) == ("chessq", None)
-    dist = recognizer.read(render_board(RUY_LOPEZ))
+    dist = recognizer.read(render_board(RUY_LOPEZ)).square_dist
     np.testing.assert_array_equal(
         np.array(CLASSES)[dist.argmax(-1)], np.array(parse_placement(RUY_LOPEZ))
     )
@@ -134,7 +163,8 @@ def test_module_is_self_contained():
         if isinstance(node, ast.ImportFrom) and node.module
     }
     ours = {m for m in imported if m.startswith("board_reader_inference")}
-    assert ours == {"board_reader_inference.onnxrt"}
+    # The session helper, and the seam it implements: nothing else of ours.
+    assert ours == {"board_reader_inference.onnxrt", "board_reader_inference.recognizer"}
 
 
 def test_a_read_takes_the_whole_frame_and_ignores_corners():
@@ -160,7 +190,7 @@ def test_black_bishop_demotion_is_not_applied():
     logits[0, c8] = -10.0
     logits[0, c8, CHESSQ_CLASSES.index("b")] = np.log(0.55)
     logits[0, c8, CHESSQ_CLASSES.index("p")] = np.log(0.45)
-    event = _served(lambda batch: logits)(_frame())
+    event = _served(lambda batch: (logits, FROM_THE_SIDE))(_frame())
     assert event.placement == START_PLACEMENT
     assert event.square_dist[0, 2].argmax() == CLASS_INDEX["b"]
 
@@ -169,8 +199,8 @@ def test_black_bishop_demotion_is_not_applied():
 def chessq_env(tmp_path, monkeypatch):
     """``BR_CHESSQ`` naming a (fake) model file."""
     model = tmp_path / "cq.onnx"
-    model.write_bytes(b"not loaded: _onnx_logits_fn is patched")
-    monkeypatch.setattr(chessq_mod, "_onnx_logits_fn", lambda path: _fake_model(START_PLACEMENT))
+    model.write_bytes(b"not loaded: _onnx_model_fn is patched")
+    monkeypatch.setattr(chessq_mod, "_onnx_model_fn", lambda path: _fake_model(START_PLACEMENT))
     monkeypatch.setenv("BR_CHESSQ", str(model))
     return model
 
@@ -221,15 +251,21 @@ def test_the_session_prefers_cuda_and_keeps_the_cpu_fallback(tmp_path, monkeypat
 
         def run(self, names: list[str], feeds: dict) -> list[np.ndarray]:
             seen["outputs"] = names
-            return [_logits_for(RUY_LOPEZ)]
+            # The order the names asked for, whatever order the file declares.
+            return [{"logits": _logits_for(RUY_LOPEZ), "direction": FROM_THE_SIDE}[n] for n in names]
 
     chosen = [("CUDAExecutionProvider", {"device_id": 0}), "CPUExecutionProvider"]
     monkeypatch.setattr(ort, "InferenceSession", Session)
     monkeypatch.setattr(chessq_mod, "cuda_providers", lambda: chosen)
     model = tmp_path / "cq.onnx"
-    dist = ChessQRecognizer(model).read(render_board(RUY_LOPEZ))
-    assert seen == {"path": str(model), "providers": chosen, "outputs": ["logits"]}
-    assert dist.shape == (8, 8, len(CLASSES))
+    recognition = ChessQRecognizer(model).read(render_board(RUY_LOPEZ))
+    assert seen == {
+        "path": str(model),
+        "providers": chosen,
+        "outputs": ["logits", "direction"],
+    }
+    assert recognition.square_dist.shape == (8, 8, len(CLASSES))
+    assert recognition.direction == pytest.approx(90.0)
 
 
 def test_replay_config_digest_distinguishes_br_chessq(chessq_env):

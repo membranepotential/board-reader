@@ -17,6 +17,7 @@ from board_reader_core.wire import Frame
 
 from board_reader_inference.recognizer import (
     ORIENTATION,
+    Recognition,
     StubRecognizer,
     build_from_env,
     event_from_dist,
@@ -35,7 +36,9 @@ def test_stub_reads_its_authored_placement_whatever_the_pixels():
     stub = StubRecognizer(MIDGAME, confidence=0.8)
     assert stub.name == "stub"
     for image in (render_board(), np.zeros((50, 90, 3), dtype=np.uint8)):
-        dist = stub.read(image)
+        recognition = stub.read(image)
+        assert recognition.direction is None  # the stub knows no board direction
+        dist = recognition.square_dist
         assert dist.shape == (8, 8, len(CLASSES))
         np.testing.assert_array_equal(
             np.array(CLASSES)[dist.argmax(-1)], np.array(parse_placement(MIDGAME))
@@ -44,7 +47,7 @@ def test_stub_reads_its_authored_placement_whatever_the_pixels():
 
 
 def test_event_from_dist_keeps_the_distribution_and_the_frame_stamps():
-    dist = StubRecognizer(MIDGAME).read(render_board())
+    dist = StubRecognizer(MIDGAME).read(render_board()).square_dist
     frame = _frame(stability=0.3, clock="white")
     event = event_from_dist(frame, dist)
     assert (event.board_id, event.seq, event.status) == ("B7", 41, "ok")
@@ -59,14 +62,15 @@ def test_a_frame_read_hands_the_recognizer_the_whole_image_and_ignores_corners()
     seen: list[np.ndarray] = []
 
     class Spy(StubRecognizer):
-        def read(self, image: np.ndarray) -> np.ndarray:
+        def read(self, image: np.ndarray) -> Recognition:
             seen.append(image)
-            return super().read(image)
+            return Recognition(super().read(image).square_dist, direction=88.5)
 
     frame = _frame(corners=np.array([[1, 2], [60, 3], [62, 61], [0, 59]], dtype=np.float32))
-    event = frame_reader(Spy(MIDGAME))(frame)
+    reading = frame_reader(Spy(MIDGAME))(frame)
     assert len(seen) == 1 and seen[0] is frame.image  # as sent: no crop, no warp
-    assert (event.placement, event.seq) == (MIDGAME, 41)
+    assert (reading.event.placement, reading.event.seq) == (MIDGAME, 41)
+    assert reading.direction == 88.5  # the recognizer's direction rides beside the event
 
 
 def test_build_from_env_without_br_chessq_serves_the_stub_loudly(monkeypatch, capsys):

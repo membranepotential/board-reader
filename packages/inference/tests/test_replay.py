@@ -37,11 +37,13 @@ from board_reader_inference import replay as replay_mod
 from board_reader_inference.cli import main
 from board_reader_inference.hub import PositionHub
 from board_reader_inference.ingest import FrameIngest
+from board_reader_inference.recognizer import FrameReading
 from board_reader_inference.replay import (
     ReplayResult,
     check_name,
     default_name,
     find_sessions,
+    render,
     replay,
 )
 from board_reader_inference.schedule import (
@@ -76,10 +78,10 @@ class ScriptedRead:
         self.default = default
         self.seen: list[int] = []
 
-    def __call__(self, frame: Frame) -> PositionEvent:
+    def __call__(self, frame: Frame) -> FrameReading:
         self.seen.append(frame.seq)
         placement = self.script.get(frame.seq, self.default)
-        return PositionEvent.from_square_dist(
+        event = PositionEvent.from_square_dist(
             board_id=frame.board_id,
             seq=frame.seq,
             utc=iso_utc(frame.capture_ts),
@@ -87,6 +89,7 @@ class ScriptedRead:
             stability=frame.stability,
             clock=ClockState(frame.clock),
         )
+        return FrameReading(event)
 
 
 def _write_recording(
@@ -398,6 +401,20 @@ def test_the_policy_decides_which_frames_are_estimated(source):
     assert result.path.joinpath(INDEX_NAME).read_text().count("\n") == 8
 
 
+def test_the_orientation_guard_drops_a_turned_read_as_the_live_worker_does(source):
+    """Replay runs the same guard: a read a quarter turn off is counted, not written."""
+
+    class Pointing(ScriptedRead):
+        def __call__(self, frame: Frame) -> FrameReading:
+            direction = 0.0 if frame.seq == 5 else 90.0
+            return FrameReading(super().__call__(frame).event, direction)
+
+    result = _run(source, "guarded", Pointing({}))
+    assert [e["frame_seq"] for e in _events(result)] == [0, 1, 2, 3, 4, 6, 7]
+    assert (result.stats.frames_estimated, result.stats.frames_misoriented) == (7, 1)
+    assert "1 dropped by the orientation guard" in render(result)
+
+
 def test_limit_truncates_the_take_rather_than_thinning_it(source):
     """``--limit`` stops the replay looking at the recording, and indexes nothing more.
 
@@ -443,8 +460,8 @@ def _ingest_event_lines(frames: list[Frame], read) -> list[dict]:
         ingest = FrameIngest(
             read,
             PositionHub(),
-            on_event=lambda event, frame: lines.append(
-                event_line(event, frame, published_ts=None)
+            on_event=lambda reading, frame: lines.append(
+                event_line(reading.event, frame, published_ts=None)
             ),
         )
         for frame in frames:

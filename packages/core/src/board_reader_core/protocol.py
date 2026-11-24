@@ -451,3 +451,68 @@ class PositionEvent:
     @classmethod
     def from_json(cls, s: str) -> PositionEvent:
         return cls.from_dict(json.loads(s))
+
+
+#: The ``type`` of a :class:`MotionUpdate` on ``WS /viewer``. A position event
+#: carries no ``type`` key, so every message before this one stays valid as-is.
+MOTION_TYPE = "motion"
+
+
+@dataclass(frozen=True, slots=True)
+class MotionUpdate:
+    """Whether a hand is over the board right now: display state, not a read.
+
+    The inference node sends one per ingested frame on ``WS /viewer`` (rate-limited
+    per board, but always on a change of ``moving``), so a viewer can show "hand on
+    board" between the sparse position events. It is never recorded and never
+    retained: a stale ``moving`` would show a hand on a board nobody touches.
+
+    ``stability`` is the frame's edge motion meter (1 = at rest), ``moving`` the
+    node's verdict on it, and ``ts`` the frame's ``capture_ts`` (edge clock).
+    """
+
+    board_id: str
+    moving: bool
+    stability: float
+    ts: float
+
+    def to_dict(self) -> dict:
+        return {
+            "type": MOTION_TYPE,
+            "board_id": self.board_id,
+            "moving": self.moving,
+            "stability": round(self.stability, 6),
+            "ts": self.ts,
+        }
+
+    def to_json(self) -> str:
+        return json.dumps(self.to_dict())
+
+    @classmethod
+    def from_dict(cls, d: dict) -> MotionUpdate:
+        return cls(
+            board_id=str(d["board_id"]),
+            moving=bool(d["moving"]),
+            stability=float(d["stability"]),
+            ts=float(d["ts"]),
+        )
+
+
+#: Everything ``WS /viewer`` sends.
+ViewerMessage = PositionEvent | MotionUpdate
+
+
+def parse_viewer_message(raw: str) -> ViewerMessage:
+    """One ``WS /viewer`` text message as what it is.
+
+    No ``type`` is a position event (§5); ``"motion"`` a :class:`MotionUpdate`.
+    Any other ``type`` raises, because it would be our own egress sending
+    something this protocol does not define.
+    """
+    d = json.loads(raw)
+    kind = d.get("type")
+    if kind is None:
+        return PositionEvent.from_dict(d)
+    if kind == MOTION_TYPE:
+        return MotionUpdate.from_dict(d)
+    raise ValueError(f"unknown /viewer message type {kind!r}")

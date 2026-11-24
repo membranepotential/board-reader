@@ -7,7 +7,8 @@ Runs on the inference node. Its surfaces:
   the per-board ingest worker (:mod:`board_reader_inference.ingest`) estimates off
   the event loop and publishes the position event to the hub.
 * ``WS /viewer`` — viewers connect and receive the position-event JSON stream
-  (retained latest per board first, then live updates).
+  (retained latest per board first, then live updates), interleaved with
+  ``{"type": "motion"}`` updates per ingested frame (display state, never retained).
 * ``GET /boards/{id}`` + ``GET /boards/{id}/frame`` + ``GET /healthz`` — latest
   position snapshot, latest raw ingested JPEG, and liveness.
 * ``WS /boards/{id}/camera`` + ``WS /boards/{id}/control`` — the camera control
@@ -52,6 +53,7 @@ from board_reader_inference.hub import PositionHub
 from board_reader_inference.ingest import FrameIngest
 from board_reader_inference.labels import READ_FRAME
 from board_reader_inference.recognizer import (
+    FrameReading,
     Recognizer,
     StubRecognizer,
     build_from_env,
@@ -212,7 +214,22 @@ def create_app(
     read = frame_reader(recognizer_)
     hub_: PositionHub = hub if hub is not None else PositionHub()
 
-    def _record_published(event, frame) -> None:
+    # The camera control channel (DESIGN D11, "dumb camera"): the control UI sets
+    # each board's camera config here and the node pushes it to the phone.
+    cameras = CameraRegistry()
+
+    def _on_published(reading: FrameReading, frame: Frame) -> None:
+        """Observers of every published live read (on the event loop).
+
+        The board's direction goes to the camera registry, which tells /control
+        which side White sits on. Only reads the orientation guard let through
+        get here, and replay never does: it is a live-camera fact.
+        """
+        _record_published(reading.event, frame)
+        if reading.direction is not None:
+            cameras.observe_direction(frame.board_id, reading.direction, frame.capture_ts)
+
+    def _record_published(event: PositionEvent, frame: Frame) -> None:
         """One compact line per published event into the session's events.ndjson."""
         if recorder is None or not recorder.active:
             return
@@ -229,7 +246,7 @@ def create_app(
     ingest_ = FrameIngest(
         read,
         hub_,
-        on_event=_record_published,
+        on_event=_on_published,
         policy=_frame_policy(),
         settle=settle,
     )
@@ -314,6 +331,9 @@ def create_app(
                 # reading on its own clock to stay alive.
                 "unscheduled": ingest_.frames_unscheduled,
                 "backstopped": ingest_.frames_backstopped,
+                # Reads the orientation guard dropped: the board pointed more
+                # than 45 degrees from its recent reads. Should be 0.
+                "misoriented": ingest_.frames_misoriented,
             },
             "settle": settle.to_dict(),
         }
@@ -364,9 +384,6 @@ def create_app(
             frame=None if entry is None else entry.streamed,
         )
 
-    # The camera control channel (DESIGN D11, "dumb camera"): the control UI sets
-    # each board's camera config here and the node pushes it to the phone.
-    cameras = CameraRegistry()
     app.state.cameras = cameras
     app.include_router(camera_router(cameras, _node_status))
 
@@ -426,7 +443,7 @@ def create_app(
         )
         # The same read the live stream runs. It is real model work — off the event
         # loop, so /ingest acks and /viewer never stall behind a snapshot upload.
-        event = await asyncio.to_thread(read, frame)
+        event = (await asyncio.to_thread(read, frame)).event
         # Repair attached before the publish — the hub's subscribers draw
         # ``prior.placement``, so publishing bare would show an impossible board
         # on the one surface the repair exists for. ``result`` inherits it.
@@ -709,11 +726,11 @@ def create_app(
 
     @app.websocket("/viewer")
     async def viewer(ws: WebSocket) -> None:
-        """Inference -> viewer position-event egress."""
+        """Inference -> viewer egress: position events and motion updates."""
         await ws.accept()
         try:
-            async for event in hub_.subscribe():
-                await ws.send_text(event.to_json())
+            async for message in hub_.subscribe():
+                await ws.send_text(message.to_json())
         except WebSocketDisconnect:
             return
 

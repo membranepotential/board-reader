@@ -32,7 +32,7 @@ from board_reader_inference.evaluate import (
     score_board,
 )
 from board_reader_inference.labels import LabeledBoard, save_label
-from board_reader_inference.recognizer import StubRecognizer
+from board_reader_inference.recognizer import Recognition, StubRecognizer
 
 MIDGAME = "r2qk2r/1b1pbppp/p1n1p3/1ppnP3/5B2/1BNP1N2/PPP2PPP/R2Q1RK1"
 CORNERS = np.array([[0, 0], [100, 0], [100, 100], [0, 100]], dtype=np.float32)
@@ -100,9 +100,9 @@ class FakeRecognizer:
         self._dists = iter(dists.values())
         self.reads = 0
 
-    def read(self, image: np.ndarray) -> np.ndarray:
+    def read(self, image: np.ndarray) -> Recognition:
         self.reads += 1
-        return next(self._dists)
+        return Recognition(next(self._dists))
 
 
 # ---- error taxonomy ----------------------------------------------------------

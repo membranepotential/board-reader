@@ -67,7 +67,10 @@ def test_end_to_end_ingest_to_viewer_stream(gateway):
     ):
         _send_frame(ingest, seq=1)
         ingest.receive_json()  # ack
+        # The frame's motion update goes out at submit, before its read publishes.
+        motion = json.loads(viewer.receive_text())
         event = json.loads(viewer.receive_text())
+    assert motion["type"] == "motion"
     assert event["board_id"] == "A1"
     assert event["placement"] == START_PLACEMENT
     assert event["status"] == "ok"

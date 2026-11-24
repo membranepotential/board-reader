@@ -27,6 +27,15 @@ from board_reader_inference.schedule import DEFAULT_POLICY_SPEC
 from board_reader_inference.server import create_app
 
 
+async def _next_position(viewer, timeout: float = 5.0) -> str:
+    """The next position event off ``/viewer``, past any motion updates."""
+    async with asyncio.timeout(timeout):
+        while True:
+            msg = await viewer.recv()
+            if "type" not in json.loads(msg):
+                return msg
+
+
 def _free_port() -> int:
     with socket.socket() as s:
         s.bind(("127.0.0.1", 0))
@@ -83,7 +92,7 @@ def test_walking_skeleton_edge_to_viewer():
             ingest_url = f"ws://127.0.0.1:{port}/ingest"
             async with websockets.connect(viewer_url) as viewer:
                 sent = await stream_to_gateway(adapter, ingest_url)
-                msg = await asyncio.wait_for(viewer.recv(), timeout=5.0)
+                msg = await _next_position(viewer)
                 return sent, msg
 
         sent, msg = asyncio.run(run())
@@ -122,7 +131,7 @@ def test_the_pipe_still_publishes_under_the_shipped_read_schedule(monkeypatch):
         async def run():
             async with websockets.connect(f"ws://127.0.0.1:{port}/viewer") as viewer:
                 sent = await stream_to_gateway(adapter, f"ws://127.0.0.1:{port}/ingest")
-                msg = await asyncio.wait_for(viewer.recv(), timeout=5.0)
+                msg = await _next_position(viewer)
                 return sent, msg
 
         sent, msg = asyncio.run(run())

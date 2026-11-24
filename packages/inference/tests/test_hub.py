@@ -6,6 +6,7 @@ import asyncio
 
 from board_reader_core.protocol import (
     START_PLACEMENT,
+    MotionUpdate,
     PositionEvent,
     dist_from_placement,
     iso_utc,
@@ -99,5 +100,26 @@ def test_slow_subscriber_drops_oldest_not_newest():
         # latest-wins: the newest event survives even under overflow.
         assert 4 in seqs
         await gen.aclose()
+
+    asyncio.run(run())
+
+
+def test_a_motion_update_reaches_live_subscribers_and_is_never_retained():
+    async def run():
+        hub = PositionHub()
+        live = hub.subscribe(replay_latest=False)
+        pending = asyncio.ensure_future(anext(live))
+        await asyncio.sleep(0)
+        update = MotionUpdate(board_id="A1", moving=True, stability=0.1, ts=5.0)
+        hub.broadcast(update)
+        assert await asyncio.wait_for(pending, 1.0) is update
+        await live.aclose()
+        assert hub.latest("A1") is None
+        # A late subscriber gets the retained positions only, and here there are none.
+        late = hub.subscribe()
+        await hub.publish(_event("A1", 3))
+        first = await asyncio.wait_for(anext(late), 1.0)
+        assert isinstance(first, PositionEvent) and first.seq == 3
+        await late.aclose()
 
     asyncio.run(run())

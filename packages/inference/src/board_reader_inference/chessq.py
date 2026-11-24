@@ -22,8 +22,12 @@ rgb-imagenet-f32-bilinear-ignore-exif-v1``, and the reference port in
   :data:`~board_reader_core.protocol.CLASSES` with ``.`` for ``empty`` — the
   mapping is still *derived* (:data:`_TO_PROTOCOL`), so a release that reordered
   its classes would fail the protocol check at import rather than serve a board
-  with white and black swapped. The second output, ``direction``, is not used
-  (plan decision D10: ignore for now).
+  with white and black swapped.
+* output ``direction``: ``(1, 2)``, the unit vector from e1 toward e8 in the
+  image as ``(cos, sin)`` with cos pointing up and sin pointing right (the
+  author's PORTABLE.md). :func:`direction_degrees` turns it into the bearing
+  :class:`~.recognizer.Recognition` carries; the ingest stream's orientation
+  guard (:class:`~.ingest.OrientationGuard`) reads it.
 
 **Not calibrated.** The distribution is the model's softmax, unchanged: the
 black-bishop demotion the old crop-classifier stack applied was measured on that
@@ -35,6 +39,7 @@ under the gitignored ``models/`` and are never committed.
 
 from __future__ import annotations
 
+import math
 from collections.abc import Callable
 from pathlib import Path
 
@@ -44,9 +49,14 @@ import numpy as np
 from board_reader_core.protocol import CLASSES, GRID, NUM_CLASSES
 
 from board_reader_inference.onnxrt import cuda_providers
+from board_reader_inference.recognizer import Recognition
 
-#: ``(1, 3, 644, 644)`` float32 -> ``(1, 64, 13)`` logits: the model, or a test fake.
-LogitsFn = Callable[[np.ndarray], np.ndarray]
+#: ``(1, 3, 644, 644)`` float32 -> its ``(1, 64, 13)`` logits and ``(1, 2)``
+#: direction, the release's two outputs: the model, or a test fake.
+ModelFn = Callable[[np.ndarray], tuple[np.ndarray, np.ndarray]]
+
+#: The release's output names, in the order :data:`ModelFn` returns them.
+OUTPUTS = ["logits", "direction"]
 
 #: Side of the square the model reads, in pixels (``input.shape`` in the descriptor).
 INPUT_PX = 644
@@ -88,14 +98,30 @@ def square_dist_from_logits(logits: np.ndarray) -> np.ndarray:
     return _softmax(arr[0][:, _TO_PROTOCOL]).reshape(GRID, GRID, NUM_CLASSES)
 
 
-def _onnx_logits_fn(model_path: Path) -> LogitsFn:
+def direction_degrees(direction: np.ndarray) -> float | None:
+    """The model's ``(1, 2)`` ``(cos, sin)`` -> degrees clockwise from up.
+
+    ``None`` when the vector is not finite or has no length, so no bearing at all
+    is reported rather than an arbitrary one.
+    """
+    arr = np.asarray(direction, dtype=np.float64)
+    if arr.shape != (1, 2):
+        raise ValueError(f"ChessQ returned direction {arr.shape}, expected (1, 2)")
+    cos, sin = float(arr[0, 0]), float(arr[0, 1])
+    if not (math.isfinite(cos) and math.isfinite(sin)) or math.hypot(cos, sin) == 0.0:
+        return None
+    return math.degrees(math.atan2(sin, cos))
+
+
+def _onnx_model_fn(model_path: Path) -> ModelFn:
     import onnxruntime as ort
 
     sess = ort.InferenceSession(str(model_path), providers=cuda_providers())
 
-    def run(batch: np.ndarray) -> np.ndarray:
-        # By name: the release has a second output (``direction``) beside it.
-        return sess.run(["logits"], {"image": batch})[0]
+    def run(batch: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        # By name, never by position: what a release exports is its own business.
+        logits, direction = sess.run(OUTPUTS, {"image": batch})
+        return logits, direction
 
     return run
 
@@ -103,19 +129,20 @@ def _onnx_logits_fn(model_path: Path) -> LogitsFn:
 class ChessQRecognizer:
     """Stateless whole-frame recognizer over the ChessQ Lite ONNX model.
 
-    ``model`` is a path to the ``.onnx`` file, or — for tests — a :data:`LogitsFn`.
+    ``model`` is a path to the ``.onnx`` file, or — for tests — a :data:`ModelFn`.
     """
 
     name = "chessq"
 
-    def __init__(self, model: str | Path | LogitsFn) -> None:
+    def __init__(self, model: str | Path | ModelFn) -> None:
         if callable(model):
-            self.logits_fn: LogitsFn = model
+            self.model_fn: ModelFn = model
             self.model_path: str | None = None
         else:
-            self.logits_fn = _onnx_logits_fn(Path(model))
+            self.model_fn = _onnx_model_fn(Path(model))
             self.model_path = str(model)
 
-    def read(self, image: np.ndarray) -> np.ndarray:
-        """The model's ``(8, 8, 13)`` chess-frame distribution for a whole BGR frame."""
-        return square_dist_from_logits(self.logits_fn(preprocess_frame(image)))
+    def read(self, image: np.ndarray) -> Recognition:
+        """The model's chess-frame distribution and direction for a whole BGR frame."""
+        logits, direction = self.model_fn(preprocess_frame(image))
+        return Recognition(square_dist_from_logits(logits), direction_degrees(direction))

@@ -39,7 +39,7 @@ from board_reader_core.wire import Frame
 
 from board_reader_inference.hub import PositionHub
 from board_reader_inference.ingest import BACKSTOP_SLACK, FrameIngest
-from board_reader_inference.recognizer import StubRecognizer, frame_reader
+from board_reader_inference.recognizer import FrameReading, StubRecognizer, frame_reader
 from board_reader_inference.schedule import (
     DEFAULT_POLICY_SPEC,
     BurstTriggered,
@@ -82,7 +82,7 @@ class _Recorder:
         self.seen: list[tuple[str, int]] = []
         self._stub = frame_reader(StubRecognizer(START_PLACEMENT))
 
-    def estimate(self, frame: Frame) -> PositionEvent:
+    def estimate(self, frame: Frame) -> FrameReading:
         self.seen.append((frame.board_id, frame.seq))
         return self._stub(frame)
 
@@ -224,7 +224,7 @@ class _GatedEstimator:
         self.release = threading.Event()
         self._stub = frame_reader(StubRecognizer(START_PLACEMENT))
 
-    def estimate(self, frame: Frame) -> PositionEvent:
+    def estimate(self, frame: Frame) -> FrameReading:
         self.seen.append(frame.seq)
         if not self.entered.is_set():
             self.entered.set()
@@ -354,7 +354,7 @@ def test_a_declined_frame_publishes_nothing_at_all():
         ingest = FrameIngest(
             est.estimate,
             hub,
-            on_event=lambda event, frame: events.append(event),
+            on_event=lambda reading, frame: events.append(reading.event),
             policy=SHIPPED,
         )
         for seq in range(10):  # one capture second: the floor is 3

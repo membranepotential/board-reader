@@ -39,6 +39,14 @@ them (:meth:`FrameIngest.lifespan`).
 What a worker *does* with a frame is not this module's decision: it runs the
 :data:`~board_reader_inference.recognizer.FrameRead` it was built with — the same
 read ``POST /estimate`` runs (:func:`~board_reader_inference.recognizer.frame_reader`).
+What it does with the *read* is: the :class:`OrientationGuard` drops a read whose
+board points the wrong way, and the rest are repaired, debounced and published.
+
+**Motion updates.** :meth:`FrameIngest.submit` also turns every arriving frame's
+``stability`` into a :class:`~board_reader_core.protocol.MotionUpdate` on the hub
+(:class:`MotionThrottle` keeps it to about five a second per board), so a viewer
+can show a hand on the board between the sparse reads. Display state only: it is
+not a read, so it is neither recorded nor replayed.
 """
 
 from __future__ import annotations
@@ -46,17 +54,26 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import math
+import statistics
 import time
+from collections import deque
 from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass
 
-from board_reader_core.protocol import PositionEvent
+from board_reader_core.protocol import MotionUpdate, PositionEvent
 from board_reader_core.wire import Frame
 
 from board_reader_inference.hub import PositionHub
 from board_reader_inference.prior import decode
-from board_reader_inference.recognizer import FrameRead
-from board_reader_inference.schedule import DUE_EPS, EveryFrame, FramePolicy, stability_of
+from board_reader_inference.recognizer import FrameRead, FrameReading
+from board_reader_inference.schedule import (
+    DUE_EPS,
+    ENTER_BURST,
+    EveryFrame,
+    FramePolicy,
+    stability_of,
+)
 from board_reader_inference.stabilize import DEFAULT_SETTLE, BoardStabilizer, SettleConfig
 
 log = logging.getLogger(__name__)
@@ -84,6 +101,106 @@ SHARPNESS_WINDOW_S = 1.0
 #: only a genuinely stalled clock trips it, and the worst case is still a bounded
 #: gap of two keepalives rather than silence.
 BACKSTOP_SLACK = 2.0
+
+#: The most a read's direction may differ from its board's running angle and
+#: still be published, in degrees. ChessQ's direction held within 2 degrees over
+#: every frame of each recorded take, so a read 45 degrees off is not the camera
+#: moving: it is the model reading the board a quarter turn or a half turn wrong.
+MAX_TURN_DEG = 45.0
+
+#: The running angle is the circular median of this many recent published reads.
+DIRECTION_WINDOW = 9
+
+#: This many dropped reads in a row mean the camera really turned (a phone
+#: knocked in its holder), not a misread: the guard re-anchors on them, so a
+#: turned camera costs a few reads instead of blinding the board until the
+#: stream restarts.
+REANCHOR_AFTER = 5
+
+#: Motion updates for one board go out at least this far apart (the node's own
+#: clock): at most five a second, whatever the edge's frame rate. A change of
+#: ``moving`` always goes out at once.
+MOTION_INTERVAL_S = 0.2
+
+
+def _wrap_deg(deg: float) -> float:
+    """``deg`` as the same direction in ``[-180, 180)``."""
+    return (deg + 180.0) % 360.0 - 180.0
+
+
+@dataclass(frozen=True, slots=True)
+class Misoriented:
+    """A read the :class:`OrientationGuard` dropped: its board pointed elsewhere."""
+
+    seq: int
+    direction: float
+    running: float
+
+
+class OrientationGuard:
+    """Drops a read whose board direction contradicts the board's recent reads.
+
+    One per board stream, like the stabilizer. The running angle is the circular
+    median of the last :data:`DIRECTION_WINDOW` published reads; a read more than
+    :data:`MAX_TURN_DEG` from it is dropped (:class:`Misoriented`) and does not
+    move it. A ``seq`` that does not advance starts the guard afresh, because that
+    is a new streaming session (the recorder rolls on the same rule). A read with
+    no direction is published unchecked. No clock: replay stays deterministic.
+    """
+
+    def __init__(self) -> None:
+        self._recent: deque[float] = deque(maxlen=DIRECTION_WINDOW)
+        self._dropped: list[float] = []
+        self._last_seq: int | None = None
+
+    @property
+    def running(self) -> float | None:
+        """The board's running angle in degrees, or ``None`` before any read."""
+        if not self._recent:
+            return None
+        ref = self._recent[-1]
+        offset = statistics.median(_wrap_deg(a - ref) for a in self._recent)
+        return _wrap_deg(ref + offset)
+
+    def check(self, seq: int, direction: float | None) -> Misoriented | None:
+        """``None`` publishes the read; a :class:`Misoriented` drops it."""
+        if self._last_seq is not None and seq <= self._last_seq:
+            self._recent.clear()
+            self._dropped.clear()
+        self._last_seq = seq
+        if direction is None:
+            return None
+        running = self.running
+        if running is None or abs(_wrap_deg(direction - running)) <= MAX_TURN_DEG:
+            self._recent.append(direction)
+            self._dropped.clear()
+            return None
+        self._dropped.append(direction)
+        if len(self._dropped) < REANCHOR_AFTER:
+            return Misoriented(seq=seq, direction=direction, running=running)
+        log.warning(
+            "board direction re-anchored from %.0f to %.0f degrees after %d "
+            "dropped reads in a row: the camera turned",
+            running, direction, len(self._dropped),
+        )
+        self._recent = deque(self._dropped, maxlen=DIRECTION_WINDOW)
+        self._dropped = []
+        return None
+
+
+class MotionThrottle:
+    """Whether a board's next motion update goes out (module docstring)."""
+
+    def __init__(self) -> None:
+        self._moving: bool | None = None
+        self._sent_at = -math.inf
+
+    def due(self, moving: bool, now: float) -> bool:
+        """``now`` is the node's monotonic clock. True also records the send."""
+        if moving == self._moving and now - self._sent_at < MOTION_INTERVAL_S - DUE_EPS:
+            return False
+        self._moving, self._sent_at = moving, now
+        return True
 
 
 def _schedule_signal(frame: Frame) -> tuple[float, float]:
@@ -121,9 +238,12 @@ def prefer_frame(
 
 
 def _read_with_prior(
-    read: FrameRead, frame: Frame, stabilizer: BoardStabilizer
-) -> PositionEvent:
+    read: FrameRead, frame: Frame, stabilizer: BoardStabilizer, guard: OrientationGuard
+) -> FrameReading | Misoriented:
     """One estimate plus its hard-constraint repair, both off the event loop.
+
+    The :class:`OrientationGuard` sees the read first: a dropped read never
+    reaches the repair or the debounce, so a misread board cannot start settling.
 
     The repair rides the event as :attr:`PositionEvent.prior` (raw ``placement``
     and ``square_dist`` untouched), so every consumer of the stream — the viewer,
@@ -136,13 +256,18 @@ def _read_with_prior(
     The repaired read then feeds the board's :class:`.stabilize.BoardStabilizer`,
     and the debounced board rides as :attr:`PositionEvent.settled` — safe here
     despite the worker thread because each board's worker estimates strictly one
-    frame at a time, in order, which is exactly the stream a debounce needs.
+    frame at a time, in order, which is exactly the stream a debounce needs. The
+    guard relies on the same one-at-a-time order.
     """
-    event = read(frame)
+    reading = read(frame)
+    dropped = guard.check(frame.seq, reading.direction)
+    if dropped is not None:
+        return dropped
+    event = reading.event
     repair = decode(event.square_dist)
     event.prior = repair.to_repair()
     event.settled = stabilizer.observe(repair.placement, frame.capture_ts)
-    return event
+    return reading
 
 
 @dataclass(frozen=True, slots=True)
@@ -164,6 +289,10 @@ class _BoardWorker:
     #: the stabilizer: burst state describes *this* camera's stream, and a stream
     #: that went away and came back is a new camera, not a continuation.
     policy: FramePolicy
+    #: The board's orientation guard, per worker like the stabilizer.
+    guard: OrientationGuard
+    #: The board's motion-update rate limit (display only).
+    motion: MotionThrottle
 
 
 class FrameIngest:
@@ -177,7 +306,7 @@ class FrameIngest:
         read: FrameRead,
         hub: PositionHub,
         *,
-        on_event: Callable[[PositionEvent, Frame], None] | None = None,
+        on_event: Callable[[FrameReading, Frame], None] | None = None,
         policy: Callable[[], FramePolicy] = EveryFrame,
         settle: SettleConfig = DEFAULT_SETTLE,
     ) -> None:
@@ -192,8 +321,9 @@ class FrameIngest:
         self._policy = policy
         #: Each board's debounce is built with these knobs (``BR_SETTLE_*``).
         self._settle = settle
-        #: Called (on the event loop) for every published event, with the frame it
-        #: was estimated from — the gateway hangs its trial log off this.
+        #: Called (on the event loop) for every published read, with the frame it
+        #: was estimated from — the gateway hangs its trial log and the camera's
+        #: direction off this.
         self._on_event = on_event
         self._boards: dict[str, _BoardWorker] = {}
         self._warned_backstop: set[str] = set()
@@ -214,6 +344,9 @@ class FrameIngest:
         #: :meth:`submit`, but a stream that is *all* refusals must not be
         #: indistinguishable from one that never sent.
         self.frames_refused = 0
+        #: Read, then dropped by the board's :class:`OrientationGuard`: the board
+        #: pointed more than :data:`MAX_TURN_DEG` away from its recent reads.
+        self.frames_misoriented = 0
 
     def submit(self, frame: Frame) -> None:
         """Hand ``frame`` to its board's worker and return immediately.
@@ -239,7 +372,16 @@ class FrameIngest:
             # No worker yet, or a stopped one (post-shutdown): start a fresh board.
             worker = self._spawn(frame.board_id)
             self._boards[frame.board_id] = worker
-        worker.policy.observe(*_schedule_signal(frame))
+        capture_ts, stability = _schedule_signal(frame)
+        worker.policy.observe(capture_ts, stability)
+        # The scheduler's own burst threshold, which the UI mirrors as MOVING_BELOW.
+        moving = stability < ENTER_BURST
+        if worker.motion.due(moving, time.monotonic()):
+            self._hub.broadcast(
+                MotionUpdate(
+                    board_id=frame.board_id, moving=moving, stability=stability, ts=capture_ts
+                )
+            )
         worker.idle.clear()
         entry = (frame, time.time())
         try:
@@ -288,12 +430,19 @@ class FrameIngest:
         idle.set()
         stabilizer = BoardStabilizer(self._settle)
         policy = self._policy()
+        guard = OrientationGuard()
         task = asyncio.create_task(
-            self._run(board_id, inbox, idle, stabilizer, policy),
+            self._run(board_id, inbox, idle, stabilizer, policy, guard),
             name=f"ingest:{board_id}",
         )
         return _BoardWorker(
-            inbox=inbox, idle=idle, task=task, stabilizer=stabilizer, policy=policy
+            inbox=inbox,
+            idle=idle,
+            task=task,
+            stabilizer=stabilizer,
+            policy=policy,
+            guard=guard,
+            motion=MotionThrottle(),
         )
 
     async def _run(
@@ -303,6 +452,7 @@ class FrameIngest:
         idle: asyncio.Event,
         stabilizer: BoardStabilizer,
         policy: FramePolicy,
+        guard: OrientationGuard,
     ) -> None:
         """Estimate whatever is in the inbox, forever, one frame at a time."""
         backstop_s = BACKSTOP_SLACK * policy.keepalive_s
@@ -328,7 +478,9 @@ class FrameIngest:
                                 board_id, now - last_read,
                             )
                     last_read = now
-                    event = await asyncio.to_thread(_read_with_prior, self._read, frame, stabilizer)
+                    outcome = await asyncio.to_thread(
+                        _read_with_prior, self._read, frame, stabilizer, guard
+                    )
                 except asyncio.CancelledError:
                     raise
                 except Exception:
@@ -338,7 +490,19 @@ class FrameIngest:
                         "estimation failed (board %s, seq %d)", board_id, frame.seq
                     )
                 else:
+                    if isinstance(outcome, Misoriented):
+                        self.frames_misoriented += 1
+                        log.warning(
+                            "board %s seq %d: dropped a read pointing %.0f degrees, "
+                            "%.0f from the board's running %.0f — almost certainly "
+                            "a rotated misread; see /healthz ingest.misoriented",
+                            board_id, outcome.seq, outcome.direction,
+                            abs(_wrap_deg(outcome.direction - outcome.running)),
+                            outcome.running,
+                        )
+                        continue
                     self.frames_estimated += 1
+                    event = outcome.event
                     previous = self._hub.latest(board_id)
                     await self._hub.publish(event)
                     # Observers only, and guarded as such: a logging or recording
@@ -346,7 +510,7 @@ class FrameIngest:
                     try:
                         self._log_read(event, frame, previous, received)
                         if self._on_event is not None:
-                            self._on_event(event, frame)
+                            self._on_event(outcome, frame)
                     except Exception:
                         log.exception(
                             "post-publish observer failed (board %s, seq %d)",

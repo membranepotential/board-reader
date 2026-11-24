@@ -19,6 +19,8 @@ import numpy as np
 from board_reader_core.protocol import CLASSES, GRID, NUM_CLASSES
 from board_reader_core.sim import render_board
 
+from board_reader_inference.recognizer import Recognition
+
 #: Probability on the matched class; the rest is spread evenly over the others.
 CONFIDENCE = 0.95
 
@@ -46,7 +48,7 @@ class SimRecognizer:
     name = "sim"
     model_path: str | None = None
 
-    def read(self, image: np.ndarray) -> np.ndarray:
+    def read(self, image: np.ndarray) -> Recognition:
         h, w = image.shape[:2]
         if h != w or h % GRID:
             raise ValueError(f"not a sim render: {w}x{h} is not a square board of 8 squares")
@@ -60,4 +62,4 @@ class SimRecognizer:
                 cell = image[r * s : (r + 1) * s, c * s : (c + 1) * s].astype(np.float32)
                 cost = ((templates[(r + c) % 2] - cell) ** 2).sum(axis=(1, 2, 3))
                 dist[r, c, int(cost.argmin())] = CONFIDENCE
-        return dist
+        return Recognition(dist)

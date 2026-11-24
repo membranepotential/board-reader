@@ -107,16 +107,17 @@ def test_m2_adaptive_stream_over_a_recorded_game():
                 # The disconnect handler drains the board's worker, so shortly
                 # after the stream ends the event flow dries up: collect until
                 # a quiet second.
-                events = []
+                events, motions = [], []
                 while True:
                     try:
                         msg = await asyncio.wait_for(viewer.recv(), timeout=1.0)
                     except TimeoutError:
                         break
-                    events.append(json.loads(msg))
-                return sent, events
+                    message = json.loads(msg)
+                    (motions if message.get("type") == "motion" else events).append(message)
+                return sent, events, motions
 
-        sent, events = asyncio.run(run())
+        sent, events, motions = asyncio.run(run())
 
     # D4 — adaptive forwarding: the ~30 fps capture stream leaves the edge as a
     # keepalive trickle plus bursts, far below the raw frame count.
@@ -136,3 +137,8 @@ def test_m2_adaptive_stream_over_a_recorded_game():
     assert all(0.0 <= s <= 1.0 for s in stabilities)
     assert min(stabilities) < 0.7, "no burst-time event made it through"
     assert max(stabilities) > 0.85, "no settled keepalive event made it through"
+
+    # Motion updates ride the same socket between the reads: the hand goes on and
+    # off the board, and every change of `moving` is sent.
+    assert {m["moving"] for m in motions} == {True, False}
+    assert all(m["board_id"] == "A1" for m in motions)

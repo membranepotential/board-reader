@@ -14,12 +14,12 @@ import time
 import numpy as np
 from starlette.testclient import TestClient
 
-from board_reader_core.protocol import START_PLACEMENT, PositionEvent
+from board_reader_core.protocol import START_PLACEMENT
 from board_reader_core.wire import Frame
 
 from board_reader_inference.hub import PositionHub
 from board_reader_inference.ingest import SHARPNESS_WINDOW_S, FrameIngest, prefer_frame
-from board_reader_inference.recognizer import StubRecognizer, frame_reader
+from board_reader_inference.recognizer import FrameReading, StubRecognizer, frame_reader
 from board_reader_inference.server import create_app
 
 
@@ -51,7 +51,7 @@ class FakeEstimator:
         self.seen: list[tuple[str, int]] = []
         self._stub = frame_reader(StubRecognizer(START_PLACEMENT))
 
-    def estimate(self, frame: Frame) -> PositionEvent:
+    def estimate(self, frame: Frame) -> FrameReading:
         time.sleep(self.delays.get(frame.board_id, self.delay))
         self.seen.append((frame.board_id, frame.seq))
         if frame.seq in self.fail_seqs:
@@ -230,7 +230,7 @@ def test_settled_rides_the_stream_and_holds_through_a_one_read_flicker():
         ingest = FrameIngest(
             lambda frame: frame_reader(StubRecognizer(placements[frame.seq]))(frame),
             hub,
-            on_event=lambda event, frame: events.append(event),
+            on_event=lambda reading, frame: events.append(reading.event),
         )
         for seq in range(3):
             ingest.submit(_frame(seq=seq))
@@ -293,9 +293,9 @@ def test_each_board_settles_with_the_ingest_settle_config():
     e4 = "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR"
     boards = {0: START_PLACEMENT, 1: e4}
 
-    def read(frame: Frame) -> PositionEvent:
-        dist = StubRecognizer(boards[frame.seq]).read(frame.image)
-        return event_from_dist(frame, dist)
+    def read(frame: Frame) -> FrameReading:
+        dist = StubRecognizer(boards[frame.seq]).read(frame.image).square_dist
+        return FrameReading(event_from_dist(frame, dist))
 
     async def run(settle: SettleConfig) -> str:
         hub = PositionHub()

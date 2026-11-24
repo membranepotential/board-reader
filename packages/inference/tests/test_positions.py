@@ -18,6 +18,7 @@ from websockets.asyncio.server import serve
 from board_reader_core.protocol import (
     EMPTY_PLACEMENT,
     START_PLACEMENT,
+    MotionUpdate,
     PositionEvent,
     dist_from_placement,
     iso_utc,
@@ -160,6 +161,18 @@ def test_follow_yields_validated_events_in_order():
     # derived from square_dist, so a broken round trip shows up here.
     assert all(e.placement == START_PLACEMENT for e in events)
     assert events[0].square_dist.shape == (8, 8, 13)
+
+
+def test_follow_skips_motion_updates():
+    """The /viewer socket interleaves motion updates; they are not positions."""
+    motion = MotionUpdate(board_id="A1", moving=True, stability=0.2, ts=1.0)
+
+    async def go():
+        server = await _serve([motion, _event(START_PLACEMENT, seq=4), motion])
+        async with server:
+            return [e async for e in follow(_url(server))]
+
+    assert [e.seq for e in _run(go())] == [4]
 
 
 def test_follow_filters_by_board_and_limit_counts_only_yielded_events():

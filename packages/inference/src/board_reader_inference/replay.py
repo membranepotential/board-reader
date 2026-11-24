@@ -139,7 +139,7 @@ from board_reader_core.recording import (
 )
 from board_reader_core.wire import decode_jpeg
 
-from board_reader_inference.ingest import _read_with_prior
+from board_reader_inference.ingest import Misoriented, OrientationGuard, _read_with_prior
 from board_reader_inference.recognizer import FrameRead, build_from_env, frame_reader
 from board_reader_inference.schedule import (
     EveryFrame,
@@ -391,6 +391,9 @@ class ReplayStats:
     #: looked at, so this is a shorter TAKE, not a sparser reading of a long one.
     truncated: bool = False
     frames_failed: int = 0  # the estimator raised; the stream goes on, as it does live
+    #: Read, then dropped by the orientation guard (``ingest.OrientationGuard``),
+    #: exactly as the live worker drops it.
+    frames_misoriented: int = 0
     frames_missing: int = 0  # index line points at a JPEG that is gone
     #: Frames the motion meter re-scored under ``--restamp-stability``. Counted
     #: over the whole session, not over the reads: the meter has to see every
@@ -405,6 +408,7 @@ class ReplayStats:
             "frames_skipped_policy": self.frames_skipped_policy,
             "truncated": self.truncated,
             "frames_failed": self.frames_failed,
+            "frames_misoriented": self.frames_misoriented,
             "frames_missing": self.frames_missing,
             "frames_restamped": self.frames_restamped,
             "wall_seconds": round(self.wall_seconds, 2),
@@ -504,6 +508,9 @@ def replay(
     out = _checked_out_dir(out_dir, recording)
     out.mkdir(parents=True, exist_ok=True)
     stabilizer = BoardStabilizer(settle)
+    # One for the replay, like the stabilizer: it starts afresh by itself on the
+    # seq restart that separates two sessions.
+    guard = OrientationGuard()
     stats = ReplayStats()
     decode = _decoder(recording)
     total = sum(sessions[i].frames for i in chosen)
@@ -558,11 +565,20 @@ def replay(
                     header=entry.header, jpeg=jpeg, received_ts=entry.received_ts
                 ).frame()
                 try:
-                    event = _read_with_prior(read, frame, stabilizer)
+                    outcome = _read_with_prior(read, frame, stabilizer, guard)
                 except Exception as e:  # one bad frame is not the end of the stream
                     stats.frames_failed += 1
                     _say(log, f"  seq {entry.seq}: estimation failed ({e})")
                     continue
+                if isinstance(outcome, Misoriented):
+                    stats.frames_misoriented += 1
+                    _say(
+                        log,
+                        f"  seq {entry.seq}: dropped, board pointing "
+                        f"{outcome.direction:.0f} deg vs running {outcome.running:.0f}",
+                    )
+                    continue
+                event = outcome.event
                 events.write(
                     json.dumps(event_line(event, frame, published_ts=None)) + "\n"
                 )
@@ -799,6 +815,7 @@ def render(result: ReplayResult) -> str:
     skipped = [
         (s.frames_skipped_policy, "by the frame policy"),
         (s.frames_failed, "the estimator raised on"),
+        (s.frames_misoriented, "dropped by the orientation guard"),
         (s.frames_missing, "whose JPEG is gone"),
     ]
     detail = ", ".join(f"{n} {what}" for n, what in skipped if n)

@@ -672,7 +672,7 @@ def read_board(recognizer: Recognizer, board: LabeledBoard) -> np.ndarray:
     image = cv2.imread(str(board.image), cv2.IMREAD_COLOR)
     if image is None:
         raise ValueError(f"could not read {board.image}")
-    return np.asarray(recognizer.read(image), dtype=np.float32)
+    return np.asarray(recognizer.read(image).square_dist, dtype=np.float32)
 
 
 def score_board(board: LabeledBoard, dist: np.ndarray) -> BoardResult:
