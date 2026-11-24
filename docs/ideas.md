@@ -3,18 +3,54 @@ aliases: [ideas, reevaluation ideas, architecture options]
 tags: [board-reader/ideas, board-reader/recognition, board-reader/data]
 ---
 
-# Ideas — the 2026-08-29 step-back reevaluation
+# Ideas
 
-_Parked, not planned. After the 08-28/29 improvement cycle closed with every
-challenger NO-GO ([[2026-08-29-bank-rematch]]), this survey reevaluated the
-system against the modern CV landscape (research pass 2026-08-29). Nothing here
-is committed work; when one is picked up it gets a plan in `docs/plans/` and a
-gate like any other challenger._
+_Parked, not planned. Nothing here is committed work; when one is picked up it gets a
+plan in `docs/plans/` and a gate like any other challenger._
 
-## The frame — what actually needs attacking
+## 2026-11-24 — a fully on-phone, portable app (user idea)
 
-The measured residual is **not** "classifier too weak" in general. It is three
-specific things, and an idea that attacks none of them is noise:
+Run recognition in the phone's browser, so the phone is the whole system. Feasible
+because ChessQ Lite int8 targets browser WASM (Lichess runs it client-side) and ChessCam
+runs in the browser at ~100 ms per frame on a Pixel 7a CPU. The control channel and the
+recognizer contract carry over; the read scheduler, prior repair and settle debounce
+would need a TypeScript port. Open: the **sink** (Lichess broadcast or PGN, a WebSocket
+endpoint, a local file) and latency on a mid-range phone. Full note, with a first
+experiment: [[on-phone-app]].
+
+## Live-viewer proposals from the 2026-08-27 mockups
+
+The static UI mockups (`docs/mockups/`, deleted 2026-11-24; `git show 7f56f58:docs/mockups/viewer.html`)
+carried two proposals that were never built: a **numbers** toggle on the live card
+printing each square's top-class probability, and a **raw · prior · settled** switch naming
+which board the card draws. The user asked for future mockups as interactive simulations,
+not storyboards.
+
+## What needs attacking now (2026-11-24)
+
+Since ChessQ became the recognizer (DESIGN D10) the crop-stack residuals below are gone
+with the crop stack. What remains, from the gate and the framing run
+([[2026-11-24-settle-tuning]], [[2026-11-24-chessq-framing]]):
+
+1. **Hands read as confident empties.** The burst-end scheduler and the settle debounce
+   absorb them on the gate, at a median move-to-settle time of 3.0 s.
+2. **Framing.** The board must fill at least half of the sent width.
+3. **Data.** The gate is four takes of one physical set and one camera. More varied
+   recordings (idea C) are the binding need, for measurement and for any offline LoRA
+   (DESIGN M5).
+
+## The 2026-08-29 step-back reevaluation (crop-stack era)
+
+After the 08-28/29 improvement cycle closed with every challenger NO-GO
+([[2026-08-29-bank-rematch]]), this survey reevaluated the system against the modern CV
+landscape (research pass 2026-08-29). It was written for the crop stack. Status after
+ChessQ: ideas A–C (data) still apply; ideas 1–3 (architecture) are moot, because the
+end-to-end model they worked around now serves; idea 4 was refuted by ChessQ.
+
+### The frame then — what needed attacking (historical)
+
+The measured residual was **not** "classifier too weak" in general. It was three
+specific things, and an idea that attacked none of them was noise:
 
 1. **Per-square crops break under occlusion/lean** — 44 % of residual is crop
    bleed ([[2026-08-28-retrain-program]]); decapitation at phone height; the c6
@@ -31,6 +67,9 @@ specific things, and an idea that attacks none of them is noise:
 ## Data ideas
 
 ### A. Legality-constrained auto-labeling of game video (the data engine)
+
+_Still applies; the reader it decodes is now ChessQ (~99 % per square). ChessQueries'
+own PGN-aligned producer is the off-the-shelf alternative ([[2026-10-09-chessqueries-handoff]])._
 
 A game video is not "unlabeled" — the legal-move graph is a brutal prior. Run
 the current ~92 %-per-square reader over a whole game, then Viterbi-decode the
@@ -77,6 +116,9 @@ dense boards ([SEAM](https://arxiv.org/pdf/2508.18179),
 
 ### 1. Detection-first re-architecture — pieces as objects, not squares as crops
 
+_Moot since 2026-11-24: ChessQ reads the whole frame end to end, so there are no crops
+to bleed._
+
 Detect every piece with a fine-tuned detector, take each detection's **base
 point**, map it through the homography to a square. This dissolves the
 bleed/decapitation/attribution family **by construction** — a leaning knight is
@@ -89,12 +131,14 @@ one object with one base, not pixels contaminating three crops.
   chess pipelines already run this shape
   ([example](https://github.com/siromermer/Dynamic-Chess-Board-Piece-Extraction)).
 - Labels: the Blender pipeline can emit boxes/keypoints for free
-  ([[synthetic pipeline|training-and-data]]); real fine-tune data comes from
+  ([[training-and-data|synthetic pipeline]]); real fine-tune data comes from
   idea A.
 - Cost: a genuine second pipeline, and the bank — our best asset — needs
   rethinking (likely a per-detection embedding bank instead of per-square).
 
 ### 2. DINOv3 bank/backbone swap — PROBED 2026-08-31: NO-GO as a swap
+
+_Closed; there is no bank or backbone of ours any more._
 
 > [!important] Measured ([[2026-08-31-dinov3-probe]]): the frozen cross-style
 > ceiling moves ~80 % → ~83 % (n.s., p = 0.137), central pooling does **not**
@@ -118,13 +162,20 @@ GPU suffices for the probe.
 
 ### 3. SAM 3 as offline labeling/masking tooling
 
+_Masking is moot with ChessQ; SAM 3 as labeling tooling for idea A still could apply._
+
 [SAM 3](https://ai.meta.com/research/publications/sam-3-segment-anything-with-concepts/)
 (Nov 2025) segments *every instance* of a text concept ("chess piece") at once.
 Too heavy to deploy; as tooling it upgrades two things: real instance masks
 instead of the gray prism (train-time occlusion-aware crops), and auto-labeling
 for A/1 (masks → base points → squares). Low-risk, bounded scope.
 
-### 4. End-to-end whole-board model — explicitly a non-idea
+### 4. End-to-end whole-board model — explicitly a non-idea (REFUTED 2026-11-24)
+
+> [!important] Refuted by ChessQ ([[2026-11-24-chessq-v6-replay-gate]]): ChessQ Lite V6,
+> an end-to-end whole-board model, read 92/101 raw perfect boards on our gate, cold,
+> against the crop stack's 5. It is now the recognizer (DESIGN D10). The paragraph
+> below is the 08-29 reasoning, kept as written.
 
 The literature's best end-to-end result on real photos
 ([ChessReD ResNeXt](https://arxiv.org/abs/2310.04086)) reaches **15.26 %
@@ -132,10 +183,13 @@ full-board accuracy** — celebrated as 7× the prior SOTA. Our pipeline does 35
 perfect settled boards across 4 takes at ~92–99 % per-square. The field's e2e
 frontier is behind us; don't chase it.
 
-## Recommended sequence (when picked up)
+## Recommended sequence (2026-08-29, crop-stack era)
+
+_Superseded by ChessQ: stage 3 is moot, and the RunPod pipeline is deleted. Stage 2's
+prerequisite, varied recordings, is still open._
 
 A chain, not a menu — each stage independently gateable on the existing 4-take
-harness, cheap on the RunPod pipeline:
+harness:
 
 1. ~~**DINOv3 probe** (idea 2)~~ — done 2026-08-31, NO-GO as a swap
    ([[2026-08-31-dinov3-probe]]); banked as a fine-tune init.
@@ -153,7 +207,8 @@ harness, cheap on the RunPod pipeline:
 
 ## Related
 
-- [[2026-08-29-bank-rematch]] — the cycle whose close triggered this
-- [[training-and-data]] — the current harness these ideas would extend/replace
+- [[on-phone-app]] — the fully on-phone app idea
+- [[2026-08-29-bank-rematch]] — the cycle whose close triggered the 08-29 survey
+- [[training-and-data]] — the deleted harness these ideas would have extended
 - [[youtube-streams]] — the angle audit constraining idea B
 - [[operating-envelope]] — what "extending the envelope" means precisely
