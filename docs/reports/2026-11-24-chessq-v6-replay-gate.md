@@ -107,3 +107,26 @@ bank on this machine.
   11/11 perfect) are the cross-scene evidence.
 - **Hand frames are still read confidently.** The settled stream absorbed them here.
   A reader that publishes raw reads, or a faster settle, needs a hand gate.
+
+## Update 2026-11-24: rescored after the truth fixes
+
+Two truth files were corrected the same day (recordings are gitignored; backups of
+the old files were not kept in the repo):
+
+- **181802** now covers the whole take: 7.Qd2 Nf6 8.O-O-O Bb4 9.a3 Be7 10.f4 at
+  seqs 200/203/211/242/265/268/271.
+- **111421**: the segments at 181 and 194 each merged two moves. They are now
+  171 d3, 180 ...Qe7, 183 Nc3, 186 ...Qd8.
+
+A ChessQ V6 per-frame sweep proposed both fixes. Each boundary was checked by eye on
+the JPEGs, and each move list was replayed for legality with python-chess.
+Rescored (`eval-session` on the existing replay directories, no re-read):
+
+| take | raw perfect | settled perfect |
+|---|---|---|
+| 181802 | 2/37 → **36/37** | 3/37 → **27/37** |
+| 111421 | 2/21 → **20/21** | 5/21 → **18/21** |
+| **4-take total** (with 08-13, 175539 unchanged) | 5/101 → **92/101** | 35/101 → **84/101** |
+
+The 15-board "truth-covered" table above is superseded. The settle lag remains the
+largest loss (92 raw vs 84 settled).

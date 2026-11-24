@@ -123,6 +123,19 @@ Three consequences:
 Probe frames from the screen live with the session scratchpad, not `data/` —
 re-pull via the ids above and `get-frames-from-yt` when one is adopted.
 
+## 2026-11-24 — World Championship broadcast (user pick, not yet audited)
+
+| video id | what | length | aspect |
+|---|---|---|---|
+| `TDx2DGiBGhc` | FIDE World Championship 2026, Gukesh–Sindarov, "No Commentary" feed, 1080p | live on 2026-11-24 | not measured |
+
+Suggested by the user as training data. Its value is the **labels**: a World
+Championship game has an official PGN (Lichess relay), so its frames can be
+labeled by aligning the video to the move list, which is the SLCC approach in
+[[2026-10-09-chessqueries-handoff]]. Next: once the stream is archived, run
+`get-frames-from-yt` (crop + angle gate), then decide whether it feeds the
+auto-label engine.
+
 ## What survives a culled stream
 
 Nothing is lost when a video is deleted: the video id, its crop, and any frames already
