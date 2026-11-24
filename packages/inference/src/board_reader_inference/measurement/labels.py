@@ -42,6 +42,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, get_args
 
+import chess
 import numpy as np
 
 from board_reader_core.protocol import encode_placement, parse_placement
@@ -109,17 +110,17 @@ def rotate_square(square: str, k: int) -> str:
     Derived from ``np.rot90`` on an index grid rather than from arithmetic, so the
     two can never drift apart: the piece on ``square`` in ``placement`` is always
     the piece on ``rotate_square(square, k)`` in ``rotate_placement(placement, k)``
-    (locked by a test). Used to carry square references — like the hard-constraint
-    decoder's repaired squares — from the frame the operator *saw* into the corner
-    frame a label is stored in.
+    (locked by a test). Used to carry square references — like the repaired squares
+    old labels record — from one frame into another.
     """
-    file_, rank = square[0], square[1:]
-    if file_ not in "abcdefgh" or rank not in [str(n) for n in range(1, 9)]:
-        raise ValueError(f"not an algebraic square: {square!r}")
-    r, c = 8 - int(rank), "abcdefgh".index(file_)
+    try:
+        named = chess.parse_square(square)
+    except ValueError as e:
+        raise ValueError(f"not an algebraic square: {square!r}") from e
+    r, c = 7 - chess.square_rank(named), chess.square_file(named)
     moved = np.rot90(np.arange(64).reshape(8, 8), k)
     rows, cols = np.where(moved == r * 8 + c)
-    return f"{'abcdefgh'[int(cols[0])]}{8 - int(rows[0])}"
+    return chess.square_name(chess.square(int(cols[0]), 7 - int(rows[0])))
 
 
 def best_rotation(truth: str, read: str) -> int:

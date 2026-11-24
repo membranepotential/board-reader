@@ -20,11 +20,14 @@ was reached, and the raw read on the wire is never changed.
   two bishops, two rooks, one queen) used up a pawn, and a surviving pawn has not
   promoted, so surplus officers plus pawns are at most 8.
 
-The board is a :class:`chess.Board` (python-chess, GPL-3.0-or-later; see
-THIRD-PARTY.md). Its own :meth:`chess.Board.status` does not fit the counts:
-``TOO_MANY_KINGS`` fires only on three kings in all, so two white kings pass, and
-it has no promotion budget. The counts are therefore taken here, off its
-bitboards.
+The board is a :class:`chess.BaseBoard` (python-chess, GPL-3.0-or-later; see
+THIRD-PARTY.md), the piece placement alone. :meth:`chess.Board.status` does not fit
+the counts: ``TOO_MANY_KINGS`` fires only on three kings in all, so two white kings
+pass, and it has no promotion budget. The counts are therefore taken here, off the
+board's bitboards. The checks ``status`` adds that hold whoever is to move (both
+kings in check, impossible checkers, a pawn on rank 1/8) were measured and left
+out: no ChessQ read or settle on the gate takes breaks one
+(docs/reports/2026-11-24-prior-backrank.md).
 
 The placement is in the chess frame (row 0 is rank 8), as every read is since the
 recognizer resolves the orientation (DESIGN D10, locked decision #15).
@@ -63,27 +66,19 @@ class Violation:
         return self.kings + self.pieces + self.promotions
 
 
-def board(placement: str) -> chess.Board:
-    """``placement`` (FEN field 1) as a python-chess board, White to move.
-
-    No castling rights and no en-passant square: a placement says neither.
-    """
-    return chess.Board(f"{placement} w - - 0 1")
-
-
-def _count(position: chess.Board, piece: chess.PieceType, color: chess.Color) -> int:
+def _count(position: chess.BaseBoard, piece: chess.PieceType, color: chess.Color) -> int:
     return chess.popcount(position.pieces_mask(piece, color))
 
 
-def _promotions(position: chess.Board, color: chess.Color) -> int:
+def _promotions(position: chess.BaseBoard, color: chess.Color) -> int:
     surplus = sum(
         max(0, _count(position, piece, color) - free) for piece, free in _STARTING_OFFICERS
     )
     return surplus + _count(position, chess.PAWN, color)
 
 
-#: Placements whose :func:`violation` is kept. Building a :class:`chess.Board`
-#: from a placement costs about 0.1 ms, the guard asks several times per read,
+#: Placements whose :func:`violation` is kept. Building a :class:`chess.BaseBoard`
+#: from a placement costs about 0.06 ms, the guard asks several times per read,
 #: and a board's stream repeats the same few placements over and over.
 CACHED_PLACEMENTS = 4096
 
@@ -91,7 +86,7 @@ CACHED_PLACEMENTS = 4096
 @lru_cache(maxsize=CACHED_PLACEMENTS)
 def violation(placement: str) -> Violation:
     """How far ``placement`` breaks each condition (module docstring)."""
-    position = board(placement)
+    position = chess.BaseBoard(placement)
     colors = (chess.WHITE, chess.BLACK)
     return Violation(
         kings=sum(max(0, _count(position, chess.KING, c) - 1) for c in colors),

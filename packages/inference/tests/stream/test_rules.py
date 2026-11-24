@@ -87,3 +87,32 @@ def test_free_rules_count_nothing():
     two_kings = _army("KK")
     assert excess(two_kings, "standard") == violation(two_kings).total == 1
     assert excess(two_kings, "free") == 0
+
+
+def test_every_count_python_chess_flags_is_flagged_here_too():
+    """Seeded property: our counts are at least as strict as python-chess's own
+    count flags on the same board, and stricter only where documented (two kings
+    of one colour, the promotion budget)."""
+    import random
+
+    import chess
+
+    counted = (
+        chess.STATUS_TOO_MANY_KINGS
+        | chess.STATUS_TOO_MANY_WHITE_PIECES
+        | chess.STATUS_TOO_MANY_BLACK_PIECES
+        | chess.STATUS_TOO_MANY_WHITE_PAWNS
+        | chess.STATUS_TOO_MANY_BLACK_PAWNS
+    )
+    rng = random.Random(7)
+    stricter = both = 0
+    for _ in range(2000):
+        cells = [rng.choice("KkQqPpNn" + "." * 40) for _ in range(64)]
+        rows = ["".join(cells[r * 8 : r * 8 + 8]) for r in range(8)]
+        placement = "/".join(_rank_fen(row) for row in rows)
+        flagged = bool(chess.Board(f"{placement} w - - 0 1").status() & counted)
+        ours = violation(placement).total > 0
+        assert ours or not flagged, placement
+        stricter += ours and not flagged
+        both += ours and flagged
+    assert stricter > 0 and both > 0  # the stream reaches both kinds of board
