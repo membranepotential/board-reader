@@ -13,8 +13,17 @@ see [[TESTING]].
 
 ```bash
 uv sync                                   # the whole workspace + dev tools
-uv run pytest                             # must be green before any commit
+make models                               # the ChessQ weights (pinned, SHA-256 checked)
+make test                                 # must be green before any commit
 ```
+
+`make models` reads the release descriptor committed under `models/chessq/` and
+downloads the weights from the pinned Hugging Face revision; a file whose SHA-256
+already matches is left alone, and a download that does not match replaces
+nothing. Without the weights every entry point still starts, but the node serves
+the **stub recognizer** (a fixed start position): it prints `!! BR_CHESSQ=... does
+not name a model file; run `make models`` at startup, and `GET /healthz` carries a
+`recognizer.fallback` with the same reason.
 
 **The canonical demo** — three containers, `edge → inference → viewer`:
 
@@ -31,19 +40,28 @@ uv run board-reader-edge feed             # synthetic feed
 uv run board-reader-edge feed --video clip.mp4 --throttle   # or a real clip
 ```
 
-**The phone flow** — serve on the LAN and open `/snapshot` on the phone:
+**The phone flow** — `make dev`, then open `/snapshot` or `/camera` on the phone.
+By hand:
 
 ```bash
-BR_MODEL=models/run_e/model.onnx \
-BR_SESSION_BANK=models/exemplars_session.npz \
+BR_CHESSQ=models/chessq/cq-vit-s-644-v6-seed1-onnx-int8-r1.onnx \
 BR_SAVE_UPLOADS=data/uploads \
-BR_CROP_MASK=gray \
 uv run board-reader-inference serve --host 0.0.0.0
 ```
 
-Take a photo, and the position appears. No taps required — corners are auto-detected,
-orientation is auto-resolved, and calibration bootstraps itself the first time you
-photograph a start position.
+Take a photo, and the position appears. No taps required: ChessQ finds the board
+and its orientation in the whole frame (DESIGN D10), so corners are not needed.
+
+**What the compose demo reads (D3, measured 2026-11-24).** The compose edge streams
+`core.sim` synthetic renders (letters on coloured squares), and ChessQ does **not**
+read them: on the 14 positions of `SAMPLE_GAME_PLACEMENTS` it scores 0/14 perfect
+boards and 79 % per square at the feed's 48 px squares (58 % at 96 px, 80 % on
+`simulate_angled_view`). Every empty square reads empty; only 250 of 436 pieces
+read right (the start position comes back `r.bk.bnr/pppppppp/8/8/8/8/P.P...PP/RNBK...R`).
+So the compose demo proves the pipe — frames in, a changing position out, the
+settled board, the stream bursting through each synthetic hand — but not
+recognition. Use a real board on `/camera`, or replay a recorded take, to see
+recognition.
 
 ## Environment
 
@@ -57,25 +75,25 @@ photograph a start position.
 > deliberately environment-specific ones. `aspects.yaml` carries the pair as the
 > `deploy` aspect so `/drift` sees them together.
 >
-> `make dev` prints the composition it resolved on startup (`recognition BR_MODEL +
-> BR_MODEL_B — the same cascade compose.yaml serves`). It withholds `BR_MODEL_B`
-> when that file is absent, or when `BR_MODEL_TUNED` asks for the other
-> composition — both of which the node treats as hard startup errors.
+> Since DESIGN D10 both set `BR_CHESSQ` and nothing else that shapes recognition.
+> `make dev` prints what it serves on startup (`recognition ChessQ Lite (...) — the
+> same recognizer compose.yaml serves`, or `!! ... missing — the node serves the
+> STUB recognizer; run 'make models'`).
 
 **Inference node**
 
 | Variable | Effect |
 |---|---|
-| `BR_MODEL` | ONNX crop classifier → `TrainedEstimator`. The zero-shot default. Reads its crop geometry from `<model>.onnx.meta.json`. |
-| `BR_MODEL_B` | A second crop classifier on a different crop geometry → `CascadeEstimator`. Squares `BR_MODEL` is unsure about are re-read by this one and the two averaged. **Both members must ship a geometry sidecar** — a missing one is a startup failure, not a warning. `GET /healthz` reports how often it fires. |
-| `BR_CASCADE_TAU` | The cascade's confidence gate (default `0.95`): squares whose max probability falls below it go to `BR_MODEL_B`. Lower = cheaper and closer to `BR_MODEL` alone. |
-| `BR_CROP_MASK` | Occlusion-aware crop masking: `gray` (the deployed default in `compose.yaml` and `make dev`) fills each crop's pixels that fall inside a *closer* neighbor's prism before classify/embed; `blur` blurs them; unset = unmasked. Shipped 2026-08-28 — perfect boards ≈20→35 on the 4-take gate, mostly by unlatching bank nearest-exemplar locks ([[recognition-pipeline#Occlusion masking — the deployed default since 2026-08-28]]). |
-| `BR_MODEL_TUNED` | A calibration fine-tune of `BR_MODEL`, from `tools/train/calibrate_finetune.py` → `AveragedEstimator`: both models read every square off **one** crop pass (they share a geometry) and the distributions are averaged 50/50. Measured 0.969 on the board it was calibrated for, against `BR_MODEL` alone at 0.938. Two hard startup errors, both deliberate: **without `BR_MODEL`** (the tuned model alone hallucinates pieces onto empty squares — it is the base's vote that suppresses them), and **together with `BR_MODEL_B`** (an unmeasured stack; pick one). `GET /healthz` names both members. |
+| `BR_CHESSQ` | **The default recognizer, set by both entry points** (DESIGN D10). ChessQ Lite ONNX → `ChessQRecognizer` (the `recognizer.py` seam), which reads the whole frame and finds the board and its orientation by itself. Outranks `BR_MODEL*`, `BR_CENTROIDS` and the session bank. A missing file degrades to the stub recognizer, loudly (startup banner, `recognizer.fallback` on `/healthz`); `make models` fetches it. **`/calibrate` answers 409 while a recognizer serves.** `GET /healthz` reports `recognizer: {name, model}`. Weights are PolyForm Noncommercial and live in `models/chessq/` (THIRD-PARTY.md). Gate result: [[2026-11-24-chessq-v6-replay-gate]]. |
+| `BR_MODEL` | *Pre-D10 stack, reachable only with `BR_CHESSQ` unset; removed in Phase B.* ONNX crop classifier → `TrainedEstimator`. Reads its crop geometry from `<model>.onnx.meta.json`. |
+| `BR_MODEL_B` | *Pre-D10 stack.* A second crop classifier on a different crop geometry → `CascadeEstimator`. Squares `BR_MODEL` is unsure about are re-read by this one and the two averaged. **Both members must ship a geometry sidecar** — a missing one is a startup failure, not a warning. `GET /healthz` reports how often it fires. |
+| `BR_CASCADE_TAU` | *Pre-D10 stack.* The cascade's confidence gate (default `0.95`): squares whose max probability falls below it go to `BR_MODEL_B`. Lower = cheaper and closer to `BR_MODEL` alone. |
+| `BR_CROP_MASK` | *Pre-D10 stack.* Occlusion-aware crop masking: `gray` (the deployed default until D10) fills each crop's pixels that fall inside a *closer* neighbor's prism before classify/embed; `blur` blurs them; unset = unmasked. Shipped 2026-08-28 — perfect boards ≈20→35 on the 4-take gate, mostly by unlatching bank nearest-exemplar locks ([[recognition-pipeline#Occlusion masking — the deployed default since 2026-08-28]]). |
+| `BR_MODEL_TUNED` | *Pre-D10 stack.* A calibration fine-tune of `BR_MODEL`, from `tools/train/calibrate_finetune.py` → `AveragedEstimator`: both models read every square off **one** crop pass (they share a geometry) and the distributions are averaged 50/50. Measured 0.969 on the board it was calibrated for, against `BR_MODEL` alone at 0.938. Two hard startup errors, both deliberate: **without `BR_MODEL`** (the tuned model alone hallucinates pieces onto empty squares — it is the base's vote that suppresses them), and **together with `BR_MODEL_B`** (an unmeasured stack; pick one). `GET /healthz` names both members. |
 | `BR_SCHEDULE` | Which arriving frames get an estimate, as a `replay --policy` spec — the same string a sweep measured. Default (set by `serve`, also `--schedule`): `burst-end:burst_end_reads=3`, i.e. read at the end of each move plus a 3 s keepalive floor; ~12× fewer estimates than reading everything, for −0.9 pp prior per-square ([the sweep](reports/2026-08-27-move-trigger-sweep.md)). **The live event stream is sparse by design** — `GET /healthz` shows `ingest.unscheduled` climbing while `estimated` crawls, and that is the system working. `every-frame` is the way back. `ingest.backstopped > 0` means an edge's `capture_ts` stopped advancing and the node is reading on its own clock to stay alive. |
-| `BR_SESSION_BANK` | Path for the per-set exemplar bank. **Opt-in: unset means nothing is ever written.** With `BR_MODEL` set, the two are ensembled. |
-| `BR_CENTROIDS` | An explicit curated calibration file. Outranks `BR_MODEL`. |
-| `BR_CHESSQ` | **Opt-in, set by neither entry point.** ChessQ Lite ONNX → `ChessQRecognizer` (the `recognizer.py` seam), which reads the whole frame by itself. Outranks `BR_MODEL`, `BR_CENTROIDS` and the session bank; a missing file is a startup error. **`/calibrate` answers 409 while it serves.** `GET /healthz` names the model under `chessq`. Weights are PolyForm Noncommercial and live in `models/chessq/` (see THIRD-PARTY.md). Gate result: [[2026-11-24-chessq-v6-replay-gate]]. |
-| `BR_OCCUPANCY_BANK` | A style-agnostic occupancy bank; enables the occupancy-only answer and start-position auto-calibration before any piece-type calibration exists. |
+| `BR_SESSION_BANK` | *Pre-D10 stack.* Path for the per-set exemplar bank. **Opt-in: unset means nothing is ever written.** With `BR_MODEL` set, the two are ensembled. |
+| `BR_CENTROIDS` | *Pre-D10 stack.* An explicit curated calibration file. Outranks `BR_MODEL`. |
+| `BR_OCCUPANCY_BANK` | *Pre-D10 stack.* A style-agnostic occupancy bank; enables the occupancy-only answer and start-position auto-calibration before any piece-type calibration exists. |
 | `BR_SAVE_UPLOADS` | Directory for retained phone photos + sidecars (placement, `autorotated`). This is what turns field shots into eval data. |
 | `BR_RECORD_DIR` | Directory for recorded ingress sessions. `serve` sets it to `recordings/` by default, so **every served run is replayable**; `serve --no-record` turns it off. |
 | `BR_RECORD_MAX_MB` | Disk-fill stop for the recorder (default: no cap). The session truncates rather than rotating. |

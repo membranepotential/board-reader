@@ -5,8 +5,9 @@ follow from that, and both matter before you redistribute anything:
 
 1. The **built viewer bundle** incorporates GPL-licensed code, so the bundle as
    distributed is **GPL-3.0-or-later**.
-2. The **trained model artifacts** derive from non-commercially-licensed training
-   data and are **not redistributable at all**. They are git-ignored on purpose.
+2. The **model artifacts** are **not redistributable at all**: the core recognizer
+   (ChessQ Lite V6) is PolyForm Noncommercial, and our older trained models derive
+   from non-commercially-licensed training data. They are git-ignored on purpose.
 
 ---
 
@@ -55,21 +56,32 @@ The resulting weights are a derivative of the first two rows: **fine for persona
 research use, not for commercial use, and not ours to redistribute.** See
 [docs/training-and-data.md](docs/training-and-data.md) for the full ledger.
 
-`.gitignore` enforces this — `models/`, `data/`, `scratch/`, `recordings/` and `*.onnx`
-never enter the repository. Keep it that way.
+`.gitignore` enforces this — `models/` (except the ChessQ release descriptors, which
+hold no weights), `data/`, `scratch/`, `recordings/` and `*.onnx` never enter the
+repository. Keep it that way.
 
 The **backbone** is the exception: DINOv2 ViT-S/14 is **Apache-2.0** (code and weights,
 [facebookresearch/dinov2](https://github.com/facebookresearch/dinov2)) and
 `tools/export_dinov2_onnx.py` converts the official Meta weights locally rather than
 pulling a third-party re-host.
 
-**ChessQ Lite** (the opt-in `BR_CHESSQ` estimator) is Lichess's board recognizer,
+**ChessQ Lite V6** — **the core recognizer** since 2026-11-24 (`BR_CHESSQ`, set by
+`compose.yaml` and `make dev`; DESIGN D10) — is Lichess's board recognizer,
 distributed at [huggingface.co/joelseytre/chessq-lite](https://huggingface.co/joelseytre/chessq-lite)
 under the **PolyForm Noncommercial License 1.0.0**: personal and research use only,
-no commercial use. We download the release into the git-ignored `models/chessq/` and
-check its SHA-256 against the release descriptor; it is never committed or
-redistributed, and the code that loads it (`board_reader_inference.chessq`) contains
-none of its weights.
+no commercial use. The user accepted that licence for this project's core on
+2026-11-24, so **the default configuration of board-reader is noncommercial** as a
+whole, whatever the Apache-2.0 source allows on its own.
+
+- **Weights:** `make models` downloads them from the pinned revision into the
+  git-ignored `models/chessq/` and checks size and SHA-256 against the release
+  descriptor. They are never committed, attached to a release or baked into an image.
+- **Descriptor:** the release's descriptor JSON
+  (`models/chessq/cq-vit-s-644-v6-seed1-onnx-int8-r1.json`) **is** committed — it is
+  metadata only (download URL at a pinned revision, size, SHA-256, input/output
+  contract, the licence name), and `make models` needs it on a fresh clone.
+- **Code:** the module that loads the model (`board_reader_inference.chessq`) is our
+  own Apache-2.0 code and contains none of its weights.
 
 The optional `init: sin` training path
 (`tools/train/configs/loso_resnet_sin.yaml`) expects a Stylized-ImageNet ResNet-50

@@ -44,7 +44,6 @@ from board_reader_core.protocol import (
 from board_reader_core.recording import FrameRecorder
 from board_reader_core.wire import Frame, decode_jpeg
 
-from board_reader_inference.chessq import ChessQRecognizer
 from board_reader_inference.estimator import CentroidEstimator, Estimator
 from board_reader_inference.hub import PositionHub
 from board_reader_inference.ingest import FrameIngest
@@ -370,13 +369,15 @@ def create_app(
                 "model_tuned": trained.tuned_path,
                 "weight": 0.5,
             }
-        # ChessQ is opt-in and outranks the whole default stack, so an operator
-        # needs to see it is the one reading before trusting a number.
+        # Which recognizer reads, from which file — and, when the weights were
+        # missing, that the stub is serving instead and why (D2: degrade loudly).
         active = session.estimator
-        if isinstance(active, RecognizerEstimator) and isinstance(
-            active.recognizer, ChessQRecognizer
-        ):
-            health["chessq"] = {"model": active.recognizer.model_path}
+        if isinstance(active, RecognizerEstimator):
+            health["recognizer"] = {
+                "name": active.recognizer.name,
+                "model": active.recognizer.model_path,
+                **({"fallback": active.fallback} if active.fallback else {}),
+            }
         return health
 
     @app.get("/boards/{board_id}")

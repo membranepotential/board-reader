@@ -12,11 +12,13 @@ the downstream application layer's job (and out of scope here).
 
 ## Status
 
-**M0 + M1 done; M2 in flight.** The end-to-end pipe is live and demoable, and per-frame
-recognition reads real phone photos: a multi-style-trained crop classifier blended with
-a per-set nearest-exemplar bank. Point a phone at a board via `/snapshot` and you get a
-position back with no taps — corners are auto-detected, orientation auto-resolved,
-calibration bootstraps itself.
+**M0 + M1 done; M2 in flight.** The end-to-end pipe is live and demoable. Since
+2026-11-24 the core recognizer is **ChessQ Lite V6** (Lichess's end-to-end board
+recognizer, DESIGN D10): it reads the whole frame, finds the board and its
+orientation itself, and on the four-take replay gate reads 92/101 raw and 84/101
+settled boards perfectly (the old cascade + bank: 5 and 35). Point a phone at a
+board via `/snapshot` or `/camera` and you get a position back with no taps and no
+calibration.
 
 The most recent live phone trial (2026-08-13) streamed **748/748 frames** without loss.
 Scored against hand-labelled truth for that recording (`recordings/<session>/report.json`,
@@ -26,27 +28,36 @@ the recording predates the settled block shipping. The residual is *entirely* on
 confusion — king vs queen on d8/e8, where a phone-height camera decapitates the rank-8
 crops — so a perfect board costs getting both of those squares right at once.
 
-**Next up:** the tall-crop retrain that attacks that residual, gated on real recordings
-rather than a synthetic holdout. See [STATUS.md](STATUS.md) for the current state and
-[DESIGN §7](docs/DESIGN.md) for the milestone ladder.
+**Next up:** simplifying the pipeline around ChessQ, then retuning the settle window
+([the plan](docs/plans/2026-11-24-simplify-around-chessq.md)). See
+[STATUS.md](STATUS.md) for the current state and [DESIGN §7](docs/DESIGN.md) for the
+milestone ladder.
 
 ## Quick start
 
 ```bash
+make models                     # the ChessQ weights: pinned revision, SHA-256 checked
 docker compose up --build       # then open http://localhost:8080
 ```
 
-You'll see a live board fed by a synthetic edge: `edge → inference → viewer`.
+You'll see a live board fed by a synthetic edge: `edge → inference → viewer`. The
+synthetic renders are not real pieces, so ChessQ reads them only partly: the demo
+shows the pipe working, a real board on `/camera` shows recognition. Without
+`make models` the node serves a stub (a fixed start position) and says so.
 
 Or run locally without Docker:
 
 ```bash
 uv sync
-uv run board-reader-inference serve            # gateway  :8000
+make models
+make dev                                       # inference + viewer, ChessQ serving
+# or by hand:
+BR_CHESSQ=models/chessq/cq-vit-s-644-v6-seed1-onnx-int8-r1.onnx \
+  uv run board-reader-inference serve          # gateway  :8000
 uv run board-reader-viewer --port 8080         # UI       :8080
 uv run board-reader-edge feed                  # synthetic feed
 uv run board-reader-inference positions        # tail the position stream (headless)
-uv run pytest                                  # the test suite
+make test                                      # the test suite
 ```
 
 ## Layout
@@ -77,9 +88,10 @@ Two carve-outs, both spelled out in **[THIRD-PARTY.md](THIRD-PARTY.md)**:
   cburnett sprites (GPLv2+), so whatever `make ui` produces is a combined GPL work.
   Our source stays Apache-2.0, and `core`/`edge`/`inference` carry no GPL dependency
   at all.
-- **Trained model artifacts are not redistributable.** The recognition model derives
-  from ChessReD (CC BY-NC-SA 4.0) and geometry of unclear provenance: fine for personal
-  and research use, **not** for commercial use, and not ours to hand on. `models/`,
-  `data/`, `scratch/` and `recordings/` are git-ignored for exactly this reason — do not
-  attach weights to a release or bake them into a published image. Run
-  `tools/export_dinov2_onnx.py` and calibrate against your own board instead.
+- **Model weights are not redistributable.** The core recognizer, ChessQ Lite V6, is
+  **PolyForm Noncommercial 1.0.0**: personal and research use only, **not** commercial
+  use. `make models` fetches it from its pinned upstream revision; only its release
+  descriptor (URL, size, SHA-256) is committed. The older in-house models derive from
+  ChessReD (CC BY-NC-SA 4.0) and geometry of unclear provenance. `models/`, `data/`,
+  `scratch/` and `recordings/` are git-ignored for exactly this reason — do not attach
+  weights to a release or bake them into a published image.

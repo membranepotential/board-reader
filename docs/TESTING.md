@@ -495,7 +495,7 @@ Two further behaviors to verify on any `/estimate`:
   carry `"bank_refreshed": {...}` — the bank grew from that photo; subsequent
   reads in that lighting improve. Mid-game photos never trigger it.
 
-### Option H — Trained zero-shot model + calibration booster (the default serve)
+### Option H — Trained zero-shot model + calibration booster (pre-D10; needs `BR_CHESSQ=` empty)
 
 The production configuration serves the multi-style trained classifier with the
 per-set bank as an ensemble booster (DESIGN §4.6):
@@ -1209,37 +1209,44 @@ What to check:
 > Sparse policies and restamps join the default replay directory name, so a sweep's
 > rows never land on top of each other.
 
-### Option O — ChessQ Lite as the estimator (opt-in, `BR_CHESSQ`)
+### Option O — ChessQ Lite, the default recognizer (`BR_CHESSQ`)
 
-`BR_CHESSQ=<model.onnx>` serves Lichess's ChessQ Lite instead of the shipped
-cascade + bank: one model reads the whole frame and finds the board itself
-([recognition pipeline](recognition-pipeline.md#selection-at-startup)). The
-weights are not in the repo; the V6 release goes to
-`models/chessq/cq-vit-s-644-v6-seed1-onnx-int8-r1.onnx` (see
-[the handoff](plans/2026-10-09-chessqueries-handoff.md)).
+`BR_CHESSQ=<model.onnx>` serves Lichess's ChessQ Lite: one model reads the whole
+frame and finds the board and its orientation itself (DESIGN D10). Both entry
+points set it. The weights are not in the repo; `make models` fetches the V6
+release into `models/chessq/cq-vit-s-644-v6-seed1-onnx-int8-r1.onnx` from the
+pinned revision its committed descriptor names, and checks the SHA-256.
 
-1. Start the stack with ChessQ:
-   `BR_CHESSQ=models/chessq/cq-vit-s-644-v6-seed1-onnx-int8-r1.onnx make dev`.
-   The inference log prints `serving ChessQ from BR_CHESSQ=... (calibration
-   disabled; ignoring BR_MODEL, BR_MODEL_B, BR_SESSION_BANK)`. A wrong path stops the node at
-   startup with `FileNotFoundError: BR_CHESSQ=... does not name a model file`.
-2. Run `curl -s localhost:8000/healthz`. Expected: a `"chessq": {"model": ...}`
-   entry naming the file.
+0. Run `make models`. Expected: `ok cq-vit-s-644-v6-seed1-onnx-int8-r1.onnx
+   (sha256 verified)` when the file is already there, `fetched ...` otherwise.
+   Run it again: it prints `ok` and downloads nothing.
+1. Start the stack: `make dev`. Expected: `recognition ChessQ Lite (...) — the same
+   recognizer compose.yaml serves`, and the inference log prints `serving ChessQ
+   from BR_CHESSQ=... (calibration disabled)`.
+2. Run `curl -s localhost:8000/healthz`. Expected: a `"recognizer": {"name":
+   "chessq", "model": ...}` entry naming the file.
+   **Missing weights:** `make dev BR_CHESSQ=models/chessq/absent.onnx`. Expected:
+   `!! ... missing — the node serves the STUB recognizer; run 'make models'`, the
+   node starts anyway, its log prints `!! BR_CHESSQ=... does not name a model file`,
+   and `/healthz` shows `"recognizer": {"name": "stub", ..., "fallback": "..."}`.
+   The live page shows the start position whatever the camera sees.
 3. Open `/camera` on the phone (Option J) and point it at a board. Expected: the
    live page shows positions within ~1 s per read (ChessQ runs ~0.4 s on the
    GPU, ~0.6–1.1 s on CPU).
 4. Press calibrate on `/camera` or `/snapshot`. Expected: HTTP 409, "calibration
-   is off while ChessQ serves", and the node keeps serving ChessQ (`/healthz`
-   still shows the `chessq` entry).
+   is off while the 'chessq' recognizer serves", and the node keeps serving ChessQ
+   (`/healthz` still shows the `recognizer` entry).
 5. Replay a take with ChessQ (Option N), with **only** `BR_CHESSQ` set:
    `BR_CHESSQ=models/chessq/cq-vit-s-644-v6-seed1-onnx-int8-r1.onnx uv run
    board-reader-inference replay recordings/20260828-111421 --policy burst-end
    --name cq-v6 --score`. Expected: the manifest's `estimator` is
    `ChessQRecognizer` and its `env` lists `BR_CHESSQ`.
 
-Automated: `packages/inference/tests/test_chessq.py` (fake model; the one
-real-weights test is `gpu`-marked and runs under `make test-gpu`, skipping when the
-weights or the held-out still are absent).
+Automated: `packages/inference/tests/test_chessq.py` and `test_recognizer.py` (fake
+model and the stub; the one real-weights test is `gpu`-marked and runs under `make
+test-gpu`, skipping when the weights or the held-out still are absent),
+`tests/test_fetch_models.py` (`make models`) and `tests/test_deploy_parity.py`
+(both entry points serve ChessQ and nothing of the old stack).
 
 ### Option P — The chess frame: label, eval and gate a recognizer (DESIGN D10)
 

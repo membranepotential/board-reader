@@ -14,11 +14,19 @@ Until Phase B of the simplification plan removes the crop-classifier stack, the
 gateway still speaks :class:`~.estimator.Estimator`, so a recognizer serves through
 :class:`RecognizerEstimator`, and :func:`build_from_env` falls back to the old
 estimator tiers (:mod:`.legacy`) when ``BR_CHESSQ`` is unset.
+
+**Missing weights degrade, loudly** (plan decision D2). ``BR_CHESSQ`` is set by
+both entry points, but the weights are never in git, so a fresh clone has none.
+Then the stub recognizer serves — the walking skeleton's fixed start position —
+with a startup banner and a ``fallback`` reason on ``/healthz``, so ``docker
+compose up`` still works and nobody mistakes the stub for a read. ``make models``
+fetches the weights.
 """
 
 from __future__ import annotations
 
 import os
+import sys
 from pathlib import Path
 from typing import Literal, Protocol
 
@@ -53,6 +61,9 @@ class Recognizer(Protocol):
     @property
     def frame(self) -> Literal["chess"]: ...
 
+    @property
+    def model_path(self) -> str | None: ...
+
     def read(self, image: np.ndarray) -> np.ndarray: ...
 
 
@@ -61,6 +72,7 @@ class StubRecognizer:
 
     name = "stub"
     frame: Literal["chess"] = "chess"
+    model_path: str | None = None
 
     def __init__(self, placement: str = START_PLACEMENT, *, confidence: float = 0.95) -> None:
         self.placement = placement
@@ -106,8 +118,11 @@ class RecognizerEstimator:
     square_size: int | None = None
     orientation = ORIENTATION
 
-    def __init__(self, recognizer: Recognizer) -> None:
+    def __init__(self, recognizer: Recognizer, *, fallback: str | None = None) -> None:
         self.recognizer = recognizer
+        #: Why this recognizer serves instead of the one the environment asked
+        #: for (missing weights), or ``None`` when it is the one asked for.
+        self.fallback = fallback
 
     def estimate(self, frame: Frame) -> PositionEvent:
         return event_from_dist(frame, self.recognizer.read(frame.image))
@@ -129,30 +144,33 @@ def read_frame(estimator: Estimator) -> BoardFrame:
 _CHESSQ_OUTRANKS = ("BR_MODEL", "BR_MODEL_B", "BR_MODEL_TUNED", "BR_CENTROIDS", "BR_SESSION_BANK")
 
 
-def _chessq(path: str) -> ChessQRecognizer:
-    """``BR_CHESSQ=<path>`` -> ChessQ Lite, or a hard error when the file is missing.
-
-    No fresh-clone courtesy: setting the variable is deliberate, and quietly
-    serving another estimator would be read as ChessQ's accuracy.
-    """
+def _chessq(path: str) -> RecognizerEstimator:
+    """``BR_CHESSQ=<path>`` -> ChessQ Lite, or the stub, loudly, without the file."""
     if not Path(path).is_file():
-        raise FileNotFoundError(f"BR_CHESSQ={path!r} does not name a model file")
+        reason = f"BR_CHESSQ={path!r} does not name a model file; run `make models`"
+        print(
+            f"!! {reason}\n!! serving the STUB recognizer: a fixed start position, "
+            "not a read of the board",
+            file=sys.stderr,
+        )
+        return RecognizerEstimator(StubRecognizer(), fallback=reason)
     outranked = [n for n in _CHESSQ_OUTRANKS if os.environ.get(n)]
     note = f"; ignoring {', '.join(outranked)}" if outranked else ""
     print(f"serving ChessQ from BR_CHESSQ={path!r} (calibration disabled{note})")
-    return ChessQRecognizer(path)
+    return RecognizerEstimator(ChessQRecognizer(path))
 
 
 def build_from_env(occupancy: CentroidEstimator | None = None) -> Estimator:
     """The estimator the environment asks for.
 
     ``BR_CHESSQ=<path>`` -> ChessQ Lite through :class:`RecognizerEstimator`, ahead
-    of every other setting. Otherwise the old tiers (:func:`.legacy.legacy_estimator`,
+    of every other setting, or the stub recognizer when the file is missing
+    (module docstring). Otherwise the old tiers (:func:`.legacy.legacy_estimator`,
     which ``occupancy`` feeds), unchanged until Phase B removes them.
     """
     path = os.environ.get("BR_CHESSQ")
     if path:
-        return RecognizerEstimator(_chessq(path))
+        return _chessq(path)
     # Imported here: the old tiers import the session, which imports this module.
     from board_reader_inference.legacy import legacy_estimator
 

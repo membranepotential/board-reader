@@ -2,9 +2,10 @@
 
 There are exactly two entry points that start a real inference node: the
 canonical demo (``docker compose up``, compose.yaml) and the dev path
-(``make dev``, the Makefile). Both choose the *recognition composition* — which
-model files load and how they combine — out of the environment, and that choice
-is the single biggest lever on how a board is read.
+(``make dev``, the Makefile). Both choose the *recognizer* — which model file
+loads — out of the environment, and that choice is the single biggest lever on
+how a board is read. Since DESIGN D10 both serve ChessQ (``BR_CHESSQ``) and
+nothing of the old crop-classifier stack.
 
 They drifted once, silently. The confidence-gated cascade landed in compose.yaml
 alone (``2b64ada``); ``make dev`` went on serving ``BR_MODEL`` by itself, so
@@ -38,16 +39,27 @@ _RECOGNITION_KEYS = frozenset(
     {"BR_MODEL", "BR_MODEL_B", "BR_MODEL_TUNED", "BR_CASCADE_TAU", "BR_CENTROIDS", "BR_CHESSQ"}
 )
 
+# The pre-D10 stack's settings. The default config of either entry point sets none
+# of them: BR_CHESSQ outranks them all, so one set beside it would be a dead knob
+# that reads as if it mattered.
+_LEGACY_KEYS = frozenset(
+    {
+        "BR_MODEL",
+        "BR_MODEL_B",
+        "BR_MODEL_TUNED",
+        "BR_CASCADE_TAU",
+        "BR_CENTROIDS",
+        "BR_CROP_MASK",
+        "BR_SESSION_BANK",
+        "BR_OCCUPANCY_BANK",
+    }
+)
+
 # Everything else may legitimately differ, because it describes the *environment*
 # rather than the reader. Each entry has to carry its reason: an undocumented
 # difference is indistinguishable from the drift above, so the test demands a
 # justification rather than a name.
 _ENVIRONMENT_SPECIFIC: dict[str, str] = {
-    "BR_SESSION_BANK": (
-        "make dev only. The session bank holds exemplars of a *physical* board; "
-        "the compose demo streams synthetic renders, where a real set's bank is "
-        "noise rather than signal."
-    ),
     "BR_SAVE_UPLOADS": (
         "make dev only. Calibrate frames are saved into the working tree to grow "
         "the eval corpus; a container should not write into the repo."
@@ -101,7 +113,7 @@ def _model_relative(path: str) -> str:
     """Normalise a model path across the container and host layouts.
 
     compose mounts ``./models`` at ``/models``, so the same artifact is
-    ``/models/run_e/model.onnx`` there and ``models/run_e/model.onnx`` here.
+    ``/models/chessq/<release>.onnx`` there and ``models/chessq/<release>.onnx`` here.
     """
     return path.split("models/", 1)[-1]
 
@@ -109,10 +121,7 @@ def _model_relative(path: str) -> str:
 def test_dev_and_compose_declare_the_same_recognition_models() -> None:
     """The dev path and the canonical demo must read boards the same way."""
     compose = _compose_inference_env()
-    # Force both members "present" so this asserts declared intent and stays
-    # green on a fresh clone, where models/ does not exist at all.
-    existing = str(_ROOT / "pyproject.toml")
-    dev = _make_dev_env(BR_MODEL=existing, BR_MODEL_B=existing)
+    dev = _make_dev_env()
 
     compose_keys = _RECOGNITION_KEYS & compose.keys()
     dev_keys = _RECOGNITION_KEYS & dev.keys()
@@ -123,21 +132,37 @@ def test_dev_and_compose_declare_the_same_recognition_models() -> None:
     )
 
     # ...and they must name the same artifacts, not merely the same variables.
-    defaults = _make_dev_env()
     for key in sorted(compose_keys):
-        if key not in defaults:  # withheld because the file is absent locally
-            continue
-        assert _model_relative(defaults[key]) == _model_relative(compose[key]), (
+        assert _model_relative(dev[key]) == _model_relative(compose[key]), (
             f"{key} points at different artifacts: compose {compose[key]!r} vs "
-            f"make dev {defaults[key]!r}"
+            f"make dev {dev[key]!r}"
         )
+
+
+def test_both_entry_points_serve_chessq_and_nothing_of_the_old_stack() -> None:
+    """DESIGN D10: ChessQ is the default recognizer, set even on a fresh clone
+    (missing weights degrade to the stub inside the node, loudly)."""
+    for name, env in (("compose.yaml", _compose_inference_env()), ("make dev", _make_dev_env())):
+        assert env.get("BR_CHESSQ", "").endswith(
+            "models/chessq/cq-vit-s-644-v6-seed1-onnx-int8-r1.onnx"
+        ), f"{name} does not serve ChessQ V6"
+        stale = sorted(_LEGACY_KEYS & env.keys())
+        assert not stale, f"{name} still sets the pre-D10 stack's {stale}"
+
+
+def test_the_served_weights_are_the_ones_make_models_fetches() -> None:
+    """The path both entry points serve is the file the committed descriptor pins."""
+    import json
+
+    [descriptor] = sorted((_ROOT / "models/chessq").glob("*.json"))
+    filename = json.loads(descriptor.read_text())["artifact"]["filename"]
+    assert _model_relative(_make_dev_env()["BR_CHESSQ"]) == f"chessq/{filename}"
 
 
 def test_every_inference_env_var_is_shared_or_justified() -> None:
     """A var set by only one entry point needs a recorded reason."""
     compose = _compose_inference_env()
-    existing = str(_ROOT / "pyproject.toml")
-    dev = _make_dev_env(BR_MODEL=existing, BR_MODEL_B=existing)
+    dev = _make_dev_env()
 
     only_one_side = set(compose) ^ set(dev)
     undeclared = {k for k in only_one_side if k not in _ENVIRONMENT_SPECIFIC}
@@ -154,40 +179,12 @@ def test_every_inference_env_var_is_shared_or_justified() -> None:
     )
 
 
-def test_dev_withholds_the_cascade_when_a_member_is_missing() -> None:
-    """A partial pair is a hard startup error; `make dev` must not trip it.
-
-    Mirrors ``legacy._trained_component``: BR_MODEL_B present with an unusable
-    BR_MODEL (or vice versa) raises rather than quietly serving one model. Running
-    `make dev` on a half-populated models/ dir should degrade, not crash.
-    """
-    dev = _make_dev_env(
-        BR_MODEL=str(_ROOT / "pyproject.toml"), BR_MODEL_B="models/does-not-exist.onnx"
-    )
-    assert "BR_MODEL_B" not in dev
-    assert dev["BR_MODEL"].endswith("pyproject.toml")
-
-
-def test_dev_withholds_the_cascade_under_a_tuned_model() -> None:
-    """BR_MODEL_TUNED and BR_MODEL_B together are an unmeasured stack.
-
-    The node refuses the combination outright, so the default cascade member has
-    to step aside when an operator asks for the calibration average.
-    """
-    dev = _make_dev_env(BR_MODEL_TUNED="models/tuned.onnx")
-    assert dev.get("BR_MODEL_TUNED") == "models/tuned.onnx"
-    assert "BR_MODEL_B" not in dev, (
-        "make dev forwarded both BR_MODEL_TUNED and BR_MODEL_B — the server "
-        "treats that as a hard error, so the dev path would not start"
-    )
-
-
 def test_dev_disables_opencv_opencl_on_the_host_gpu() -> None:
     """The host path must not let OpenCV's OpenCL backend abort the node.
 
     Env parity with compose is not enough, because the two run on different
-    hardware: compose declares no GPU device and runs the cascade on CPU, while
-    `make dev` puts two ONNX sessions on the host card. When OpenCV's OpenCL
+    hardware: compose declares no GPU device and runs the recognizer on CPU, while
+    `make dev` puts its ONNX session on the host card. When OpenCV's OpenCL
     `warpAffine` then cannot allocate, it throws a cv::Exception through C++
     terminate — the node *aborts* mid-stream (status 134) instead of degrading.
     Measured 2026-08-13 on a 4GB GTX 1650. `disabled` is the strong form: the
@@ -259,10 +256,7 @@ def test_dev_cpu_reads_boards_exactly_like_dev() -> None:
     class of bug as the compose/`make dev` cascade drift this module exists to
     catch — and harder to see, because the two targets look identical.
     """
-    existing = str(_ROOT / "pyproject.toml")
-    assert _make_dev_env("dev-cpu", BR_MODEL=existing, BR_MODEL_B=existing) == (
-        _make_dev_env("dev", BR_MODEL=existing, BR_MODEL_B=existing)
-    )
+    assert _make_dev_env("dev-cpu") == _make_dev_env("dev")
 
 
 @pytest.mark.parametrize("path", [_COMPOSE, _MAKEFILE])

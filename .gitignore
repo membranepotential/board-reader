@@ -20,8 +20,14 @@ data/
 *.mkv
 *.webm
 
-# Model artifacts (regenerated from official weights via tools/export_dinov2_onnx.py)
-models/
+# Model artifacts (regenerated from official weights via tools/export_dinov2_onnx.py,
+# or fetched by `make models`). The one exception is the recognizer's release
+# descriptors: metadata only (URL at a pinned revision, size, SHA-256), committed
+# so `make models` works on a fresh clone. The weights themselves never enter git.
+models/*
+!models/chessq/
+models/chessq/*
+!models/chessq/*.json
 *.onnx
 
 # Training/experiment scratch (run dirs, checkpoints, logs — reproducible from

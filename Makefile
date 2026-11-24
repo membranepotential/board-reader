@@ -4,6 +4,7 @@
 #   make dev-cpu the same stack with the GPU hidden — for when the card is
 #                also driving your screens (see CUDA_ENV below)
 #   make ui      build the SvelteKit viewer frontend into the Python package
+#   make models  fetch the recognizer weights (pinned, SHA-256 verified)
 #   make stop    stop anything left running
 #   make test     the suite in parallel, minus the GPU tests
 #   make test-gpu the GPU tests alone (needs an idle GPU)
@@ -16,11 +17,10 @@
 # on every `make dev` also means an edit under packages/viewer/ui/ is never served
 # stale — there is no separate "did the UI change" check to fall out of date.
 #
-# The env below is the *deployed* config, not a convenience default: BR_MODEL
-# alone serves the trained model (599/640 on the labeled eval), and only with
-# BR_SESSION_BANK does it ensemble with the exemplar bank (638/640). The bank is
-# part of the product, so it belongs here rather than in a shell snippet you have
-# to remember.
+# The env below is the *deployed* config, not a convenience default: BR_CHESSQ
+# serves ChessQ Lite V6, the core recognizer (DESIGN D10), exactly as compose.yaml
+# does (tests/test_deploy_parity.py). The weights are not in git — `make models`
+# fetches them; without them the node serves the stub recognizer and says so.
 #
 # The viewer runs TWICE, but only for convenience now — either bind serves all three
 # pages. Every page is same-origin: the viewer relays the whole inference API under
@@ -42,7 +42,7 @@
 # the group again — bash recurses until it overflows its stack and segfaults.
 # The trap disarms itself first for the same reason.
 
-.PHONY: dev dev-cpu ui stop test test-gpu test-all test-ui test-e2e test-front lint lint-fix gate
+.PHONY: dev dev-cpu ui models stop test test-gpu test-all test-ui test-e2e test-front lint lint-fix gate
 
 # `wait -n` below is a bashism, and the teardown relies on bash trap semantics.
 SHELL := /bin/bash
@@ -50,42 +50,24 @@ SHELL := /bin/bash
 # Primary LAN address, so /snapshot works from a phone. Falls back to localhost.
 HOST := $(shell ip route get 1.1.1.1 2>/dev/null | grep -oP 'src \K[\d.]+' || echo 127.0.0.1)
 
-BR_MODEL        ?= models/run_e/model.onnx
-BR_SESSION_BANK ?= models/exemplars_session.npz
-BR_SAVE_UPLOADS ?= data/uploads
-# The cascade's second member, so the dev path reads boards the same way the
-# canonical `docker compose up` demo does. These two drifted once already: the
-# cascade landed in compose.yaml alone (2b64ada) and `make dev` went on quietly
-# serving BR_MODEL by itself for two days. tests/test_deploy_parity.py is now
+# The recognizer, so the dev path reads boards the same way the canonical
+# `docker compose up` demo does. The two entry points drifted once already (the
+# cascade landed in compose.yaml alone, 2b64ada); tests/test_deploy_parity.py is
 # the guard, and aspects.yaml carries the Makefile as part of `deploy`.
-BR_MODEL_B      ?= models/run_f/model.onnx
-# Occlusion-aware crop masking (E6, the 08-28 ship decision) — the deployed
-# default compose.yaml serves; `make dev` must read boards the same way.
-BR_CROP_MASK    ?= gray
-
-# ...but forwarded only when the node can actually serve it. Two configurations
-# are hard startup errors *by design* — a partial pair (one member missing, so
-# it would silently serve one model where two were asked for) and TUNED+B (an
-# unmeasured stack). Neither should be reachable by running `make dev` against a
-# half-populated models/ dir, so the composition is resolved here rather than
-# discovered as a traceback on port 8000.
-ifdef BR_MODEL_TUNED
-CASCADE_ENV :=
-else
-CASCADE_ENV := $(if $(and $(wildcard $(BR_MODEL)),$(wildcard $(BR_MODEL_B))),BR_MODEL_B=$(BR_MODEL_B),)
-endif
+BR_CHESSQ       ?= models/chessq/cq-vit-s-644-v6-seed1-onnx-int8-r1.onnx
+BR_SAVE_UPLOADS ?= data/uploads
 
 # OpenCV's OpenCL backend shares the card with onnxruntime, and it is the one
 # that turns a tight GPU into a *crash*: when `warpAffine` cannot allocate, it
 # throws a cv::Exception through C++ terminate, so the node aborts (status 134)
 # mid-stream instead of degrading. Measured 2026-08-13 on the 4GB GTX 1650 —
 # the cascade's second session plus a leaked CUDA context from a previous run
-# was enough. The warps here are ~1280x680 and unremarkable on CPU, so the GPU
-# path buys nothing worth an uncatchable abort. `disabled` is the strong form:
-# the runtime is never loaded, so no VRAM is claimed at all (`=` to re-enable).
+# was enough. The image work here is unremarkable on CPU, so the GPU path buys
+# nothing worth an uncatchable abort. `disabled` is the strong form: the runtime
+# is never loaded, so no VRAM is claimed at all (`=` to re-enable).
 #
 # NOTE this is deliberately NOT mirrored in compose.yaml: that stack declares no
-# GPU device, so it runs the same cascade on CPU where none of this applies.
+# GPU device, so it runs the same recognizer on CPU where none of this applies.
 # Env parity between the two entry points does not imply the same hardware
 # envelope — see tests/test_deploy_parity.py.
 OPENCV_OPENCL_RUNTIME ?= disabled
@@ -120,27 +102,16 @@ ui:
 	cd packages/viewer/ui && pnpm install --frozen-lockfile && pnpm build
 
 dev: ui
-	@test -f "$(BR_MODEL)" || echo "!! $(BR_MODEL) missing — server will degrade to the stub"
-	@test -f "$(BR_SESSION_BANK)" || echo "!! $(BR_SESSION_BANK) missing — trained model only, no ensemble"
-ifdef BR_MODEL_TUNED
-	@echo "  recognition BR_MODEL + BR_MODEL_TUNED — the calibration average; cascade withheld (stacking them is unmeasured)"
-else ifneq ($(CASCADE_ENV),)
-	@echo "  recognition BR_MODEL + BR_MODEL_B — the same cascade compose.yaml serves"
-else
-	@echo "!! $(BR_MODEL_B) missing — serving BR_MODEL alone, NOT the cascade the canonical demo runs"
-endif
-	@echo "  gpu        $(if $(CUDA_ENV),hidden — the same cascade on CPU; nothing of ours can reach the display's card,visible — onnxruntime capped at $${BR_GPU_MEM_LIMIT_MB:-768} MiB/session so the display keeps its VRAM)"
+	@test -f "$(BR_CHESSQ)" \
+	  && echo "  recognition ChessQ Lite ($(BR_CHESSQ)) — the same recognizer compose.yaml serves" \
+	  || echo "!! $(BR_CHESSQ) missing — the node serves the STUB recognizer; run 'make models'"
+	@echo "  gpu        $(if $(CUDA_ENV),hidden — the same recognizer on CPU; nothing of ours can reach the display's card,visible — onnxruntime capped at $${BR_GPU_MEM_LIMIT_MB:-768} MiB/session so the display keeps its VRAM)"
 	@echo "  camera     https://$(HOST):$(VIEWER_TLS_PORT)/camera   (accept the warning once)"
 	@echo "  snapshot   http://$(HOST):$(VIEWER_PORT)/snapshot"
 	@echo "  live       http://$(HOST):$(VIEWER_PORT)"
 	@echo "  inference  http://$(HOST):$(INFERENCE_PORT)"
-	@BR_MODEL=$(BR_MODEL) \
-	BR_SESSION_BANK=$(BR_SESSION_BANK) \
+	@BR_CHESSQ=$(BR_CHESSQ) \
 	BR_SAVE_UPLOADS=$(BR_SAVE_UPLOADS) \
-	BR_CROP_MASK=$(BR_CROP_MASK) \
-	$(CASCADE_ENV) \
-	$(if $(BR_MODEL_TUNED),BR_MODEL_TUNED=$(BR_MODEL_TUNED),) \
-	$(if $(BR_CASCADE_TAU),BR_CASCADE_TAU=$(BR_CASCADE_TAU),) \
 	OPENCV_OPENCL_RUNTIME=$(OPENCV_OPENCL_RUNTIME) \
 	$(CUDA_ENV) \
 	  uv run board-reader-inference serve --host 0.0.0.0 --port $(INFERENCE_PORT) & \
@@ -166,7 +137,7 @@ endif
 # The whole `dev` stack with the card hidden from the inference node. One
 # assignment does it: target-specific variables reach a target's prerequisites,
 # so this is the value `dev`'s recipe expands. Nothing else differs — same
-# models, same cascade, same ports — so it is a straight swap when the machine
+# recognizer, same ports — so it is a straight swap when the machine
 # running this is also the machine displaying it.
 dev-cpu: CUDA_ENV := CUDA_VISIBLE_DEVICES=
 dev-cpu: dev
@@ -222,13 +193,18 @@ test-gpu:
 test-all:
 	uv run pytest -n auto
 
+# The recognizer weights, from the release descriptors committed under
+# models/chessq/ (pinned Hugging Face revision, size, SHA-256). Idempotent: a file
+# whose SHA-256 already matches is left alone, and a bad download replaces nothing.
+models:
+	uv run python tools/fetch_models.py
+
 # The replay gate (docs/reports/2026-11-24-chessq-v6-replay-gate.md): re-read the
 # four gate takes through BR_CHESSQ alone, score each against its truth.json, and
 # print the table against GATE_BASE. Serial — each replay wants the GPU. The takes
 # and their replay flags live in tools/gate_table.py, so this recipe and the table
 # can never disagree about what the gate is. GATE_NAME must be new for a new
 # measurement: a replay overwrites its own directory.
-BR_CHESSQ ?= models/chessq/cq-vit-s-644-v6-seed1-onnx-int8-r1.onnx
 GATE_NAME ?= gate
 GATE_BASE ?= cq-v6
 

@@ -34,7 +34,11 @@ from board_reader_inference.chessq import (
     square_dist_from_logits,
 )
 from board_reader_inference.hub import PositionHub
-from board_reader_inference.recognizer import RecognizerEstimator, build_from_env
+from board_reader_inference.recognizer import (
+    RecognizerEstimator,
+    StubRecognizer,
+    build_from_env,
+)
 from board_reader_inference.routing import PhotoRead, route_for
 from board_reader_inference.server import create_app
 from board_reader_inference.session import CalibrationRefused, EstimatorSession
@@ -199,10 +203,18 @@ def test_br_chessq_outranks_every_other_estimator_setting(chessq_env):
     assert est.recognizer.model_path == str(chessq_env)
 
 
-def test_br_chessq_missing_file_fails_loudly(tmp_path, monkeypatch):
+def test_missing_weights_degrade_to_the_stub_loudly(tmp_path, monkeypatch, capsys):
+    """A fresh clone has no weights (plan decision D2): the node still starts, on
+    the stub, says so at startup, and ``/healthz`` carries the reason."""
     monkeypatch.setenv("BR_CHESSQ", str(tmp_path / "absent.onnx"))
-    with pytest.raises(FileNotFoundError, match="BR_CHESSQ"):
-        build_from_env(None)
+    est = build_from_env(None)
+    assert isinstance(est, RecognizerEstimator)
+    assert isinstance(est.recognizer, StubRecognizer)
+    assert "make models" in (est.fallback or "")
+    assert "STUB recognizer" in capsys.readouterr().err
+    health = TestClient(create_app(est, PositionHub())).get("/healthz").json()
+    assert health["recognizer"]["name"] == "stub"
+    assert "absent.onnx" in health["recognizer"]["fallback"]
 
 
 def test_calibrate_is_refused_and_keeps_chessq(chessq_env):
@@ -214,7 +226,10 @@ def test_calibrate_is_refused_and_keeps_chessq(chessq_env):
     assert "BR_CHESSQ" in r.json()["error"]
     assert isinstance(client.app.state.estimator, RecognizerEstimator)
     assert not Path("bank.npz").exists()
-    assert client.get("/healthz").json()["chessq"] == {"model": str(chessq_env)}
+    assert client.get("/healthz").json()["recognizer"] == {
+        "name": "chessq",
+        "model": str(chessq_env),
+    }
 
 
 def test_start_position_reads_do_not_bootstrap_a_bank(chessq_env):
