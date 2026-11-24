@@ -9,7 +9,7 @@
 #   make test     the suite in parallel, minus the GPU tests
 #   make test-gpu the GPU tests alone (needs an idle GPU)
 #   make test-all everything, GPU included
-#   make gate     replay the four gate takes and print them against ka2-tuned
+#   make gate     replay the four gate takes and print them against sp03-settle05
 #
 # `dev` depends on `ui`, unconditionally: the viewer server (server.py) refuses to
 # start if packages/viewer/src/board_reader_viewer/web/ is missing, and that
@@ -228,11 +228,12 @@ models:
 # print the table against GATE_BASE. Serial — each replay wants the GPU. The takes
 # and their replay flags live in tools/gate_table.py, so this recipe and the table
 # can never disagree about what the gate is. GATE_NAME must be new for a new
-# measurement: a replay overwrites its own directory. The base, ka2-tuned, is the
-# shipped stack (fp32, serve's schedule with the 2 s keepalive, the 1.0 s settle):
-# 142/154 raw, 138/154 settled perfect (docs/reports/2026-11-24-live-latency.md).
+# measurement: a replay overwrites its own directory. The base, sp03-settle05, is the
+# shipped stack (fp32; serve's schedule: burst-end 3 reads 0.3 s apart and a 2 s
+# keepalive; the 0.5 s settle; the edge's 1 s burst tail): 145/156 raw, 140/156
+# settled perfect (docs/reports/2026-11-24-latency-round2.md).
 GATE_NAME ?= gate
-GATE_BASE ?= ka2-tuned
+GATE_BASE ?= sp03-settle05
 
 gate:
 	@test -f "$(BR_CHESSQ)" || { echo "!! $(BR_CHESSQ) missing — run 'make models'"; exit 2; }
