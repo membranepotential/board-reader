@@ -12,8 +12,6 @@ confidences**. No moves, no legality, no PGN — those belong to the downstream 
 - **latency-fix** — phone motion meter stuck at stability 1.000 in live take 1 (no bursts → 3–6 s per
   move); fix meter + evaluate keepalive ~1 s / settle 0.5 s on the gate — implementer-high running — next:
   gate + held-out tables, then user re-test.
-- **docs-rewrite** — DESIGN.md as a current decision record (superseded decisions collapsed), every doc
-  audited against code, `docs/on-phone-app.md` — implementer-high running — next: review, commit check.
 
 ## Done (2026-11-24 — the ChessQ rebuild; plan: [docs/plans/2026-11-24-simplify-around-chessq.md](docs/plans/2026-11-24-simplify-around-chessq.md))
 
@@ -25,6 +23,8 @@ confidences**. No moves, no legality, no PGN — those belong to the downstream 
   replays, 0 hand leaks. Framing: board must fill ≥ ~50 % of the sent width.
 - **Dumb-camera phone** (DESIGN D11): `/camera` only films; laptop `/control` sets crop, lens,
   resolution, start/stop. Live take 1 (`recordings/20261124-200631`): reads good, latency bad (see Now).
+- **Docs rewritten:** DESIGN.md 1,103 → 618 lines (superseded decisions in one table), all notes
+  audited, mockups deleted, `docs/on-phone-app.md`.
 - **Learnings → 14 path-scoped rules** in `.claude/rules/`; store frozen (13 verdicts left).
 - **Data hygiene:** truth fixed for 181802 + 111421; big datasets/videos/old models archived to the HDD
   (`/run/media/felix/archive/board-reader/`, symlinked; mount it before using them).
@@ -42,7 +42,9 @@ confidences**. No moves, no legality, no PGN — those belong to the downstream 
 5. **Python edge on the control channel** (today: static `--roi`) — needed for a Pi/Jetson camera.
 6. **ChessCam v2 as the fast/portable recognizer** (45 ms CPU, emits square centres) — candidate for the
    Pi/Jetson and the on-phone idea; one more file behind the recognizer seam.
-7. **Idea, parked:** fully on-phone portable app — [docs/on-phone-app.md](docs/on-phone-app.md).
+7. **Turn on the prior's back-rank constraint** — `prior.decode` is never given the frame, though the
+   chess frame is now always known; pass `quarter_turns=0` and gate it.
+8. **Idea, parked:** fully on-phone portable app — [docs/on-phone-app.md](docs/on-phone-app.md).
 
 ## Open questions
 
