@@ -9,7 +9,10 @@ confidences**. No moves, no legality, no PGN — those are the downstream applic
 
 ## Now
 
-- **chessq-lite-probe — PAUSED 2026-10-09, resume first** (handoff:
+- **chessq-lite-probe — RAN 2026-11-24: GO.** Cold, ChessQ Lite V6 reads gate takes at 99.2 %/sq
+  (shipped 88.5–96 %), held-out stills 11/11; ChessCam v2 98.3 % at 45 ms CPU. Next: estimator
+  + replay gate. Original note follows.
+  _(was: PAUSED 2026-10-09)_ (handoff:
   [docs/plans/2026-10-09-chessqueries-handoff.md](docs/plans/2026-10-09-chessqueries-handoff.md)).
   Lichess's new "From image" runs ChessQ Lite v4 (ChessQueries, arXiv
   2608.30762): an end-to-end per-square recognizer on CPU that may answer all three

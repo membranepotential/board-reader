@@ -103,3 +103,34 @@ Local only, `scratch/` is gitignored: `scratch/experiments/chessq-lite-probe/`
    test.
 5. Data: evaluate their SLCC producer (`chessqueries-annotate`) as our
    auto-labeling engine instead of building ours.
+
+## Results (run 2026-11-24): GO — all three models beat the shipped stack cold
+
+`cq_bench.py` on CPU, whole frame (`full`); `crop10` is within ±0.5 points
+everywhere, so cropping does not matter. `cq_bench.py` now also loads `.tflite`
+(ChessCam), run from its own env `scratch/experiments/chessq-lite-probe/litert-env`
+(`ai-edge-litert`). Raw outputs are in `out/*.json`.
+
+| Model | ms/frame (CPU) | held-out 08-31 stills | curated stills | gate-take frames, per-sq | perfect frames | segment vote, perfect |
+|---|---|---|---|---|---|---|
+| **Shipped stack** | ~1.3 GPU-s | 96.6 %, 1/11 | — | 88.5–96.0 % | — | — |
+| ChessCam v2 (MobileNetV4, 320 px, fp16 tflite) | **45** | 100 %, 11/11 | 98.3 %, 6/10 | 98.3 % | 283/413 | 54/73 |
+| ChessQ Lite v4 (int8) | 1133 | 100 %, 11/11 | 99.5 %, 7/10 | 98.7 % | 291/413 | 55/73 |
+| **ChessQ Lite V6** (int8, HF `joelseytre/chessq-lite`, SHA-256 checked) | 1076 | 100 %, 11/11 | **99.8 %, 9/10** | **99.2 %** | **324/413** | **61/73** |
+
+- No model ever read a board upside down (`rot!=0` = 0 everywhere).
+- **The remaining errors are mostly hands.** Errors cluster in whole truth segments and
+  in one board region. For example, 08-28 frame #48 has a hand over a1–d2, which is read
+  as 7 empty squares. The sampler takes the middle half of each segment, which does not
+  exclude hands. The errors are confident: mean p(argmax) on wrong squares is 0.95 for
+  ChessCam. So a hand gate (our masking, or the stabilizer) is still needed. Board
+  min-confidence does separate perfect from imperfect reads (0.99 vs 0.81 for ChessCam).
+- Latencies for v4 and V6 were measured while other CPU jobs ran, so they read high.
+- The segment vote is a crude stand-in for the settled stream. The real comparison is
+  the replay gate (next step).
+
+### Next
+1. Wrap V6 (accuracy) and ChessCam v2 (speed) as estimators in the inference node, then
+   run the replay gate against `tkr-shipped`.
+2. Test whether ChessCam v2's square-centre output (`(1,64,3)`: x, y, sigma) can replace our
+   corner detection. Compare its homography with the recorded corners.
