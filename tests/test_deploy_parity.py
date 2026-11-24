@@ -7,6 +7,13 @@ loads — out of the environment, and that choice is the single biggest lever on
 how a board is read. Since DESIGN D10 both serve ChessQ (``BR_CHESSQ``) and
 nothing of the old crop-classifier stack.
 
+They serve the same *release* (ChessQ Lite V6) but not always the same *file*:
+the file follows the hardware. A GPU node serves our fp32 export, a CPU node the
+author's int8 (docs/reports/2026-11-24-chessq-gpu-formats.md — they read every
+gate frame identically). compose declares no GPU device, so it serves int8; so
+does ``make dev-cpu``; ``make dev`` serves fp32. The tests below pin that
+pairing, so "different file" can only ever mean "different hardware".
+
 They drifted once, silently. The confidence-gated cascade landed in compose.yaml
 alone (``2b64ada``); ``make dev`` went on serving ``BR_MODEL`` by itself, so
 every live phone test ran a measurably weaker reader than the demo it was
@@ -112,45 +119,69 @@ def _model_relative(path: str) -> str:
     return path.split("models/", 1)[-1]
 
 
-def test_dev_and_compose_declare_the_same_recognition_models() -> None:
-    """The dev path and the canonical demo must read boards the same way."""
-    compose = _compose_inference_env()
-    dev = _make_dev_env()
+#: The V6 file each kind of hardware serves (Makefile ``BR_CHESSQ_GPU``/``_CPU``).
+_GPU_MODEL = "chessq/cq-vit-s-644-v6-seed1-onnx-fp32.onnx"
+_CPU_MODEL = "chessq/cq-vit-s-644-v6-seed1-onnx-int8-r1.onnx"
 
-    compose_keys = _RECOGNITION_KEYS & compose.keys()
-    dev_keys = _RECOGNITION_KEYS & dev.keys()
-    assert compose_keys == dev_keys, (
+
+def _compose_declares_a_gpu() -> bool:
+    """Whether compose reserves a GPU device for the inference service."""
+    spec = yaml.safe_load(_COMPOSE.read_text(encoding="utf-8"))
+    devices = (
+        spec["services"]["inference"].get("deploy", {}).get("resources", {})
+        .get("reservations", {}).get("devices", [])
+    )
+    return any("gpu" in d.get("capabilities", []) for d in devices)
+
+
+def test_dev_and_compose_declare_the_same_recognition_keys() -> None:
+    """The dev path and the canonical demo configure recognition with the same keys."""
+    compose_keys = _RECOGNITION_KEYS & _compose_inference_env().keys()
+    dev_keys = _RECOGNITION_KEYS & _make_dev_env().keys()
+    assert compose_keys == dev_keys == _RECOGNITION_KEYS, (
         "the recognition composition drifted between compose.yaml and `make dev`: "
-        f"only in compose {sorted(compose_keys - dev_keys)}, "
-        f"only in make {sorted(dev_keys - compose_keys)}"
+        f"compose sets {sorted(compose_keys)}, make dev {sorted(dev_keys)}"
     )
 
-    # ...and they must name the same artifacts, not merely the same variables.
-    for key in sorted(compose_keys):
-        assert _model_relative(dev[key]) == _model_relative(compose[key]), (
-            f"{key} points at different artifacts: compose {compose[key]!r} vs "
-            f"make dev {dev[key]!r}"
-        )
+
+def test_each_entry_point_serves_the_v6_file_for_its_hardware() -> None:
+    """GPU -> the fp32 export, CPU -> the int8 release; nothing else differs."""
+    compose = _model_relative(_compose_inference_env()["BR_CHESSQ"])
+    assert compose == (_GPU_MODEL if _compose_declares_a_gpu() else _CPU_MODEL), (
+        "compose.yaml must serve the fp32 export exactly when it reserves a GPU "
+        f"and the int8 release otherwise; it serves {compose!r}"
+    )
+    assert _model_relative(_make_dev_env("dev")["BR_CHESSQ"]) == _GPU_MODEL
+    assert _model_relative(_make_dev_env("dev-cpu")["BR_CHESSQ"]) == _CPU_MODEL
 
 
 def test_both_entry_points_serve_chessq_and_nothing_of_the_old_stack() -> None:
     """DESIGN D10: ChessQ is the default recognizer, set even on a fresh clone
     (missing weights degrade to the stub inside the node, loudly)."""
     for name, env in (("compose.yaml", _compose_inference_env()), ("make dev", _make_dev_env())):
-        assert env.get("BR_CHESSQ", "").endswith(
-            "models/chessq/cq-vit-s-644-v6-seed1-onnx-int8-r1.onnx"
-        ), f"{name} does not serve ChessQ V6"
+        assert "cq-vit-s-644-v6-seed1-onnx-" in env.get("BR_CHESSQ", ""), (
+            f"{name} does not serve ChessQ V6"
+        )
         stale = sorted(_LEGACY_KEYS & env.keys())
         assert not stale, f"{name} still sets the pre-D10 stack's {stale}"
 
 
-def test_the_served_weights_are_the_ones_make_models_fetches() -> None:
-    """The path both entry points serve is the file the committed descriptor pins."""
+def test_the_served_weights_are_the_ones_make_models_produces() -> None:
+    """Every served file is the artifact of a committed descriptor — fetched or
+    exported — and both are V6: the export names the V6 release it was built from."""
     import json
 
-    [descriptor] = sorted((_ROOT / "models/chessq").glob("*.json"))
-    filename = json.loads(descriptor.read_text())["artifact"]["filename"]
-    assert _model_relative(_make_dev_env()["BR_CHESSQ"]) == f"chessq/{filename}"
+    descriptors = {
+        f"chessq/{meta['artifact']['filename']}": meta
+        for meta in (
+            json.loads(p.read_text()) for p in sorted((_ROOT / "models/chessq").glob("*.json"))
+        )
+    }
+    assert {_GPU_MODEL, _CPU_MODEL} <= descriptors.keys()
+    assert descriptors[_CPU_MODEL]["model"]["release"].startswith("cq-vit-s-644-v6-seed1-")
+    exported_from = descriptors[_GPU_MODEL]["export"]["source"]["release"]
+    assert exported_from.startswith("cq-vit-s-644-v6-seed1-")
+    assert exported_from in {meta["model"]["release"] for meta in descriptors.values()}
 
 
 def test_every_inference_env_var_is_shared_or_justified() -> None:
@@ -243,14 +274,18 @@ def test_dev_cpu_hides_the_card_and_dev_keeps_it() -> None:
     )
 
 
-def test_dev_cpu_reads_boards_exactly_like_dev() -> None:
+def test_dev_cpu_differs_from_dev_only_in_the_hardware_choice() -> None:
     """The CPU escape hatch must differ in hardware only, never in recognition.
 
     A `dev-cpu` that quietly served a different composition would be the same
     class of bug as the compose/`make dev` cascade drift this module exists to
-    catch — and harder to see, because the two targets look identical.
+    catch — and harder to see, because the two targets look identical. The one
+    allowed difference is the V6 file, pinned by the test above.
     """
-    assert _make_dev_env("dev-cpu") == _make_dev_env("dev")
+    cpu, gpu = _make_dev_env("dev-cpu"), _make_dev_env("dev")
+    assert {k: v for k, v in cpu.items() if k != "BR_CHESSQ"} == {
+        k: v for k, v in gpu.items() if k != "BR_CHESSQ"
+    }
 
 
 @pytest.mark.parametrize("path", [_COMPOSE, _MAKEFILE])

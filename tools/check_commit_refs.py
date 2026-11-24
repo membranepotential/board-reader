@@ -67,6 +67,8 @@ KNOWN_NON_COMMITS = frozenset(
         "89d75e34",  # ChessQ Lite v4 int8 SHA-256 prefix (ChessQ handoff)
         "a0393fdd5a7dfafd1a6d91e0d9b7c50aeacff025",  # HF joelseytre/chessq-lite revision (models/chessq descriptor)
         "1a09d2625d4f9ed7d088e1b28f66e635a6aac841",  # chessqueries source revision named in the ChessQ V6 descriptor
+        "7b4e62a7eea47ee42961ecbeda5ccb752635791e",  # chessqueries source revision named in the V6 safetensors descriptor
+        "f54c07b50ae27ec5516bc80efdfb4e0600adc007",  # JSeytre/chessqueries commit pinned by tools/chessq_export
     }
 )
 

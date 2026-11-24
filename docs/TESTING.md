@@ -343,7 +343,7 @@ Lichess URL are assembled in the page.
 
 ```bash
 # 1. Serve inference with real recognition (ChessQ; `make models` first):
-BR_CHESSQ=models/chessq/cq-vit-s-644-v6-seed1-onnx-int8-r1.onnx \
+BR_CHESSQ=models/chessq/cq-vit-s-644-v6-seed1-onnx-fp32.onnx \
 BR_SAVE_UPLOADS=data/uploads \
   uv run board-reader-inference serve --host 0.0.0.0 --port 8000
 
@@ -481,7 +481,7 @@ By hand, if you want different ports or only the camera:
 
 ```bash
 # 1. Inference with real recognition (same env as Option F):
-BR_CHESSQ=models/chessq/cq-vit-s-644-v6-seed1-onnx-int8-r1.onnx \
+BR_CHESSQ=models/chessq/cq-vit-s-644-v6-seed1-onnx-fp32.onnx \
   uv run board-reader-inference serve --host 0.0.0.0
 
 # 2. Viewer with TLS — getUserMedia requires a secure context on a phone:
@@ -846,7 +846,7 @@ iteration:** change the code, replay, score, diff. No phone, no board, no server
 
 ```bash
 # Whatever `serve` runs is what replay runs — same env vars, same builder:
-BR_CHESSQ=models/chessq/cq-vit-s-644-v6-seed1-onnx-int8-r1.onnx \
+BR_CHESSQ=models/chessq/cq-vit-s-644-v6-seed1-onnx-fp32.onnx \
 uv run board-reader-inference replay recordings/20260813-193308 --score
 ```
 
@@ -948,16 +948,22 @@ What to check:
 
 `BR_CHESSQ=<model.onnx>` serves Lichess's ChessQ Lite: one model reads the whole
 frame and finds the board and its orientation itself (DESIGN D10). Both entry
-points set it. The weights are not in the repo; `make models` fetches the V6
-release into `models/chessq/cq-vit-s-644-v6-seed1-onnx-int8-r1.onnx` from the
-pinned revision its committed descriptor names, and checks the SHA-256.
+points set it: `make dev` to the fp32 export (GPU), `make dev-cpu` and compose to
+the author's int8 file (CPU). The weights are not in the repo; `make models`
+fetches the int8 ONNX and the FP16 safetensors from the pinned revision their
+committed descriptors name, checks the SHA-256, and exports the fp32 ONNX.
 
 0. Run `make models`. Expected: `ok cq-vit-s-644-v6-seed1-onnx-int8-r1.onnx
-   (sha256 verified)` when the file is already there, `fetched ...` otherwise.
-   Run it again: it prints `ok` and downloads nothing.
-1. Start the stack: `make dev`. Expected: `recognition ChessQ Lite (...) — the same
-   recognizer compose.yaml serves`, and the inference log prints `serving ChessQ
-   from BR_CHESSQ=...`.
+   (sha256 verified)` and the same for the `.safetensors` when the files are already
+   there, `fetched ...` otherwise; then either `exported cq-vit-s-644-v6-seed1-onnx-fp32.onnx
+   (... 192/192 squares agree with the package ...)` or, when it is current,
+   `ok cq-vit-s-644-v6-seed1-onnx-fp32.onnx (export sha256 verified against its
+   descriptor)`. Run it again: every line says `ok`, nothing is downloaded or
+   exported, and `git status` shows no change to `models/chessq/*.json`.
+1. Start the stack: `make dev`. Expected: `recognition ChessQ Lite V6
+   (models/chessq/cq-vit-s-644-v6-seed1-onnx-fp32.onnx)`, and the inference log
+   prints `serving ChessQ from BR_CHESSQ=...`. `make dev-cpu` names the int8 file
+   instead.
 2. Run `curl -s localhost:8000/healthz`. Expected: a `"recognizer": {"name":
    "chessq", "model": ...}` entry naming the file.
    **Missing weights:** `make dev BR_CHESSQ=models/chessq/absent.onnx`. Expected:
@@ -966,8 +972,8 @@ pinned revision its committed descriptor names, and checks the SHA-256.
    and `/healthz` shows `"recognizer": {"name": "stub", ..., "fallback": "..."}`.
    The live page shows the start position whatever the camera sees.
 3. Open `/camera` on the phone (Option J) and point it at a board. Expected: the
-   live page shows positions within ~1 s per read (ChessQ runs ~0.4 s on the
-   GPU, ~0.6–1.1 s on CPU).
+   live page shows positions within ~1 s per read (ChessQ fp32 runs ~0.2 s on the
+   GPU; int8 ~0.6–1.1 s on CPU).
 4. Replay a take with ChessQ (Option N), with **only** `BR_CHESSQ` set:
    `BR_CHESSQ=models/chessq/cq-vit-s-644-v6-seed1-onnx-int8-r1.onnx uv run
    board-reader-inference replay recordings/20260828-111421 --policy burst-end
@@ -977,8 +983,10 @@ pinned revision its committed descriptor names, and checks the SHA-256.
 Automated: `packages/inference/tests/test_chessq.py` and `test_recognizer.py` (fake
 model and the stub; the one real-weights test is `gpu`-marked and runs under `make
 test-gpu`, skipping when the weights or the held-out still are absent),
-`tests/test_fetch_models.py` (`make models`) and `tests/test_deploy_parity.py`
-(both entry points serve ChessQ and nothing of the old stack). The e2e stream test
+`tests/test_fetch_models.py` and `tests/test_chessq_export.py` (`make models`:
+the downloads, the export's source check and descriptor) and
+`tests/test_deploy_parity.py` (both entry points serve ChessQ V6, fp32 exactly where
+a GPU is declared, and nothing of the old stack). The e2e stream test
 uses `tests/_sim_recognizer.py` instead, because ChessQ does not read sim renders.
 
 ### Option P — The chess frame: label, eval and gate a recognizer (DESIGN D10)

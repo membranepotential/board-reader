@@ -18,9 +18,11 @@
 # stale — there is no separate "did the UI change" check to fall out of date.
 #
 # The env below is the *deployed* config, not a convenience default: BR_CHESSQ
-# serves ChessQ Lite V6, the core recognizer (DESIGN D10), exactly as compose.yaml
-# does (tests/test_deploy_parity.py). The weights are not in git — `make models`
-# fetches them; without them the node serves the stub recognizer and says so.
+# serves ChessQ Lite V6, the core recognizer (DESIGN D10), the same release
+# compose.yaml serves (tests/test_deploy_parity.py) — as fp32 on the GPU here, as
+# int8 on the CPU there (see BR_CHESSQ_GPU below). The weights are not in git —
+# `make models` fetches and exports them; without them the node serves the stub
+# recognizer and says so.
 #
 # The viewer runs TWICE, but only for convenience now — either bind serves all three
 # pages. Every page is same-origin: the viewer relays the whole inference API under
@@ -54,7 +56,17 @@ HOST := $(shell ip route get 1.1.1.1 2>/dev/null | grep -oP 'src \K[\d.]+' || ec
 # `docker compose up` demo does. The two entry points drifted once already (the
 # cascade landed in compose.yaml alone, 2b64ada); tests/test_deploy_parity.py is
 # the guard, and aspects.yaml carries the Makefile as part of `deploy`.
-BR_CHESSQ       ?= models/chessq/cq-vit-s-644-v6-seed1-onnx-int8-r1.onnx
+#
+# One release, two files, chosen by hardware (docs/reports/2026-11-24-chessq-gpu-formats.md):
+#   GPU  our fp32 export — ~205 ms/read on the GTX 1650. The author's int8 runs
+#        600+ ms there: its integer matmuls have no CUDA kernels.
+#   CPU  the author's int8 — ~660 ms/read against ~990 ms for fp32 on this machine.
+# Both read every gate frame identically (cq-v6 vs cq-v6-fp32: 0 of 133 boards differ).
+# `make dev` and `make gate` take the GPU file; `make dev-cpu` and compose (which
+# declares no GPU device) take the CPU file.
+BR_CHESSQ_GPU   := models/chessq/cq-vit-s-644-v6-seed1-onnx-fp32.onnx
+BR_CHESSQ_CPU   := models/chessq/cq-vit-s-644-v6-seed1-onnx-int8-r1.onnx
+BR_CHESSQ       ?= $(BR_CHESSQ_GPU)
 BR_SAVE_UPLOADS ?= data/uploads
 
 # OpenCV's OpenCL backend shares the card with onnxruntime, and it is the one
@@ -103,7 +115,7 @@ ui:
 
 dev: ui
 	@test -f "$(BR_CHESSQ)" \
-	  && echo "  recognition ChessQ Lite ($(BR_CHESSQ)) — the same recognizer compose.yaml serves" \
+	  && echo "  recognition ChessQ Lite V6 ($(BR_CHESSQ))" \
 	  || echo "!! $(BR_CHESSQ) missing — the node serves the STUB recognizer; run 'make models'"
 	@echo "  gpu        $(if $(CUDA_ENV),hidden — the same recognizer on CPU; nothing of ours can reach the display's card,visible — onnxruntime capped at $${BR_GPU_MEM_LIMIT_MB:-768} MiB/session so the display keeps its VRAM)"
 	@echo "  camera     https://$(HOST):$(VIEWER_TLS_PORT)/camera   (accept the warning once)"
@@ -136,10 +148,12 @@ dev: ui
 
 # The whole `dev` stack with the card hidden from the inference node. One
 # assignment does it: target-specific variables reach a target's prerequisites,
-# so this is the value `dev`'s recipe expands. Nothing else differs — same
-# recognizer, same ports — so it is a straight swap when the machine
-# running this is also the machine displaying it.
+# so this is the value `dev`'s recipe expands. The model file follows the hardware
+# (the CPU one, as compose serves); nothing else differs — same release, same
+# ports — so it is a straight swap when the machine running this is also the
+# machine displaying it.
 dev-cpu: CUDA_ENV := CUDA_VISIBLE_DEVICES=
+dev-cpu: BR_CHESSQ := $(BR_CHESSQ_CPU)
 dev-cpu: dev
 
 # `-n auto` (pytest-xdist) fans the suite across every core: ~23s -> ~10s here.
@@ -196,8 +210,17 @@ test-all:
 # The recognizer weights, from the release descriptors committed under
 # models/chessq/ (pinned Hugging Face revision, size, SHA-256). Idempotent: a file
 # whose SHA-256 already matches is left alone, and a bad download replaces nothing.
+#
+# Two steps. fetch_models downloads the author's int8 ONNX (the CPU model) and the
+# FP16 safetensors; tools/chessq_export then exports those safetensors to the fp32
+# ONNX the GPU serves, checks it square by square against the official package's
+# own prediction, and writes its descriptor. The export runs in its own uv project
+# (PyTorch + chessqueries), so the workspace and the node never depend on torch.
+# The first run installs that environment (~1 GB of wheels) and takes a minute.
 models:
 	uv run python tools/fetch_models.py
+	CUDA_VISIBLE_DEVICES= uv run --project tools/chessq_export --frozen \
+	  python tools/chessq_export/export.py
 
 # The replay gate (docs/reports/2026-11-24-chessq-v6-replay-gate.md): re-read the
 # four gate takes through BR_CHESSQ alone, score each against its truth.json, and

@@ -24,6 +24,13 @@ services:
       # git (PolyForm Noncommercial, THIRD-PARTY.md): `make models` fetches them
       # into ./models. Without them the node serves the stub recognizer, says so
       # at startup and on /healthz, so a fresh clone still composes up.
+      #
+      # The int8 file, because this stack declares no GPU device and int8 is the
+      # faster CPU model (~660 vs ~990 ms/read). On a host with the NVIDIA
+      # container toolkit, a GPU reservation plus the fp32 export
+      # (cq-vit-s-644-v6-seed1-onnx-fp32.onnx, `make models`) is ~3x faster; the
+      # image already carries onnxruntime-gpu. tests/test_deploy_parity.py holds
+      # the pairing: GPU declared <=> fp32 served.
       BR_CHESSQ: /models/chessq/cq-vit-s-644-v6-seed1-onnx-int8-r1.onnx
       # Every ingested frame is recorded (WP-H2) so the run can be replayed:
       #   board-reader-edge feed --recording recordings/ --throttle

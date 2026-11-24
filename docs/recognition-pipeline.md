@@ -49,9 +49,14 @@ class Recognizer(Protocol):
 Three implementations exist:
 
 - **`ChessQRecognizer`** (`chessq.py`) — the served model. `BR_CHESSQ` names the ONNX
-  file; `make models` downloads it at a pinned Hugging Face revision and checks its
-  SHA-256 (`models/chessq/*.json` holds the release descriptor). The weights are
-  PolyForm Noncommercial — see `THIRD-PARTY.md`.
+  file, and the session takes CUDA when onnxruntime can use it (`onnxrt.cuda_providers`),
+  the CPU otherwise. One release ships as two files, chosen by hardware: the **fp32
+  export** on a GPU (`make dev`, `make gate`) and the author's **int8** on a CPU
+  (`make dev-cpu`, `compose.yaml`). `make models` downloads the int8 file and the FP16
+  safetensors at a pinned Hugging Face revision, checks their SHA-256 against
+  `models/chessq/*.json`, and exports the fp32 file with the official package
+  (`tools/chessq_export`, checked square by square against the package's own
+  prediction). The weights are PolyForm Noncommercial — see `THIRD-PARTY.md`.
 - **`StubRecognizer`** — the walking skeleton: a fixed placement, whatever the pixels. It
   serves when `BR_CHESSQ` is unset or names no file, and it says so (a stderr banner at
   startup, and `recognizer.fallback` on `/healthz`). A fresh clone without `make models`
@@ -106,8 +111,10 @@ plain rectangle.
   ([[2026-11-24-chessq-v6-replay-gate]]). `make gate` reruns it; every deletion step of the
   simplification was held to identical placements, prior and settled boards.
 - **Stills** — `eval data/eval`: 20/21 perfect boards.
-- **Latency** — the served int8 ONNX has no CUDA kernels for its quantized matmuls and runs
-  at ~0.4–0.7 s per frame on the GTX 1650; the fp32 export runs at ~205 ms
+- **Latency** — on the GTX 1650 the fp32 export runs at ~205 ms per read; the int8 file
+  runs at ~0.4–0.7 s there (its quantized matmuls have no CUDA kernels) but is the faster
+  file on a CPU (~660 vs ~990 ms). The fp32 and int8 files read all 133 gate reads
+  identically, and the four gate replays take 31 s instead of 65 s
   ([[2026-11-24-chessq-gpu-formats]]).
 
 ## Known weaknesses

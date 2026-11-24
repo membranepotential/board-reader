@@ -68,7 +68,7 @@ you are adding a test.
 
 ```bash
 uv sync                       # install the whole workspace + dev tools
-make models                   # the ChessQ weights (pinned, SHA-256 checked); without them the stub serves
+make models                   # the ChessQ weights (pinned, SHA-256 checked) + the fp32 export; without them the stub serves
 make test                     # the whole suite in parallel (-n auto), minus GPU, ~16s
 make test-gpu                 # the real-ONNX-session test (ChessQ V6 on a still); needs an idle GPU
 make test-all                 # everything, GPU included
@@ -82,11 +82,11 @@ make gate GATE_NAME=<new>     # replay the four gate takes; table against cq-v6 
 # `make dev` depends on `ui`, so this alone is only needed after touching
 # packages/viewer/ui/ without wanting the rest of the stack.
 make ui                       # build the SvelteKit frontend -> board_reader_viewer/web/
-make dev
+make dev                      # ChessQ V6 fp32 on the GPU; `make dev-cpu` serves int8 on the CPU
 
 # Or by hand, without Docker (two terminals):
-BR_CHESSQ=models/chessq/cq-vit-s-644-v6-seed1-onnx-int8-r1.onnx \
-  uv run board-reader-inference serve          # gateway on :8000
+BR_CHESSQ=models/chessq/cq-vit-s-644-v6-seed1-onnx-fp32.onnx \
+  uv run board-reader-inference serve          # gateway on :8000 (int8 file on a CPU)
 uv run board-reader-edge feed                  # synthetic feed -> :8000
 uv run board-reader-viewer --port 8080         # UI on :8080  -> open it
 

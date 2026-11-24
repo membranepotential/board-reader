@@ -1,0 +1,27 @@
+# The ChessQ Lite V6 fp32 ONNX export (`make models`), as its own uv project.
+#
+# NOT a workspace member, on purpose: the export needs PyTorch and the official
+# `chessqueries` package, the served node needs neither. Keeping them here means
+# the inference runtime (and its Docker image) never resolves torch.
+#
+#   uv run --project tools/chessq_export --frozen python tools/chessq_export/export.py
+#
+# `chessqueries` is pinned to the commit the model card names (user-approved
+# 2026-11-24, docs/reports/2026-11-24-chessq-gpu-formats.md). The 7-day seasoning
+# matches the workspace's rule (CLAUDE.md, "Supply chain").
+[project]
+name = "chessq-export"
+version = "0"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+  "chessqueries",
+  "onnx",
+  "onnxruntime",
+]
+
+[tool.uv]
+package = false
+exclude-newer = "2026-11-17T00:00:00Z"
+
+[tool.uv.sources]
+chessqueries = { git = "https://github.com/JSeytre/chessqueries", rev = "f54c07b50ae27ec5516bc80efdfb4e0600adc007" }

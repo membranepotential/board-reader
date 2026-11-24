@@ -53,3 +53,37 @@ package as runtime is equally fast, but adds PyTorch and CUDA wheels to the infe
 image for no speed gain. The fp32 file is our own export, so `make models` gains an
 export step: the pinned package in an isolated uv project, from the official
 SHA-256-checked safetensors. The switch must pass the 4-take replay gate against `cq-v6`.
+
+## Update 2026-11-24: shipped, and the replay gate
+
+The fp32 export is now what a GPU serves (`make dev`, `make gate`); the int8 file
+stays the CPU model (`make dev-cpu`, `compose.yaml`, which declares no GPU device).
+`make models` reproduces the export: `tools/chessq_export` (its own uv project, the
+same pinned package) exports byte-identically to the file measured here
+(SHA-256 `b9ebec59cafc7d706f7403baff93642daa3a0daa61796b8e231fa2caba659f2b`), and its per-square argmax equals the package's own CPU fp32
+prediction on 3 drawn boards (192/192 squares, max |Δlogit| 2.7e-5) and on 5 real
+eval photos (320/320, max 4.8e-5).
+
+**CPU, measured the same day** (onnxruntime CPU EP, 12 threads, machine loaded):
+int8 663 ms, fp32 986 ms per read. So int8 stays the CPU choice.
+
+**Replay gate** (`make gate GATE_NAME=cq-v6-fp32`, burst-end, settle 2.5 s / 2 reads):
+
+| take | raw per-sq | raw perfect | prior perfect | settled perfect | wall (int8 → fp32) |
+|---|---|---|---|---|---|
+| 20260813-193308 | .9924 | 25/31 | 25/31 | 31/31 | 21.2 → 11.0 s |
+| 20260827-175539 | .9948 | 11/12 | 11/12 | 8/12 | 6.9 → 3.8 s |
+| 20260828-111421 | .9985 | 20/21 | 20/21 | 18/21 | 13.8 → 6.2 s |
+| 20260827-181802 | .9996 | 36/37 | 36/37 | 27/37 | 22.6 → 10.0 s |
+| **total** | .9966 | 92/101 | 92/101 | 84/101 | 64.5 → 31.1 s |
+
+Every cell is identical to `cq-v6` (int8). Not just the totals: all 133 published
+placements and all 133 settled boards are the same strings. The wall time halves
+(it includes JPEG decode and the restamp of 08-13's 748 frames, so the per-read
+gain is larger than 2×).
+
+One caveat on provenance: the int8 descriptor names a different
+`source_checkpoint_sha256` (`48d0366d492f6949dc551921863a6239e56af987bda39e052518ebf0f39019fb`) than the safetensors
+(`9b007ccea09348ee011d13f95f7a9d33dfdf92aca4c9557bfbefd17a52fc0ba5`). They
+may be two serialisations of one training run, or two checkpoints; the identical
+gate reads say they behave as one model on our takes, but that is not proof.

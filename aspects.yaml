@@ -189,8 +189,10 @@ aspects:
 
   models:
     description: >-
-      External state — the recognizer weights actually on disk (models/chessq/,
-      fetched by `make models` against the committed release descriptors).
+      External state — the recognizer weights actually on disk (models/chessq/:
+      the int8 ONNX and FP16 safetensors fetched by `make models` against the
+      committed release descriptors, and the fp32 ONNX tools/chessq_export builds
+      from the safetensors against its committed export descriptor).
       Git-ignored (PolyForm Noncommercial), so the repo can only describe them,
       never contain them.
     probe: "ls -1 models/chessq 2>/dev/null"
@@ -202,8 +204,9 @@ aspects:
           rather than assumed.
       - aspect: deploy
         role: >-
-          BR_CHESSQ must name the same model file in compose.yaml and in the
-          Makefile's defaults. A missing file degrades to the stub recognizer,
+          BR_CHESSQ must name the V6 file for each entry point's hardware: the
+          fp32 export where a GPU is used (make dev), the int8 release on a CPU
+          (make dev-cpu, compose.yaml). A missing file degrades to the stub recognizer,
           loudly (plan decision D2), so check /healthz's recognizer block after
           a change.
       - aspect: status

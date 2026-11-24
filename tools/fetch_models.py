@@ -12,6 +12,10 @@ For every descriptor this:
 * refuses a descriptor whose URL is not https at its own pinned revision, so a
   moving branch such as ``main`` can never be fetched.
 
+A descriptor with an :data:`EXPORT_KEY` block describes a file we *build* rather
+than download (the fp32 ONNX, ``tools/chessq_export``); this script leaves those
+alone, and ``make models`` runs the export after it.
+
     uv run python tools/fetch_models.py            # what `make models` runs
 """
 
@@ -26,7 +30,23 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 DESCRIPTORS = "models/chessq/*.json"
+#: The block that marks a descriptor as an export's provenance, not a download pin.
+EXPORT_KEY = "export"
 _CHUNK = 1 << 20
+
+
+def is_export(meta: dict) -> bool:
+    """Whether a descriptor describes a file built here rather than fetched."""
+    return EXPORT_KEY in meta
+
+
+def release_descriptors(root: Path) -> list[Path]:
+    """The descriptors under ``root`` that pin a download, in name order."""
+    return [
+        path
+        for path in sorted(root.glob(DESCRIPTORS))
+        if not is_export(json.loads(path.read_text()))
+    ]
 
 
 @dataclass(frozen=True)
@@ -96,7 +116,7 @@ def fetch(pin: Pin) -> str:
 
 
 def main(root: Path = ROOT) -> int:
-    descriptors = sorted(root.glob(DESCRIPTORS))
+    descriptors = release_descriptors(root)
     if not descriptors:
         print(f"fetch_models: no descriptors match {DESCRIPTORS}", file=sys.stderr)
         return 2

@@ -49,6 +49,18 @@ the same footing as `data/external/chessred`. The end-to-end operator workflow (
 ask the user for a crop, which frame-extraction mode to use) is documented in the
 `get-frames-from-yt` Claude Code skill (`.claude/skills/get-frames-from-yt/`).
 
+## `fetch_models.py` + `chessq_export/` — `make models`
+
+`fetch_models.py` downloads every release descriptor's file under `models/chessq/`
+(pinned Hugging Face revision, size, SHA-256): the int8 ONNX served on a CPU and the
+FP16 safetensors. `chessq_export/` is its own uv project (PyTorch + the official
+`chessqueries` package at a pinned commit; **not** a workspace member, so nothing
+that serves depends on torch). Its `export.py` turns the safetensors into the fp32
+ONNX served on a GPU, checks per-square argmax against the package's own prediction
+(drawn boards by default, `--samples` adds photos), and writes the export's
+descriptor through `descriptor.py` (stdlib only, tested by
+`tests/test_chessq_export.py`). See the [runbook](../docs/runbook.md#running-it).
+
 ## `gate_table.py` — the four-take replay gate as one table
 
 Reads `recordings/<take>/replays/<name>/report.json` for two replay names on the

@@ -86,7 +86,26 @@ def test_an_unpinned_url_is_refused(tmp_path, url):
         fm.Pin.load(_descriptor(tmp_path, url=url))
 
 
-def test_the_committed_descriptor_pins_the_v6_release():
-    [pin] = [fm.Pin.load(p) for p in sorted(fm.ROOT.glob(fm.DESCRIPTORS))]
-    assert pin.filename == "cq-vit-s-644-v6-seed1-onnx-int8-r1.onnx"
-    assert pin.sha256 == "b5469a816bbc0c0574c4c02da6aff95286b1e3c90cb233e4e3d8750e1eed6e51"
+def test_an_export_descriptor_is_not_a_download(tmp_path, served):
+    """The fp32 export's descriptor has no URL: fetching skips it, never fails on it."""
+    _, asked = served
+    _descriptor(tmp_path)
+    (tmp_path / "models/chessq/built.json").write_text(
+        json.dumps({fm.EXPORT_KEY: {}, "artifact": {"filename": "built.onnx"}})
+    )
+    assert fm.main(tmp_path) == 0
+    assert len(asked) == 1
+    assert not (tmp_path / "models/chessq/built.onnx").exists()
+
+
+def test_the_committed_descriptors_pin_the_v6_releases():
+    pins = {
+        pin.filename: pin.sha256
+        for pin in (fm.Pin.load(p) for p in fm.release_descriptors(fm.ROOT))
+    }
+    assert pins == {
+        "cq-vit-s-644-v6-seed1-onnx-int8-r1.onnx":
+            "b5469a816bbc0c0574c4c02da6aff95286b1e3c90cb233e4e3d8750e1eed6e51",
+        "cq-vit-s-644-v6-seed1-safetensors-fp16-r1.safetensors":
+            "6c2248146327f8845435f46c68d557b5a98f83a8f930c2afc81e5b453fc083bc",
+    }

@@ -33,7 +33,7 @@ milestone ladder.
 ## Quick start
 
 ```bash
-make models                     # the ChessQ weights: pinned revision, SHA-256 checked
+make models                     # the ChessQ weights: pinned, SHA-256 checked, fp32 exported
 docker compose up --build       # then open http://localhost:8080
 ```
 
@@ -49,8 +49,8 @@ uv sync
 make models
 make dev                                       # inference + viewer, ChessQ serving
 # or by hand:
-BR_CHESSQ=models/chessq/cq-vit-s-644-v6-seed1-onnx-int8-r1.onnx \
-  uv run board-reader-inference serve          # gateway  :8000
+BR_CHESSQ=models/chessq/cq-vit-s-644-v6-seed1-onnx-fp32.onnx \
+  uv run board-reader-inference serve          # gateway  :8000 (GPU file; int8 for CPU)
 uv run board-reader-viewer --port 8080         # UI       :8080
 uv run board-reader-edge feed                  # synthetic feed
 uv run board-reader-inference positions        # tail the position stream (headless)
@@ -87,7 +87,8 @@ Two carve-outs, both spelled out in **[THIRD-PARTY.md](THIRD-PARTY.md)**:
   at all.
 - **Model weights are not redistributable.** The core recognizer, ChessQ Lite V6, is
   **PolyForm Noncommercial 1.0.0**: personal and research use only, **not** commercial
-  use. `make models` fetches it from its pinned upstream revision; only its release
-  descriptor (URL, size, SHA-256) is committed. `models/`, `data/`,
+  use. `make models` fetches it from its pinned upstream revision (the int8 ONNX and
+  the FP16 safetensors) and exports the fp32 ONNX the GPU serves; only the
+  descriptors (URL, size, SHA-256, export provenance) are committed. `models/`, `data/`,
   `scratch/` and `recordings/` are git-ignored for exactly this reason — do not attach
   weights to a release or bake them into a published image.

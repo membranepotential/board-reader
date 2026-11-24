@@ -208,6 +208,30 @@ def test_ingest_publishes_chessq_read_with_prior(gateway, drain_ingest):
     assert snap["prior"]["placement"] == RUY_LOPEZ
 
 
+def test_the_session_prefers_cuda_and_keeps_the_cpu_fallback(tmp_path, monkeypatch):
+    """The model file opens on :func:`onnxrt.cuda_providers` — CUDA when the build
+    and the environment allow it, CPU last — so one ``BR_CHESSQ`` serves either."""
+    import onnxruntime as ort
+
+    seen: dict[str, object] = {}
+
+    class Session:
+        def __init__(self, path: str, providers: list) -> None:
+            seen["path"], seen["providers"] = path, providers
+
+        def run(self, names: list[str], feeds: dict) -> list[np.ndarray]:
+            seen["outputs"] = names
+            return [_logits_for(RUY_LOPEZ)]
+
+    chosen = [("CUDAExecutionProvider", {"device_id": 0}), "CPUExecutionProvider"]
+    monkeypatch.setattr(ort, "InferenceSession", Session)
+    monkeypatch.setattr(chessq_mod, "cuda_providers", lambda: chosen)
+    model = tmp_path / "cq.onnx"
+    dist = ChessQRecognizer(model).read(render_board(RUY_LOPEZ))
+    assert seen == {"path": str(model), "providers": chosen, "outputs": ["logits"]}
+    assert dist.shape == (8, 8, len(CLASSES))
+
+
 def test_replay_config_digest_distinguishes_br_chessq(chessq_env):
     env = replay.config_env()
     assert env["BR_CHESSQ"]["value"] == str(chessq_env)
@@ -218,19 +242,24 @@ def test_replay_config_digest_distinguishes_br_chessq(chessq_env):
 # --------------------------------------------------------------------------- #
 
 _ROOT = Path(__file__).resolve().parents[3]
-_V6 = _ROOT / "models/chessq/cq-vit-s-644-v6-seed1-onnx-int8-r1.onnx"
 _STILL = _ROOT / "data/eval/heldout-20260831/img_0763.label.json"
 
 
 @pytest.mark.gpu
-@pytest.mark.skipif(
-    not (_V6.exists() and _STILL.exists()),
-    reason=f"needs {_V6.relative_to(_ROOT)} and {_STILL.relative_to(_ROOT)} (gitignored)",
+@pytest.mark.parametrize(
+    "model",
+    [
+        _ROOT / "models/chessq/cq-vit-s-644-v6-seed1-onnx-int8-r1.onnx",  # the CPU file
+        _ROOT / "models/chessq/cq-vit-s-644-v6-seed1-onnx-fp32.onnx",  # the GPU file
+    ],
+    ids=["int8", "fp32"],
 )
-def test_real_v6_reads_a_held_out_midgame_still():
+def test_real_v6_reads_a_held_out_midgame_still(model: Path):
     import cv2
 
+    if not (model.exists() and _STILL.exists()):
+        pytest.skip(f"needs {model.relative_to(_ROOT)} and {_STILL.relative_to(_ROOT)} (gitignored)")
     label = json.loads(_STILL.read_text())
     image = cv2.imread(str(_STILL.parent / label["photo"]))
-    event = _served(_V6)(Frame(board_id="still", seq=0, capture_ts=0.0, image=image))
+    event = _served(model)(Frame(board_id="still", seq=0, capture_ts=0.0, image=image))
     assert event.placement == label["placement"]

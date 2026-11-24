@@ -12,14 +12,29 @@ see [[TESTING]].
 
 ```bash
 uv sync                                   # the whole workspace + dev tools
-make models                               # the ChessQ weights (pinned, SHA-256 checked)
+make models                               # the ChessQ weights (pinned, SHA-256 checked) + fp32 export
 make test                                 # must be green before any commit
 ```
 
-`make models` reads the release descriptor committed under `models/chessq/` and
-downloads the weights from the pinned Hugging Face revision; a file whose SHA-256
-already matches is left alone, and a download that does not match replaces
-nothing. Without the weights every entry point still starts, but the node serves
+`make models` does two things. First it reads the release descriptors committed
+under `models/chessq/` and downloads the author's int8 ONNX and FP16 safetensors
+from the pinned Hugging Face revision; a file whose SHA-256 already matches is left
+alone, and a download that does not match replaces nothing. Then
+`tools/chessq_export` (its own uv project with PyTorch and the pinned official
+`chessqueries` package) exports the safetensors to
+`cq-vit-s-644-v6-seed1-onnx-fp32.onnx`, checks that its per-square argmax equals
+the package's own prediction on a few drawn boards, and writes
+`cq-vit-s-644-v6-seed1-onnx-fp32.json` (source URL and SHA-256, package commit,
+library versions, export SHA-256). The export is byte-reproducible under the lock,
+so the committed descriptor names the exact bytes; an export that is already
+current is left alone. The first run installs that environment (~1 GB) once.
+
+**Which file serves.** One release, two files, chosen by hardware: on a GPU the fp32
+export (~205 ms per read on the GTX 1650), on a CPU the author's int8 (~660 ms,
+against ~990 ms for fp32 on the CPU). The int8 file runs *slower* on CUDA (600+ ms)
+because its integer matmuls have no CUDA kernels. Both read every gate frame
+identically. `make dev` and `make gate` serve fp32; `make dev-cpu` and `compose.yaml`
+(which declares no GPU device) serve int8 ([[2026-11-24-chessq-gpu-formats]]). Without the weights every entry point still starts, but the node serves
 the **stub recognizer** (a fixed start position): it prints `!! BR_CHESSQ=... does
 not name a model file; run `make models`` at startup, and `GET /healthz` carries a
 `recognizer.fallback` with the same reason.
@@ -43,7 +58,7 @@ uv run board-reader-edge feed --video clip.mp4 --throttle   # or a real clip
 By hand:
 
 ```bash
-BR_CHESSQ=models/chessq/cq-vit-s-644-v6-seed1-onnx-int8-r1.onnx \
+BR_CHESSQ=models/chessq/cq-vit-s-644-v6-seed1-onnx-fp32.onnx \
 BR_SAVE_UPLOADS=data/uploads \
 uv run board-reader-inference serve --host 0.0.0.0
 ```
@@ -82,7 +97,7 @@ recognition.
 
 | Variable | Effect |
 |---|---|
-| `BR_CHESSQ` | **The recognizer, set by both entry points** (DESIGN D10). ChessQ Lite ONNX → `ChessQRecognizer` (the `recognizer.py` seam), which reads the whole frame and finds the board and its orientation by itself. Unset or a missing file degrades to the stub recognizer, loudly (startup banner, `recognizer.fallback` on `/healthz`); `make models` fetches it. `GET /healthz` reports `recognizer: {name, model}`. Weights are PolyForm Noncommercial and live in `models/chessq/` (THIRD-PARTY.md). Gate result: [[2026-11-24-chessq-v6-replay-gate]]. |
+| `BR_CHESSQ` | **The recognizer, set by both entry points** (DESIGN D10). ChessQ Lite ONNX → `ChessQRecognizer` (the `recognizer.py` seam), which reads the whole frame and finds the board and its orientation by itself. The session takes CUDA when onnxruntime can use it and the CPU otherwise; serve the fp32 file on a GPU and the int8 file on a CPU (see *Which file serves* above). Unset or a missing file degrades to the stub recognizer, loudly (startup banner, `recognizer.fallback` on `/healthz`); `make models` fetches and exports both. `GET /healthz` reports `recognizer: {name, model}`. Weights are PolyForm Noncommercial and live in `models/chessq/` (THIRD-PARTY.md). Gate result: [[2026-11-24-chessq-v6-replay-gate]]. |
 | `BR_SCHEDULE` | Which arriving frames get an estimate, as a `replay --policy` spec — the same string a sweep measured. Default (set by `serve`, also `--schedule`): `burst-end:burst_end_reads=3`, i.e. read at the end of each move plus a 3 s keepalive floor; ~12× fewer estimates than reading everything, for −0.9 pp prior per-square ([the sweep](reports/2026-08-27-move-trigger-sweep.md)). **The live event stream is sparse by design** — `GET /healthz` shows `ingest.unscheduled` climbing while `estimated` crawls, and that is the system working. `every-frame` is the way back. `ingest.backstopped > 0` means an edge's `capture_ts` stopped advancing and the node is reading on its own clock to stay alive. |
 | `BR_SAVE_UPLOADS` | Directory for retained phone photos + sidecars (placement, the frame it was read in, prior flips). This is what turns field shots into eval data. |
 | `BR_RECORD_DIR` | Directory for recorded ingress sessions. `serve` sets it to `recordings/` by default, so **every served run is replayable**; `serve --no-record` turns it off. |
@@ -217,9 +232,9 @@ Two defences, and they are different in kind:
   rounds every extension up to the next power of two and never gives it back)
   and `cudnn_conv_algo_search=HEURISTIC` (the default benchmarks every conv
   algorithm with large transient workspaces).
-* **`make dev-cpu` (opt in).** The same stack — same recognizer, same ports — with `CUDA_VISIBLE_DEVICES=` empty, which is CUDA's "no devices". The
+* **`make dev-cpu` (opt in).** The same stack — same release, same ports — with `CUDA_VISIBLE_DEVICES=` empty, which is CUDA's "no devices", and the int8 file, the faster one on a CPU. The
   node then never touches the card at all, so the display's VRAM is not a shared
-  resource. ChessQ on CPU (int8) takes ~600 ms per read against ~205 ms for fp32 on
+  resource. ChessQ on CPU (int8) takes ~660 ms per read against ~205 ms for fp32 on
   CUDA ([[2026-11-24-chessq-gpu-formats]]), and it is exactly what `compose.yaml` runs. Use
   it when the machine running the node is also the machine displaying it.
 
