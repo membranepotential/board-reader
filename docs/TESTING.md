@@ -10,20 +10,20 @@ Two layers, both required by the project's "user-testable from the start" princi
 
 ## 0. Read this first (the 60-second version)
 
-The suite is **fast — ~16 s for all ~860 tests**. If testing is costing you more
+The suite is **fast — ~10 s for all ~860 tests**. If testing is costing you more
 than that, you are doing one of the things in this section. Read it before you run
 anything; do not read the remaining 600 lines unless you are adding a test.
 
 **The only two commands you normally need:**
 
 ```bash
-make test                                  # everything, ~16s. The gate before a commit.
+make test                                  # everything, ~10s. The gate before a commit.
 uv run pytest packages/inference/tests/test_server.py -q    # one file, while iterating
 ```
 
 | Want | Run | Cost (measured 2026-11-24, one suite at a time) |
 |---|---|---|
-| The gate (before committing) | `make test` | **~16 s** — all ~860 |
+| The gate (before committing) | `make test` | **~10 s** — all ~860 |
 | One file / one test | `uv run pytest <path>[::<test>] -q` | 1–8 s |
 | One package | `uv run pytest packages/<pkg> -q` | core 1 s (128) · edge 1 s (85) · inference 11 s (495). The viewer has no Python tests: it is Vitest and Playwright (`make test-front`) |
 | Recognition changes only | `make test-gpu` | a few s, **needs an idle GPU** |
@@ -89,7 +89,7 @@ reasoning.
 
 ```bash
 uv sync                # once, to set up the workspace venv
-make test              # the suite across all cores, minus the GPU test (green), ~16s
+make test              # the suite across all cores, minus the GPU test (green), ~10s
 make test-gpu          # the GPU test alone — an idle GPU, or it flakes
 make test-all          # everything, GPU included
 uv run pytest          # the whole suite, serially (~23s)

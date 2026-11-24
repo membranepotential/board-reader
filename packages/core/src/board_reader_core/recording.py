@@ -26,7 +26,7 @@ One directory is one **streaming session**. An edge that reconnects restarts its
 closes the current directory's manifest (``closed_reason``) and continues in a
 sibling with a fresh timestamp id. Historical recordings, written before the
 recorder rolled, may still hold several sessions with colliding seqs in one
-directory — which is why readers (:mod:`board_reader_inference.replay`) still
+directory — which is why readers (:mod:`board_reader_inference.measurement.replay`) still
 detect session boundaries themselves.
 
 Two properties the writer maintains, both for crash-safety: the JPEG file is

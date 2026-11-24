@@ -16,7 +16,7 @@ pipeline, measuring accuracy, operating envelope, runbook).
    We never land a milestone that can't be demoed live. New behaviour ships with
    both automated tests **and** a path in [docs/TESTING.md](docs/TESTING.md). The
    walking skeleton (M0) exists precisely to make this true from day one.
-2. **Everything is tested.** No feature merges without tests. `make test` (~16 s) is
+2. **Everything is tested.** No feature merges without tests. `make test` (~10 s) is
    green before any commit **that changes something the suite covers**. Don't run
    it when nothing testable changed — a docs, comment, `Makefile` or `STATUS.md`
    edit is not a reason to spend a suite run. Logic-heavy code gets unit tests;
@@ -65,7 +65,7 @@ then commit with `git commit -F msg -- <paths>`: a pathspec commit records workt
 deletions of tracked files and ignores the rest of the index. A brand-new file still
 needs `git add`, so run it in the same command as the commit.
 
-**Testing costs ~16 s. If it is costing you more, read
+**Testing costs ~10 s. If it is costing you more, read
 [docs/TESTING.md §0](docs/TESTING.md#0-read-this-first-the-60-second-version)** —
 it is the 60-second agent briefing: which command to run when, the four habits that
 waste the most time, what a hang means, and the one `/ingest` gotcha
@@ -75,7 +75,7 @@ you are adding a test.
 ```bash
 uv sync                       # install the whole workspace + dev tools
 make models                   # the ChessQ weights (pinned, SHA-256 checked) + the fp32 export; without them the stub serves
-make test                     # the whole suite in parallel (-n auto), minus GPU, ~16s
+make test                     # the whole suite in parallel (-n auto), minus GPU, ~10s
 make test-gpu                 # the real-ONNX-session test (ChessQ V6 on a still); needs an idle GPU
 make test-all                 # everything, GPU included
 make test-front               # the frontend: Vitest + Playwright (not covered by `make test`)

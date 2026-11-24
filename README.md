@@ -15,8 +15,9 @@ the downstream application layer's job (and out of scope here).
 **M0 + M1 done; M2 in flight.** The end-to-end pipe is live and demoable. Since
 2026-11-24 the core recognizer is **ChessQ Lite V6** (Lichess's end-to-end board
 recognizer, DESIGN D10): it reads the whole frame, finds the board and its
-orientation itself, and on the four-take replay gate reads 92/101 raw and 84/101
-settled boards perfectly (the old cascade + bank: 5 and 35). Point a phone at a
+orientation itself. On the seven-take replay gate the shipped stack reads 341/361 boards
+perfectly per read and 315/361 in the settled stream (on the first four-take gate the old
+cascade + bank managed 5 and 35 of 101 where ChessQ first managed 92 and 84). Point a phone at a
 board via `/snapshot`, or stream one from `/camera` (the phone only films; you draw the
 board's rectangle, pick the lens and start the stream from `/control` on the laptop),
 and you get a position back with no taps on the phone and no calibration.

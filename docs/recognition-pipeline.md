@@ -108,9 +108,10 @@ tall, and when the phone is upright.
 
 ## Measured
 
-- **Replay gate** — the four gate takes replayed through ChessQ: **92/101 raw, 84/101
-  settled** perfect boards, against the old crop stack's 5 and 35
-  ([[2026-11-24-chessq-v6-replay-gate]]). `make gate` reruns it; every deletion step of the
+- **Replay gate** — the seven gate takes replayed through the shipped stack (base
+  `sp03-settle05-7`): **341/361 raw, 315/361 settled** perfect boards. On the original
+  four takes ChessQ first read 92/101 raw and 84/101 settled, against the old crop stack's
+  5 and 35 ([[2026-11-24-chessq-v6-replay-gate]]). `make gate` reruns it; every deletion step of the
   simplification was held to identical placements, prior and settled boards.
 - **Stills** — `eval data/eval`: 20/21 perfect boards; with the upload labels, 41/47
   ([[measuring-accuracy]]).
