@@ -5,7 +5,8 @@
    * Every board's bookkeeping — the sanitized grid, pending squares, motion,
    * change rings, staleness, events/sec, reconnect-with-backoff — already lives
    * in `PositionStream` (`#lib/stores/positions.svelte`); this page is wiring: one
-   * `<BoardCard>` per board, in a stable order, plus the connection chip.
+   * `<BoardCard>` per board, in a stable order, each beside its `<GamePanel>` (the PGN
+   * decoded from that board's reads), plus the connection chip.
    *
    * The route is prerendered (`adapter-static`), and `PositionStream`'s
    * constructor reads `performance.now()` and its `start()` opens a socket — both
@@ -17,6 +18,7 @@
   import { VIEWER_SOCKET, wsUrl } from '#lib/api.ts';
   import { PositionStream } from '#lib/stores/positions.svelte.ts';
   import BoardCard from '#lib/components/live/BoardCard.svelte';
+  import GamePanel from '#lib/components/game/GamePanel.svelte';
 
   let stream: PositionStream | undefined = $state();
   /** The socket URL this page reads from, shown so an operator can see it. */
@@ -49,7 +51,10 @@
 <main>
   {#if stream}
     {#each stream.boards as board (board.id)}
-      <BoardCard {board} liveness={stream.liveness(board)} />
+      <div class="board-and-game">
+        <BoardCard {board} liveness={stream.liveness(board)} />
+        <GamePanel event={board.event} />
+      </div>
     {/each}
   {/if}
 </main>
@@ -100,6 +105,13 @@
     margin-left: auto;
     font-size: 13px;
     color: #6aa8ff;
+  }
+
+  .board-and-game {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px;
+    align-items: flex-start;
   }
 
   main {

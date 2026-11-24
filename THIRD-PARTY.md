@@ -19,7 +19,9 @@ follow from that, and all matter before you redistribute anything:
 (`GPL-3.0-or-later`) for board rendering, and pulls in its stylesheets — which embed
 the **cburnett** piece sprites (`GPLv2+`, © Colin M.L. Burnett, per
 [lila's COPYING.md](https://github.com/lichess-org/lila/blob/master/COPYING.md)) as
-data URIs.
+data URIs. It also depends on **[`chessops`](https://github.com/niklasf/chessops)**
+(`GPL-3.0-or-later`, by the Lichess team), for the move generation, SAN and PGN behind
+the live page's game panel (`src/lib/game/`).
 
 `make ui` links these into `packages/viewer/build/`. That output
 is a combined work:
