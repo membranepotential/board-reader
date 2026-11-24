@@ -40,7 +40,7 @@ What a worker *does* with a frame is not this module's decision: it runs the
 :data:`~board_reader_inference.recognition.recognizer.FrameRead` it was built with — the same
 read ``POST /estimate`` runs (:func:`~board_reader_inference.recognition.recognizer.frame_reader`).
 What it does with the *read* is: the :class:`OrientationGuard` drops a read whose
-board points the wrong way, and the rest are repaired, debounced and published.
+board points the wrong way, and the rest are debounced and published.
 
 **Motion updates.** :meth:`FrameIngest.submit` also turns every arriving frame's
 ``stability`` into a :class:`~board_reader_core.protocol.MotionUpdate` on the hub
@@ -71,7 +71,6 @@ from board_reader_core.wire import Frame
 
 from board_reader_inference.recognition.recognizer import FrameRead, FrameReading
 from board_reader_inference.stream.hub import PositionHub
-from board_reader_inference.stream.prior import decode
 from board_reader_inference.stream.schedule import (
     DUE_EPS,
     ENTER_BURST,
@@ -97,8 +96,8 @@ def event_line(event: PositionEvent, frame: Frame, *, published_ts: float | None
     digest (:func:`square_evidence`, ~1.8 kB) rides along instead: it is what
     turns "d8 read k" into "d8 read k at 0.51 over q at 0.49", and it is the
     whole evidence base for the trial report's margin section. The digest is of
-    the estimator's own distribution — the ``prior`` repair never rewrites it —
-    so it stays comparable across the three streams.
+    the estimator's own distribution, so it explains the raw and the settled
+    board alike.
 
     The frame's own ``seq`` and ``capture_ts`` ride along too, so an event can be
     joined back to the exact recorded frame it was estimated from.
@@ -280,36 +279,27 @@ def prefer_frame(
     return queued if fq.sharpness > fi.sharpness else incoming
 
 
-def _read_with_prior(
+def _read_and_settle(
     read: FrameRead, frame: Frame, stabilizer: BoardStabilizer, guard: OrientationGuard
 ) -> FrameReading | Misoriented:
-    """One estimate plus its hard-constraint repair, both off the event loop.
+    """One estimate and its debounce, both off the event loop.
 
     The :class:`OrientationGuard` sees the read first: a dropped read never
-    reaches the repair or the debounce, so a misread board cannot start settling.
+    reaches the debounce, so a misread board cannot start settling.
 
-    The repair rides the event as :attr:`PositionEvent.prior` (raw ``placement``
-    and ``square_dist`` untouched), so every consumer of the stream — the viewer,
-    ``GET /boards/{id}``, a recording — sees the same repaired board the HTTP
-    endpoints already serve beside their reads. ``quarter_turns`` is deliberately
-    not passed: the chess frame is the recognizer's inference, not established,
-    and an inferred frame makes the back-rank constraint circular (see
-    :mod:`.prior`).
-
-    The repaired read then feeds the board's :class:`.stabilize.BoardStabilizer`,
-    and the debounced board rides as :attr:`PositionEvent.settled` — safe here
-    despite the worker thread because each board's worker estimates strictly one
-    frame at a time, in order, which is exactly the stream a debounce needs. The
-    guard relies on the same one-at-a-time order.
+    The raw read then feeds the board's :class:`.stabilize.BoardStabilizer`, and
+    the debounced board rides as :attr:`PositionEvent.settled` (raw ``placement``
+    and ``square_dist`` untouched) — safe here despite the worker thread because
+    each board's worker estimates strictly one frame at a time, in order, which
+    is exactly the stream a debounce needs. The guard relies on the same
+    one-at-a-time order.
     """
     reading = read(frame)
     dropped = guard.check(frame.seq, reading.direction)
     if dropped is not None:
         return dropped
     event = reading.event
-    repair = decode(event.square_dist)
-    event.prior = repair.to_repair()
-    event.settled = stabilizer.observe(repair.placement, frame.capture_ts)
+    event.settled = stabilizer.observe(event.placement, frame.capture_ts)
     return reading
 
 
@@ -522,7 +512,7 @@ class FrameIngest:
                             )
                     last_read = now
                     outcome = await asyncio.to_thread(
-                        _read_with_prior, self._read, frame, stabilizer, guard
+                        _read_and_settle, self._read, frame, stabilizer, guard
                     )
                 except asyncio.CancelledError:
                     raise
@@ -576,35 +566,26 @@ class FrameIngest:
         """One line per published read — INFO when the board changed, DEBUG otherwise.
 
         This is the trial log an operator tails: which placement the stream
-        settled on, how long this node took, and what the prior decoder had to
-        repair. ``proc`` is receive→publish on this node's own clock — never
-        capture→publish, which subtracts the *edge's* clock (a phone off NTP)
-        from ours and would print nonsense in the one log meant to diagnose lag.
-        "Changed" is judged on the *settled* placement, because that is what a
-        viewer displays; a read flickering between boards that debounce to the
-        same position is a DEBUG detail, not news.
+        settled on and how long this node took. ``proc`` is receive→publish on
+        this node's own clock — never capture→publish, which subtracts the
+        *edge's* clock (a phone off NTP) from ours and would print nonsense in the
+        one log meant to diagnose lag. "Changed" is judged on the *settled*
+        placement, because that is what a viewer displays; a read flickering
+        between boards that debounce to the same position is a DEBUG detail, not
+        news.
         """
 
         def displayed(ev: PositionEvent) -> str:
-            if ev.settled is not None:
-                return ev.settled.placement
-            return ev.prior.placement if ev.prior else ev.placement
+            return ev.settled.placement if ev.settled is not None else ev.placement
 
         shown = displayed(event)
         before = displayed(previous) if previous else None
-        changed = shown != before
-        flips = event.prior.flips if event.prior else ()
-        residual = event.prior.residual if event.prior else {}
         log.log(
-            logging.INFO if changed else logging.DEBUG,
-            "read %s seq=%d conf=%.3f proc=%.2fs %s%s%s",
+            logging.INFO if shown != before else logging.DEBUG,
+            "read %s seq=%d conf=%.3f proc=%.2fs %s",
             event.board_id,
             frame.seq,
             event.confidence,
             time.time() - received,
             shown,
-            "".join(
-                f" [{f.square} {f.from_class}->{f.to_class}]" for f in flips
-            ),
-            f" residual={residual}" if residual else "",
         )

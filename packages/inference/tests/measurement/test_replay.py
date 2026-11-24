@@ -610,7 +610,7 @@ def test_restamping_changes_the_schedule_and_nothing_else(metered):
     """The claim a restamped control run rests on.
 
     ``stability`` is a header field the estimators copy onto the published event
-    and nothing else ever reads — it does not enter recognition, the prior, or the
+    and nothing else ever reads — it does not enter recognition or the
     debounce. So an every-frame replay of a restamped take reads the same pixels
     in the same order as an unrestamped one and must publish the same boards; only
     the advisory field differs. If that ever stops being true, a scheduling sweep

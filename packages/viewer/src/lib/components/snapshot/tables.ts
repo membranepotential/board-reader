@@ -2,7 +2,7 @@
  * The evidence tables, as functions of the read.
  *
  * Each stage body's key/value table is a *view* of something the page already holds —
- * the distribution, the node's repair, the board as shown — so each one is
+ * the distribution, the board as shown — so each one is
  * a pure function here rather than a block of markup or a `kv(...)` call buried in a
  * render path. That is what makes "what does the read stage say about this reply?"
  * a question with a test instead of a screenshot.
@@ -10,7 +10,6 @@
 
 import type { BoardGrid } from '#lib/board/fen.ts';
 import { LOW_CONFIDENCE, type EstimateResponse } from '#lib/protocol/index.ts';
-import type { PriorRepair } from '#lib/protocol/generated.ts';
 import { kv, kvIf, type KvRow } from './kv';
 import { confidenceSummary, fmt, materialCensus } from './reading';
 
@@ -32,25 +31,6 @@ export function readTable(
     kv('board / seq', `${response.event.board_id} / ${response.event.seq}`),
     kv('captured', response.event.utc)
   ];
-}
-
-/**
- * The repair, cheapest flip first. An empty `flips` list is the GOOD case — the read was
- * already a possible board — and is reported as such rather than hidden.
- */
-export function repairTable(prior: PriorRepair | null): readonly KvRow[] {
-  if (prior === null) return [kv('served', 'this build of the server does not decode a repair')];
-  const rows: KvRow[] = prior.flips.map((flip, i) =>
-    kv(
-      `${i + 1}. ${flip.square}`,
-      `${flip.from} → ${flip.to} · ${flip.constraint} · cost ${fmt(flip.cost, 3)}`
-    )
-  );
-  const residual = Object.entries(prior.residual);
-  if (residual.length) {
-    rows.push(kv('unresolved', residual.map(([key, count]) => `${key} ${count}`).join(' · '), 'warn'));
-  }
-  return rows.length ? rows : [kv('flips', 'none — no constraint was violated')];
 }
 
 export function materialTable(grid: BoardGrid): readonly KvRow[] {

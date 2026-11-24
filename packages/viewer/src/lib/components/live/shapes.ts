@@ -4,9 +4,7 @@
  * owns the fade timing and hands this a ready-to-draw list, so this is a pure
  * mapping from the store's readout to chessground's `DrawShape` vocabulary.
  *
- * A red ring marks a square the prior decoder relabelled to make the board
- * possible (the drawn piece is the decoder's, not the estimator's); a dashed
- * amber ring one the settled board hasn't adopted yet (a move in flight, or a
+ * A dashed amber ring marks a square the settled board hasn't adopted yet (a move in flight, or a
  * misread still being debounced — the drawn piece is still whatever was last
  * settled there); a green ring a square the settled board just changed, fading
  * to pale — all outlines, never fills, so they read as annotations on the board
@@ -42,11 +40,9 @@ export function pendingShapes(pending: readonly SquareKey[]): DrawShape[] {
 
 export function boardShapes(
   rings: readonly ChangeRing[],
-  flipped: readonly SquareKey[] = [],
   pending: readonly SquareKey[] = []
 ): DrawShape[] {
-  const shapes: DrawShape[] = flipped.map((square) => ({ orig: square, brush: 'red' }));
-  shapes.push(...pendingShapes(pending));
+  const shapes: DrawShape[] = pendingShapes(pending);
   for (const ring of rings) {
     shapes.push({ orig: ring.square, brush: ring.phase === 'fresh' ? 'green' : 'paleGreen' });
   }

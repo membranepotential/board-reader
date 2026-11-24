@@ -35,10 +35,10 @@ from board_reader_inference.measurement.trial import (
 )
 
 # Rank 8 read with two black kings — the 08-13 trial's actual raw failure. One
-# square wrong (d8), and impossible, so the prior decoder has something to repair.
+# square wrong (d8), and impossible.
 TWO_KINGS = "rnbkkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR"
-# What the coin-flip repair produces on the other half of its flips: possible,
-# still wrong, and wrong on *two* squares.
+# The k/q swap of the same squares: possible, still wrong, and wrong on *two*
+# squares.
 SWAPPED = "rnbkqbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR"
 E4 = "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR"
 
@@ -52,7 +52,6 @@ def _event(
     frame_seq: int,
     placement: str,
     *,
-    prior: str | None = None,
     settled: str | None = None,
     board_id: str = "phone",
     evidence: list | None = None,
@@ -69,8 +68,6 @@ def _event(
         "capture_ts": 1786642427.0 + frame_seq,
         "published_ts": 1786642429.0 + frame_seq,
     }
-    if prior is not None:
-        line["prior"] = {"placement": prior, "flips": [], "residual": {}}
     if settled is not None:
         line["settled"] = {"placement": settled, "pending": []}
     if evidence is not None:
@@ -127,18 +124,18 @@ def _truth(**over) -> SessionTruth:
     )
 
 
-#: The 08-13 failure in miniature: a persistently wrong raw board, a repair that
-#: alternates between right and a two-square-wrong possibility, and a move at
-#: seq 100 whose first two reads land inside the guard.
+#: The 08-13 failure in miniature: a raw board that alternates between right and
+#: a two-square-wrong k/q swap, and a move at seq 100 whose first two reads land
+#: inside the guard.
 FLIPFLOP_EVENTS = [
-    _event(0, TWO_KINGS, prior=START_PLACEMENT),
-    _event(10, TWO_KINGS, prior=SWAPPED),
-    _event(20, TWO_KINGS, prior=START_PLACEMENT),
-    _event(30, TWO_KINGS, prior=SWAPPED),
-    _event(100, E4, prior=E4),  # in the guard
-    _event(103, E4, prior=E4),  # in the guard
-    _event(110, E4, prior=E4),
-    _event(120, E4, prior=E4),
+    _event(0, START_PLACEMENT),
+    _event(10, SWAPPED),
+    _event(20, START_PLACEMENT),
+    _event(30, SWAPPED),
+    _event(100, E4),  # in the guard
+    _event(103, E4),  # in the guard
+    _event(110, E4),
+    _event(120, E4),
 ]
 
 
@@ -258,10 +255,10 @@ def test_read_events_skips_junk_and_keeps_order(tmp_path):
         fh.write("{truncated\n\n")
     events = read_events(recording)
     assert [e.frame_seq for e in events] == [0, 5]
-    assert events[0].prior_placement is None
+    assert events[0].settled_placement is None
 
 
-def test_three_streams_score_differently_on_the_flipflop_session(tmp_path):
+def test_both_streams_score_differently_on_the_flipflop_session(tmp_path):
     report = score_session(_session(tmp_path, FLIPFLOP_EVENTS), _truth())
 
     assert report.events_total == 8
@@ -270,21 +267,15 @@ def test_three_streams_score_differently_on_the_flipflop_session(tmp_path):
     assert report.excluded_untruthed == 0
     assert report.settled_derived is True  # no settled block on these events
 
-    raw, prior, settled = (report.stream(s) for s in Stream)
-    # Raw is wrong on d8 for the four start-position reads: 63/64 each.
-    assert (raw.correct, raw.perfect) == (4 * 63 + 2 * 64, 2)
-    # The repair fixes two of those outright and breaks two squares on the other
-    # two — the same square total, a very different board total. This is exactly
-    # why the streams are not summed together.
-    assert (prior.correct, prior.perfect) == (4 * 64 + 2 * 62, 4)
-    assert prior.correct == raw.correct
-    # The debounce holds the majority board through the flip-flop AND through the
+    raw, settled = (report.stream(s) for s in Stream)
+    # Raw is wrong on d8 and e8 for the two swapped reads: 62/64 each.
+    assert (raw.correct, raw.perfect) == (4 * 64 + 2 * 62, 4)
+    # The debounce holds the first board through the flip-flop AND takes the
     # move, so every scored board is right.
     assert (settled.correct, settled.perfect) == (6 * 64, 6)
     assert settled.derived is True
 
-    assert raw.confusions == {"q->k": 4}
-    assert prior.confusions == {"q->k": 2, "k->q": 2}
+    assert raw.confusions == {"q->k": 2, "k->q": 2}
     assert raw.errors == {"type": 4}
 
 
@@ -298,8 +289,8 @@ def test_per_segment_breakdown_splits_the_move(tmp_path):
 
 def test_recorded_settled_is_used_as_is(tmp_path):
     events = [
-        _event(0, TWO_KINGS, prior=START_PLACEMENT, settled=START_PLACEMENT),
-        _event(10, TWO_KINGS, prior=SWAPPED, settled=SWAPPED),
+        _event(0, TWO_KINGS, settled=START_PLACEMENT),
+        _event(10, TWO_KINGS, settled=SWAPPED),
     ]
     report = score_session(_session(tmp_path, events), _truth())
     assert report.settled_derived is False
@@ -311,8 +302,8 @@ def test_recorded_settled_is_used_as_is(tmp_path):
 
 def test_events_for_another_board_are_counted_not_scored(tmp_path):
     events = [
-        _event(0, START_PLACEMENT, prior=START_PLACEMENT),
-        _event(1, START_PLACEMENT, prior=START_PLACEMENT, board_id="other"),
+        _event(0, START_PLACEMENT),
+        _event(1, START_PLACEMENT, board_id="other"),
     ]
     report = score_session(_session(tmp_path, events), _truth())
     assert (report.events_total, report.events_scored) == (2, 1)
@@ -323,12 +314,6 @@ def test_a_board_with_no_events_is_an_error_that_names_what_was_recorded(tmp_pat
     recording = _session(tmp_path, [_event(0, START_PLACEMENT, board_id="other")])
     with pytest.raises(TruthError, match="recorded \\['other'\\]"):
         score_session(recording, _truth())
-
-
-def test_an_event_without_a_repair_falls_back_to_the_raw_board(tmp_path):
-    report = score_session(_session(tmp_path, [_event(0, TWO_KINGS)]), _truth())
-    assert report.prior_missing == 1
-    assert report.stream(Stream.PRIOR).correct == report.stream(Stream.RAW).correct
 
 
 def test_report_renders_and_serialises(tmp_path):
@@ -345,9 +330,8 @@ def test_report_renders_and_serialises(tmp_path):
         "excluded_guard": 2,
         "excluded_untruthed": 0,
         "excluded_other_board": 0,
-        "prior_missing": 0,
     }
-    assert [s["stream"] for s in doc["streams"]] == ["raw", "prior", "settled"]
+    assert [s["stream"] for s in doc["streams"]] == ["raw", "settled"]
     json.dumps(doc)  # the --json path must not choke on a Counter or a Path
 
 
@@ -373,7 +357,7 @@ def test_cli_scores_a_session_and_writes_json(tmp_path, capsys):
 
 def test_cli_fails_on_a_session_with_nothing_left_to_score(tmp_path, capsys):
     # Every event lands inside the guard after the boundary at seq 100.
-    events = [_event(100, E4, prior=E4), _event(101, E4, prior=E4)]
+    events = [_event(100, E4), _event(101, E4)]
     recording = _session(tmp_path / "rec", events)
     truth = _truth(
         segments=(TruthSegment(0, START_PLACEMENT), TruthSegment(100, E4)), guard_seqs=50
@@ -408,13 +392,11 @@ def test_evidence_separates_a_coin_flip_from_a_conviction(tmp_path):
         _event(
             0,
             TWO_KINGS,
-            prior=TWO_KINGS,
             evidence=_digest(TWO_KINGS, d8=("q", 0.51, 0.47)),
         ),
         _event(
             10,
             TWO_KINGS,
-            prior=TWO_KINGS,
             evidence=_digest(TWO_KINGS, d8=("n", 0.90, 0.05)),
         ),
     ]
@@ -444,9 +426,9 @@ def test_evidence_survives_a_malformed_digest(tmp_path):
     """A digest is diagnostic, never load-bearing: garbage there must not cost a
     session its score."""
     events = [
-        _event(0, TWO_KINGS, prior=TWO_KINGS, evidence=[["k", 0.5]]),  # wrong shape
+        _event(0, TWO_KINGS, evidence=[["k", 0.5]]),  # wrong shape
         _event(
-            10, TWO_KINGS, prior=TWO_KINGS, evidence=_digest(TWO_KINGS, d8=("q", 0.6, 0.3))
+            10, TWO_KINGS, evidence=_digest(TWO_KINGS, d8=("q", 0.6, 0.3))
         ),
     ]
     report = score_session(_session(tmp_path, events), _truth())
@@ -459,7 +441,7 @@ def test_evidence_survives_a_malformed_digest(tmp_path):
 def test_evidence_renders_its_margins(tmp_path):
     events = [
         _event(
-            0, TWO_KINGS, prior=TWO_KINGS, evidence=_digest(TWO_KINGS, d8=("q", 0.51, 0.47))
+            0, TWO_KINGS, evidence=_digest(TWO_KINGS, d8=("q", 0.51, 0.47))
         )
     ]
     text = score_session(_session(tmp_path, events), _truth()).render()
@@ -489,7 +471,7 @@ def test_timing_measures_input_rate_against_read_rate(tmp_path):
 
 
 def test_timing_says_nothing_rather_than_zero_when_a_session_has_one_frame(tmp_path):
-    recording = _session(tmp_path, [_event(0, START_PLACEMENT, prior=START_PLACEMENT)])
+    recording = _session(tmp_path, [_event(0, START_PLACEMENT)])
     t = score_session(recording, _truth()).timing
 
     assert t.fps == 0.0 and t.reads_per_s == 0.0  # no span to divide by
@@ -499,8 +481,8 @@ def test_timing_says_nothing_rather_than_zero_when_a_session_has_one_frame(tmp_p
 def test_timing_counts_only_the_scored_board(tmp_path):
     frames = _photo_frames(2)
     events = [
-        _event(0, START_PLACEMENT, prior=START_PLACEMENT),
-        _event(1, START_PLACEMENT, prior=START_PLACEMENT, board_id="other"),
+        _event(0, START_PLACEMENT),
+        _event(1, START_PLACEMENT, board_id="other"),
     ]
     t = score_session(_session(tmp_path, events, frames), _truth()).timing
 

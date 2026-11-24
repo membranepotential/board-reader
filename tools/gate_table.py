@@ -6,7 +6,7 @@ whose truth docs/reports/2026-11-24-heldout-truth-completion.md completed. Each 
 ``recordings/<take>/replays/<name>/report.json`` (``replay --score``); this reads
 two of them per take and prints, as ``base→candidate``:
 
-    take | raw per-sq | raw perfect | prior perfect | settled perfect
+    take | raw per-sq | raw perfect | settled perfect
 
 with a total row (per-square pooled over every scored square, perfect boards
 summed). ``make gate`` replays the takes under a new name and prints this against
@@ -60,8 +60,9 @@ GATE_TAKES = (
     GateTake("20260827-172736", restamp_stability=True),
 )
 
-#: The three boards a published event carries, in report order.
-STREAMS = ("raw", "prior", "settled")
+#: The two boards a published event carries, in report order. A base replayed
+#: before 2026-11-24 also scored a ``prior`` stream; the table ignores it.
+STREAMS = ("raw", "settled")
 
 
 @dataclass(frozen=True)
@@ -104,7 +105,7 @@ class Scored:
             }
         )
 
-    def cells(self) -> tuple[str, str, str, str]:
+    def cells(self) -> tuple[str, str, str]:
         raw = self.streams["raw"]
         per_sq = f"{raw.correct / raw.squares:.4f}".lstrip("0") if raw.squares else "—"
         return (
@@ -119,7 +120,7 @@ def report_path(recordings: Path, take: str, name: str) -> Path:
 
 def table(base: str, candidate: str, *, recordings: Path, takes: tuple[GateTake, ...]) -> str:
     """The gate table as Markdown; raises ``FileNotFoundError`` naming a missing report."""
-    header = ("take", "raw per-sq", "raw perfect", "prior perfect", "settled perfect")
+    header = ("take", "raw per-sq", "raw perfect", "settled perfect")
     pairs: list[tuple[str, Scored, Scored]] = []
     for t in takes:
         a, b = (report_path(recordings, t.take, n) for n in (base, candidate))

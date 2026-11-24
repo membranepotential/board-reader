@@ -163,7 +163,6 @@ def save_label(
     predicted: str | None,
     corrections: int,
     autorotated: int,
-    prior_flips: list[str] | None = None,
 ) -> Path:
     """Write ``<upload_id>.label.json``; returns the path.
 
@@ -173,22 +172,12 @@ def save_label(
     in the corner frame. A chess-frame read is never autorotated and needs no
     corners. Re-labelling the same upload overwrites — the last confirmation is
     the truth.
-
-    ``prior_flips`` are the squares the hard-constraint decoder repaired in this
-    read (:mod:`.prior`), in the frame the operator saw, un-rotated to the corner
-    frame like everything else here. They are recorded for one reason: since the
-    decoder's repair is what gets *displayed*, an operator confirming with no
-    corrections can hand back truth that came from the decoder rather than from
-    the board. That is the same bias the bank incidents taught us to distrust, so
-    a later eval must be able to find these labels — it cannot if we do not
-    write them down. Nothing reads them back into the bank; see the module note.
     """
     k = (autorotated // 90) % 4
     if frame == "chess" and k:
         raise ValueError("a chess-frame read is never autorotated")
     truth = rotate_placement(placement, -k) if k else placement
     parse_placement(truth)  # reject a malformed label before it reaches disk
-    flips = [rotate_square(s, -k) if k else s for s in (prior_flips or [])]
     path = directory / f"{upload_id}{LABEL_SUFFIX}"
     path.write_text(
         json.dumps(
@@ -203,7 +192,6 @@ def save_label(
                 "predicted": predicted,
                 "corrections": corrections,
                 "autorotated": autorotated,
-                "prior_flips": flips,
             }
         )
     )

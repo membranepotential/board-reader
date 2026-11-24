@@ -125,7 +125,6 @@ def cmd_eval(args: argparse.Namespace) -> int:
     try:
         report = run(
             args.paths or None,
-            prior=not args.no_prior,
             temperature=args.temperature,
             json_out=args.json,
         )
@@ -315,14 +314,6 @@ def build_parser() -> argparse.ArgumentParser:
         f"default: {' '.join(DEFAULT_PATHS)}",
     )
     e.add_argument(
-        "--no-prior",
-        action="store_true",
-        help="isolate the raw estimator by skipping the hard-constraint decode "
-        "(<=1 king per colour, no pawn on rank 1/8, <=16 pieces, promotion "
-        "budget). The decode is ON by default because it is what /estimate now "
-        "serves, and this harness scores what serves",
-    )
-    e.add_argument(
         "--temperature",
         action="store_true",
         help="also fit and report temperature scaling of the confidences "
@@ -424,8 +415,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     t = sub.add_parser(
         "eval-session",
-        help="score a recorded live session against its truth.json (raw vs prior "
-        "vs settled)",
+        help="score a recorded live session against its truth.json (raw vs settled)",
     )
     t.add_argument(
         "recording",

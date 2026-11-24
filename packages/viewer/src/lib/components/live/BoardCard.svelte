@@ -37,7 +37,7 @@
 
   const event = $derived(board.event);
   const placement = $derived(gridToFen(board.grid));
-  const shapes = $derived(boardShapes(liveness.rings, board.flipped, board.pending));
+  const shapes = $derived(boardShapes(liveness.rings, board.pending));
   const motion = $derived(liveness.motion);
 </script>
 

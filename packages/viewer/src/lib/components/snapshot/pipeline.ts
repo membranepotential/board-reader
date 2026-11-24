@@ -15,17 +15,17 @@
  */
 
 /**
- * Four stages: the recognizer reads the whole photo, so there is no detection,
- * rectification or orientation step left for this page to show.
+ * Three stages: the recognizer reads the whole photo, so there is no detection,
+ * rectification or orientation step left for this page to show, and the node no
+ * longer repairs an impossible read.
  */
-export const STAGE_ORDER = ['capture', 'read', 'repair', 'output'] as const;
+export const STAGE_ORDER = ['capture', 'read', 'output'] as const;
 
 export type StageId = (typeof STAGE_ORDER)[number];
 
 /**
  * What a stage is currently saying about itself. `warn` is not a failure: it is the
- * stage's own "look at this" — a dim photo, a hand-corrected square, a board the
- * server had to repair.
+ * stage's own "look at this" — a dim photo, a hand-corrected square.
  */
 export type StageState = 'idle' | 'run' | 'ok' | 'warn' | 'fail';
 
@@ -56,8 +56,7 @@ export interface StageMeta {
 export const STAGES: readonly StageMeta[] = [
   { id: 'capture', index: 1, title: 'Capture', initialSummary: 'no photo yet' },
   { id: 'read', index: 2, title: 'Read', initialSummary: 'waiting for a photo' },
-  { id: 'repair', index: 3, title: 'Impossible-board repair', initialSummary: 'waiting for a read' },
-  { id: 'output', index: 4, title: 'Position output', initialSummary: 'waiting for a read' }
+  { id: 'output', index: 3, title: 'Position output', initialSummary: 'waiting for a read' }
 ];
 
 export type Pipeline = Readonly<Record<StageId, StageStatus>>;
@@ -107,5 +106,5 @@ export function resetFrom(pipeline: Pipeline, id: StageId): Pipeline {
   return next;
 }
 
-/** The three stages a `/estimate` call owns, in order. */
-export const READ_STAGES: readonly StageId[] = ['read', 'repair', 'output'];
+/** The two stages a `/estimate` call owns, in order. */
+export const READ_STAGES: readonly StageId[] = ['read', 'output'];

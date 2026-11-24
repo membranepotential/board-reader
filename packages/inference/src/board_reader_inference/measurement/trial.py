@@ -24,12 +24,11 @@ scoring rather than counted as errors (12 seqs is ~1.5 s at the 08-13 trial's
 7.5 fps). Excluded counts are reported, because a guard that swallows half the
 session is a measurement, not a detail.
 
-**Three streams, scored apart.** A published event carries up to three boards and
-they fail differently: the raw argmax (``placement``), the hard-constraint repair
-(``prior.placement``, :mod:`.prior`) and the temporal debounce
+**Two streams, scored apart.** A published event carries two boards and they fail
+differently: the raw argmax (``placement``) and the temporal debounce
 (``settled.placement``, :mod:`.stabilize`). Scoring them side by side is the whole
-point — it is what says whether the repair and the debounce earn their keep on a
-real stream, which no single-photo eval can answer. Recordings made before the
+point — it is what says whether the debounce earns its keep on a real stream,
+which no single-photo eval can answer. Recordings made before the
 settled block existed get it **derived** here, by replaying the same
 :class:`~board_reader_inference.stream.stabilize.BoardStabilizer` the gateway now runs
 live; the report says so, because a replayed number is not a recorded one.
@@ -253,10 +252,9 @@ def truth_skeleton(recording: Recording) -> str:
 
 
 class Stream(StrEnum):
-    """The three boards a published event can carry, scored side by side."""
+    """The two boards a published event carries, scored side by side."""
 
     RAW = "raw"  # placement — the estimator's per-square argmax
-    PRIOR = "prior"  # prior.placement — the hard-constraint repair
     SETTLED = "settled"  # settled.placement — the K-consecutive debounce
 
 
@@ -277,7 +275,6 @@ class RecordedEvent:
     published_ts: float
     confidence: float
     placement: str
-    prior_placement: str | None
     settled_placement: str | None
     #: 64 squares in board order, each a tuple of (class, probability) pairs
     #: ordered most-likely first. ``None`` when the session recorded no digest.
@@ -316,7 +313,6 @@ def read_events(recording: Recording, *, board_id: str | None = None) -> list[Re
                     published_ts=float(d.get("published_ts", 0.0)),
                     confidence=float(d.get("confidence", 0.0)),
                     placement=str(d["placement"]),
-                    prior_placement=_block_placement(d.get("prior")),
                     settled_placement=_block_placement(d.get("settled")),
                     evidence=_parse_evidence(d.get("evidence")),
                 )
@@ -353,7 +349,7 @@ def _parse_evidence(block: object) -> tuple[tuple[tuple[str, float], ...], ...] 
 
 
 def _block_placement(block: object) -> str | None:
-    """The ``placement`` of an advisory block (``prior``/``settled``), if it has one."""
+    """The ``placement`` of the advisory ``settled`` block, if it has one."""
     if not isinstance(block, dict):
         return None
     placement = block.get("placement")
@@ -362,36 +358,27 @@ def _block_placement(block: object) -> str | None:
 
 @dataclass(frozen=True)
 class ScoredRead:
-    """One event joined to its truth segment, with all three boards resolved."""
+    """One event joined to its truth segment, with both boards resolved."""
 
     event: RecordedEvent
     segment: int
     raw: str
-    prior: str
     settled: str
 
     def board(self, stream: Stream) -> str:
-        if stream is Stream.RAW:
-            return self.raw
-        if stream is Stream.PRIOR:
-            return self.prior
-        return self.settled
+        return self.raw if stream is Stream.RAW else self.settled
 
 
 def derive_settled(events: list[RecordedEvent]) -> list[str]:
     """Replay :class:`BoardStabilizer` over a board's events, in order.
 
     What the gateway does live, for recordings that predate it doing so. Fed the
-    *repaired* placement, exactly as the live path feeds it (see
-    :mod:`.stabilize`), and fed **every** event including the ones scoring will
-    exclude — the gateway saw those too, and a debounce that skipped them would
-    settle differently.
+    raw placement, exactly as the live path feeds it (see :mod:`.stabilize`), and
+    fed **every** event including the ones scoring will exclude — the gateway saw
+    those too, and a debounce that skipped them would settle differently.
     """
     stabilizer = BoardStabilizer()
-    return [
-        stabilizer.observe(e.prior_placement or e.placement, e.capture_ts).placement
-        for e in events
-    ]
+    return [stabilizer.observe(e.placement, e.capture_ts).placement for e in events]
 
 
 # --------------------------------------------------------------------------- #
@@ -430,7 +417,7 @@ class SegmentScore:
 
 @dataclass
 class StreamScore:
-    """How one of the three boards did over the whole scored session."""
+    """How one of the two boards did over the whole scored session."""
 
     stream: Stream
     events: int
@@ -588,8 +575,8 @@ class EvidenceScore:
     Scored against the **raw** board on purpose: raw is the per-square argmax of
     the very distribution the digest summarises, so ``margin`` is exactly
     "how much more probability the wrong answer had than the right one". The
-    prior and settled boards are repairs *of* these reads, so the same evidence
-    is what they had to work with.
+    settled board is composed *of* these reads, so the same evidence is what it
+    had to work with.
 
     A small margin with truth as the runner-up is a fixable error — the crop
     carries the answer and the model nearly found it. Truth outside the top
@@ -738,7 +725,6 @@ class SessionReport:
     excluded_guard: int
     excluded_untruthed: int
     excluded_other_board: int
-    prior_missing: int
     settled_derived: bool
     evidence: EvidenceScore
     timing: Timing
@@ -764,7 +750,6 @@ class SessionReport:
                 "excluded_guard": self.excluded_guard,
                 "excluded_untruthed": self.excluded_untruthed,
                 "excluded_other_board": self.excluded_other_board,
-                "prior_missing": self.prior_missing,
             },
             "settled_derived": self.settled_derived,
             "truth_frame": self.frame.to_dict(),
@@ -791,11 +776,6 @@ class SessionReport:
                 f">={SETTLE_MIN_READS} reads) — this recording predates the settled "
                 "block, so that row is what the gateway would publish today, not "
                 "what it published then"
-            )
-        if self.prior_missing:
-            lines.append(
-                f"prior:     {self.prior_missing} event(s) carried no repair; the "
-                "prior row falls back to the raw board for those"
             )
         f = self.frame
         if f.reads and f.verdict:
@@ -933,7 +913,7 @@ def _excluded_detail(report: SessionReport) -> str:
 
 
 def score_session(recording: Recording, truth: SessionTruth) -> SessionReport:
-    """Join a recording's events to ``truth`` and score all three streams."""
+    """Join a recording's events to ``truth`` and score both streams."""
     all_events = read_events(recording)
     mine = [e for e in all_events if e.board_id == truth.board_id]
     if not mine:
@@ -953,7 +933,6 @@ def score_session(recording: Recording, truth: SessionTruth) -> SessionReport:
 
     reads: list[ScoredRead] = []
     excluded_guard = excluded_untruthed = 0
-    prior_missing = 0
     for event, settled_placement in zip(mine, settled):
         index = truth.index_for(event.frame_seq)
         if index < 0:
@@ -962,21 +941,17 @@ def score_session(recording: Recording, truth: SessionTruth) -> SessionReport:
         if truth.in_guard(event.frame_seq):
             excluded_guard += 1
             continue
-        if event.prior_placement is None:
-            prior_missing += 1
         reads.append(
             ScoredRead(
                 event=event,
                 segment=index,
                 raw=event.placement,
-                prior=event.prior_placement or event.placement,
                 settled=settled_placement,
             )
         )
 
     streams = [
         _score_stream(Stream.RAW, reads, truth, derived=False),
-        _score_stream(Stream.PRIOR, reads, truth, derived=False),
         _score_stream(Stream.SETTLED, reads, truth, derived=settled_derived),
     ]
     return SessionReport(
@@ -989,7 +964,6 @@ def score_session(recording: Recording, truth: SessionTruth) -> SessionReport:
         excluded_guard=excluded_guard,
         excluded_untruthed=excluded_untruthed,
         excluded_other_board=len(all_events) - len(mine),
-        prior_missing=prior_missing,
         settled_derived=settled_derived,
         evidence=score_evidence(reads, truth),
         # Timed over every event this board published, not just the scored ones:

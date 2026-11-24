@@ -9,7 +9,7 @@ paths:
 - Keep a package's `src/<package>/` flat only while it holds a handful of modules with one concern (core and edge today, 5 and 7 modules). Once it grows past ~8 modules or several distinct concerns, group the modules into subpackages by concern, each with a one-line docstring in its `__init__.py`, and keep only the entry points (the app factory, the CLI) at the package root, because a flat folder of 17 modules (the inference node, 2026-11-24) hides which parts belong together and which may import which. The user asked for this explicitly.
 - Organize `board_reader_inference` like this, and put a new module into the group whose concern it serves:
   - `recognition/` — what turns pixels into a distribution: `recognizer.py`, `chessq.py`, `onnxrt.py`.
-  - `stream/` — the live read path after recognition: `ingest.py`, `schedule.py`, `stabilize.py`, `prior.py`, `hub.py`.
+  - `stream/` — the live read path after recognition: `ingest.py`, `schedule.py`, `stabilize.py`, `rules.py`, `hub.py`.
   - `control/` — the camera control channel: `camera.py`.
   - `measurement/` — replay, scoring and labels: `replay.py`, `trial.py`, `evaluate.py`, `labels.py`, `calibration.py`.
   - the root — `server.py` (the app factory), `cli.py`, and `positions.py` (the headless `/viewer` client).

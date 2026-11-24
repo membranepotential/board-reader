@@ -12,7 +12,7 @@ import {
 describe('the pipeline record', () => {
   it('describes every stage exactly once, in display order', () => {
     expect(STAGES.map((s) => s.id)).toEqual([...STAGE_ORDER]);
-    expect(STAGES.map((s) => s.index)).toEqual([1, 2, 3, 4]);
+    expect(STAGES.map((s) => s.index)).toEqual([1, 2, 3]);
   });
 
   it('starts idle with each stage carrying its own opening line', () => {
@@ -31,8 +31,8 @@ describe('the pipeline record', () => {
   });
 
   it('keeps the existing line when only the state changes', () => {
-    const pipeline = withStage(initialPipeline(), 'repair', 'warn');
-    expect(pipeline['repair']).toEqual({ state: 'warn', summary: 'waiting for a read' });
+    const pipeline = withStage(initialPipeline(), 'output', 'warn');
+    expect(pipeline['output']).toEqual({ state: 'warn', summary: 'waiting for a read' });
   });
 
   it('restates a whole read at once', () => {

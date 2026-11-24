@@ -199,49 +199,9 @@ def test_from_dict_rejects_mismatched_classes():
         PositionEvent.from_dict(d)
 
 
-def test_prior_repair_rides_the_event_and_round_trips():
-    """The optional ``prior`` block survives to_dict/from_dict byte-identically —
-    and its absence stays absence, not an empty stub a consumer must special-case."""
-    from board_reader_core.protocol import PriorFlip, PriorRepair
-
-    dist = dist_from_placement(START_PLACEMENT)
-    bare = PositionEvent.from_square_dist(
-        board_id="A1", seq=0, utc=iso_utc(0.0), square_dist=dist
-    )
-    assert bare.prior is None
-    assert "prior" not in bare.to_dict()
-    assert PositionEvent.from_json(bare.to_json()).prior is None
-
-    bare.prior = PriorRepair(
-        placement=START_PLACEMENT,
-        flips=(PriorFlip("d8", "k", "q", 0.7382, "kings"),),
-        residual={"kings": 1},
-    )
-    back = PositionEvent.from_json(bare.to_json())
-    assert back.prior == bare.prior
-    assert back.to_dict()["prior"] == {
-        "placement": START_PLACEMENT,
-        "flips": [
-            {"square": "d8", "from": "k", "to": "q", "cost": 0.7382, "constraint": "kings"}
-        ],
-        "residual": {"kings": 1},
-    }
-
-
-def test_a_malformed_prior_placement_is_refused():
-    from board_reader_core.protocol import PriorRepair
-
-    dist = dist_from_placement(START_PLACEMENT)
-    ev = PositionEvent.from_square_dist(
-        board_id="A1", seq=0, utc=iso_utc(0.0), square_dist=dist
-    )
-    with pytest.raises(ValueError, match="8 ranks"):
-        ev.prior = PriorRepair(placement="not/a/board")
-
-
 def test_settled_board_rides_the_event_and_round_trips():
     """The optional ``settled`` block survives to_dict/from_dict byte-identically —
-    and its absence stays absence, exactly like ``prior``."""
+    and its absence stays absence, not an empty stub a consumer must special-case."""
     from board_reader_core.protocol import SettledBoard
 
     dist = dist_from_placement(START_PLACEMENT)

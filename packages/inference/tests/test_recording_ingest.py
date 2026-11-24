@@ -211,7 +211,7 @@ def test_published_events_land_in_the_session_beside_their_frames(recorded):
     assert first["frame_seq"] in (0, 1)
     assert first["capture_ts"] >= 1000.0
     assert first["published_ts"] > 0
-    assert "prior" in first  # the repair is part of the run's record
+    assert first["settled"]["placement"] == first["placement"]  # the debounce is recorded
 
 
 def test_a_refused_frame_is_counted_and_the_socket_survives():

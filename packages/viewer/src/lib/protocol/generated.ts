@@ -235,66 +235,6 @@ export const PreviewsMessage = z.strictObject({
 export type PreviewsMessage = Immutable<z.infer<typeof PreviewsMessage>>;
 
 /**
- * One square the hard-constraint decoder relabelled, as it travels on the wire.
- *
- * The producer is the inference node's prior decoder; this is only its wire
- * shape. `cost` is the log-probability margin given up, in nats; it may be
- * negative on a square's second flip.
- */
-export const PriorFlip = z.strictObject({
-  square: z.string().regex(/^[a-h][1-8]$/),
-  from: z.enum([
-    'empty',
-    'P',
-    'N',
-    'B',
-    'R',
-    'Q',
-    'K',
-    'p',
-    'n',
-    'b',
-    'r',
-    'q',
-    'k'
-  ]),
-  to: z.enum([
-    'empty',
-    'P',
-    'N',
-    'B',
-    'R',
-    'Q',
-    'K',
-    'p',
-    'n',
-    'b',
-    'r',
-    'q',
-    'k'
-  ]),
-  cost: z.number(),
-  constraint: z.string().min(1)
-});
-export type PriorFlip = Immutable<z.infer<typeof PriorFlip>>;
-
-/**
- * The nearest *possible* board to a read, served beside it (never instead).
- *
- * `square_dist` and `placement` stay exactly what the estimator produced —
- * a consumer that wants the repaired board takes `placement` from here,
- * and one that runs its own smoothing over the raw distribution can ignore this
- * block entirely, so the prior is never double-counted. `residual` holds the
- * per-constraint excess the decoder could not repair (empty = fully possible).
- */
-export const PriorRepair = z.strictObject({
-  placement: z.string().refine(checks.isPlacement, { message: 'fails isPlacement' }),
-  flips: z.array(PriorFlip),
-  residual: z.record(z.string(), z.int().min(0).max(9007199254740991))
-});
-export type PriorRepair = Immutable<z.infer<typeof PriorRepair>>;
-
-/**
  * Node -> either client: one message was refused; the socket stays open.
  */
 export const RefusedMessage = z.strictObject({
@@ -329,9 +269,9 @@ export type ReportMessage = Immutable<z.infer<typeof ReportMessage>>;
  * currently reading differently from the settled board — a move in flight looks
  * like its from/to squares going pending, then being adopted.
  *
- * Advisory like `PriorRepair`: `placement`/`square_dist` on the event
- * stay exactly what the estimator produced, and a consumer running its own
- * smoothing ignores this block entirely.
+ * Advisory: `placement`/`square_dist` on the event stay exactly what the
+ * estimator produced, and a consumer running its own smoothing ignores this
+ * block entirely.
  */
 export const SettledBoard = z.strictObject({
   placement: z.string().refine(checks.isPlacement, { message: 'fails isPlacement' }),
@@ -349,7 +289,6 @@ export type SettledBoard = Immutable<z.infer<typeof SettledBoard>>;
  */
 export const PositionEvent = z.strictObject({
   clock: ClockState,
-  prior: PriorRepair.nullable().optional(),
   settled: SettledBoard.nullable().optional(),
   board_id: z.string().min(1),
   utc: z.string().regex(/^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]+)?Z$/),

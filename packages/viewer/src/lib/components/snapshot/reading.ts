@@ -2,7 +2,7 @@
  * What one read means, as pure functions over the parsed `/estimate` reply.
  *
  * The rule this module exists to keep: **the node's own read is never mutated.** The
- * baseline is `prior.placement ?? event.placement` plus `square_dist`, and every hand
+ * baseline is `event.placement` plus `square_dist`, and every hand
  * correction is a separate layer on top of it — so "reset corrections" restores exactly
  * what the node served, a correction can always be described as `read → assigned`, and
  * the ground-truth label is a derived value rather than a second copy of the board.
@@ -375,24 +375,13 @@ export function rawEventJson(response: EstimateResponse): string {
     orientation: response.event.orientation,
     clock: response.event.clock,
     square_dist: '[8 x 8 x 13 floats — see the confidence map]',
-    prior: response.prior,
     upload: response.upload,
     warnings: response.warnings
   };
   return JSON.stringify(body, null, 2);
 }
 
-/**
- * The baseline board a reading establishes.
- *
- * `event.placement` is the raw argmax and stays that way in the event JSON, while
- * `prior` carries the nearest board that is actually possible — when the node decoded
- * one, THAT is the answer, and corrections layer on top of it.
- */
-export function baselinePlacement(response: EstimateResponse): string {
-  return response.prior?.placement ?? response.event.placement;
-}
-
+/** The baseline board a reading establishes: the node's read, before any correction. */
 export function baselineGrid(response: EstimateResponse): BoardGrid {
-  return fenToGrid(baselinePlacement(response));
+  return fenToGrid(response.event.placement);
 }

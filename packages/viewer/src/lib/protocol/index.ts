@@ -23,7 +23,7 @@
 
 import type { z } from 'zod';
 
-import { CameraConfig, PositionEvent, type FrameSize, type PriorRepair } from './generated';
+import { CameraConfig, PositionEvent, type FrameSize } from './generated';
 import { err, ok, type Result } from '../result';
 
 // ---- the 13-class vocabulary -------------------------------------------------
@@ -205,8 +205,6 @@ export const LOW_CONFIDENCE = 0.5;
 /** `POST /estimate`: the position event, plus what only a one-shot read carries. */
 export interface EstimateResponse {
   readonly event: PositionEvent;
-  /** The event's own `prior`, lifted out: the board the page establishes as its baseline. */
-  readonly prior: PriorRepair | null;
   /** Names the retained photo, so this read's position can be confirmed via `/labels`. */
   readonly upload: string | null;
   readonly warnings: readonly string[];
@@ -247,7 +245,6 @@ export function parseEstimateResponse(raw: unknown): ParseResult<EstimateRespons
   if (!event.ok) return event;
   return ok({
     event: event.value,
-    prior: event.value.prior ?? null,
     upload: asString(upload),
     warnings: Array.isArray(warnings) ? warnings.filter((w): w is string => typeof w === 'string') : []
   });

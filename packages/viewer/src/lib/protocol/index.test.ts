@@ -50,25 +50,16 @@ describe('a position event off the wire', () => {
     expect(parseEvent(JSON.stringify(validEvent)).ok).toBe(true);
   });
 
-  it('carries the prior repair and the settled board when the event has them', () => {
+  it('carries the settled board when the event has one', () => {
     const bare = parseEvent(validEvent);
-    expect(bare.ok && bare.value.prior).toBeUndefined();
+    expect(bare.ok && bare.value.settled).toBeUndefined();
 
     const parsed = parseEvent({
       ...validEvent,
-      prior: {
-        placement: '8/8/8/8/8/8/8/8',
-        flips: [{ square: 'e8', from: 'k', to: 'q', cost: 0.74, constraint: 'kings' }],
-        residual: { kings: 1 }
-      },
       settled: { placement: '8/8/8/8/8/8/8/8', pending: ['e4', 'e2'] }
     });
     expect(parsed.ok).toBe(true);
     if (!parsed.ok) return;
-    expect(parsed.value.prior?.flips[0]).toEqual({
-      square: 'e8', from: 'k', to: 'q', cost: 0.74, constraint: 'kings'
-    });
-    expect(parsed.value.prior?.residual).toEqual({ kings: 1 });
     expect(parsed.value.settled?.pending).toEqual(['e4', 'e2']);
   });
 
@@ -95,15 +86,12 @@ describe('a position event off the wire', () => {
     ['a placement of seven ranks', { ...validEvent, placement: '8/8/8/8/8/8/8' }],
     ['a settled board with no placement', { ...validEvent, settled: { pending: ['e4'] } }],
     [
-      'a flip on a square that is not one',
-      {
-        ...validEvent,
-        prior: {
-          placement: START_PLACEMENT,
-          flips: [{ square: 'z9', from: 'k', to: 'q', cost: 0, constraint: 'kings' }],
-          residual: {}
-        }
-      }
+      'a pending square that is not one',
+      { ...validEvent, settled: { placement: START_PLACEMENT, pending: ['z9'] } }
+    ],
+    [
+      'the prior block the node no longer sends',
+      { ...validEvent, prior: { placement: START_PLACEMENT, flips: [], residual: {} } }
     ],
     ['a key the protocol does not define', { ...validEvent, streming: true }]
   ])('refuses %s', (_label, raw) => {
@@ -168,21 +156,15 @@ describe('parseEstimateResponse', () => {
     expect(parseEstimateResponse({ board_id: 'snapshot' }).ok).toBe(false);
   });
 
-  it('reads the position event, with its prior and its extras', () => {
+  it('reads the position event and its extras', () => {
     const parsed = parseEstimateResponse({
       ...validEvent,
       upload: '20260807-100000-0001-estimate',
-      warnings: ['low_light'],
-      prior: {
-        placement: START_PLACEMENT,
-        flips: [{ square: 'd8', from: 'q', to: 'b', cost: 0.4, constraint: 'piece_count' }],
-        residual: { kings: 1 }
-      }
+      warnings: ['low_light']
     });
     expect(parsed.ok).toBe(true);
     if (!parsed.ok) return;
-    expect(parsed.value.prior?.flips[0]?.square).toBe('d8');
-    expect(parsed.value.prior?.residual['kings']).toBe(1);
+    expect(parsed.value.event.placement).toBe(validEvent.placement);
     expect(parsed.value.warnings).toEqual(['low_light']);
     expect(parsed.value.upload).toBe('20260807-100000-0001-estimate');
   });

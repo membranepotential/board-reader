@@ -3,17 +3,17 @@ paths:
   - 'packages/inference/src/board_reader_inference/stream/stabilize.py'
   - 'packages/inference/src/board_reader_inference/stream/schedule.py'
   - 'packages/inference/src/board_reader_inference/stream/ingest.py'
-  - 'packages/inference/src/board_reader_inference/stream/prior.py'
+  - 'packages/inference/src/board_reader_inference/stream/rules.py'
   - 'packages/inference/tests/stream/test_stabilize.py'
   - 'packages/inference/tests/stream/test_schedule.py'
   - 'packages/inference/tests/stream/test_ingest_schedule.py'
-  - 'packages/inference/tests/stream/test_prior.py'
+  - 'packages/inference/tests/stream/test_rules.py'
 ---
 
-# Read scheduling, the prior and the settle debounce
+# Read scheduling, the settle debounce and its guard
 
 - Express every debounce window in wall-clock seconds plus a minimum read count, never as a number of reads, because the read rate varies more than 10x with load and schedule (0.9/s loaded vs 7.5/s replayed on one stream), so a K tuned at one rate is wrong at the other.
-- Keep the settle coherence rule: a commit may not raise the settled board's hard-constraint excess (`prior.violation`); keep the outer guard `_excess(read) <= held_excess` before the `STALE_WINDOWS` escape, and keep that escape surgical (stop dragging as soon as the excess clears), because without the rule two squares settle on halves of two exclusive readings (two black kings on most boards of one take), and without the deadline a blocked square starves forever.
+- Keep the settle coherence rule: a commit may not raise the settled board's excess (`rules.violation(...).total`); keep the outer guard `_excess(read) <= held_excess` before the `STALE_WINDOWS` escape, and keep that escape surgical (stop dragging as soon as the excess clears), because without the rule two squares settle on halves of two exclusive readings (two black kings on most boards of one take), and without the deadline a blocked square starves forever.
 - Do not replace the unbroken-run quorum with a windowed majority or long-horizon vote counting, because both were scored on 24 recorded runs and lost on every pooled axis (fewer perfect boards, more flicker): the quorum is a quality filter, and a rule that settles more also settles noise.
 - Keep a `FramePolicy` observe-at-submit, decide-at-drain: `FrameIngest.submit()` observes every arriving frame (a burst end is visible only from the whole run, and the latest-wins inbox hides most frames), and the worker asks `due()` exactly once, on the frame it picked, because `due()` answering True consumes the read.
 - Give policies two floats (`capture_ts`, `stability`), never a header object, and coerce only in `schedule.stability_of` (null, NaN or missing → 1.0, "at rest"), because a recorded `FrameEntry.header` is a dict while a wire `Frame.header` is a method, and a NaN stability loses every comparison and can declare a move complete mid-hand.

@@ -19,12 +19,6 @@ describe('boardShapes', () => {
   });
 });
 
-describe('prior flips', () => {
-  it('rings a repaired square red', () => {
-    expect(boardShapes([], ['e8'])).toEqual([{ orig: 'e8', brush: 'red' }]);
-  });
-});
-
 describe('pendingShapes', () => {
   it('draws a dashed customSvg ring, not a named brush, for each pending square', () => {
     const shapes = pendingShapes(['e4', 'e2']);
@@ -43,11 +37,11 @@ describe('pendingShapes', () => {
 });
 
 describe('settled pending', () => {
-  it('rings a pending square after the repair rings, ahead of the change rings', () => {
+  it('rings a pending square ahead of the change rings', () => {
     const rings: ChangeRing[] = [{ square: 'd4', phase: 'fresh' }];
-    const shapes = boardShapes(rings, ['e8'], ['c3']);
-    expect(shapes.map((s) => s.orig)).toEqual(['e8', 'c3', 'd4']);
-    expect(shapes[1]!.brush).toBeUndefined();
-    expect(shapes[1]!.customSvg).toBeDefined();
+    const shapes = boardShapes(rings, ['c3']);
+    expect(shapes.map((s) => s.orig)).toEqual(['c3', 'd4']);
+    expect(shapes[0]!.brush).toBeUndefined();
+    expect(shapes[0]!.customSvg).toBeDefined();
   });
 });

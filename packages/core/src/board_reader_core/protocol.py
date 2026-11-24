@@ -326,38 +326,6 @@ class ClockState(Wire):
 
 
 @wire
-class PriorFlip(Wire):
-    """One square the hard-constraint decoder relabelled, as it travels on the wire.
-
-    The producer is the inference node's prior decoder; this is only its wire
-    shape. ``cost`` is the log-probability margin given up, in nats; it may be
-    negative on a square's second flip.
-    """
-
-    square: Square
-    from_class: Annotated[ClassName, Field(alias="from")]
-    to_class: Annotated[ClassName, Field(alias="to")]
-    cost: Annotated[StrictFloat, AfterValidator(rounded(4))]
-    constraint: Annotated[StrictStr, Field(min_length=1)]
-
-
-@wire
-class PriorRepair(Wire):
-    """The nearest *possible* board to a read, served beside it (never instead).
-
-    ``square_dist`` and ``placement`` stay exactly what the estimator produced —
-    a consumer that wants the repaired board takes :attr:`placement` from here,
-    and one that runs its own smoothing over the raw distribution can ignore this
-    block entirely, so the prior is never double-counted. ``residual`` holds the
-    per-constraint excess the decoder could not repair (empty = fully possible).
-    """
-
-    placement: Placement
-    flips: tuple[PriorFlip, ...] = ()
-    residual: dict[StrictStr, Natural] = Field(default_factory=dict)
-
-
-@wire
 class SettledBoard(Wire):
     """A temporally debounced board, served beside the raw read (never instead).
 
@@ -368,9 +336,9 @@ class SettledBoard(Wire):
     currently reading differently from the settled board — a move in flight looks
     like its from/to squares going pending, then being adopted.
 
-    Advisory like :class:`PriorRepair`: ``placement``/``square_dist`` on the event
-    stay exactly what the estimator produced, and a consumer running its own
-    smoothing ignores this block entirely.
+    Advisory: ``placement``/``square_dist`` on the event stay exactly what the
+    estimator produced, and a consumer running its own smoothing ignores this
+    block entirely.
     """
 
     placement: Placement
@@ -398,10 +366,6 @@ class PositionEvent(Wire):
     stability: Score = 1.0
     clock: ClockState = Field(default_factory=ClockState)
     status: Status = "ok"
-    #: Optional hard-constraint repair of this read, produced by the inference
-    #: node's prior decoder. ``placement`` above stays the raw argmax; a display
-    #: that must never show an impossible board draws ``prior.placement`` instead.
-    prior: PriorRepair | None = Field(default=None, exclude_if=absent)
     #: Optional debounced board, produced by the ingest stabilizer on streamed
     #: frames only (a one-shot ``/estimate`` has no stream to settle over). A
     #: display that must not flicker draws ``settled.placement``.

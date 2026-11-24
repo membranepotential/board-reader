@@ -39,11 +39,12 @@ TAKES = (gate.GateTake("t1", restamp_stability=True), gate.GateTake("t2"))
 
 @pytest.fixture
 def recordings(tmp_path):
+    # A base replayed before 2026-11-24 also scored a prior stream; it is ignored.
     same = {"raw": (60, 64, 0, 1), "prior": (64, 64, 1, 1), "settled": (64, 64, 1, 1)}
     _report(tmp_path / "t1/replays/base", same)
-    _report(tmp_path / "t1/replays/cand", same)
-    _report(tmp_path / "t2/replays/base", {"raw": (120, 128, 0, 2), "prior": (120, 128, 0, 2), "settled": (128, 128, 2, 2)})
-    _report(tmp_path / "t2/replays/cand", {"raw": (128, 128, 2, 2), "prior": (128, 128, 2, 2), "settled": (128, 128, 2, 2)})
+    _report(tmp_path / "t1/replays/cand", {"raw": (60, 64, 0, 1), "settled": (64, 64, 1, 1)})
+    _report(tmp_path / "t2/replays/base", {"raw": (120, 128, 0, 2), "settled": (128, 128, 1, 2)})
+    _report(tmp_path / "t2/replays/cand", {"raw": (128, 128, 2, 2), "settled": (128, 128, 2, 2)})
     return tmp_path
 
 
@@ -51,12 +52,12 @@ def test_table_shows_changes_as_arrows_and_pools_the_total(recordings):
     out = gate.table("base", "cand", recordings=recordings, takes=TAKES)
     lines = out.splitlines()
     assert lines[0] == "base → cand"
-    assert lines[2] == "| take | raw per-sq | raw perfect | prior perfect | settled perfect |"
+    assert lines[2] == "| take | raw per-sq | raw perfect | settled perfect |"
     # Unchanged cells print once; changed ones as base→candidate.
-    assert lines[4] == "| t1 | .9375 | 0/1 | 1/1 | 1/1 |"
-    assert lines[5] == "| t2 | .9375→1.0000 | 0/2→2/2 | 0/2→2/2 | 2/2 |"
+    assert lines[4] == "| t1 | .9375 | 0/1 | 1/1 |"
+    assert lines[5] == "| t2 | .9375→1.0000 | 0/2→2/2 | 1/2→2/2 |"
     # Per-square is pooled over squares, not averaged over takes.
-    assert lines[6] == "| **total** | .9375→.9792 | 0/3→2/3 | 1/3→3/3 | 3/3 |"
+    assert lines[6] == "| **total** | .9375→.9792 | 0/3→2/3 | 2/3→3/3 |"
 
 
 def test_a_missing_replay_is_named(recordings):

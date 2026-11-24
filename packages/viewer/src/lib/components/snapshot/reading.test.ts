@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   assignmentFor,
   argmaxClass,
-  baselinePlacement,
+  baselineGrid,
   castlingRights,
   classOfKey,
   confidenceSummary,
@@ -21,7 +21,7 @@ import {
   withCorrection,
   type Corrections
 } from './reading';
-import { fenToGrid } from '#lib/board/fen.ts';
+import { fenToGrid, gridToFen } from '#lib/board/fen.ts';
 import {
   CLASSES,
   NUM_CLASSES,
@@ -182,8 +182,7 @@ describe('the raw event block', () => {
       confidence: 0.91,
       square_dist: Array.from({ length: 8 }, () =>
         Array.from({ length: 8 }, () => Array.from({ length: NUM_CLASSES }, () => 1 / NUM_CLASSES))
-      ),
-      prior: { placement: 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBN1', flips: [], residual: {} }
+      )
     }),
     upload: 'u1',
     warnings: ['low_light']
@@ -195,10 +194,9 @@ describe('the raw event block', () => {
     return result.value;
   }
 
-  it('prefers the repaired board as the baseline, leaving the raw argmax in the event', () => {
+  it('takes the node\'s read as the baseline', () => {
     const response = parsed(positionRaw);
-    expect(baselinePlacement(response)).toBe('rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBN1');
-    expect(response.event.placement).toBe(START_PLACEMENT);
+    expect(gridToFen(baselineGrid(response))).toBe(START_PLACEMENT);
   });
 
   it('replaces the 8×8×13 floats with a note', () => {

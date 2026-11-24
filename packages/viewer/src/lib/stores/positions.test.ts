@@ -204,47 +204,6 @@ describe('PositionStream', () => {
   });
 });
 
-describe('prior repair on the stream', () => {
-  const TWO_KINGS = 'rnbkkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR';
-  const REPAIRED = 'rnbkqbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR';
-  const prior = {
-    placement: REPAIRED,
-    flips: [{ square: 'e8', from: 'k', to: 'q', cost: 0.74, constraint: 'kings' }],
-    residual: {}
-  };
-
-  it('draws the repaired board, never the impossible raw one', () => {
-    const stream = streamAt({ now: 0 });
-    stream.ingest(positionEvent({ placement: TWO_KINGS, prior }));
-    const board = stream.board('phone')!;
-    expect(board.grid[0]).toEqual(['r', 'n', 'b', 'k', 'q', 'b', 'n', 'r']);
-    expect(board.event.placement).toBe(TWO_KINGS); // the raw read stays readable
-    expect(board.flipped).toEqual(['e8']);
-  });
-
-  it('diffs change rings against the repaired grid, so a stable repair is quiet', () => {
-    const clock = { now: 1000 };
-    const stream = streamAt(clock);
-    stream.ingest(positionEvent({ placement: TWO_KINGS, prior }));
-    clock.now = 2000;
-    stream.ingest(positionEvent({ seq: 2, placement: TWO_KINGS, prior }));
-    expect(Object.keys(stream.board('phone')!.changedAt)).toEqual([]);
-  });
-
-  it('refuses an event whose flip names no square, rather than drawing it', () => {
-    const stream = streamAt({ now: 0 });
-    const flips = [...prior.flips, { square: 'z9', from: 'k', to: 'q', cost: 1, constraint: 'kings' }];
-    expect(stream.ingest(positionEvent({ placement: TWO_KINGS, prior: { ...prior, flips } }))).toBeNull();
-    expect(stream.boards).toHaveLength(0);
-  });
-
-  it('an event without a prior draws its own placement and flips nothing', () => {
-    const stream = streamAt({ now: 0 });
-    stream.ingest(positionEvent());
-    expect(stream.board('phone')!.flipped).toEqual([]);
-  });
-});
-
 describe('settled board on the stream', () => {
   const SETTLED = 'rnbqkbnr/pppp1ppp/8/4p3/4P3/8/PPPP1PPP/RNBQKBNR';
   const settled = { placement: SETTLED, pending: ['e2', 'e4'] };
@@ -256,13 +215,6 @@ describe('settled board on the stream', () => {
     expect(board.grid[3]).toEqual(['', '', '', '', 'p', '', '', '']); // rank 5, e5
     expect(board.event.placement).toBe(START_PLACEMENT); // the raw read stays readable
     expect(board.pending).toEqual(['e2', 'e4']);
-  });
-
-  it('prefers settled over prior when an event carries both', () => {
-    const stream = streamAt({ now: 0 });
-    const prior = { placement: START_PLACEMENT, flips: [], residual: {} };
-    stream.ingest(positionEvent({ placement: START_PLACEMENT, prior, settled }));
-    expect(stream.board('phone')!.grid[3]).toEqual(['', '', '', '', 'p', '', '', '']);
   });
 
   it('diffs change rings against the settled grid, so a quiet debounce is quiet', () => {
@@ -281,7 +233,7 @@ describe('settled board on the stream', () => {
     expect(stream.boards).toHaveLength(0);
   });
 
-  it('an event without a settled board draws its prior (or raw) placement and exposes no pending squares', () => {
+  it('an event without a settled board draws its raw placement and exposes no pending squares', () => {
     const stream = streamAt({ now: 0 });
     stream.ingest(positionEvent());
     expect(stream.board('phone')!.pending).toEqual([]);

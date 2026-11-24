@@ -2,7 +2,7 @@
  * `/snapshot` — the pipeline inspector.
  *
  * The page is a diagnostic surface for the reading algorithm, so the properties worth
- * pinning are about what it *shows*: that all four stages exist and start idle (nothing
+ * pinning are about what it *shows*: that all three stages exist and start idle (nothing
  * hidden behind an opt-in), that a photo is read as it is, whole, the moment it is
  * chosen, that inspecting a square shows the ranked distribution rather than only the
  * argmax, and that a confirmed board reaches `/labels`. All of them need a real file
@@ -15,7 +15,7 @@ import { expect, test, type Page } from '@playwright/test';
 import { estimateReply, squareDist, stubIdleNode, stubJson, START_PLACEMENT } from './helpers/node';
 import { checkerboardPng } from './helpers/png';
 
-const STAGE_TITLES = ['Capture', 'Read', 'Impossible-board repair', 'Position output'];
+const STAGE_TITLES = ['Capture', 'Read', 'Position output'];
 
 /**
  * a8 is a black rook in the start position, and every square carries this same ranking
@@ -39,7 +39,7 @@ test.beforeEach(async ({ page }) => {
   await stubIdleNode(page);
 });
 
-test('the four pipeline stages all render, in order, and start idle', async ({ page }) => {
+test('the three pipeline stages all render, in order, and start idle', async ({ page }) => {
   await page.goto('/snapshot');
 
   const steps = page.locator('.step');

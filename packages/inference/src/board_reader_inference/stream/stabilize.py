@@ -2,8 +2,8 @@
 
 The estimator is stateless per frame by decision (D1), and the 08-13 phone trial
 showed exactly what that costs a display: a hand crossing the board reads as a
-phantom piece for a frame or two, and a near-coin-flip constraint repair (two raw
-kings, alternating demotion) swaps k/q back and forth at burst rate. Both are
+phantom piece for a frame or two, and a near-coin-flip square (a k/q swap on
+rank 8) flips back and forth at burst rate. Both are
 short-lived events on a stream that publishes several reads per second.
 
 :class:`BoardStabilizer` is the gateway-side answer, deliberately tiny: a square
@@ -21,16 +21,18 @@ That is the one thing a naive per-square debounce gets wrong, and it is not a
 theoretical worry: on the 08-27 control take replayed at every frame, d8 settled
 on ``k`` from one reading of a k/q swap while e8 settled on ``k`` from the
 *other* reading, and the published settled board carried **two black kings on
-69 % of its events** — a board no repaired read ever claimed and no truth segment
-can ever equal. That is what "settled per-square 96.1 % below its own prior input
-97.2 %, settled-perfect 0/253, never settles a segment" was made of. So a
-displacement is committed only if it does not make the settled board *less
-possible* than it already is (:func:`~board_reader_inference.stream.prior.violation`,
-the same hard-constraint excess the prior decoder descends); when it would, the
+69 % of its events** — a board no read ever claimed and no truth segment can ever
+equal. So a displacement is committed only if it does not make the settled board
+*less possible* than it already is (:func:`~board_reader_inference.stream.rules.violation`,
+the excess over the conditions no standard game can break); when it would, the
 squares the same read disagrees on are dragged along with it — see
 :meth:`BoardStabilizer.observe`. The invariant is *monotone*, not *possible*: the
-first read is adopted wholesale and sets the ceiling, so feeding the debounce the
-repaired placement (as the live path does) is what makes that ceiling zero.
+first read is adopted wholesale and sets the ceiling, and a read that is itself
+impossible is never adopted over a more possible settled board. Under ChessQ the
+raw reads are possible almost always (2 of 446 gate reads were not), so the
+ceiling is zero in practice; the guard is what keeps the 3 impossible boards per
+gate run that settle without it off the settled stream
+(docs/reports/2026-11-24-prior-backrank.md).
 
 The result travels as the advisory
 :class:`~board_reader_core.protocol.SettledBoard` block beside the raw read —
@@ -39,8 +41,8 @@ byte-identical on the wire, and a consumer running its own smoothing ignores the
 block. This is a *display* debounce, not the downstream legality smoother
 (DESIGN D3): it consults no move model and holds whatever the reads converge to,
 right or wrong. The constraint check above is not legality either — it is the
-same necessary condition on the piece multiset the prior already enforces per
-read, applied to the board the debounce composes out of several of them.
+necessary condition on the pieces, applied to the board the debounce composes out
+of several reads.
 """
 
 from __future__ import annotations
@@ -50,10 +52,7 @@ import os
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 
-import numpy as np
-
 from board_reader_core.protocol import (
-    CLASSES,
     GRID,
     SettledBoard,
     encode_placement,
@@ -61,7 +60,7 @@ from board_reader_core.protocol import (
     square_name,
 )
 
-from .prior import tally, violation
+from board_reader_inference.stream.rules import violation
 
 #: How long a square must read as the same new class before the settled board
 #: adopts it. With the shipped schedule's burst-end run (three reads 0.3 s apart,
@@ -93,10 +92,6 @@ STALE_WINDOWS = 2
 
 #: The environment ``serve`` reads the three knobs from (:meth:`SettleConfig.from_env`).
 SETTLE_ENV = ("BR_SETTLE_SECONDS", "BR_SETTLE_MIN_READS", "BR_SETTLE_STALE_WINDOWS")
-
-#: Class symbol -> index, for handing a placement to the prior's tally.
-_CLASS_INDEX = {symbol: index for index, symbol in enumerate(CLASSES)}
-
 
 @dataclass(frozen=True)
 class SettleConfig:
@@ -169,14 +164,8 @@ def _from_env[T: (float, int)](
 
 
 def _excess(grid: list[list[str]]) -> int:
-    """The hard-constraint excess of a board, as an integer to be minimised.
-
-    ``oriented=False``: the debounce is never told which way round the board is,
-    so the back-rank-pawn constraint is left unclaimed rather than counted in an
-    arbitrary frame. Kings, piece count and promotion budget need no frame.
-    """
-    labels = np.array([[_CLASS_INDEX[cls] for cls in row] for row in grid])
-    return violation(tally(labels, oriented=False)).total
+    """How impossible a board is, as the integer the guard keeps from rising."""
+    return violation(encode_placement(grid)).total
 
 
 @dataclass
@@ -226,16 +215,11 @@ class BoardStabilizer:
     it flickers below the quorum, which is a real stream (settled ``k`` on d8
     against 200 straight reads of ``q``, held for 260 s). So a ripe square that
     has been blocked for :data:`STALE_WINDOWS` windows gives up on its partners
-    and the whole contested set falls through to this read — which is the prior's
-    own repair, and therefore the most possible board the debounce could compose
-    out of it. Worst-case staleness is one window to ripen plus ``STALE_WINDOWS``
+    and the contested set falls through to this read. Worst-case staleness is one window to ripen plus ``STALE_WINDOWS``
     to time out, ~3x ``settle_seconds``. The excess rule still gates that commit:
     a read that is *itself* less possible than the settled board is never adopted,
-    however long it persists.
-
-    Feed it the *repaired* placement (``prior.placement``): the raw argmax can be
-    persistently impossible (the trial's two-kings rank 8), and an impossible
-    board must not become the one thing a debounced display holds on to.
+    however long it persists, so an impossible read cannot become the one thing
+    a debounced display holds on to.
     """
 
     def __init__(self, config: SettleConfig = DEFAULT_SETTLE) -> None:
@@ -316,10 +300,9 @@ class BoardStabilizer:
         1. the ripe set alone, when it costs nothing;
         2. the ripe set plus quorum-carrying partners of the same read, added in
            evidence order until it costs nothing (the *drag*);
-        3. once a ripe square has been blocked for ``STALE_WINDOWS`` windows, the
-           whole contested set — which is exactly this read, and this read is the
-           prior's own repair, so it is the one board guaranteed to be as
-           possible as anything the debounce could compose out of it;
+        3. once a ripe square has been blocked for ``STALE_WINDOWS`` windows, and
+           only if this read is itself no less possible than the settled board,
+           the contested set, dragged in quorum-free until the excess clears;
         4. failing all that, whichever ripe squares can be committed one at a
            time without raising the excess, in evidence order — greedy, not
            maximum: a two-square commit that only works as a pair is passed over

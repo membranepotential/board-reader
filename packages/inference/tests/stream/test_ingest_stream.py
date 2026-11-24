@@ -225,9 +225,8 @@ def test_settled_rides_the_stream_and_holds_through_a_one_read_flicker():
     """Every streamed event carries ``settled``, and a single flickered read (a
     hand over the board, a mid-move blur) never changes the settled placement.
 
-    The flicker satisfies every hard constraint on purpose: the stabilizer sees
-    the *repaired* read, so a constraint-violating flicker would be (correctly)
-    erased by the prior decoder before the debounce is even exercised.
+    The flicker is a possible board on purpose, so it is the debounce that
+    holds it back, not the guard.
     """
     flicker = "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR"  # 1.e4 for a read
 

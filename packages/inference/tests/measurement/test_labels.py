@@ -236,45 +236,6 @@ def test_rotate_square_rejects_a_non_square():
         rotate_square("j9", 1)
 
 
-def test_label_records_the_decoder_repairs_in_the_corner_frame(tmp_path):
-    """A repaired square is stored un-rotated, like the placement it belongs to.
-
-    Without this the eval cannot tell truth that came from the board apart from
-    truth the operator accepted from the decoder.
-    """
-    save_label(
-        tmp_path,
-        "20260806-210118-0000-estimate",
-        frame="corners", placement=START_PLACEMENT,
-        corners="0,0,8,0,8,8,0,8",
-        predicted=START_PLACEMENT,
-        corrections=0,
-        autorotated=90,
-        prior_flips=["e8", "a1"],
-    )
-    meta = json.loads(
-        (tmp_path / f"20260806-210118-0000-estimate{LABEL_SUFFIX}").read_text()
-    )
-    assert meta["prior_flips"] == [rotate_square("e8", -1), rotate_square("a1", -1)]
-
-
-def test_label_without_repairs_records_an_empty_list_not_a_missing_key(tmp_path):
-    """Absent would mean "unknown"; empty means "the decoder ran and changed nothing"."""
-    save_label(
-        tmp_path,
-        "20260806-210118-0000-estimate",
-        frame="corners", placement=START_PLACEMENT,
-        corners="0,0,8,0,8,8,0,8",
-        predicted=START_PLACEMENT,
-        corrections=0,
-        autorotated=0,
-    )
-    meta = json.loads(
-        (tmp_path / f"20260806-210118-0000-estimate{LABEL_SUFFIX}").read_text()
-    )
-    assert meta["prior_flips"] == []
-
-
 # --------------------------------------------------------------------------- #
 # Frames (DESIGN D10)
 # --------------------------------------------------------------------------- #

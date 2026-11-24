@@ -31,14 +31,9 @@ import { motionReadout, type MotionReadout, type MotionSample } from './position
 export type ConnectionState = 'connecting' | 'live' | 'disconnected';
 
 /**
- * The squares the prior decoder relabelled. The validator already refused any
- * event whose square is not one; the guard only narrows `string` to `SquareKey`.
+ * The settled board's pending squares. The validator already refused any event
+ * whose square is not one; the guard only narrows `string` to `SquareKey`.
  */
-function flippedSquares(event: PositionEvent): SquareKey[] {
-  return (event.prior?.flips ?? []).map((flip) => flip.square).filter(isSquareKey);
-}
-
-/** The settled board's pending squares, narrowed the same way. */
 function pendingSquares(event: PositionEvent): SquareKey[] {
   return (event.settled?.pending ?? []).filter(isSquareKey);
 }
@@ -50,13 +45,10 @@ export interface BoardState {
   /**
    * The sanitized 8×8 — what the board is drawn from, never the raw string.
    * `settled.placement` when the event carries one (a debounced board, held
-   * still against flicker); else the node's prior-repaired placement, since the
-   * raw argmax can spell an impossible board (two kings) that must never be what
-   * the operator stares at; else the raw placement itself.
+   * still against flicker, and kept off impossible boards by the node's guard);
+   * else the raw placement itself.
    */
   readonly grid: BoardGrid;
-  /** Squares the prior decoder relabelled to make the board possible. */
-  readonly flipped: readonly SquareKey[];
   /** Squares the settled board hasn't adopted yet — a move in flight, or a
    *  misread still being debounced. Empty when the event carries no `settled`. */
   readonly pending: readonly SquareKey[];
@@ -196,7 +188,7 @@ export class PositionStream {
     this.#now = now;
 
     const previous = this.#boards[event.board_id];
-    const grid = fenToGrid(event.settled?.placement ?? event.prior?.placement ?? event.placement);
+    const grid = fenToGrid(event.settled?.placement ?? event.placement);
     // Diffed against the previous GRID, which is this store's whole memory of the
     // past — see the module note on DESIGN D1.
     const changed = changedSquares(previous?.grid ?? null, grid);
@@ -210,7 +202,6 @@ export class PositionStream {
       id: event.board_id,
       event,
       grid,
-      flipped: flippedSquares(event),
       pending: pendingSquares(event),
       changedAt,
       lastAt: now,

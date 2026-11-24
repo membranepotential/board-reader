@@ -254,121 +254,6 @@ def test_report_separates_confidence_of_right_and_wrong_boards():
     assert "perfect" in rendered and "imperfect" in rendered
 
 
-# ---- the opt-in hard-constraint prior ----------------------------------------
-
-
-def _dist_with_runner_up(
-    placement: str, square: str, top: tuple[str, float], second: tuple[str, float]
-) -> np.ndarray:
-    """Plant a square whose argmax is ``top`` and whose second choice is ``second``.
-
-    The decoder relabels to the *cheapest alternative*, so a synthetic board with a
-    flat tail would always decode to ``empty``. Giving the runner-up real mass is
-    what makes these tests exercise the decision the real distribution makes.
-    """
-    dist = dist_from_placement(placement, confidence=0.95).copy()
-    c, r = "abcdefgh".index(square[0]), GRID - int(square[1])
-    rest = (1.0 - top[1] - second[1]) / (NUM_CLASSES - 2)
-    dist[r, c] = rest
-    dist[r, c, CLASS_INDEX[top[0]]] = top[1]
-    dist[r, c, CLASS_INDEX[second[0]]] = second[1]
-    return dist
-
-
-def test_the_prior_is_on_by_default_because_it_is_what_serves():
-    """The harness scores what /estimate serves, and the decode now serves."""
-    dists = {"two_kings": _dist_with(MIDGAME, {"e8": ("K", 0.6)})}
-    report = evaluate(FakeRecognizer(dists), [_board("two_kings")])
-    assert report.prior != []
-    assert "hard-constraint prior" in report.render()
-
-
-def test_the_prior_can_be_isolated_away():
-    """``--no-prior`` still gives the raw estimator on its own."""
-    dists = {"two_kings": _dist_with(MIDGAME, {"e8": ("K", 0.6)})}
-    report = evaluate(FakeRecognizer(dists), [_board("two_kings")], prior=False)
-    assert report.prior == []
-    assert "hard-constraint prior" not in report.render()
-
-
-def test_the_prior_fixes_a_two_king_board_and_says_which_square():
-    """e8 truly holds a black king; the estimator calls it white at a thin margin."""
-    dist = _dist_with_runner_up(MIDGAME, "e8", ("K", 0.50), ("k", 0.45))
-    report = evaluate(FakeRecognizer({"b": dist}), [_board("b")], prior=True)
-
-    assert report.perfect_boards == 0 and report.correct == 63
-    (p,) = report.prior
-    assert p.decode.placement == MIDGAME and p.perfect_after
-    assert [str(f) for f in p.decode.flips] == ["e8 K->k"]
-    assert [str(c) for c in p.fixed] == ["e8 K->k (truth k)"]
-    assert p.broken == ()
-    assert report.prior_fixed == 1 and report.prior_broken == 0
-    assert report.prior_perfect_boards == 1 and report.prior_correct == 64
-
-
-def test_the_prior_can_break_a_square_it_was_right_about():
-    """The failure mode that must stay visible: a hallucinated second king that is
-    *more* confident than the real one drags the real one out instead."""
-    dist = _dist_with(MIDGAME, {"e8": ("k", 0.40), "a5": ("k", 0.90)})
-    report = evaluate(FakeRecognizer({"b": dist}), [_board("b")], prior=True)
-
-    (p,) = report.prior
-    assert [f.square for f in p.decode.flips] == ["e8"]
-    assert [c.square for c in p.broken] == ["e8"]
-    assert p.fixed == ()
-    assert report.prior_broken == 1 and report.prior_correct == report.correct - 1
-
-
-def test_a_board_with_nothing_to_repair_is_reported_as_untouched():
-    report = evaluate(
-        FakeRecognizer({"b": dist_from_placement(MIDGAME)}), [_board("b")], prior=True
-    )
-    (p,) = report.prior
-    assert p.decode.flips == () and p.changes == ()
-    assert p.correct_before == p.correct_after == 64
-    rendered = report.render()
-    assert "boards touched   0/1" in rendered
-    assert "nothing to decode" in rendered
-
-
-def test_the_prior_block_prints_both_scores_and_every_flip():
-    dist = _dist_with_runner_up(MIDGAME, "e8", ("K", 0.50), ("k", 0.45))
-    report = evaluate(FakeRecognizer({"b": dist}), [_board("b")], prior=True)
-    rendered = report.render()
-    assert "hard-constraint prior" in rendered
-    assert "PERFECT BOARDS   0/1 -> 1/1" in rendered
-    assert "per-square       63/64 -> 64/64   (fixed 1 · broken 0)" in rendered
-    assert "e8 K->k" in rendered and "kings" in rendered and "FIXED" in rendered
-    # The headline block above it is untouched by the prior.
-    assert "PERFECT BOARDS   0/1" in rendered
-
-
-def test_the_prior_survives_json_round_tripping():
-    dist = _dist_with_runner_up(MIDGAME, "e8", ("K", 0.50), ("k", 0.45))
-    report = evaluate(FakeRecognizer({"b": dist}), [_board("b")], prior=True)
-    out = json.loads(json.dumps(report.to_dict()))
-    assert out["prior"]["fixed"] == 1 and out["prior"]["broken"] == 0
-    assert out["prior"]["per_board"][0]["flips"][0]["square"] == "e8"
-    assert out["prior"]["per_board"][0]["changes"][0]["verdict"] == "fixed"
-    assert out["correct_squares"] == 63  # the primary number never moves
-
-
-def test_the_eval_cli_defaults_the_prior_on():
-    from board_reader_inference.cli import build_parser
-
-    assert build_parser().parse_args(["eval"]).no_prior is False
-    assert build_parser().parse_args(["eval", "--no-prior", "data/uploads"]).no_prior is True
-
-
-def test_the_prior_never_rewrites_what_the_estimator_serves():
-    """DESIGN D1: the decode is a value beside the read, not a correction to it."""
-    dist = _dist_with_runner_up(MIDGAME, "e8", ("K", 0.50), ("k", 0.45))
-    before = dist.copy()
-    report = evaluate(FakeRecognizer({"b": dist}), [_board("b")], prior=True)
-    assert np.array_equal(dist, before)
-    assert report.boards[0].predicted != report.prior[0].decode.placement
-
-
 # ---- provenance and the contamination warning --------------------------------
 
 
@@ -446,7 +331,7 @@ def _chess_board(board_id: str = "c0") -> LabeledBoard:
 
 def test_a_recognizer_reads_chess_labels_whole_and_skips_corner_frame_ones():
     report = evaluate(
-        StubRecognizer(MIDGAME), [_chess_board(), _corner_frame_board("legacy")], prior=False
+        StubRecognizer(MIDGAME), [_chess_board(), _corner_frame_board("legacy")]
     )
     assert [b.board_id for b in report.boards] == ["c0"]
     assert report.perfect_boards == 1 and report.skipped == ["legacy"]
@@ -458,7 +343,7 @@ def test_a_recognizer_reads_chess_labels_whole_and_skips_corner_frame_ones():
 def test_a_turned_read_is_flagged_by_the_frame_diagnostic():
     from board_reader_inference.measurement.labels import rotate_placement
 
-    report = evaluate(StubRecognizer(rotate_placement(MIDGAME, 2)), [_chess_board()], prior=False)
+    report = evaluate(StubRecognizer(rotate_placement(MIDGAME, 2)), [_chess_board()])
     assert report.boards[0].rotation == 2
     assert report.to_dict()["rotated_boards"] == [{"board_id": "c0", "rotation": 180}]
     assert "TURNED: c0 180°" in report.render()

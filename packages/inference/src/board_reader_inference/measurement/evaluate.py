@@ -23,14 +23,8 @@ read agrees best with its truth (:func:`.labels.best_rotation`). A non-zero turn
 means the read and the label disagree about which way the board faces — for a
 recognizer, a misread orientation or a label in the wrong frame.
 
-``--prior`` adds a second, opt-in score: the same distributions run through the
-hard-constraint decoder (:mod:`.prior`). It is reported *beside* the estimator's own
-numbers, with squares fixed and squares broken kept apart, because a repair that
-trades one right square for one wrong one is not an improvement.
-
     uv run board-reader-inference eval
     uv run board-reader-inference eval data/uploads
-    ... eval --no-prior data/uploads    # the raw recognizer, without the decode
 """
 
 from __future__ import annotations
@@ -38,7 +32,6 @@ from __future__ import annotations
 import json
 from collections import Counter
 from dataclasses import dataclass, field
-from enum import StrEnum
 from pathlib import Path
 
 import numpy as np
@@ -52,7 +45,6 @@ from board_reader_core.protocol import (
 
 from board_reader_inference.measurement.labels import LabeledBoard, best_rotation
 from board_reader_inference.recognition.recognizer import Recognizer
-from board_reader_inference.stream.prior import PriorDecode, decode
 
 #: Reliability-diagram resolution. Ten bins over [0, 1] is the conventional
 #: choice and keeps each row readable at the ~640-square scale we evaluate at.
@@ -153,89 +145,6 @@ class BoardResult:
                 }
                 for e in self.errors
             ],
-        }
-
-
-class FlipVerdict(StrEnum):
-    """What a decoder flip did to a square, judged against the truth label."""
-
-    FIXED = "fixed"  # was wrong, now right
-    BROKEN = "broken"  # was right, now wrong
-    NEUTRAL = "neutral"  # wrong before and after — a different wrong answer
-
-
-@dataclass(frozen=True)
-class SquareChange:
-    """One square the decoder relabelled, with the truth beside it."""
-
-    square: str
-    truth: str
-    before: str
-    after: str
-
-    @property
-    def verdict(self) -> FlipVerdict:
-        if self.after == self.truth:
-            return FlipVerdict.FIXED
-        if self.before == self.truth:
-            return FlipVerdict.BROKEN
-        return FlipVerdict.NEUTRAL
-
-    def __str__(self) -> str:
-        return f"{self.square} {self.before}->{self.after} (truth {self.truth})"
-
-    def to_dict(self) -> dict:
-        return {
-            "square": self.square,
-            "truth": self.truth,
-            "before": self.before,
-            "after": self.after,
-            "verdict": self.verdict.value,
-        }
-
-
-@dataclass(frozen=True)
-class PriorBoardResult:
-    """One board scored twice: as the estimator read it, and as the decoder repaired it.
-
-    ``fixed`` and ``broken`` are kept apart on purpose. A decoder that fixes three
-    squares and breaks two is not "+1"; it is a coin flip with extra steps, and the
-    net number would hide that.
-    """
-
-    board_id: str
-    decode: PriorDecode
-    changes: tuple[SquareChange, ...]
-    correct_before: int
-    correct_after: int
-
-    @property
-    def fixed(self) -> tuple[SquareChange, ...]:
-        return tuple(c for c in self.changes if c.verdict is FlipVerdict.FIXED)
-
-    @property
-    def broken(self) -> tuple[SquareChange, ...]:
-        return tuple(c for c in self.changes if c.verdict is FlipVerdict.BROKEN)
-
-    @property
-    def perfect_before(self) -> bool:
-        return self.correct_before == GRID * GRID
-
-    @property
-    def perfect_after(self) -> bool:
-        return self.correct_after == GRID * GRID
-
-    def to_dict(self) -> dict:
-        return {
-            "board_id": self.board_id,
-            "placement": self.decode.placement,
-            "flips": [f.to_dict() for f in self.decode.flips],
-            "residual": self.decode.residual.to_dict(),
-            "changes": [c.to_dict() for c in self.changes],
-            "correct_before": self.correct_before,
-            "correct_after": self.correct_after,
-            "fixed": len(self.fixed),
-            "broken": len(self.broken),
         }
 
 
@@ -401,10 +310,6 @@ class Report:
     warnings: list[str] = field(default_factory=list)
     #: Labels found but not scorable (corner-frame truth), by board id.
     skipped: list[str] = field(default_factory=list)
-    #: Populated only with ``--prior``: the same boards re-scored after the
-    #: hard-constraint decoder. Empty means the decoder was not run at all, which
-    #: is not the same as it having found nothing to do.
-    prior: list[PriorBoardResult] = field(default_factory=list)
     #: Populated with ``--temperature``: what temperature scaling does to the
     #: CONFIDENCES (it cannot move a single answer — see :mod:`.calibration`).
     #: Every number here is leave-one-board-out, so no board is graded by a
@@ -419,22 +324,6 @@ class Report:
     def rotated(self) -> list[BoardResult]:
         """Boards whose read agrees with the truth best when turned (the frame check)."""
         return [b for b in self.boards if b.rotation]
-
-    @property
-    def prior_perfect_boards(self) -> int:
-        return sum(p.perfect_after for p in self.prior)
-
-    @property
-    def prior_correct(self) -> int:
-        return sum(p.correct_after for p in self.prior)
-
-    @property
-    def prior_fixed(self) -> int:
-        return sum(len(p.fixed) for p in self.prior)
-
-    @property
-    def prior_broken(self) -> int:
-        return sum(len(p.broken) for p in self.prior)
 
     @property
     def squares(self) -> int:
@@ -459,15 +348,6 @@ class Report:
             "ece": round(self.ece, 4),
             "errors_by_kind": dict(self.errors_by_kind()),
             "confusions": dict(self.confusions()),
-            "prior": {
-                "perfect_boards": self.prior_perfect_boards,
-                "correct_squares": self.prior_correct,
-                "fixed": self.prior_fixed,
-                "broken": self.prior_broken,
-                "per_board": [p.to_dict() for p in self.prior],
-            }
-            if self.prior
-            else None,
             "temperature": self.temperature.to_dict() if self.temperature else None,
             "reliability": [
                 {
@@ -522,58 +402,6 @@ class Report:
             )
         return lines
 
-    def _render_prior(self) -> list[str]:
-        """The prior block: both scores side by side, then every flip.
-
-        Fixed and broken are printed apart, and each flip is printed with its truth
-        label, because the only way to trust this decoder is to read its edits.
-        """
-        if not self.prior:
-            return []
-        n = len(self.boards)
-        touched = [p for p in self.prior if p.decode.flips]
-        residual = [p for p in self.prior if not p.decode.residual.satisfied]
-        lines = [
-            "",
-            "hard-constraint prior (decoded from square_dist; the wire is unchanged)",
-            "  frame unknown here, so the back-rank pawn constraint sits out — counts only",
-        ]
-        lines.append(
-            f"  PERFECT BOARDS   {self.perfect_boards}/{n} -> "
-            f"{self.prior_perfect_boards}/{n}"
-        )
-        lines.append(
-            f"  per-square       {self.correct}/{self.squares} -> "
-            f"{self.prior_correct}/{self.squares}"
-            f"   (fixed {self.prior_fixed} · broken {self.prior_broken})"
-        )
-        lines.append(
-            f"  boards touched   {len(touched)}/{n}"
-            + (f" · residual violation on {len(residual)}" if residual else "")
-        )
-        if not touched:
-            lines.append("  no board violated a hard constraint — nothing to decode")
-            return lines
-        fired = Counter(f.constraint.value for p in touched for f in p.decode.flips)
-        lines.append(
-            "  constraints fired  "
-            + " · ".join(f"{k} {v}" for k, v in fired.most_common())
-        )
-        lines.append("  flips")
-        for p in touched:
-            by_square = {c.square: c for c in p.changes}
-            for flip in p.decode.flips:
-                change = by_square.get(flip.square)
-                verdict = change.verdict.value if change else "reverted"
-                truth = change.truth if change else "?"
-                lines.append(
-                    f"    {p.board_id:<32}{flip!s:<16}cost {flip.cost:5.2f}"
-                    f"  {flip.constraint.value:<17}truth {truth:<6}{verdict.upper()}"
-                )
-            if not p.decode.residual.satisfied:
-                lines.append(f"    {p.board_id:<32}residual: {p.decode.residual}")
-        return lines
-
     def render(self) -> str:
         if not self.boards:
             if self.skipped:
@@ -610,8 +438,6 @@ class Report:
             f"per-square       {self.correct}/{self.squares}"
             f"   {100.0 * self.correct / self.squares:5.1f}%"
         )
-
-        lines += self._render_prior()
 
         kinds = self.errors_by_kind()
         if kinds:
@@ -697,47 +523,6 @@ def score_board(board: LabeledBoard, dist: np.ndarray) -> BoardResult:
     )
 
 
-def score_prior(board: LabeledBoard, dist: np.ndarray) -> PriorBoardResult:
-    """Decode one distribution under the hard constraints and score the result.
-
-    ``dist`` is only read — the decoder returns a placement beside the event, it
-    never rewrites the distribution the estimator produced (DESIGN D1).
-
-    Truth here lives in the frame the photo's *corners* define, which is not a
-    chess frame — 16 of 21 confirmed boards were shot a quarter- or half-turn off —
-    and nothing in the eval *establishes* the true one. Resolving it by the
-    rotation that minimises back-rank pawns would be circular, so the frame is
-    reported as unknown and :attr:`Constraint.BACK_RANK_PAWNS` sits out. What is measured here
-    is therefore the three rotation-invariant count constraints.
-    """
-    result = decode(dist, quarter_turns=None)
-    truth = parse_placement(board.placement)
-    before = [[CLASSES[int(i)] for i in row] for row in dist.argmax(axis=-1)]
-    after = parse_placement(result.placement)
-    changes = tuple(
-        SquareChange(
-            square=square_name(r, c),
-            truth=truth[r][c],
-            before=before[r][c],
-            after=after[r][c],
-        )
-        for r in range(GRID)
-        for c in range(GRID)
-        if before[r][c] != after[r][c]
-    )
-    return PriorBoardResult(
-        board_id=board.board_id,
-        decode=result,
-        changes=changes,
-        correct_before=sum(
-            before[r][c] == truth[r][c] for r in range(GRID) for c in range(GRID)
-        ),
-        correct_after=sum(
-            after[r][c] == truth[r][c] for r in range(GRID) for c in range(GRID)
-        ),
-    )
-
-
 def reliability(
     confidences: np.ndarray, hits: np.ndarray, bins: int = CONF_BINS
 ) -> tuple[list[Bin], float]:
@@ -772,21 +557,10 @@ def evaluate(
     recognizer: Recognizer,
     boards: list[LabeledBoard],
     *,
-    prior: bool = True,
     temperature: bool = False,
 ) -> Report:
-    """Read every labeled board and assemble the report.
-
-    ``prior`` scores the hard-constraint decode of each distribution
-    (:mod:`.prior`) alongside the estimator's own numbers. It defaults to **on**
-    because the decoder now serves (``/estimate`` returns its repair), and this
-    harness's whole contract is to score what actually serves — an off-by-default
-    flag would quietly stop measuring the product. It still changes nothing about
-    the primary numbers: both scores are reported side by side, never folded
-    together. Pass ``prior=False`` (``--no-prior``) to isolate the raw estimator.
-    """
+    """Read every labeled board and assemble the report."""
     results: list[BoardResult] = []
-    prior_results: list[PriorBoardResult] = []
     confidences: list[np.ndarray] = []
     hits: list[np.ndarray] = []
     dists: list[np.ndarray] = []
@@ -796,8 +570,6 @@ def evaluate(
         dist = read_board(recognizer, board)
         result = score_board(board, dist)
         results.append(result)
-        if prior:
-            prior_results.append(score_prior(board, dist))
         truth = parse_placement(board.placement)
         truth_idx = np.array(
             [[CLASSES.index(truth[r][c]) for c in range(GRID)] for r in range(GRID)]
@@ -823,7 +595,6 @@ def evaluate(
         ece=ece,
         warnings=warnings,
         skipped=skipped,
-        prior=prior_results,
         temperature=(
             score_temperature(results, dists, truth_indices) if temperature else None
         ),
@@ -840,7 +611,6 @@ def run(
     paths: list[str] | None = None,
     *,
     recognizer: Recognizer | None = None,
-    prior: bool = True,
     temperature: bool = False,
     json_out: str | None = None,
 ) -> Report:
@@ -853,7 +623,7 @@ def run(
         from board_reader_inference.recognition.recognizer import build_from_env
 
         recognizer = build_from_env()
-    report = evaluate(recognizer, boards, prior=prior, temperature=temperature)
+    report = evaluate(recognizer, boards, temperature=temperature)
     if json_out:
         Path(json_out).write_text(json.dumps(report.to_dict(), indent=2))
     return report

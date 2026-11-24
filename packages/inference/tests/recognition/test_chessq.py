@@ -224,7 +224,7 @@ def test_missing_weights_degrade_to_the_stub_loudly(tmp_path, monkeypatch, capsy
     assert "absent.onnx" in health["recognizer"]["fallback"]
 
 
-def test_ingest_publishes_chessq_read_with_prior(gateway, drain_ingest):
+def test_ingest_publishes_and_settles_a_chessq_read(gateway, drain_ingest):
     client = gateway(create_app(ChessQRecognizer(_fake_model(RUY_LOPEZ)), PositionHub()))
     frame = _frame(RUY_LOPEZ, corners=np.array([[0, 0], [384, 0], [384, 384], [0, 384]], dtype=np.float32))
     header, jpeg = frame.encode()
@@ -235,7 +235,7 @@ def test_ingest_publishes_chessq_read_with_prior(gateway, drain_ingest):
     drain_ingest(client)
     snap = client.get("/boards/A1").json()
     assert snap["placement"] == RUY_LOPEZ
-    assert snap["prior"]["placement"] == RUY_LOPEZ
+    assert snap["settled"]["placement"] == RUY_LOPEZ
 
 
 def test_the_session_prefers_cuda_and_keeps_the_cpu_fallback(tmp_path, monkeypatch):

@@ -34,7 +34,6 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
-import numpy as np
 from fastapi import FastAPI, Query, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
@@ -114,24 +113,6 @@ def _record_max_bytes() -> int | None:
 # Below this mean pixel value a photo is dim enough that recognition measurably
 # degrades (evening-room shots measured ~37/255) — responses carry a warning.
 LOW_LIGHT_MEAN = 55.0
-
-
-def _prior_decode(event):
-    """Hard-constraint repair of one read (:mod:`.prior`), for serving beside it.
-
-    ``square_dist`` and ``event.placement`` are left exactly as the estimator
-    produced them — the §5 invariant is that ``placement`` is the argmax of
-    ``square_dist``, and the hub publishes the raw event. The repair rides along
-    in the HTTP response as ``result["prior"]``, so applying it stays the
-    consumer's choice and a downstream legality smoother cannot double-count it
-    (DESIGN D1).
-
-    **``quarter_turns`` is deliberately not passed**: see :mod:`.prior`'s module
-    docstring for why an orientation guess fed back into the repair is circular.
-    """
-    from board_reader_inference.stream.prior import decode
-
-    return decode(np.asarray(event.square_dist))
 
 
 def _frame_policy() -> Callable[[], FramePolicy]:
@@ -408,19 +389,9 @@ def create_app(
         # The same read the live stream runs. It is real model work — off the event
         # loop, so /ingest acks and /viewer never stall behind a snapshot upload.
         event = (await asyncio.to_thread(read, frame)).event
-        # Repair attached before the publish — the hub's subscribers draw
-        # ``prior.placement``, so publishing bare would show an impossible board
-        # on the one surface the repair exists for. ``result`` inherits it.
-        repair = await asyncio.to_thread(_prior_decode, event)
-        event.prior = repair.to_repair()
         await hub_.publish(event)
         result = event.to_dict()
-        _annotate_upload(
-            sidecar,
-            frame=READ_FRAME,
-            placement=event.placement,
-            prior_flips=[f.square for f in repair.flips],
-        )
+        _annotate_upload(sidecar, frame=READ_FRAME, placement=event.placement)
         if sidecar is not None:
             # Names the retained photo so the client can confirm this read's
             # position as ground truth (POST /labels/{upload}). Absent when
@@ -506,10 +477,6 @@ def create_app(
                 predicted=meta.get("placement"),
                 corrections=corrections,
                 autorotated=int(meta.get("autorotated") or 0),
-                # What the decoder repaired in the read the operator just
-                # confirmed — so a later eval can tell truth that came from the
-                # board apart from truth that came from the decoder.
-                prior_flips=[str(s) for s in (meta.get("prior_flips") or [])],
             )
         except OSError as e:
             return JSONResponse({"error": f"could not write label: {e}"}, status_code=500)

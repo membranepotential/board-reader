@@ -4,7 +4,7 @@
    *
    * This is the **pipeline inspector**: the diagnostic surface for the reading algorithm.
    * One photo goes in and the page shows every stage that turned it into a position —
-   * capture, read, repair, output — each with its own state, headline and full
+   * capture, read, output — each with its own state, headline and full
    * evidence. The recognizer finds the board and its orientation in the whole photo,
    * so there are no corners to set and the read is always in the chess frame (rank 8
    * on top).
@@ -13,7 +13,7 @@
    *
    *  - **One image.** The photo is downscaled once and *that* image is what is posted
    *    to `/estimate` and what the capture stage describes.
-   *  - **The node's read is never mutated.** `prior.placement ?? placement` plus
+   *  - **The node's read is never mutated.** `placement` plus
    *    `square_dist` is the baseline; hand corrections are a separate layer over it. So
    *    "reset corrections" restores exactly what the node served, and the ground-truth
    *    label is derived rather than a second copy of the board.
@@ -83,7 +83,7 @@
     type Corrections,
     type SideToMove
   } from '#lib/components/snapshot/reading.ts';
-  import { materialTable, readTable, repairTable } from '#lib/components/snapshot/tables.ts';
+  import { materialTable, readTable } from '#lib/components/snapshot/tables.ts';
   import {
     EMPTY_PLACEMENT,
     GRID,
@@ -110,7 +110,6 @@
   let stageOpen: Record<StageId, boolean> = $state({
     capture: false,
     read: false,
-    repair: false,
     output: false
   });
 
@@ -192,7 +191,6 @@
 
   const captureTable = $derived(image === null || facts === null ? [] : captureRows(image, facts));
   const readRows = $derived(readTable(reading, estimateMs));
-  const repairRows = $derived(repairTable(reading?.prior ?? null));
   const materialRows = $derived(shownGrid === null ? [] : materialTable(shownGrid));
 
   const lowChips = $derived.by(() => {
@@ -328,18 +326,6 @@
         `${LOW_CONFIDENCE} · position confidence ${fmt(response.event.confidence, 3)}`
     );
 
-    const prior = response.prior;
-    pipeline = withStage(
-      pipeline,
-      'repair',
-      prior === null ? 'idle' : prior.flips.length ? 'warn' : 'ok',
-      prior === null
-        ? 'no repair reported by the server'
-        : prior.flips.length
-          ? `${prior.flips.length} square(s) relabelled to reach a possible board` +
-            (Object.keys(prior.residual).length ? ' — some impossibility remains' : '')
-          : 'the read was already a possible board — nothing changed'
-    );
     restateOutput();
     hideBanner();
 
@@ -832,16 +818,6 @@
             {#if (reading?.warnings.length ?? 0) > 0}
               <div class="note warn">Server warnings: {reading?.warnings.join(', ')}</div>
             {/if}
-          {:else if stage.id === 'repair'}
-            <p class="note">
-              Some reads describe a board that cannot exist — two white kings, a pawn on the
-              back rank, more pieces than a side can own. The server decodes the nearest
-              possible board out of the same per-square distribution and returns it alongside
-              the raw read; the distribution itself is never rewritten. Every square it
-              relabelled is listed here, cheapest first, so the repair is auditable rather than
-              silent. The board above shows the repaired position.
-            </p>
-            <KvTable rows={repairRows} />
           {:else}
             <code class="fen">{shownPlacement ?? ''}</code>
             <div class="row">

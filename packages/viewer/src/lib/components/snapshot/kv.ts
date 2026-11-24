@@ -3,7 +3,7 @@
  *
  * The hand-written page built these tables by joining `<tr><th>…` strings into
  * `innerHTML`, which is why it also needed an `esc()` helper for every value that came
- * from the node (upload ids, stored placements, prior constraints). Rows are values
+ * from the node (upload ids, stored placements). Rows are values
  * here and Svelte does the escaping, so that helper — and the whole class of bug it
  * defended against — is gone from this page.
  */

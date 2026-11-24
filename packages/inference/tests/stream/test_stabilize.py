@@ -2,27 +2,25 @@
 
 from __future__ import annotations
 
-import numpy as np
 import pytest
 
 from board_reader_core.protocol import (
-    CLASSES,
     START_PLACEMENT,
     encode_placement,
     parse_placement,
 )
 
-from board_reader_inference.stream.prior import tally, violation
+from board_reader_inference.stream.rules import violation
 from board_reader_inference.stream.stabilize import BoardStabilizer, SettleConfig
 
 #: START_PLACEMENT after 1.e4 — one real move, two squares changed.
 E4 = "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR"
 #: A phantom: the trial's hallucinated black rook on b6. Note it is *impossible*
-#: — 17 black pieces — which is the whole reason the prior repair runs first.
+#: — 17 black pieces — so the guard keeps it off the settled board.
 PHANTOM_B6 = "rnbqkbnr/pppppppp/1r6/8/8/8/PPPPPPPP/RNBQKBNR"
 #: The other flicker a hand makes, and a possible board: b8 briefly occluded.
 GONE_B8 = "r1bqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR"
-#: The k/q swap the 08-27 control take's repair coin-flipped into: d8 k, e8 q.
+#: The k/q swap the 08-27 control take coin-flipped into: d8 k, e8 q.
 #: Possible on its own — it is only ever *half* of it that is not.
 SWAP = "rnbkqbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR"
 #: The same reading with d8 misread as empty: e8 still k, d8 no longer q.
@@ -32,10 +30,8 @@ TWO_KINGS = "rnbkkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR"
 
 
 def is_possible(placement: str) -> bool:
-    """Does this board satisfy the prior's hard constraints? (the invariant)"""
-    index = {symbol: i for i, symbol in enumerate(CLASSES)}
-    labels = np.array([[index[cls] for cls in row] for row in parse_placement(placement)])
-    return violation(tally(labels, oriented=False)).satisfied
+    """Does this board break none of the guard's conditions? (the invariant)"""
+    return violation(placement).total == 0
 
 
 def test_first_read_is_adopted_wholesale():
@@ -204,7 +200,7 @@ def test_a_swap_is_displaced_as_a_swap():
     """d8's quorum is dragged into e8's settlement rather than left behind.
 
     This is the 08-27 control take's lock-in: settled per-square 96.1 % *below*
-    its own 97.2 % prior input, 0/253 perfect boards, 0/7 truth segments ever
+    its own 97.2 % repaired input, 0/253 perfect boards, 0/7 truth segments ever
     settled — because 69 % of its settled events carried two black kings, a board
     no read ever claimed and no truth segment can equal.
     """
@@ -242,8 +238,7 @@ def test_the_settled_board_never_becomes_less_possible():
 
 def test_an_impossible_read_is_never_adopted():
     """A hallucinated 17th piece survives the whole window and still does not
-    land: the settled board may not be made less possible than it is. In the
-    live path the prior repair has already removed it — this is the backstop."""
+    land: the settled board may not be made less possible than it is."""
     stab = BoardStabilizer(SettleConfig(seconds=0.0))
     stab.observe(START_PLACEMENT, 0.0)
     stab.observe(PHANTOM_B6, 1.0)
@@ -253,9 +248,8 @@ def test_an_impossible_read_is_never_adopted():
 
 
 def test_an_impossible_first_board_is_still_escapable():
-    """The first read is adopted wholesale even if it is impossible (a caller
-    feeding the raw argmax rather than the repair). The rule is *never less
-    possible*, not *never commit*, so the stream still recovers."""
+    """The first read is adopted wholesale even if it is impossible. The rule is
+    *never less possible*, not *never commit*, so the stream still recovers."""
     stab = BoardStabilizer(SettleConfig(seconds=2.5))
     assert stab.observe(TWO_KINGS, 0.0).placement == TWO_KINGS
     stab.observe(START_PLACEMENT, 1.0)

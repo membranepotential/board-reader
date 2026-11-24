@@ -13,8 +13,8 @@ through today's recognizer and writes fresh events. That is this module.
 **It replays the live path, not a copy of it.** The frames go through the same
 :func:`~board_reader_inference.recognition.recognizer.frame_reader` read the ``/ingest``
 worker runs, the same
-:func:`~board_reader_inference.stream.ingest._read_with_prior` (estimate -> prior repair
--> :class:`~board_reader_inference.stream.stabilize.BoardStabilizer`), and the same
+:func:`~board_reader_inference.stream.ingest._read_and_settle` (estimate ->
+:class:`~board_reader_inference.stream.stabilize.BoardStabilizer`), and the same
 :func:`~board_reader_inference.stream.ingest.event_line` writer. A replayed event is
 what the gateway *would* have published; a second implementation of any of those
 three would make the comparison meaningless.
@@ -148,7 +148,7 @@ from board_reader_inference.recognition.recognizer import (
 from board_reader_inference.stream.ingest import (
     Misoriented,
     OrientationGuard,
-    _read_with_prior,
+    _read_and_settle,
     event_line,
 )
 from board_reader_inference.stream.schedule import (
@@ -469,7 +469,7 @@ def replay(
     ``settle`` configures the debounce (``serve`` reads the same knobs from
     ``BR_SETTLE_*``).
 
-    The estimate/repair/debounce is :func:`~board_reader_inference.stream.ingest._read_with_prior`
+    The estimate and debounce are :func:`~board_reader_inference.stream.ingest._read_and_settle`
     — the ingest worker's own body — and the stabilizer is fed the frame's
     ``capture_ts``, so the settle window is recorded time. One stabilizer for the
     whole replay: it is one board's stream, in order, which is exactly the stream
@@ -577,7 +577,7 @@ def replay(
                     header=entry.header, jpeg=jpeg, received_ts=entry.received_ts
                 ).frame()
                 try:
-                    outcome = _read_with_prior(read, frame, stabilizer, guard)
+                    outcome = _read_and_settle(read, frame, stabilizer, guard)
                 except Exception as e:  # one bad frame is not the end of the stream
                     stats.frames_failed += 1
                     _say(log, f"  seq {entry.seq}: estimation failed ({e})")
