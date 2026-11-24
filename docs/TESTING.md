@@ -1015,6 +1015,36 @@ eval and replays are all in the chess frame.
 Automated: `test_labels.py`, `test_server_labels.py`, `test_evaluate.py` and
 `test_trial.py` (frame sections), `tests/test_gate_table.py`.
 
+### Option Q — Record a game to PGN on the live page (WP-H3)
+
+Each board card on the live page has a **game** panel beside it. The panel decodes that
+board's reads into a legal game, starting from the initial position
+([docs/plans/2026-11-24-pgn-decoder.md](plans/2026-11-24-pgn-decoder.md)).
+
+1. Run `make dev`, open `/camera` on the phone and `http://localhost:8080` on the
+   laptop, and point the phone at a board in the initial position. Expected: the
+   panel says "No moves yet" and the Lichess link ends in `/analysis/pgn/*`.
+2. Play `1.e4 e5 2.Nf3` at a normal pace. Expected: each move appears in the move
+   list within a few seconds. A move the decoder is still unsure of shows dimmed and
+   italic, and the header counts it as provisional. It turns solid once later reads
+   agree.
+3. Take a move back and hold the board still for a few seconds. Expected: the move
+   leaves the list.
+4. Press **Copy PGN** and paste it into a text editor. Expected: the button says
+   "Copied", and the text has `[UTCDate]`/`[UTCTime]` tags and a `{ [%emt h:mm:ss] }`
+   comment after each move. On plain http from another machine the browser may
+   refuse the clipboard; then the panel says so and opens the PGN for manual copying.
+5. Click **Open in Lichess analysis**. Expected: a new tab with the same moves on
+   Lichess's analysis board. Only the link sends the game to Lichess.
+6. Press **New game**. Expected: the move list empties.
+7. Offline accuracy: run `node tools/pgn_eval.ts`. It replays the seven gate takes'
+   events through the same decoder and compares them with `truth.json`. Expected
+   (2026-11-24): `80/80 plies before the first divergence, 7/7 games exact`, commit
+   latency median 3.0 s, max 5.0 s. `--param margin=6` shows a failure (20260827-181802
+   decodes `3.d3`).
+
+Automated: `src/lib/game/*.test.ts` (Vitest) and `tests/game.spec.ts` (Playwright).
+
 ---
 
 ## Quick health checks
