@@ -54,19 +54,28 @@ class Recognition:
     clockwise from straight up, in ``(-180, 180]``: 0 means White sits at the
     bottom of the picture, 90 that White sits on the left. ``None`` when the
     recognizer does not report it (the stub) or reported nothing usable.
+
+    ``frame_energy`` says how unlike a clear board the frame looks, on the model's
+    own logit scale (:func:`~.chessq.frame_energy`): above the settle threshold the
+    read is *obscured*, a hand over the board, say. ``None`` when the recognizer
+    does not report it (the stub, the test recognizers); such a read is never
+    obscured.
     """
 
     square_dist: np.ndarray
     direction: float | None = None
+    frame_energy: float | None = None
 
 
 @dataclass(frozen=True, slots=True)
 class FrameReading:
-    """One frame's read: its position event and the board's direction (see
-    :class:`Recognition`), which rides beside the event, never in it."""
+    """One frame's read: its position event, and the board's direction and the
+    frame energy (see :class:`Recognition`), which ride beside the event, never in
+    it."""
 
     event: PositionEvent
     direction: float | None = None
+    frame_energy: float | None = None
 
 
 #: One frame in, its read out — what a read *is*, for every caller.
@@ -139,7 +148,9 @@ def frame_reader(recognizer: Recognizer) -> FrameRead:
     def read(frame: Frame) -> FrameReading:
         recognition = recognizer.read(frame.image)
         return FrameReading(
-            event_from_dist(frame, recognition.square_dist), recognition.direction
+            event_from_dist(frame, recognition.square_dist),
+            recognition.direction,
+            recognition.frame_energy,
         )
 
     return read

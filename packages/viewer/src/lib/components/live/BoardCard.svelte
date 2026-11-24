@@ -12,7 +12,9 @@
    * the per-square numbers), and the read frame's stability (the node reads after
    * motion ends, so that one always says "at rest"). Motion comes from the node's
    * per-frame motion messages instead, and the chip is absent when the node sends
-   * none.
+   * none. The "hand?" chip is the latest read's `obscured` flag: the node judged
+   * something to cover the board (a hand resting still makes no motion), so that
+   * read could not settle a change.
    *
    * Stale = the reading is old, so it stops asserting itself — except the `.live`
    * row, which is exempt: how stale it is, is exactly what you want to read on a
@@ -57,6 +59,14 @@
       {:else if motion.kind === 'stale'}
         <span class="motion-chip unknown" title="no motion message from the node for a few seconds">
           motion ?
+        </span>
+      {/if}
+      {#if event.obscured}
+        <span
+          class="obscured-chip"
+          title="the last read looks obscured (a hand over the board?), so it could not change the board shown"
+        >
+          hand?
         </span>
       {/if}
       {#if liveness.stale}
@@ -126,6 +136,7 @@
   }
   .status,
   .motion-chip,
+  .obscured-chip,
   .stale-chip {
     font-size: 12px;
     padding: 1px 7px;
@@ -154,6 +165,10 @@
   .motion-chip.unknown {
     background: #2b2f37;
     color: #9aa3ad;
+  }
+  .obscured-chip {
+    background: #3a2f18;
+    color: #ffcf7a;
   }
   .stale-chip {
     background: #3a2020;

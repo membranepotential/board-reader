@@ -14,7 +14,7 @@ import time
 import numpy as np
 from starlette.testclient import TestClient
 
-from board_reader_core.protocol import START_PLACEMENT
+from board_reader_core.protocol import START_PLACEMENT, PositionEvent
 from board_reader_core.wire import Frame
 
 from board_reader_inference.recognition.recognizer import (
@@ -350,6 +350,42 @@ def test_each_board_settles_with_the_ingest_settle_config():
 
     assert asyncio.run(run(SettleConfig(seconds=0.0, min_reads=1))) == e4
     assert asyncio.run(run(SettleConfig())) == START_PLACEMENT
+
+
+def test_an_obscured_read_is_published_as_such_and_commits_nothing():
+    """The frame energy reaches the debounce through ``_read_and_settle``: with a
+    window that commits any changed read at once, the obscured one still waits."""
+    from board_reader_inference.recognition.recognizer import event_from_dist
+    from board_reader_inference.stream.stabilize import SettleConfig
+
+    e4 = "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR"
+    #: seq -> (the read, its frame energy): clear, obscured, clear.
+    reads = {0: (START_PLACEMENT, -14.0), 1: (e4, -10.0), 2: (e4, -14.0)}
+
+    def read(frame: Frame) -> FrameReading:
+        board, energy = reads[frame.seq]
+        dist = StubRecognizer(board).read(frame.image).square_dist
+        return FrameReading(event_from_dist(frame, dist), frame_energy=energy)
+
+    async def run() -> list[PositionEvent]:
+        hub = PositionHub()
+        ingest = FrameIngest(
+            read, hub, settle=SettleConfig(seconds=0.0, min_reads=1, obscured_energy=-12.4)
+        )
+        published = []
+        for seq in reads:
+            ingest.submit(_frame(seq=seq))
+            await asyncio.wait_for(ingest.drain(), timeout=5.0)
+            published.append(hub.latest("A1"))
+        await ingest.close()
+        return published
+
+    events = asyncio.run(run())
+    assert [(e.placement, e.obscured) for e in events] == [
+        (START_PLACEMENT, False),
+        (START_PLACEMENT, True),
+        (e4, False),
+    ]
 
 
 def test_healthz_reports_the_settle_config_from_the_environment(monkeypatch):

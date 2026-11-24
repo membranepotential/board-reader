@@ -127,6 +127,20 @@ test('the motion chip follows the motion messages and is absent without them', a
   await expect(card.locator('.motion-chip')).toHaveText('still');
 });
 
+test('the hand chip shows while the latest read is obscured', async ({ page }) => {
+  const socket = await FakeViewerSocket.install(page);
+  await page.goto('/');
+  socket.send(positionEvent());
+  const card = page.locator('.board-card');
+  await expect(card).toHaveCount(1);
+  await expect(card.locator('.obscured-chip')).toHaveCount(0);
+
+  socket.send(positionEvent({ seq: 2, obscured: true }));
+  await expect(card.locator('.obscured-chip')).toHaveText('hand?');
+  socket.send(positionEvent({ seq: 3 }));
+  await expect(card.locator('.obscured-chip')).toHaveCount(0);
+});
+
 test('a card shows pending squares as dashed rings and no confidence readouts', async ({
   page
 }) => {

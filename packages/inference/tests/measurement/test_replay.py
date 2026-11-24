@@ -862,6 +862,23 @@ def test_cli_settle_flags_override_the_environment(tmp_path, monkeypatch, capsys
     assert "stale_windows" in capsys.readouterr().err
     assert not (recording / "replays" / "y").exists()
 
+
+def test_cli_obscured_energy_flag_overrides_the_environment(tmp_path, monkeypatch, capsys):
+    monkeypatch.delenv("BR_CHESSQ", raising=False)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("BR_OBSCURED_ENERGY", "-11")
+    _write_metered_recording(tmp_path / "recordings", moving=range(40, 50))
+    recording = tmp_path / "recordings" / "metered"
+
+    assert main(["replay", str(recording), "--name", "e", "--obscured-energy", "off"]) == 0
+    block = json.loads((recording / "replays" / "e" / "manifest.json").read_text())["replay"]
+    assert block["obscured_energy"] is None
+    assert "obscured above energy None" in capsys.readouterr().out
+
+    assert main(["replay", str(recording), "--name", "z", "--obscured-energy", "high"]) == 2
+    assert "cannot replay" in capsys.readouterr().err
+    assert not (recording / "replays" / "z").exists()
+
 # --------------------------------------------------------------------------- #
 # The session seam: state must not cross it
 # --------------------------------------------------------------------------- #

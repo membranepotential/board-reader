@@ -33,6 +33,7 @@ from board_reader_inference.recognition.chessq import (
     INPUT_PX,
     ChessQRecognizer,
     direction_degrees,
+    frame_energy,
     preprocess_frame,
     square_dist_from_logits,
 )
@@ -142,6 +143,29 @@ def test_a_direction_with_no_length_or_a_nan_reports_none():
 def test_logits_of_the_wrong_shape_are_refused():
     with pytest.raises(ValueError, match="ChessQ returned"):
         square_dist_from_logits(np.zeros((64, 13), dtype=np.float32))
+
+
+def test_frame_energy_is_the_mean_of_the_four_highest_square_energies():
+    """Per square minus logsumexp of its 13 logits, per frame the mean of the 4
+    highest (the hand-signal probe's ``energy_f``): one weak square in 64 moves the
+    frame, a board of confident squares stays low."""
+    logits = _logits_for(START_PLACEMENT, peak=14.0).astype(np.float64)
+    confident = -(14.0 + np.log1p(12 * np.exp(-14.0)))  # every square alike
+    assert frame_energy(logits) == pytest.approx(confident)
+    logits[0, 27] = 0.0  # d5: no class stands out, energy -log(13)
+    logits[0, 28, 0] = 2.0  # e5: a weak "empty"
+    expected = (-np.log(13.0) - (2.0 + np.log1p(12 * np.exp(-2.0))) + 2 * confident) / 4
+    assert frame_energy(logits) == pytest.approx(expected)
+
+
+def test_frame_energy_refuses_logits_of_the_wrong_shape():
+    with pytest.raises(ValueError, match="ChessQ returned"):
+        frame_energy(np.zeros((64, 13), dtype=np.float32))
+
+
+def test_the_recognizer_reports_the_frame_energy_of_its_logits():
+    recognition = ChessQRecognizer(_fake_model(RUY_LOPEZ)).read(render_board(RUY_LOPEZ))
+    assert recognition.frame_energy == pytest.approx(frame_energy(_logits_for(RUY_LOPEZ)))
 
 
 def test_recognizer_reads_in_the_chess_frame():

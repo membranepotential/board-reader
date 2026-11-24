@@ -135,12 +135,21 @@ def test_to_dict_has_protocol_shape():
     for key in (
         "board_id", "utc", "seq", "orientation", "classes",
         "changed_utc", "placement", "pending", "square_dist", "confidence", "stability",
-        "clock", "status",
+        "clock", "status", "obscured",
     ):
         assert key in d
     assert d["classes"] == list(CLASSES)
     assert np.asarray(d["square_dist"]).shape == (GRID, GRID, NUM_CLASSES)
     assert d["status"] == "ok"  # never "illegal" — legality is not ours to judge
+    assert d["obscured"] is False  # a one-shot read is never judged obscured
+
+
+def test_an_event_recorded_before_the_obscured_flag_parses_as_clear():
+    line = PositionEvent.from_square_dist(
+        board_id="A1", seq=0, utc=iso_utc(0.0), square_dist=dist_from_placement(START_PLACEMENT)
+    ).to_dict()
+    del line["obscured"]
+    assert PositionEvent.from_dict(line).obscured is False
 
 
 def test_an_event_refuses_a_distribution_of_the_wrong_shape_or_range():
@@ -208,9 +217,10 @@ def test_a_settled_board_is_the_placement_and_the_read_stays_in_the_dist():
     read = "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR"  # 1.e4, not settled yet
     ev = PositionEvent.from_square_dist(
         board_id="A1", seq=0, utc=iso_utc(0.0), square_dist=dist_from_placement(read)
-    ).with_placement(START_PLACEMENT, changed_utc=iso_utc(-5.0))
+    ).with_placement(START_PLACEMENT, changed_utc=iso_utc(-5.0), obscured=True)
     assert ev.placement == START_PLACEMENT
     assert ev.changed_utc == "1969-12-31T23:59:55.000Z"  # the board held since then
+    assert ev.obscured
     assert ev.raw_placement == read
     assert ev.pending == ("e4", "e2")  # board order: rank 8 first
     ev.validate()

@@ -361,6 +361,12 @@ class PositionEvent(Wire):
     finished settling it, a settle window or more later). For a one-shot read it
     equals ``utc``.
 
+    ``obscured`` says the node judged this read obscured: something, most likely a
+    hand, covers part of the board, so the read may name covered squares empty. Such
+    a read can start settling a change but never completes one, so ``placement``
+    holds until a clear read confirms it. False for a one-shot read, and in a
+    recording made before the flag existed.
+
     Construct via :meth:`from_square_dist` (and :meth:`with_placement` for a
     settled board), so ``pending`` and ``confidence`` stay derived from
     ``square_dist`` and can never drift out of sync with it. Every field is
@@ -381,6 +387,7 @@ class PositionEvent(Wire):
     stability: Score = 1.0
     clock: ClockState = Field(default_factory=ClockState)
     status: Status = "ok"
+    obscured: StrictBool = False
 
     @classmethod
     def from_square_dist(
@@ -417,9 +424,11 @@ class PositionEvent(Wire):
             orientation=orientation,
         )
 
-    def with_placement(self, placement: str, *, changed_utc: str) -> PositionEvent:
+    def with_placement(
+        self, placement: str, *, changed_utc: str, obscured: bool
+    ) -> PositionEvent:
         """This read published with ``placement`` (a settled board), which last
-        changed at ``changed_utc``.
+        changed at ``changed_utc``, and whether the read was ``obscured``.
 
         ``pending`` is derived again, so the event stays self-consistent.
         """
@@ -428,6 +437,7 @@ class PositionEvent(Wire):
             placement=placement,
             pending=pending_squares(self.square_dist, placement),
             changed_utc=changed_utc,
+            obscured=obscured,
         )
 
     @property

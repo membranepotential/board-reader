@@ -237,6 +237,12 @@ export type MotionUpdate = Immutable<z.infer<typeof MotionUpdate>>;
  * finished settling it, a settle window or more later). For a one-shot read it
  * equals `utc`.
  *
+ * `obscured` says the node judged this read obscured: something, most likely a
+ * hand, covers part of the board, so the read may name covered squares empty. Such
+ * a read can start settling a change but never completes one, so `placement`
+ * holds until a clear read confirms it. False for a one-shot read, and in a
+ * recording made before the flag existed.
+ *
  * Construct via `from_square_dist` (and `with_placement` for a
  * settled board), so `pending` and `confidence` stay derived from
  * `square_dist` and can never drift out of sync with it. Every field is
@@ -275,7 +281,8 @@ export const PositionEvent = z.strictObject({
     'recalibrating',
     'needs_setup',
     'stale'
-  ])
+  ]),
+  obscured: z.boolean()
 });
 export type PositionEvent = Immutable<z.infer<typeof PositionEvent>>;
 

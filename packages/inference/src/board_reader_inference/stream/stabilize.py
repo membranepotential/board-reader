@@ -43,6 +43,17 @@ is a *display* debounce, not the downstream legality smoother
 right or wrong. The constraint check above is not legality either — it is the
 necessary condition on the pieces, applied to the board the debounce composes out
 of several reads.
+
+**An obscured read is evidence, never a commit.** A hand resting still on the
+board makes no motion, so the schedule reads it, and ChessQ reads the covered
+squares as empty at p >= 0.96: confidence cannot tell. The frame energy can
+(:func:`~board_reader_inference.recognition.chessq.frame_energy`), and above
+:attr:`SettleConfig.obscured_energy` the read is *obscured*. It still starts and
+extends challengers, because a mid-move read with the hand on the piece also says
+something true (the lifted piece's square is empty), but no square ripens on it, so
+nothing commits until a clear read confirms or resets each challenger. Dropping
+obscured reads outright cost 15 gate boards in the probe, this 3
+(docs/reports/2026-11-24-hand-signal-probe.md).
 """
 
 from __future__ import annotations
@@ -89,24 +100,42 @@ SETTLE_MIN_READS = 2
 #: staleness at ~3x SETTLE_SECONDS (one window to ripen, two to time out).
 STALE_WINDOWS = 2
 
-#: The environment ``serve`` reads the three knobs from (:meth:`SettleConfig.from_env`).
-SETTLE_ENV = ("BR_SETTLE_SECONDS", "BR_SETTLE_MIN_READS", "BR_SETTLE_STALE_WINDOWS")
+#: A read whose frame energy is above this is obscured and commits nothing (module
+#: docstring). The median of the probe's leave-one-take-out thresholds (each the
+#: 99th percentile over the other gate takes' clear frames, -12.13 to -12.93) for
+#: ChessQ V6. Energy lives on the model's logit scale, like a temperature: **re-fit
+#: it for every model release** (docs/reports/2026-11-24-hand-signal-probe.md).
+OBSCURED_ENERGY = -12.4
+
+#: The environment ``serve`` reads the knobs from (:meth:`SettleConfig.from_env`).
+SETTLE_ENV = (
+    "BR_SETTLE_SECONDS",
+    "BR_SETTLE_MIN_READS",
+    "BR_SETTLE_STALE_WINDOWS",
+    "BR_OBSCURED_ENERGY",
+)
+
+#: How ``BR_OBSCURED_ENERGY`` and ``replay --obscured-energy`` spell "no gate".
+GATE_OFF = "off"
 
 @dataclass(frozen=True)
 class SettleConfig:
-    """The debounce's three knobs, as one value a node or a replay is built with.
+    """The debounce's knobs, as one value a node or a replay is built with.
 
     ``seconds`` and ``min_reads`` are the window a challenger must span
     (:data:`SETTLE_SECONDS`, :data:`SETTLE_MIN_READS`); ``stale_windows`` is how
     many windows a ripe-but-blocked square waits before the coherence rule gives
-    way (:data:`STALE_WINDOWS`). ``serve`` reads them from ``BR_SETTLE_*``,
-    ``replay`` from ``--settle-*`` (defaulting to the same environment), and a
-    replay records them in its manifest, name and config digest.
+    way (:data:`STALE_WINDOWS`); ``obscured_energy`` is the frame energy above
+    which a read commits nothing (:data:`OBSCURED_ENERGY`, ``None`` switches that
+    gate off). ``serve`` reads them from :data:`SETTLE_ENV`, ``replay`` from
+    ``--settle-*`` and ``--obscured-energy`` (defaulting to the same environment),
+    and a replay records them in its manifest, name and config digest.
     """
 
     seconds: float = SETTLE_SECONDS
     min_reads: int = SETTLE_MIN_READS
     stale_windows: int = STALE_WINDOWS
+    obscured_energy: float | None = OBSCURED_ENERGY
 
     def __post_init__(self) -> None:
         if not (math.isfinite(self.seconds) and self.seconds >= 0):
@@ -115,6 +144,10 @@ class SettleConfig:
             raise ValueError(f"settle min_reads must be >= 1, got {self.min_reads}")
         if self.stale_windows < 1:
             raise ValueError(f"settle stale_windows must be >= 1, got {self.stale_windows}")
+        if self.obscured_energy is not None and not math.isfinite(self.obscured_energy):
+            raise ValueError(
+                f"obscured energy must be finite (or {GATE_OFF!r}), got {self.obscured_energy}"
+            )
 
     @property
     def is_default(self) -> bool:
@@ -122,15 +155,32 @@ class SettleConfig:
 
     @property
     def slug(self) -> str:
-        """A path-safe name for a non-default config: ``settle1.5s-2r-2w``."""
-        return f"settle{self.seconds:g}s-{self.min_reads}r-{self.stale_windows}w"
+        """A path-safe name for a non-default config: ``settle1.5s-2r-2w``, with
+        ``-e-12.0`` (or ``-eoff``) appended when the energy gate is not the default."""
+        slug = f"settle{self.seconds:g}s-{self.min_reads}r-{self.stale_windows}w"
+        if self.obscured_energy != OBSCURED_ENERGY:
+            slug += f"-e{_energy_text(self.obscured_energy)}"
+        return slug
 
-    def to_dict(self) -> dict[str, float | int]:
+    def obscures(self, frame_energy: float | None) -> bool:
+        """Whether a read with this frame energy is obscured (module docstring).
+
+        A read without one (the stub) never is, and neither is any read with the
+        gate off.
+        """
+        return (
+            self.obscured_energy is not None
+            and frame_energy is not None
+            and frame_energy > self.obscured_energy
+        )
+
+    def to_dict(self) -> dict[str, float | int | None]:
         """The manifest's form (its first two keys predate this class)."""
         return {
             "settle_seconds": self.seconds,
             "settle_min_reads": self.min_reads,
             "stale_windows": self.stale_windows,
+            "obscured_energy": self.obscured_energy,
         }
 
     @classmethod
@@ -138,11 +188,18 @@ class SettleConfig:
         """``BR_SETTLE_SECONDS`` / ``_MIN_READS`` / ``_STALE_WINDOWS``; unset keeps
         the default. A malformed value raises, so a typo fails at startup."""
         default = cls()
-        seconds, min_reads, stale = SETTLE_ENV
+        seconds, min_reads, stale, energy = SETTLE_ENV
         return cls(
             seconds=_from_env(environ, seconds, float, default.seconds),
             min_reads=_from_env(environ, min_reads, int, default.min_reads),
             stale_windows=_from_env(environ, stale, int, default.stale_windows),
+            obscured_energy=_from_env(
+                environ,
+                energy,
+                parse_obscured_energy,
+                default.obscured_energy,
+                f"float or {GATE_OFF!r}",
+            ),
         )
 
 
@@ -150,8 +207,28 @@ class SettleConfig:
 DEFAULT_SETTLE = SettleConfig()
 
 
-def _from_env[T: (float, int)](
-    environ: Mapping[str, str], name: str, parse: Callable[[str], T], default: T
+def parse_obscured_energy(raw: str) -> float | None:
+    """``"off"`` -> ``None`` (no gate), anything else a float; raises ``ValueError``.
+
+    Finiteness is :class:`SettleConfig`'s check, so ``"nan"`` fails there.
+    """
+    return None if raw.strip().lower() == GATE_OFF else float(raw)
+
+
+def _energy_text(energy: float | None) -> str:
+    """``-12.0`` -> ``"-12"``, ``None`` -> ``"off"``: repr, a bare ``.0`` trimmed."""
+    if energy is None:
+        return GATE_OFF
+    text = repr(energy)
+    return text.removesuffix(".0")
+
+
+def _from_env[T](
+    environ: Mapping[str, str],
+    name: str,
+    parse: Callable[[str], T],
+    default: T,
+    what: str | None = None,
 ) -> T:
     raw = environ.get(name)
     if raw is None or raw == "":
@@ -159,7 +236,7 @@ def _from_env[T: (float, int)](
     try:
         return parse(raw)
     except ValueError as e:
-        raise ValueError(f"{name}={raw!r} is not a valid {parse.__name__}") from e
+        raise ValueError(f"{name}={raw!r} is not a valid {what or parse.__name__}") from e
 
 
 def _excess(grid: list[list[str]], rules: Rules) -> int:
@@ -246,7 +323,12 @@ class BoardStabilizer:
         return self._changed_ts
 
     def observe(
-        self, placement: str, ts: float, rules: Rules = DEFAULT_RULES
+        self,
+        placement: str,
+        ts: float,
+        rules: Rules = DEFAULT_RULES,
+        *,
+        obscured: bool = False,
     ) -> str:
         """Fold one read into the settled board and return the settled placement.
 
@@ -257,6 +339,12 @@ class BoardStabilizer:
         under ``free`` the guard counts nothing, so every ripe square commits. It
         may change from one read to the next; the guard then judges this read's
         commit by the new setting.
+
+        ``obscured`` (:meth:`SettleConfig.obscures`) makes the read evidence only:
+        it starts and extends challengers as usual, but no square ripens on it, so
+        it commits nothing, not even through the stale fall-through. The first read
+        is still adopted wholesale: there is no settled board to hold yet, and a
+        wrong square is displaced by the clear reads that follow.
 
         Raises ``ValueError`` on an unparseable placement, like
         :func:`~board_reader_core.protocol.parse_placement`.
@@ -288,7 +376,8 @@ class BoardStabilizer:
                     challenger.reads += 1
                 contested.append((r, c))
                 if (
-                    challenger.reads >= self._min_reads
+                    not obscured
+                    and challenger.reads >= self._min_reads
                     and ts - challenger.first_ts >= self._window
                 ):
                     ripe.append((r, c))

@@ -897,7 +897,8 @@ def render(result: ReplayResult) -> str:
     if not result.settle.is_default:
         lines.append(
             f"settle:    {result.settle.seconds:g} s, >= {result.settle.min_reads} reads, "
-            f"stale after {result.settle.stale_windows} windows"
+            f"stale after {result.settle.stale_windows} windows, "
+            f"obscured above energy {result.settle.obscured_energy}"
         )
     if result.policy != EveryFrame().name or result.restamp:
         note = result.policy

@@ -181,7 +181,7 @@ def cmd_replay(args: argparse.Namespace) -> int:
     from board_reader_inference.measurement.replay import render, run
     from board_reader_inference.measurement.trial import TRUTH_NAME, TruthError
     from board_reader_inference.stream.schedule import parse_policy
-    from board_reader_inference.stream.stabilize import SettleConfig
+    from board_reader_inference.stream.stabilize import SettleConfig, parse_obscured_energy
 
     try:
         # Parsed before anything expensive: a typo in --policy must cost a line of
@@ -194,6 +194,11 @@ def cmd_replay(args: argparse.Namespace) -> int:
             min_reads=default.min_reads if args.settle_min_reads is None else args.settle_min_reads,
             stale_windows=(
                 default.stale_windows if args.stale_windows is None else args.stale_windows
+            ),
+            obscured_energy=(
+                default.obscured_energy
+                if args.obscured_energy is None
+                else parse_obscured_energy(args.obscured_energy)
             ),
         )
     except ValueError as e:
@@ -329,7 +334,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     from board_reader_inference.measurement.replay import REPLAYS_DIR
     from board_reader_inference.stream.schedule import POLICIES
-    from board_reader_inference.stream.stabilize import SettleConfig
+    from board_reader_inference.stream.stabilize import GATE_OFF, SettleConfig
 
     POLICY_DEFAULT = "every-frame"
     POLICY_HELP = "Known: " + "; ".join(
@@ -390,6 +395,14 @@ def build_parser() -> argparse.ArgumentParser:
         "falling through to the current read (env BR_SETTLE_STALE_WINDOWS; default "
         f"{SettleConfig().stale_windows}). Non-default settle values join the replay "
         "name, the manifest and the config digest",
+    )
+    r.add_argument(
+        "--obscured-energy", dest="obscured_energy", default=None, metavar="E",
+        help="a read whose ChessQ frame energy is above this is obscured (a hand over "
+        "the board) and commits no square; it still counts as evidence. "
+        f"'{GATE_OFF}' switches the gate off (env BR_OBSCURED_ENERGY; default "
+        f"{SettleConfig().obscured_energy}, fitted for ChessQ V6: re-fit it per "
+        "model release)",
     )
     r.add_argument(
         "--rules",

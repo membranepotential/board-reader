@@ -39,6 +39,7 @@ export interface EventOverrides {
   readonly status?: 'ok' | 'recalibrating' | 'needs_setup' | 'stale';
   readonly confidence?: number;
   readonly stability?: number;
+  readonly obscured?: boolean;
   readonly square_dist?: readonly (readonly (readonly number[])[])[];
 }
 
@@ -60,6 +61,7 @@ export function positionEvent(overrides: EventOverrides = {}): Record<string, un
     confidence: 0.93,
     stability: 1,
     status: 'ok',
+    obscured: false,
     clock: { running: 'none' },
     ...overrides
   };

@@ -28,6 +28,7 @@ export function positionEvent(over: Record<string, unknown> = {}): Record<string
     stability: 0.95,
     clock: { running: 'none' },
     status: 'ok',
+    obscured: false,
     ...over
   };
 }

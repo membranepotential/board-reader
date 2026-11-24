@@ -64,13 +64,21 @@ def test_a_frame_read_hands_the_recognizer_the_whole_image_and_ignores_corners()
     class Spy(StubRecognizer):
         def read(self, image: np.ndarray) -> Recognition:
             seen.append(image)
-            return Recognition(super().read(image).square_dist, direction=88.5)
+            return Recognition(
+                super().read(image).square_dist, direction=88.5, frame_energy=-13.25
+            )
 
     frame = _frame(corners=np.array([[1, 2], [60, 3], [62, 61], [0, 59]], dtype=np.float32))
     reading = frame_reader(Spy(MIDGAME))(frame)
     assert len(seen) == 1 and seen[0] is frame.image  # as sent: no crop, no warp
     assert (reading.event.placement, reading.event.seq) == (MIDGAME, 41)
     assert reading.direction == 88.5  # the recognizer's direction rides beside the event
+    assert reading.frame_energy == -13.25  # ... and so does its frame energy
+
+
+def test_the_stub_reports_no_frame_energy():
+    """So the stub's reads are never obscured (``SettleConfig.obscures``)."""
+    assert StubRecognizer().read(np.zeros((8, 8, 3), dtype=np.uint8)).frame_energy is None
 
 
 def test_build_from_env_without_br_chessq_serves_the_stub_loudly(monkeypatch, capsys):

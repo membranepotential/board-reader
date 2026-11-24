@@ -32,7 +32,8 @@ const validEvent = {
   confidence: 0.87,
   stability: 0.42,
   clock: { running: 'white' },
-  status: 'ok'
+  status: 'ok',
+  obscured: false
 };
 
 const parseEvent = (raw: unknown) => parseWire(PositionEvent, raw);

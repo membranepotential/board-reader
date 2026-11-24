@@ -13,7 +13,11 @@ from board_reader_core.protocol import (
 )
 
 from board_reader_inference.stream.rules import violation
-from board_reader_inference.stream.stabilize import BoardStabilizer, SettleConfig
+from board_reader_inference.stream.stabilize import (
+    OBSCURED_ENERGY,
+    BoardStabilizer,
+    SettleConfig,
+)
 
 #: START_PLACEMENT after 1.e4 — one real move, two squares changed.
 E4 = "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR"
@@ -152,6 +156,9 @@ def test_rejects_nonsensical_parameters():
         SettleConfig(min_reads=0)
     with pytest.raises(ValueError):
         SettleConfig(stale_windows=0)
+    for energy in (float("nan"), float("inf"), -float("inf")):
+        with pytest.raises(ValueError):
+            SettleConfig(obscured_energy=energy)
 
 
 def test_settle_config_from_env_keeps_unset_knobs_at_their_defaults():
@@ -162,11 +169,23 @@ def test_settle_config_from_env_keeps_unset_knobs_at_their_defaults():
     assert SettleConfig.from_env(
         {"BR_SETTLE_SECONDS": "0.5", "BR_SETTLE_MIN_READS": "1", "BR_SETTLE_STALE_WINDOWS": "3"}
     ) == SettleConfig(seconds=0.5, min_reads=1, stale_windows=3)
+    assert SettleConfig.from_env({"BR_OBSCURED_ENERGY": "-11.5"}) == (
+        SettleConfig(obscured_energy=-11.5)
+    )
+    assert SettleConfig.from_env({"BR_OBSCURED_ENERGY": "off"}) == (
+        SettleConfig(obscured_energy=None)
+    )
 
 
 @pytest.mark.parametrize(
     "env",
-    [{"BR_SETTLE_SECONDS": "fast"}, {"BR_SETTLE_MIN_READS": "1.5"}, {"BR_SETTLE_STALE_WINDOWS": "0"}],
+    [
+        {"BR_SETTLE_SECONDS": "fast"},
+        {"BR_SETTLE_MIN_READS": "1.5"},
+        {"BR_SETTLE_STALE_WINDOWS": "0"},
+        {"BR_OBSCURED_ENERGY": "high"},
+        {"BR_OBSCURED_ENERGY": "nan"},
+    ],
 )
 def test_a_malformed_settle_env_fails_loudly(env):
     with pytest.raises(ValueError):
@@ -178,7 +197,66 @@ def test_settle_config_names_itself_for_a_replay_directory():
     config = SettleConfig(seconds=1.5, min_reads=1, stale_windows=3)
     assert not config.is_default
     assert config.slug == "settle1.5s-1r-3w"
-    assert config.to_dict() == {"settle_seconds": 1.5, "settle_min_reads": 1, "stale_windows": 3}
+    assert config.to_dict() == {
+        "settle_seconds": 1.5,
+        "settle_min_reads": 1,
+        "stale_windows": 3,
+        "obscured_energy": OBSCURED_ENERGY,
+    }
+    assert SettleConfig(obscured_energy=-12.0).slug == "settle0.5s-2r-2w-e-12"
+    assert SettleConfig(obscured_energy=-12.25).slug == "settle0.5s-2r-2w-e-12.25"
+    assert SettleConfig(obscured_energy=None).slug == "settle0.5s-2r-2w-eoff"
+
+
+def test_a_read_is_obscured_only_above_the_threshold():
+    config = SettleConfig(obscured_energy=-12.4)
+    assert config.obscures(-12.0)
+    assert not config.obscures(-12.4)  # strictly above, as the probe gated
+    assert not config.obscures(-13.0)
+    assert not config.obscures(None)  # a recognizer that reports no energy
+    assert not SettleConfig(obscured_energy=None).obscures(0.0)  # the gate is off
+
+
+def test_an_obscured_read_never_commits_but_its_evidence_counts():
+    """The resting hand: reads under it agree on a wrong board for longer than the
+    window, and none of them commits. The first clear read that agrees with the
+    challenger they started then commits at once: their evidence counted."""
+    stab = BoardStabilizer(SettleConfig(seconds=0.5))
+    stab.observe(START_PLACEMENT, 0.0)
+    for ts in (1.0, 1.5, 2.0, 3.0, 5.0):  # four seconds of the hand, ripe many times over
+        assert stab.observe(GONE_B8, ts, obscured=True) == START_PLACEMENT
+    assert stab.changed_ts == 0.0
+    assert stab.observe(GONE_B8, 5.3) == GONE_B8
+    assert stab.changed_ts == 1.0  # the run began under the hand
+
+
+def test_a_clear_read_after_the_hand_resets_what_the_hand_started():
+    stab = BoardStabilizer(SettleConfig(seconds=0.5))
+    stab.observe(START_PLACEMENT, 0.0)
+    for ts in (1.0, 1.5, 2.0):
+        stab.observe(GONE_B8, ts, obscured=True)
+    assert stab.observe(START_PLACEMENT, 2.5) == START_PLACEMENT
+    assert stab.observe(GONE_B8, 2.8) == START_PLACEMENT  # a fresh run, not ripe yet
+
+
+def test_an_obscured_read_cannot_take_the_stale_fall_through():
+    """The deadline escape is a commit too: under the hand it waits."""
+    stab = BoardStabilizer(SettleConfig(seconds=1.0, stale_windows=1))
+    stab.observe(START_PLACEMENT, 0.0)
+    # d8 alone reads k (two black kings if committed alone): ripe, blocked.
+    for i in range(1, 5):
+        stab.observe(SWAP if i % 2 else TWO_KINGS, i * 0.5)
+    # Clear, this stream falls through to SWAP at 2.5 s; obscured, it never does.
+    for i in range(5, 40):
+        assert stab.observe(SWAP if i % 2 else TWO_KINGS, i * 0.5, obscured=True) == (
+            START_PLACEMENT
+        )
+
+
+def test_an_obscured_first_read_is_still_adopted():
+    """No settled board exists to hold, so the first read is the board (and the
+    clear reads that follow displace whatever it got wrong)."""
+    assert BoardStabilizer().observe(GONE_B8, 0.0, obscured=True) == GONE_B8
 
 
 def test_stale_windows_sets_how_long_a_blocked_square_waits():

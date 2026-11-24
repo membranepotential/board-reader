@@ -312,20 +312,25 @@ def _read_and_settle(
     despite the worker thread because each board's worker estimates strictly one
     frame at a time, in order, which is exactly the stream a debounce needs. The
     guard and the clock rely on the same one-at-a-time order. ``rules`` is the
-    board's setting for this read.
+    board's setting for this read. A read whose frame energy the stabilizer's
+    config calls obscured (:meth:`~.stabilize.SettleConfig.obscures`) commits
+    nothing and is published with ``obscured`` set.
     """
     reading = read(frame)
     dropped = guard.check(frame.seq, reading.direction)
     if dropped is not None:
         return dropped
     event = reading.event
-    settled = stabilizer.observe(event.placement, frame.capture_ts, rules)
+    obscured = stabilizer.config.obscures(reading.frame_energy)
+    settled = stabilizer.observe(event.placement, frame.capture_ts, rules, obscured=obscured)
     changed_ts = stabilizer.changed_ts
     assert changed_ts is not None  # observe() has just seen a read
     changed = clock.observe(
         frame.seq, frame.capture_ts, event.placement, settled, changed_ts, held
     )
-    published = event.with_placement(settled, changed_utc=iso_utc(changed))
+    published = event.with_placement(
+        settled, changed_utc=iso_utc(changed), obscured=obscured
+    )
     return replace(reading, event=published)
 
 

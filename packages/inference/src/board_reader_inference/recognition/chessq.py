@@ -29,6 +29,17 @@ rgb-imagenet-f32-bilinear-ignore-exif-v1``, and the reference port in
   :class:`~.recognizer.Recognition` carries; the ingest stream's orientation
   guard (:class:`~.ingest.OrientationGuard`) reads it.
 
+**Frame energy** (:func:`frame_energy`): the same ``logits``, read as "does this
+frame look like a board?". A square's energy is minus the logsumexp of its 13
+logits; the frame's is the mean of its :data:`ENERGY_TOP` highest squares. A hand
+on the board pulls a few squares at its edge up, so the frame's value rises while
+the covered squares still read "empty" at p >= 0.96. The settle debounce refuses to
+commit on a frame above its threshold
+(:attr:`~board_reader_inference.stream.stabilize.SettleConfig.obscured_energy`;
+docs/reports/2026-11-24-hand-signal-probe.md). The int8 file has the same output,
+so both release files report it. The value lives on the logit scale, so the
+threshold belongs to one model release.
+
 **Not calibrated.** The distribution is the model's softmax, unchanged: the
 black-bishop demotion the old crop-classifier stack applied was measured on that
 stack's distribution, and its absolute margin means nothing on a different model.
@@ -70,6 +81,11 @@ _TO_PROTOCOL = np.array(
     [CHESSQ_CLASSES.index("." if name == "empty" else name) for name in CLASSES]
 )
 
+#: How many of the highest square energies the frame energy averages: a hand
+#: disturbs a few squares, not the board (the probe's ``energy_f``, frame AUC 0.970
+#: for hand frames against clear ones).
+ENERGY_TOP = 4
+
 #: ``input.normalization`` in the descriptor (ImageNet), per RGB channel.
 _MEAN = np.array([0.485, 0.456, 0.406], dtype=np.float32)
 _STD = np.array([0.229, 0.224, 0.225], dtype=np.float32)
@@ -96,6 +112,22 @@ def square_dist_from_logits(logits: np.ndarray) -> np.ndarray:
             f"ChessQ returned {arr.shape}, expected (1, {GRID * GRID}, {NUM_CLASSES})"
         )
     return _softmax(arr[0][:, _TO_PROTOCOL]).reshape(GRID, GRID, NUM_CLASSES)
+
+
+def frame_energy(logits: np.ndarray) -> float:
+    """The model's ``(1, 64, 13)`` logits -> the frame energy (module docstring).
+
+    Higher means less like a clear board. Computed in float64, as the probe did, so
+    the threshold fitted there applies unchanged.
+    """
+    arr = np.asarray(logits, dtype=np.float64)
+    if arr.shape != (1, GRID * GRID, NUM_CLASSES):
+        raise ValueError(
+            f"ChessQ returned {arr.shape}, expected (1, {GRID * GRID}, {NUM_CLASSES})"
+        )
+    peak = arr[0].max(axis=-1)
+    energy = -(np.log(np.exp(arr[0] - peak[:, None]).sum(axis=-1)) + peak)
+    return float(np.sort(energy)[-ENERGY_TOP:].mean())
 
 
 def direction_degrees(direction: np.ndarray) -> float | None:
@@ -143,6 +175,11 @@ class ChessQRecognizer:
             self.model_path = str(model)
 
     def read(self, image: np.ndarray) -> Recognition:
-        """The model's chess-frame distribution and direction for a whole BGR frame."""
+        """The model's chess-frame distribution, direction and frame energy for a
+        whole BGR frame."""
         logits, direction = self.model_fn(preprocess_frame(image))
-        return Recognition(square_dist_from_logits(logits), direction_degrees(direction))
+        return Recognition(
+            square_dist_from_logits(logits),
+            direction_degrees(direction),
+            frame_energy(logits),
+        )
