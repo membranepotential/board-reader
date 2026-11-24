@@ -123,7 +123,7 @@ def _prior_decode(event):
 def _frame_policy() -> Callable[[], FramePolicy]:
     """``BR_SCHEDULE`` -> a factory for each board's read scheduler.
 
-    The value is a policy spec string (``burst-end:burst_end_reads=3``,
+    The value is a policy spec string (``burst-end:burst_end_reads=3,spacing_s=0.6``,
     ``every-frame``, ``when-still:theta=0.9``) — the same grammar
     ``board-reader-inference replay --policy`` takes and the same string a replay
     manifest records, so what a sweep measured and what the node runs cannot drift

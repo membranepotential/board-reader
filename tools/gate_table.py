@@ -23,6 +23,8 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
+from board_reader_inference.schedule import DEFAULT_POLICY_SPEC
+
 ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -37,7 +39,12 @@ class GateTake:
 
     @property
     def replay_args(self) -> str:
-        return "--policy burst-end" + (" --restamp-stability" if self.restamp_stability else "")
+        """Replayed with the schedule ``serve`` ships, so the gate measures the
+        served stack (until 2026-11-24 it was plain ``burst-end``, one read per
+        move, which ``serve`` never ran)."""
+        return f"--policy {DEFAULT_POLICY_SPEC}" + (
+            " --restamp-stability" if self.restamp_stability else ""
+        )
 
 
 GATE_TAKES = (

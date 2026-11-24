@@ -660,7 +660,7 @@ def test_the_config_digest_moves_only_for_a_non_default_settle():
     env = {"BR_CHESSQ": {"value": "models/chessq/cq.onnx"}}
     assert replay_mod.config_digest(env) == replay_mod.config_digest(env, SettleConfig())
     assert replay_mod.config_digest(env) != replay_mod.config_digest(
-        env, SettleConfig(seconds=1.0)
+        env, SettleConfig(seconds=2.0)
     )
 
 

@@ -772,8 +772,8 @@ label is only as good as the estimator that produced it):
 > [!important] Live event streams are SPARSE — pick `guard_seqs` for the schedule,
 > not for the camera
 > Since the move-trigger milestone the node does **not** publish one event per
-> frame. `BR_SCHEDULE` defaults to `burst-end:burst_end_reads=3`: three reads a
-> beat apart when a move finishes, then roughly one every 3 s while the board
+> frame. `BR_SCHEDULE` defaults to `burst-end:burst_end_reads=3,spacing_s=0.6`:
+> three reads 0.6 s apart when a move finishes, then roughly one every 3 s while the board
 > rests, ~12× fewer events than the frames that arrived
 > ([the sweep](reports/2026-08-27-move-trigger-sweep.md)). `frames.ndjson` is
 > unchanged — every arriving frame is still recorded, because recording happens in
@@ -916,8 +916,8 @@ What to check:
 - **the replay is deterministic** — same recording, same code, same env gives a
   byte-identical `events.ndjson` (modulo the model's own float nondeterminism), so
   two replays can be diffed as a claim about the *code*. Everything time-based
-  runs on each frame's recorded `capture_ts`, never the wall clock: a 2.5 s settle
-  window is 2.5 seconds *of the recording* whether the replay takes ten minutes or
+  runs on each frame's recorded `capture_ts`, never the wall clock: a 1 s settle
+  window is 1 second *of the recording* whether the replay takes ten minutes or
   ten milliseconds;
 - **more events than the run published** (08-13: 748 against the run's 85), for the
   reason in the warning above. The report's `timing` block and its settled row are

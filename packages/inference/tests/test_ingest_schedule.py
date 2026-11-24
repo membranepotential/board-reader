@@ -47,6 +47,7 @@ from board_reader_inference.schedule import (
     parse_policy,
 )
 from board_reader_inference.server import create_app
+from board_reader_inference.stabilize import SETTLE_SECONDS
 
 #: Capture seconds between two frames — 10 fps, a plausible in-burst rate.
 DT = 0.1
@@ -123,7 +124,7 @@ def test_a_completed_move_buys_three_spaced_reads_and_nothing_during_the_hand():
     """The whole point of the shipped policy, end to end through the worker.
 
     The move runs from frame 5 to 10; the burst ends ``EXIT_HOLD_S`` of calm later
-    at frame 18, which owes three reads ``spacing_s=1.3`` apart — 2.6 s of span,
+    at frame 18, which owes three reads ``spacing_s=0.6`` apart — 1.2 s of span,
     which is what :data:`~board_reader_inference.stabilize.SETTLE_SECONDS` needs
     before a completed move can settle on its own evidence.
     """
@@ -132,11 +133,11 @@ def test_a_completed_move_buys_three_spaced_reads_and_nothing_during_the_hand():
         seen, ingest = await _drive(SHIPPED, _one_move())
         # frame 0 (the stream's first), the move-complete frame, then its two
         # follow-ups a beat apart. 6.0 s of capture time, four estimates.
-        assert seen == [0, 18, 31, 44]
+        assert seen == [0, 18, 24, 30]
         assert not [s for s in seen if 5 <= s <= 18 - 1], "nothing read inside the hand"
         gaps = np.diff([s * DT for s in seen[1:]])
-        assert gaps.min() >= 1.3 - DT
-        assert seen[-1] * DT - seen[1] * DT >= 2.5, "the run spans a settle window"
+        assert gaps.min() >= 0.6 - DT
+        assert seen[-1] * DT - seen[1] * DT >= SETTLE_SECONDS, "the run spans a settle window"
         # 60 frames arrived; 56 of them cost nothing beyond the decode.
         assert ingest.frames_received == 60
         assert ingest.frames_estimated == 4
@@ -200,7 +201,7 @@ def test_boards_schedule_independently():
         return est
 
     est = asyncio.run(run())
-    assert est.seqs("BUSY") == [0, 18, 31, 44]  # its own move, its own quorum
+    assert est.seqs("BUSY") == [0, 18, 24, 30]  # its own move, its own quorum
     assert est.seqs("QUIET") == [0, 30]  # 6.0 s of rest: the floor, twice
 
 

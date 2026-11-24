@@ -306,8 +306,8 @@ frames yields a transition on *every single frame*. That is the honest picture o
 stateless estimator emits, and precisely the argument for the layer above it.
 
 One narrow exception ships since 08-13: the gateway attaches an advisory `settled` block
-to *streamed* events (DESIGN §5) — a per-square display debounce (an unbroken ~2.5 s of
-consistent reads, `board_reader_inference.stabilize`, never composing a board *less*
+to *streamed* events (DESIGN §5) — a per-square display debounce (an unbroken ~1 s of
+consistent reads, at least two, `board_reader_inference.stabilize`, never composing a board *less*
 possible than the one it already holds, and never stale by more than ~3 settle windows)
 over the repaired placements, born from the first
 phone trial where a hand mid-move and a coin-flip two-kings repair made the live board

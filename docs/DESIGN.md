@@ -847,7 +847,7 @@ Field notes:
 - `settled` (optional, streamed frames only) = a **display debounce** of the
   repaired reads, served beside the raw fields like `prior`:
   `{"placement": <debounced board>, "pending": [<squares reading differently, not yet adopted>]}`.
-  A square must hold the same class on every read across a ~2.5 s window (and
+  A square must hold the same class on every read across a ~1 s window (and
   ≥2 reads) before the settled board adopts it, so a hand crossing the board or
   a coin-flip repair (the 08-13 trial's alternating k/q demotion) never reaches
   a display that draws this block. The window is time, not a read count: the
@@ -879,6 +879,12 @@ Field notes:
   that was wrong on most raw boards; with ChessQ it mostly costs lag (92/101 raw vs
   84/101 settled perfect on the gate). It is retuned in Phase D against settled
   perfect boards, move-to-settle latency and a no-hand-frame constraint.
+  **Retuned 2026-11-24 (Phase D):** 1.0 s / 2 reads / 2 stale windows, with the
+  burst end's three reads 0.6 s apart (`burst-end:burst_end_reads=3,spacing_s=0.6`)
+  so a move settles on its own evidence. Gate: 104/119 settled perfect (110/119
+  raw), median move-to-settle 3.0 s (was 4.2 s), no hand or misread settled, 08-13
+  35/35 ([report](reports/2026-11-24-settle-tuning.md)). The knobs are
+  `BR_SETTLE_*` on `serve`.
 
 The application layer (a consumer) is responsible for turning this stream into
 moves, full FENs, legality decisions, and PGN.

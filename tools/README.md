@@ -65,8 +65,8 @@ descriptor through `descriptor.py` (stdlib only, tested by
 
 Reads `recordings/<take>/replays/<name>/report.json` for two replay names on the
 four gate takes and prints `base→candidate` per take plus a pooled total. `make gate
-GATE_NAME=<new>` replays the takes through `BR_CHESSQ` and prints it against
-`cq-v6`. See [measuring accuracy](../docs/measuring-accuracy.md).
+GATE_NAME=<new>` replays the takes through `BR_CHESSQ` with `serve`'s schedule and
+prints it against `cq-v6-tuned`. See [measuring accuracy](../docs/measuring-accuracy.md).
 
 ## `migrate_labels_to_chess_frame.py` — corner-frame labels → chess frame (D10)
 

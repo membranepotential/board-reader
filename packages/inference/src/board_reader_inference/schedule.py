@@ -345,8 +345,9 @@ class BurstTriggered:
         :class:`~board_reader_inference.stabilize.BoardStabilizer` wants
         ``SETTLE_MIN_READS`` reads spanning ``SETTLE_SECONDS``, so a single read
         per move leaves the debounce holding the previous position until the
-        keepalive slowly catches up. Three reads ~1.3 s apart span 2.6 s and hand
-        it the quorum at the third, roughly a beat after the move.
+        keepalive slowly catches up. The shipped three reads 0.6 s apart span
+        1.2 s and hand it the quorum at the third, about a second after the move
+        (:data:`DEFAULT_POLICY_SPEC`).
 
     ``enter`` / ``exit`` / ``exit_hold_s``
         The burst hysteresis, defaulted to the client's own constants. Tune only
@@ -542,16 +543,19 @@ POLICIES: Mapping[str, type] = {
 }
 
 #: What the live gateway schedules with unless ``BR_SCHEDULE`` says otherwise —
-#: ``BurstTriggered(keepalive_s=3.0, burst_end_reads=3, spacing_s=1.3)``, the
-#: recommendation of ``docs/reports/2026-08-27-move-trigger-sweep.md`` §8. Only
-#: ``burst_end_reads`` appears because the other two are already the defaults, and
-#: a spec states what was *asked for* (see :func:`_spec`).
+#: ``BurstTriggered(keepalive_s=3.0, burst_end_reads=3, spacing_s=0.6)``. Only the
+#: two non-default parameters appear, because a spec states what was *asked for*
+#: (see :func:`_spec`); the class defaults stay put so every recorded spec string
+#: still rebuilds the run it names.
 #:
-#: ``burst_end_reads=3`` at ``spacing_s=1.3`` is the one setting where a burst end
-#: spans ``SETTLE_SECONDS=2.5`` on its own evidence, so a completed move can settle
-#: without waiting on the keepalive. ``BR_SCHEDULE=every-frame`` is the way back to
-#: reading everything.
-DEFAULT_POLICY_SPEC = "burst-end:burst_end_reads=3"
+#: Three reads 0.6 s apart span 1.2 s, just over ``SETTLE_SECONDS=1.0``, so a
+#: completed move settles on the burst end's own evidence without waiting on the
+#: keepalive. Swept 2026-11-24 with the settle window
+#: (docs/reports/2026-11-24-settle-tuning.md); before that it was
+#: ``burst_end_reads=3`` at 1.3 s spacing against a 2.5 s window
+#: (docs/reports/2026-08-27-move-trigger-sweep.md §8). ``BR_SCHEDULE=every-frame``
+#: is the way back to reading everything.
+DEFAULT_POLICY_SPEC = "burst-end:burst_end_reads=3,spacing_s=0.6"
 
 
 def parse_policy(spec: str) -> FramePolicy:
