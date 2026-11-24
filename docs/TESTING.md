@@ -147,9 +147,9 @@ make test-front                    # both layers, from the repo root — Vitest 
 
 cd packages/viewer/ui              # or, one at a time, from the package
 pnpm install --frozen-lockfile     # once; mirrors `uv sync --frozen`'s discipline
-pnpm test                          # Vitest — src/lib/**, node env, ~1s, 342 cases today
+pnpm test                          # Vitest — src/lib/**, node env, ~1s, 262 cases today
 pnpm check                         # svelte-kit sync + svelte-check, strict TS
-pnpm test:e2e                      # Playwright — 46 tests in a real Chromium, ~15s
+pnpm test:e2e                      # Playwright — 21 tests in a real Chromium, ~15s
 ```
 
 `make test-ui` and `make test-e2e` are the two halves of `make test-front`; each runs

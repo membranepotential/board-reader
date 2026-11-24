@@ -187,13 +187,13 @@ Until 2026-08-07 only the camera page worked this way; the live and snapshot pag
 handed an absolute `http://<lan-ip>:8000` and talked to the node directly, which is why
 the node still runs CORS middleware — nothing in this repo now depends on it.
 
-## The frontend: one typed library, three routes
+## The frontend: one typed library, four routes
 
-The three pages are a SvelteKit 2 / Svelte 5 (runes) / TypeScript-strict app
+The four pages are a SvelteKit 2 / Svelte 5 (runes) / TypeScript-strict app
 (`packages/viewer/ui`), prerendered by `adapter-static` (`make ui`, or `pnpm build`)
 straight into `packages/viewer/src/board_reader_viewer/web/` — generated and
 gitignored, not a source. `server.py` still serves exactly `index.html`,
-`snapshot.html` and `camera.html` out of that directory; those names now name build
+`snapshot.html`, `camera.html` and `control.html` out of that directory; those names now name build
 *output*, not hand-written files, and the server refuses to start if the directory
 is missing (see `docs/TESTING.md`).
 
@@ -210,10 +210,11 @@ L1→L2 wire framing — and the differences between the copies were the bugs.
 | `lib/edge/{motion,ingest,sharpness}.ts` | the `/camera` page's browser edge: a JS mirror of `board_reader_edge`'s `MotionMeter`/`AdaptiveForwarder`, the two-message (JSON header + JPEG) `/ws/ingest` sender, and the focus score |
 | `lib/stores/{positions.svelte,liveness}.ts` | the live position stream as Svelte 5 state — deliberately not a state machine over positions (DESIGN D1): the only history kept is the previous grid, and only to diff a changed square |
 
-`src/routes/` holds the three pages (`+page.svelte` for `/`, `camera/+page.svelte`,
+`src/routes/` holds the four pages (`+page.svelte` for `/`, `camera/+page.svelte`,
+`control/+page.svelte`,
 `snapshot/+page.svelte`) and the page-specific components each composes from
-`lib/components/{live,camera,snapshot}/` — UI, not shared logic. 342 Vitest cases
-cover `src/lib/**` today, and 46 Playwright tests drive the three built pages in a
+`lib/components/{live,camera,control,snapshot}/` — UI, not shared logic. 262 Vitest cases
+cover `src/lib/**` today, and 21 Playwright tests drive the four built pages in a
 real Chromium; see [[TESTING#1. Automated tests]].
 
 The vendored chessground 9 (`static/vendor/chessground*`) is gone with the rest of
