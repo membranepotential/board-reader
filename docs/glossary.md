@@ -39,7 +39,7 @@ a misread and a real capture all produce transitions identically. What the headl
 prints; telling them apart is the consumer's job.
 
 **Status** — `ok | recalibrating | needs_setup | stale`. Only `ok` is emitted; the others are
-reserved (plan decision D8). Notably there is no `illegal`; legality is not ours to judge, and
+reserved (plan decision D8, DESIGN §5). Notably there is no `illegal`; legality is not ours to judge, and
 an illegal-looking placement is reported as `ok`.
 
 ## Geometry
@@ -66,8 +66,8 @@ events, labels, truth files, eval and replay all use it. See
 operator's corners defined. Only older labels and upload sidecars carry it; `eval` skips
 corner-frame labels.
 
-**Framing** — how much of the frame the board fills. ChessQ needs the board to span most of
-the frame width. See [[recognition-pipeline#Framing: the board must fill the frame]].
+**Framing** — how much of the frame the board fills. ChessQ needs the board to span at least
+half of the frame width. See [[recognition-pipeline#Framing: the board must fill the frame]].
 
 ## Recognition
 
@@ -75,7 +75,8 @@ the frame width. See [[recognition-pipeline#Framing: the board must fill the fra
 frame in, its board's `(8, 8, 13)` distribution out, in the chess frame. The seam every
 recognition model plugs into.
 
-**ChessQ Lite V6** — the served recognizer (DESIGN D10): Lichess's whole-frame board model,
+**ChessQ Lite V6** — the served recognizer (DESIGN D10): the small model of Joël Seytre's
+ChessQueries, the whole-frame board model Lichess runs in its "From image" editor.
 `BR_CHESSQ`, fetched by `make models`, PolyForm Noncommercial.
 
 **Stub recognizer** — the walking skeleton: one fixed placement, whatever the pixels. Serves,
@@ -89,6 +90,13 @@ read, riding beside it as `prior`; the read itself is never rewritten.
 
 **Settled** — the debounced board (`stabilize.py`): the last placement that held for the
 settle window, riding on stream events as `settled`.
+
+**Read scheduler** — the node's choice of which arriving frames to read (`schedule.py`,
+`BR_SCHEDULE`): by default three reads 0.6 s apart at the end of a motion burst, plus a
+keepalive read when 3 s of capture time passed without one.
+
+**Replay gate** — the four recorded takes with truth that every recognition, decode or
+settle change is measured on (`make gate`); the reference row is `cq-v6-tuned`.
 
 **Zero-shot** — reading a chess set with no calibration for it. ChessQ is zero-shot on every
 set; there is no calibration round any more.
@@ -122,8 +130,9 @@ smoothing that makes them possible. Today's consumers are the viewer UI and the 
 `positions` tail, and neither smooths anything; see
 [[architecture#Temporal consistency — the layer nobody has built]].
 
-**Seasoning** — the 7-day supply-chain hold: `[tool.uv] exclude-newer` refuses to resolve any
-release published in the last week, so a freshly-compromised package is never pulled.
+**Seasoning** — the 7-day supply-chain hold: `[tool.uv] exclude-newer` (Python) and
+`minimumReleaseAge` in `pnpm-workspace.yaml` (the UI) refuse any release published in the
+last week, so a freshly-compromised package is never pulled.
 
 ## Related
 

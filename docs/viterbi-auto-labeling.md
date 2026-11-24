@@ -10,6 +10,12 @@ The engine this describes is **planned, not built** (plan in progress →
 `docs/plans/2026-08-31-autolabel-engine.md` when it lands). This note explains the
 algorithm itself and why it fits this problem unusually well._
 
+> [!note] Written for the crop stack (2026-08-31)
+> The "92 %" is the removed crop classifier. ChessQ reads ~99.8 % per square on the labeled
+> stills and settles 104/119 gate boards perfectly ([[measuring-accuracy]]), so the decode
+> has less to fix; the algorithm is unchanged. Its stage 0 was measured NO-GO on the
+> corpus of the time ([[2026-08-31-autolabel-stage0]]).
+
 ## The problem it solves
 
 The reader estimates each frame independently at ~92–96 % per-square accuracy

@@ -73,8 +73,8 @@ plus a branch in `build_from_env`.
 
 The recognizer finds the board **and its orientation** in the frame, so every placement it
 returns is already in the chess frame: rank 8 first, file a first, as FEN writes it. This
-reverses DESIGN decision #15 (the old crop stack read in the frame its corners defined and
-guessed the rotation separately). Events, labels, ground truth, eval and replay all use the
+reverses the old locked decision #15 (the crop stack read in the frame its corners defined
+and guessed the rotation separately; see DESIGN, "Superseded decisions"). Events, labels, ground truth, eval and replay all use the
 chess frame; the protocol's `orientation` field is now always `a1_bottom_left`.
 
 Because the model infers orientation, the measuring tools check it:
@@ -112,7 +112,8 @@ tall, and when the phone is upright.
   settled** perfect boards, against the old crop stack's 5 and 35
   ([[2026-11-24-chessq-v6-replay-gate]]). `make gate` reruns it; every deletion step of the
   simplification was held to identical placements, prior and settled boards.
-- **Stills** — `eval data/eval`: 20/21 perfect boards.
+- **Stills** — `eval data/eval`: 20/21 perfect boards; with the upload labels, 41/47
+  ([[measuring-accuracy]]).
 - **Latency** — on the GTX 1650 the fp32 export runs at ~205 ms per read; the int8 file
   runs at ~0.4–0.7 s there (its quantized matmuls have no CUDA kernels) but is the faster
   file on a CPU (~660 vs ~990 ms). The fp32 and int8 files read all 133 gate reads

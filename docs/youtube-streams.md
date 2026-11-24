@@ -36,6 +36,12 @@ the reader's operating envelope: producers shoot from a low, wide angle for the 
 from overhead for a per-square CV pipeline. A steeper/overhead camera remains a **sourcing
 requirement** for future broadcast test data, not a nice-to-have.
 
+> [!note] The thresholds are the crop stack's (2026-11-24)
+> The `0.62`/`0.73` bands were measured on the removed crop classifier, and the server's
+> `very_low_angle` warning went with it. ChessQ has not been measured against camera
+> angle ([[operating-envelope#Camera angle and light]]), so read the verdicts above as
+> "what the old reader could use". The registry and the aspect measurements stand.
+
 > [!warning] Standing M2 risk
 > Neither survivor is in the good band. M2's recorded-game demo rests on *degraded*
 > footage until a steeper-angle source (or own footage) is found — so treat its
@@ -232,7 +238,7 @@ cluttered broadcast frames.
 | `TDEnuPnvLaA_0442_board.png` | `10,232,351,234,310,112,58,110` |
 | `7u9zRjq3ePw_0003_full.png` | `687,943,1249,934,1171,720,751,727` (mild fish-eye) |
 
-### Real-footage validation findings (2026-06-17)
+### Real-footage validation findings (2026-06-17, crop-stack era)
 
 Rectification works on both streams with operator corners. Recognition (rectify → crop
 → DINOv2 centroid) **within-frame self-consistency**: video1 start 92% piece-type /

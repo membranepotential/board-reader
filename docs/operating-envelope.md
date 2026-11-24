@@ -53,8 +53,8 @@ as the likely weak spots until it is. Only the `low_light` warning remains on th
 
 Every accuracy figure in this repo is relative to a small labeled eval: 21 stills
 (`ground_truth.json` 10, `heldout-20260831` 11), the chess-frame upload labels (47 boards
-in total with the stills), and the replay gate's four recorded takes (101 truth-covered
-boards). Two consequences worth holding onto:
+in total with the stills), and the replay gate's four recorded takes (119 scored boards under the shipped schedule,
+one physical set and one camera). Two consequences worth holding onto:
 
 - Figures from different eval sets are **not comparable**. Compare only on the shared
   boards.

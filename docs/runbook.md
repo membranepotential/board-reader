@@ -92,16 +92,15 @@ recognition.
 > deliberately environment-specific ones.
 >
 > Since DESIGN D10 both set `BR_CHESSQ` and nothing else that shapes recognition.
-> `make dev` prints what it serves on startup (`recognition ChessQ Lite (...) — the
-> same recognizer compose.yaml serves`, or `!! ... missing — the node serves the
-> STUB recognizer; run 'make models'`).
+> `make dev` prints what it serves on startup (`recognition ChessQ Lite V6 (<file>)`,
+> or `!! <file> missing — the node serves the STUB recognizer; run 'make models'`).
 
 **Inference node**
 
 | Variable | Effect |
 |---|---|
 | `BR_CHESSQ` | **The recognizer, set by both entry points** (DESIGN D10). ChessQ Lite ONNX → `ChessQRecognizer` (the `recognizer.py` seam), which reads the whole frame and finds the board and its orientation by itself. The session takes CUDA when onnxruntime can use it and the CPU otherwise; serve the fp32 file on a GPU and the int8 file on a CPU (see *Which file serves* above). Unset or a missing file degrades to the stub recognizer, loudly (startup banner, `recognizer.fallback` on `/healthz`); `make models` fetches and exports both. `GET /healthz` reports `recognizer: {name, model}`. Weights are PolyForm Noncommercial and live in `models/chessq/` (THIRD-PARTY.md). Gate result: [[2026-11-24-chessq-v6-replay-gate]]. |
-| `BR_SCHEDULE` | Which arriving frames get an estimate, as a `replay --policy` spec — the same string a sweep measured. Default (set by `serve`, also `--schedule`): `burst-end:burst_end_reads=3,spacing_s=0.6`, i.e. three reads 0.6 s apart at the end of each move (enough for the 1 s settle window to adopt it on its own evidence, [the settle sweep](reports/2026-11-24-settle-tuning.md)) plus a 3 s keepalive floor; ~12× fewer estimates than reading everything, for −0.9 pp prior per-square ([the sweep](reports/2026-08-27-move-trigger-sweep.md)). **The live event stream is sparse by design** — `GET /healthz` shows `ingest.unscheduled` climbing while `estimated` crawls, and that is the system working. `every-frame` is the way back. `ingest.backstopped > 0` means an edge's `capture_ts` stopped advancing and the node is reading on its own clock to stay alive. |
+| `BR_SCHEDULE` | Which arriving frames get an estimate, as a `replay --policy` spec — the same string a sweep measured. Default (set by `serve`, also `--schedule`): `burst-end:burst_end_reads=3,spacing_s=0.6`, i.e. three reads 0.6 s apart at the end of each move (enough for the 1 s settle window to adopt it on its own evidence, [the settle sweep](reports/2026-11-24-settle-tuning.md)) plus a 3 s keepalive floor. The one-read-per-move `burst-end` the 08-27 sweep measured read ~12× fewer frames than `every-frame` for −0.9 pp prior per square on the old stack ([the sweep](reports/2026-08-27-move-trigger-sweep.md)); three reads per move cost a little more. **The live event stream is sparse by design** — `GET /healthz` shows `ingest.unscheduled` climbing while `estimated` crawls, and that is the system working. `every-frame` is the way back. `ingest.backstopped > 0` means an edge's `capture_ts` stopped advancing and the node is reading on its own clock to stay alive. |
 | `BR_SETTLE_SECONDS`, `BR_SETTLE_MIN_READS`, `BR_SETTLE_STALE_WINDOWS` | The settle debounce (`stabilize.SettleConfig`): a square changes after reading the same new class for `SECONDS` of capture time on at least `MIN_READS` reads; a square the board-coherence rule blocks falls through after `STALE_WINDOWS` windows. Unset keeps the defaults in `stabilize.py` (1.0 s, 2 reads, 2 windows since [the settle sweep](reports/2026-11-24-settle-tuning.md)); a malformed value stops the node at startup. `GET /healthz` reports them under `settle`; `replay --settle-*` takes the same knobs. |
 | `BR_SAVE_UPLOADS` | Directory for retained phone photos + sidecars (placement, the frame it was read in, prior flips). This is what turns field shots into eval data. |
 | `BR_RECORD_DIR` | Directory for recorded ingress sessions. `serve` sets it to `recordings/` by default, so **every served run is replayable**; `serve --no-record` turns it off. |
@@ -199,7 +198,7 @@ verify (`tools/stop.sh`). That matters more than it sounds:
 backend shares the card with onnxruntime, and it is the one that turns a tight
 GPU into a *crash* rather than a degradation: a failed `warpAffine` allocation
 throws a `cv::Exception` through C++ `terminate`, which no Python handler can
-catch. The warps are small enough that the CPU path costs nothing worth that
+catch. The image work left (one resize per read) costs nothing on the CPU worth that
 risk. This is **not** mirrored in `compose.yaml`, which declares no GPU device and
 runs the same recognizer on CPU — the two entry points share an environment, not a
 hardware envelope.

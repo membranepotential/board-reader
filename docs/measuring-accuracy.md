@@ -59,8 +59,13 @@ errors are mostly settle lag
 
 The harness prints a reliability diagram: for each confidence bin, what the reader
 *claimed* against what it actually achieved, plus the mean board confidence of
-perfect and imperfect boards. DESIGN §9 lists confidence calibration as a top risk,
-because the downstream smoothing plan consumes confidences.
+perfect and imperfect boards. DESIGN §9 lists confidence calibration as an open
+question, because the downstream smoothing plan consumes confidences.
+
+On ChessQ (all 47 labels, 2026-11-24) the diagram is nearly flat: ECE 0.002, 3006 of 3008
+squares claim ≥ 0.9, and the mean board confidence is 1.000 on perfect and imperfect
+boards alike. Per square the numbers are honest; per board they do not separate a wrong
+read from a right one.
 
 `--temperature` fits a single temperature `T` and rescales each square's distribution
 as `q ∝ p^(1/T)`. Two properties make it safe to reason about:
@@ -73,7 +78,8 @@ as `q ∝ p^(1/T)`. Two properties make it safe to reason about:
   exactly the way the bank incident below already taught us once.
 
 On the earlier ensemble (23 labelled boards) it took ECE from 0.255 to 0.004 with
-`T = 0.251`, stable across folds (0.235–0.257). It has not been re-measured on ChessQ.
+`T = 0.251`, stable across folds (0.235–0.257). `--temperature` has not been re-run on
+ChessQ, whose ECE is already 0.002.
 
 > [!warning] The gap is the wrong statistic, and it says the opposite of the truth
 > On that ensemble the perfect−imperfect board-confidence **gap** fell from +0.136 to

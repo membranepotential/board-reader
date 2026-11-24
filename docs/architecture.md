@@ -13,7 +13,7 @@ import rules below are enforced by a test, not by convention.
 
 | Package (`import`) | Role | May import |
 |---|---|---|
-| `board-reader-core` (`board_reader_core`) | the shared contract: L3 protocol, L1→L2 wire, sim helpers, geometry-only board detection | numpy, opencv |
+| `board-reader-core` (`board_reader_core`) | the shared contract: L3 protocol, L1→L2 wire, camera control contract, recording format, sim helpers | numpy, opencv |
 | `board-reader-edge` (`board_reader_edge`) | the **edge** node ("Pi", L1): capture, static crop, forward | core only |
 | `board-reader-inference` (`board_reader_inference`) | the **inference** node (L2): stateless recognizer + gateway | core only |
 | `board-reader-viewer` (`board_reader_viewer`) | serves the live-position UI and the phone pages (snapshot + camera), and relays the camera page's traffic to the inference node | nothing |
@@ -44,25 +44,27 @@ flowchart LR
   laptop[laptop: /control page] -->|"PUT /api/boards/{id}/camera"| vw
   camphone -.->|"POST /api/boards/{id}/camera/report<br/>reply = config"| vw
   vw -.->|camera control| gw
-  phone[phone: /snapshot page] -->|POST /estimate: photo| gw
+  phone[phone: /snapshot page] -->|"POST /api/estimate: photo (relay)"| vw
+  vw -->|POST /estimate| gw
   gw --> rec["recognizer (ChessQ)"]
   rec --> hub[position hub<br/>retains latest per board]
   hub -->|WS /viewer| viewer[viewer UI]
-  gw -.->|HTTP response| phone
+  gw -.->|HTTP response, via the relay| phone
 ```
 
 **Streaming path (`WS /ingest`)** — the design's main line, live since M2. The edge
 sends the board as two WebSocket messages, a JSON header then the binary JPEG. Every
 frame carries `board_id`, `capture_ts` (sensor time, not receive time), `seq`,
-`stability`, and (inside a burst) a `burst_id`. The gateway reads every frame the same
-way `POST /estimate` reads a photo: the whole JPEG through the recognizer
+`stability`, an edge-measured `sharpness`, and (inside a burst) a `burst_id`. The
+gateway reads the frames its read scheduler picks the same way `POST /estimate` reads a
+photo: the whole JPEG through the recognizer
 (`recognizer.frame_reader`), which finds the board and its orientation itself
 ([[recognition-pipeline]]). Old recordings carry a legacy **`corners`** field (the
 playing-surface quad the edge used to send): `wire.Frame` still parses it so they replay,
 the recording keeps it, and recognition ignores it. No edge sends it any more.
 
 **The browser edge (`GET /camera` on the viewer)** — DESIGN §6's "virtual Pi", and since
-Phase C a **dumb camera** (DESIGN D10, "dumb camera"): a full-screen viewfinder with one
+Phase C a **dumb camera** (DESIGN D11): a full-screen viewfinder with one
 status line and **no controls at all**. Everything about what it films is set from the
 **control UI** on the laptop (`GET /control` on the viewer), held per board on the
 inference node, and pushed to the phone, which applies it:
@@ -83,7 +85,7 @@ inference node, and pushed to the phone, which applies it:
   (long side ≤ 960 px) on `/ws/ingest`. The crop matters — ChessQ needs the board to
   fill at least half of the image width
   ([[recognition-pipeline#Framing: the board must fill the frame]]) — which is why the
-  control UI warns about a missing, small or upright rectangle.
+  control UI warns about a missing, too-wide or upright rectangle, and an upright phone.
 - **A full-frame preview** (480 px long side, every 1.5 s) goes to
   `POST /boards/{id}/camera/preview`, so the control UI can show the camera's whole field
   of view and the rectangle on it, beside the cropped frame the node actually receives
@@ -119,7 +121,7 @@ rate the model sustains — skipping the stale end of the burst, never the fresh
 and a slow model can't stall viewers, HTTP, or the socket. An ack means *received*, not
 *estimated*.
 
-**Recording (WP-H2).** The same handler appends every arriving frame to a recording
+**Recording (DESIGN WP-H2).** The same handler appends every arriving frame to a recording
 session — `manifest.json` + an append-only `frames.ndjson` + the JPEGs exactly as
 received (`board_reader_core.recording`). It sits at `/ingest` deliberately: that is
 the one socket *every* edge crosses, so the CLI feed, a Pi and the phone `/camera`
@@ -264,15 +266,16 @@ board-reader-inference positions --out run.ndjson --quiet
 ```
 
 `--changes-only` suppresses an event whose placement matches that board's previous one:
-an at-rest board republishes the same position at the keepalive rate (DESIGN D4), and a
-log of that is noise. A board's first event is always reported — "never seen before" and
+an at-rest board republishes the same position at the node's keepalive read (every 3 s,
+DESIGN §4.3), and a log of that is noise. A board's first event is always reported — "never seen before" and
 "held still" are different facts and the tail keeps them apart. Walkthrough in
 [[TESTING#Option L — Watch or capture the position stream]]; operator recipes in
 [[runbook#Capturing a run's positions]].
 
 ## Temporal consistency — the layer nobody has built
 
-> [!warning] `stability` is computed on the edge, rides every event, and is consumed by nobody
+> [!warning] `stability` is computed on the edge, rides every event, and no consumer reads it
+> Inside the system the forwarder and the read scheduler use it; downstream, nothing does.
 > That is not a bug in the CV layer and not a violation of DESIGN. The layer that would
 > use it does not exist — in this repo or outside it.
 
