@@ -207,7 +207,7 @@ def install(app: FastAPI) -> None:
         """Inference -> browser position events."""
         await relay_websocket(ws, "/viewer")
 
-    @app.api_route("/api/{path:path}", methods=["GET", "POST"])
+    @app.api_route("/api/{path:path}", methods=["GET", "POST", "PUT"])
     async def api(request: Request, path: str) -> Response:
         """Everything the pages ask of the inference node, under one prefix.
 

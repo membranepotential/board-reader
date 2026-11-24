@@ -1,6 +1,6 @@
 """Inference gateway (DESIGN.md §4.5) — FastAPI WebSocket ingress + egress.
 
-Runs on the inference node. Three surfaces:
+Runs on the inference node. Its surfaces:
 
 * ``WS /ingest`` — the edge connects and streams frames. Each frame is two WS
   messages: a JSON header then the binary JPEG. The gateway decodes and acks, and
@@ -10,6 +10,9 @@ Runs on the inference node. Three surfaces:
   (retained latest per board first, then live updates).
 * ``GET /boards/{id}`` + ``GET /boards/{id}/frame`` + ``GET /healthz`` — latest
   position snapshot, latest raw ingested JPEG, and liveness.
+* ``/boards/{id}/camera`` — the camera control channel: the control UI's config
+  for each board's camera, which the edge pulls and applies
+  (:mod:`board_reader_inference.camera_control`).
 
 The gateway holds the recognizer and the position hub. It never imports the
 edge package; it only speaks the wire (:mod:`board_reader_core.wire`).
@@ -26,6 +29,7 @@ import logging
 import os
 import time
 from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
@@ -37,6 +41,8 @@ from board_reader_core.protocol import PositionEvent, square_evidence
 from board_reader_core.recording import FrameRecorder
 from board_reader_core.wire import Frame, decode_jpeg
 
+from board_reader_inference.camera_control import CameraRegistry, StreamedFrame
+from board_reader_inference.camera_control import router as camera_router
 from board_reader_inference.hub import PositionHub
 from board_reader_inference.ingest import FrameIngest
 from board_reader_inference.recognizer import (
@@ -183,6 +189,15 @@ def event_line(
     return line
 
 
+@dataclass(frozen=True, slots=True)
+class _Retained:
+    """The latest frame ``/ingest`` accepted for one board, kept for previews."""
+
+    header: dict
+    jpeg: bytes
+    streamed: StreamedFrame
+
+
 def create_app(
     recognizer: Recognizer | None = None,
     hub: PositionHub | None = None,
@@ -217,7 +232,7 @@ def create_app(
     # disk write, unbounded board count — mirrors the hub's own retention). This
     # is what ``GET /boards/{id}/frame`` serves for the live video-like preview;
     # it is independent of the hub's estimated PositionEvent.
-    latest_frames: dict[str, tuple[dict, bytes]] = {}
+    latest_frames: dict[str, _Retained] = {}
 
     # Ingress recording (WP-H2): every frame that crosses the wire is appended to
     # a session directory, so any run can be replayed later with
@@ -325,13 +340,22 @@ def create_app(
         entry = latest_frames.get(board_id)
         if entry is None:
             return JSONResponse({"error": "no frame for board"}, status_code=404)
-        header, jpeg = entry
         headers = {
-            "X-Seq": str(header["seq"]),
-            "X-Capture-Ts": str(header["capture_ts"]),
+            "X-Seq": str(entry.header["seq"]),
+            "X-Capture-Ts": str(entry.header["capture_ts"]),
             "Cache-Control": "no-store",
         }
-        return Response(content=jpeg, media_type="image/jpeg", headers=headers)
+        return Response(content=entry.jpeg, media_type="image/jpeg", headers=headers)
+
+    def _streamed(board_id: str) -> StreamedFrame | None:
+        entry = latest_frames.get(board_id)
+        return None if entry is None else entry.streamed
+
+    # The camera control channel (DESIGN D10, "dumb camera"): the control UI sets
+    # each board's camera config here and the edge pulls it on its report poll.
+    cameras = CameraRegistry()
+    app.state.cameras = cameras
+    app.include_router(camera_router(cameras, _streamed))
 
     # One-shot HTTP ingress for the phone snapshot page (viewer /snapshot): the
     # body is the photo as shot, and the recognizer finds the board in it.
@@ -674,7 +698,14 @@ def create_app(
                 # normalised (corners as 8 floats, seq an int), never whatever
                 # JSON arrived.
                 normalised = frame.header()
-                latest_frames[frame.board_id] = (normalised, jpeg)
+                height, width = frame.image.shape[:2]
+                latest_frames[frame.board_id] = _Retained(
+                    header=normalised,
+                    jpeg=jpeg,
+                    streamed=StreamedFrame(
+                        seq=frame.seq, received_at=time.time(), width=width, height=height
+                    ),
+                )
                 # Record what ARRIVED, before the latest-wins pre-filter has had a
                 # chance to drop it: a recording is the input to a run, not a log
                 # of what the estimator got round to.

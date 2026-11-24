@@ -53,6 +53,9 @@ class _EchoHandler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:
         self._reflect("GET")
 
+    def do_PUT(self) -> None:
+        self._reflect("PUT")
+
     def log_message(self, *args) -> None:
         pass
 
@@ -119,6 +122,21 @@ def test_http_proxy_relays_any_node_path_under_the_prefix(inference_http, path):
 def test_http_proxy_relays_get_as_get(inference_http):
     """Image and listing endpoints are GETs; forwarding them as POST would 501."""
     assert TestClient(create_app()).get("/api/uploads?limit=1").json()["method"] == "GET"
+
+
+def test_http_proxy_relays_put_with_its_body(inference_http):
+    """The control UI replaces a board's camera config with a PUT."""
+    response = TestClient(create_app()).put(
+        "/api/boards/phone/camera",
+        content=b'{"streaming": true}',
+        headers={"content-type": "application/json"},
+    )
+    reflected = response.json()
+    assert (reflected["method"], reflected["path"], reflected["body"]) == (
+        "PUT",
+        "/boards/phone/camera",
+        '{"streaming": true}',
+    )
 
 
 def test_http_proxy_forwards_response_headers_the_pages_act_on(inference_http):
