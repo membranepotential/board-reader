@@ -177,3 +177,13 @@ replay invariant above.
 - **Old recordings carry `corners`:** `wire.Frame` must keep parsing them.
 - **The gate is four takes on one physical set.** Record more varied sessions before
   trusting the settle defaults broadly.
+
+## 2026-11-24 update: Phase C becomes "dumb camera" (user decision)
+
+The phone is only a camera. Everything is configured from the control UI on the
+laptop: crop rectangle, lens, resolution and start/stop. The user chose **pushed config
+applied on the phone**: the phone still crops and measures motion inside the
+configured rectangle, so the wire contract and the edge/inference split stay as they
+are. The phone has no controls; it shows the viewfinder and connection state. The live
+test happens after this lands. This replaces steps 14–15's /camera design (tracker,
+corners and labels go; no operator rectangle on the phone itself).

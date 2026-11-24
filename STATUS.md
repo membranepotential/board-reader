@@ -17,7 +17,9 @@ confidences**. No moves, no legality, no PGN — those are the downstream applic
 - **simplify-around-chessq** — plan written ([docs/plans/2026-11-24-simplify-around-chessq.md](docs/plans/2026-11-24-simplify-around-chessq.md),
   18 commits in 4 phases) — D7 delete both, D11 accepted (user). **Phase A DONE** (`4d166bc`..`acfe00f`, replay
   invariant exact; 26/27 upload labels migrated, 1 quarantined). **Phase B DONE** (`0d9590d`..`d5d3e3e`, ≈ −24.6k lines; gate identical after
-  s7/s8/s10; 858 tests, 342 vitest). Next: fp32 switch + settle tuning (Phase D); Phase C needs a live take.
+  s7/s8/s10; 858 tests, 342 vitest). fp32 switch DONE (`719daf8`), Phase D settle tuning DONE (`62a6854`, `7f97de5`:
+  settled 84/101 → 104/119, median lag 4.3 → 3.0 s, 0 hand leaks). **Phase C = dumb camera** (user 2026-11-24:
+  phone only films, laptop control UI pushes crop/lens/start-stop): implementer-high running; then live take.
   Step 13 framing DONE (`332a32f`): board must fill ≥ ~50 % of width → D1 = plain rectangle crop (Phase C).
 - **chessq-fp16 — DONE, cut short** (`f6361e1`): serve V6 **fp32 ONNX on CUDA** (~205 ms vs ~600+ int8, same
   reads; fp16 slower on the 1650). Next, after Phase B: export step in `make models` + switch + replay gate.
