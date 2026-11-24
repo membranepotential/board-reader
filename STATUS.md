@@ -7,15 +7,15 @@ _reconciled: 2026-11-24 @ `480a5ea`_ · decisions: [docs/DESIGN.md](docs/DESIGN.
 A camera reads a live OTB board and streams timestamped **piece placements + per-square
 confidences**. No moves, no legality, no PGN — those belong to the downstream application layer.
 
-## Now (2 agents, files partitioned)
+## Now (1 agent)
 
 - **hand-signal probe DONE** (`8645523`): ChessQ frame energy (−logsumexp, mean of top-4 squares) flags hand
   frames at AUC 0.97; as a no-commit gate: resting-hand take 9 wrong boards → 0, gate 314 → 311/361.
 - **priors DONE** (`5d0cdb2`..`61e1822`): decoder + `prior` field gone; count guard in `stream/rules.py`
   (python-chess, inference only); per-board `rules: standard|free`; one placement per event + `pending` +
   `changed_utc` (median 1.45 s after the true change vs 3.12 s); gate base `guard-only` 314/361, 0 leaks.
-- **PGN builder** — temporal decoder (research ChessCam vs Viterbi/beam over legal moves) → live PGN panel
-  with copy + Lichess analysis link; offline accuracy on the gate takes — running (agent; viewer lib/game/).
+- **PGN builder DONE** (`81408ac`, `2bd0f32`): beam Viterbi over legal positions (chessops) → live game panel
+  with copy + Lichess link; gate takes 7/7 games exact (80/80 plies), commit lag median 3.0 s.
 - **changed_utc refine** — after a settle, pixel-compare the changed squares in the held frames (no extra
   ChessQ reads) to find the first frame of the new board; truth + score for take 2; then the energy
   no-commit gate (`obscured` on the event) — running (agent).
