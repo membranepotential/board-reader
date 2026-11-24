@@ -7,7 +7,7 @@
 > legality, or game history — that is the application layer's job, downstream and
 > out of scope.
 
-**Status:** Draft v0.4 · **Date:** 2026-06-16 · **Author:** Felix Peppert (with research synthesis)
+**Status:** Draft v0.5 · **Date:** 2026-06-16, amended 2026-11-24 (D10: ChessQ is the core recognizer) · **Author:** Felix Peppert (with research synthesis)
 
 ### Core philosophy (read this first)
 
@@ -42,6 +42,8 @@ constraints that recover accuracy.
 3. **No required calibration from the start position.** The system must work when
    dropped into an arbitrary mid-game position. A short **calibration round is
    optional** and may use *any* known labeled position, not specifically the start.
+   **Amended 2026-11-24 (D10):** there is no calibration round at all; adapting to
+   a set is an offline LoRA fine-tune that ships as a new ONNX file.
 4. **Stability is advisory, not a gate.** We stream a per-frame stability/change
    score; the application layer owns move segmentation. The CV layer does not
    decide "a move happened."
@@ -49,8 +51,13 @@ constraints that recover accuracy.
 6. **Board detection runs on the edge** (it's cheap and the camera/board geometry
    is local). The edge sends **rectified board crops**; the central node need not
    re-localize.
+   **Amended 2026-11-24 (D10), pending the framing measurement:** the recognizer
+   finds the board itself, so the edge sends the frame or a plain ROI box, with no
+   detection and no rectification.
 7. **Recognition model:** **DINOv2 embeddings** + a lightweight classifier head;
    default works with no per-board training, optionally refined by calibration.
+   **Superseded 2026-11-24 (D10):** ChessQ Lite V6, an end-to-end whole-frame
+   recognizer, behind the `Recognizer` seam.
 8. **Clock in v1:** **which-side-is-running only**, streamed as sensor state (the
    application layer interprets it). Time OCR deferred.
 9. **Edge runtime in the sim:** **in the browser** (JS/WASM OpenCV); keep the edge
@@ -67,8 +74,12 @@ constraints that recover accuracy.
     layer never infers orientation from the *pieces*; after a reposition it may
     auto-recover the frame from *board-intrinsic* cues (printed edge coordinates,
     clock side) and otherwise falls back to manual re-setup (§4.4.1).
+   **Reversed 2026-11-24 (D10):** the recognizer resolves the board and its
+   orientation per frame, and everything is reported in the chess frame.
 16. **Backbone = DINOv2-S (Apache-2.0)**, kept behind a swappable interface; DINOv3
     is a candidate, not the default (licensing).
+    **Superseded 2026-11-24 (D10):** no in-house backbone; ChessQ's weights are
+    PolyForm Noncommercial 1.0.0, accepted by the user.
 
 ---
 
@@ -222,6 +233,10 @@ This replaces the old "only send one settled frame" gate — we no longer hide
 transitions, but we still avoid streaming full 30 fps continuously, preserving
 the many-boards-per-Jetson goal. Each frame is stamped with capture time + seq.
 
+**Amended 2026-11-24 (D10), pending the framing measurement (plan step 13):** the
+adaptive forwarding stays; the detection and rectification go. The edge sends the
+whole frame or a plain ROI box, and which of the two is decided by measurement.
+
 ### D5 — Authoritative timestamp at capture, sync via chrony/NTP
 Read the sensor capture timestamp on the edge and convert to wall-clock via a
 one-time `CLOCK_MONOTONIC↔CLOCK_REALTIME` offset. Sync nodes with **chrony
@@ -238,6 +253,10 @@ classes}. Optionally, a **calibration round** refines accuracy for a specific se
 by building per-set class centroids from **any known labeled position** the
 operator supplies (not necessarily the start). See §4.6.
 
+**Superseded 2026-11-24 (D10):** recognition is one whole-frame read by ChessQ Lite
+V6 behind the `Recognizer` seam; there is no per-square embedding, no head of ours
+and no calibration.
+
 ### D7 — Clock (v1): which-side-running, streamed as sensor state
 Temporal differencing of two clock ROIs over a ~1.5–2 s window → `running ∈
 {white, black, none}`. Streamed as a sensor reading; the application layer
@@ -248,6 +267,11 @@ Target a tripod view at ~45–60°. Implication: **back-rank occlusion** is expe
 occluded squares are reported with **low confidence** rather than guessed. We do
 not lean on legality to fill them in (that's the consumer's option).
 
+**Amended 2026-11-24 (D10):** the low-confidence half no longer holds. ChessQ reads
+squares under an arm as confident empties (p ≥ 0.96), so hands are handled by
+reading at burst end (§4.5) and by the `settled` debounce (§5), not by confidence.
+The angled view stays the target.
+
 ### D9 — Target Jetson Orin Nano; simulate on x86; models in ONNX
 The original Jetson Nano is EOL (JetPack 4.6 / CUDA 10.2, EOL Jan 2027). Reference
 target = **Jetson Orin Nano (Super)** (~$249, 67 INT8 TOPS, JetPack 6.x); note
@@ -256,6 +280,60 @@ DeepStream** at this scale; OpenCV + TensorRT (FP16) suffices. **Author models i
 ONNX** (portable); build TensorRT engines *only on-device*. Sim = plain
 `linux/amd64` Docker + ONNX Runtime (CPU or host CUDA EP) — logic/integration
 fidelity, not a Jetson benchmark.
+
+### D10 — ChessQ is the core recognizer (ADR, 2026-11-24)
+
+**Status:** accepted (user, 2026-11-24). Plan:
+[plans/2026-11-24-simplify-around-chessq.md](plans/2026-11-24-simplify-around-chessq.md).
+Evidence: [reports/2026-11-24-chessq-v6-replay-gate.md](reports/2026-11-24-chessq-v6-replay-gate.md).
+
+**Context.** Eight months of in-house recognition (DINOv2 features, exemplar banks,
+calibration, multi-style crop classifiers, the black-bishop demotion) never beat
+~80 % cross-style piece type zero-shot, and on the 4-take replay gate the shipped
+cascade + bank reached 5/101 raw and 35/101 settled perfect boards. ChessQ Lite V6
+(Lichess's end-to-end board recognizer, ONNX, 644×644 whole frame in, 64×13 logits
+out) reads the same frames cold at 92/101 raw and 84/101 settled perfect, with no
+crop, no warp, no bank and no calibration, about 3× faster per read.
+
+**Decision.**
+- **One recognizer seam.** `board_reader_inference.recognizer` defines a `Recognizer`
+  (`name`, `read(image) -> (8,8,13)` distribution in the chess frame), a stub, and
+  `build_from_env()`. ChessQ Lite V6 is the default implementation; the env name
+  stays `BR_CHESSQ` so replay config digests stay continuous. A second model
+  (ChessCam v2, the hedge for licence and Pi/Jetson latency) is one more file
+  behind the same seam.
+- **The chess frame is the only convention.** The recognizer resolves the board and
+  its orientation per frame; events, labels, truth, eval, replay and the viewer all
+  use the chess frame (a8 top-left from White's side). This reverses locked
+  decision #15.
+- **No calibration, no banks, no in-house models, no training harness.** Any
+  adaptation to a new set is an offline LoRA fine-tune that produces a new ONNX
+  file, never a runtime calibration round.
+- **Licence accepted.** The V6 weights are PolyForm Noncommercial 1.0.0. They are
+  pinned to a Hugging Face revision, SHA-256-verified (`make models`) and never
+  committed. A fresh clone without them degrades to the stub recognizer, loudly
+  (`/healthz` names the recognizer that serves).
+- **Hands** are handled by burst-end scheduling (§4.5) and the `settled` debounce
+  (§5), not by per-square confidence: ChessQ reads an arm-covered square as a
+  confident empty (p ≥ 0.96), so "occluded = low confidence" no longer holds.
+
+**Unchanged:** D1 (stateless per-frame estimator; `prior` and `settled` stay
+advisory, served beside the raw read), D2, D3, D5, D7, D9, the edge/inference
+separation, and the principle that every milestone is user-testable and fully
+tested.
+
+**Amendments, and where each stands.** Each amended passage below carries a dated
+note pointing here.
+
+| Passage | Change | Lands in |
+|---|---|---|
+| #3, D6, §4.6, M5, WP-E | no calibration round; adaptation is an offline LoRA | Phase B (plan steps 6–7) |
+| #7, #16, D6, §4.6 | ChessQ behind the `Recognizer` seam; PolyForm NC accepted | Phase A (now) |
+| #15, §4.4.1, §5 `orientation`, §9 | chess frame, resolved per frame by the recognizer | Phase A (now) |
+| D8, §4.4 | hands: burst-end scheduling + debounce, not confidence | Phase A (now) |
+| WP-B, §4.2, §4.3 | recognition = one whole-frame read, no square crops | Phase A–B (steps 2, 8–10) |
+| #6, D4, §4.2, §4.5 `corners` and `/detect`, WP-A | edge sends the frame or an ROI box; no detection, no rectification | **pending the framing measurement** (plan step 13, decision D1 in the plan) |
+| §5 `settled` window | settle values retuned for a reader whose raw stream is right | Phase D (plan steps 16–18) |
 
 ---
 
@@ -303,6 +381,11 @@ fidelity, not a Jetson benchmark.
 - `publisher` — JPEG-encodes the rectified crop, stamps capture time + seq +
   stability, sends over the WebSocket; sends control messages on setup.
 
+> **Amended 2026-11-24 (D10).** L2 is now `FrameIngest` → `recognizer.read(image)`
+> → `PositionEvent` → `prior` (advisory) → `BoardStabilizer` → hub. The `estimator`
+> below is the recognizer; there are no calibration centroids. The edge
+> `localizer` goes once the framing measurement is in (Phase C).
+
 **L2 Central vision** (the "Jetson"; Docker container) — **stateless per board**
 except for cached model + optional calibration centroids:
 - `frame-router` — receives crops per board id, dispatches to the worker pool.
@@ -336,6 +419,8 @@ only a **viewer** that renders the latest placement directly.
 - **Occlusion (hand over board).** Affected squares get **low per-square
   confidence**; the position is still emitted. Burst voting recovers the estimate
   once the hand leaves. We never block the stream.
+  **Amended 2026-11-24 (D10):** with ChessQ, covered squares read as *confident*
+  empties; burst-end scheduling and the `settled` debounce keep them off displays.
 - **Camera moved.** Handled in detail in §4.4.1 below — the case splits into a
   recoverable *bump/drift* and an orientation-invalidating *reposition*.
 - **Edge offline.** Egress marks the board stale (no frames / status event).
@@ -343,6 +428,13 @@ only a **viewer** that renders the latest placement directly.
   decides whether to trust, smooth, or ignore it.
 
 ### 4.4.1 Camera movement
+
+> **Amended 2026-11-24 (D10).** Orientation is no longer fixed at setup: the
+> recognizer resolves the board and its orientation on every frame, and the
+> reported frame is always the chess frame. The bump/reposition split below,
+> the tracker and the re-detection fallback serve the corner-labelled pipeline;
+> they go with it once the framing measurement settles plan decision D1
+> (Phase C). Until then they still run on `/camera`.
 
 "The camera moved" is really **two different events** with different handling. The
 distinction matters because the CV layer fixes its board orientation at setup
@@ -501,7 +593,19 @@ A clean gap is recoverable; a confident lie corrupts the consumer's state.
 
 Note there is **no move-resolver / game-state module** — by design.
 
+**Amended 2026-11-24 (D10).** `/calibrate` goes in Phase B (no calibration round).
+`corners` on the wire becomes legacy: still parsed so old recordings replay, never
+sent, ignored by the recognizer. `/detect` goes with the edge detection, pending the
+framing measurement (Phase C).
+
 ### 4.6 Recognition model (DINOv2, calibration optional)
+
+> **Superseded 2026-11-24 (D10).** The recognition model is ChessQ Lite V6 behind
+> the `Recognizer` seam: one 644×644 whole-frame read, a 64×13 distribution out,
+> chess frame, no square crops, no banks, no calibration. Weights are pinned and
+> SHA-256-verified (`make models`), PolyForm Noncommercial 1.0.0. This section is
+> kept as the record of what was built and measured before; the bank, the
+> calibration paths and the crop classifiers are removed in Phase B.
 
 **Default (no per-board training):**
 - A frozen **DINOv2 ViT-S/14** (~21M params; ViT-B for headroom) embeds
@@ -707,6 +811,9 @@ Field notes:
   layer does **not** infer "White's view" from the pieces (unreliable from one
   image, and it would breach the stateless principle); it reports the deterministic
   frame and lets the consumer rotate if it wants.
+  **Amended 2026-11-24 (D10):** the placement is always in the chess frame (rank 8
+  first, file a first, as in FEN), resolved per frame by the recognizer.
+  `orientation` stays as a constant (`a1_bottom_left`) and is reserved.
 - `classes` = the 13-class index order for every per-square vector. Uppercase =
   white, lowercase = black; `empty` is index 0.
 - `square_dist` = **canonical output**: an 8×8 grid of 13-vectors, each a
@@ -721,7 +828,8 @@ Field notes:
 - `stability` ∈ [0,1] (1 = at rest); advisory only — the consumer segments moves.
 - `clock.running` ∈ `white|black|none` (v1; embedded as a field per board event;
   times added later).
-- `status` ∈ `ok|recalibrating|needs_setup|stale`. `recalibrating` = transient
+- `status` ∈ `ok|recalibrating|needs_setup|stale` (since D10 only `ok` is
+  emitted; the rest are reserved). `recalibrating` = transient
   re-rectification after a bump (placements suppressed until stable);
   `needs_setup` = camera repositioned, orientation reference invalidated, awaiting
   operator re-setup (see §4.4.1). Note: **no `illegal`** — legality is not ours to
@@ -767,6 +875,10 @@ Field notes:
   *published* reads, and the raw `placement`/`square_dist` stay byte-identical.
   Flicker-free displays (the viewer, `/camera`) draw `settled.placement` and may
   mark `pending` squares as in flux.
+  **Amended 2026-11-24 (D10):** the ~2.5 s / 2-read window was sized for a reader
+  that was wrong on most raw boards; with ChessQ it mostly costs lag (92/101 raw vs
+  84/101 settled perfect on the gate). It is retuned in Phase D against settled
+  perfect boards, move-to-settle latency and a no-hand-frame constraint.
 
 The application layer (a consumer) is responsible for turning this stream into
 moves, full FENs, legality decisions, and PGN.
@@ -830,8 +942,11 @@ Jetson.
   position, recorder, status events; chrony/NTP (or simulated offset).
 - **M4 — Multi-board on one central node.** N simulated edges → one container;
   shared estimator pool; measure boards-per-container.
-- **M5 — Calibration round (optional path).** Position-agnostic few-shot centroids
-  from any labeled position; measure the accuracy lift vs the default head.
+- ~~**M5 — Calibration round (optional path).** Position-agnostic few-shot centroids
+  from any labeled position; measure the accuracy lift vs the default head.~~
+  **Replaced 2026-11-24 (D10):** **M5 — Offline adaptation (optional).** A LoRA
+  fine-tune of the recognizer on labeled frames of one set, exported as a new ONNX
+  file and gated on the replay gate like any model change.
 - **M6 — Clock (which-side-running).** Two-ROI differencing streamed as sensor
   state.
 - **M7 — Hardening & (optional) hardware port.** Robustness, ONNX→TensorRT on a
@@ -840,6 +955,10 @@ Jetson.
 ---
 
 ## 8. Work packages
+
+> **Amended 2026-11-24 (D10).** WP-A shrinks to capture framing (whole frame or ROI
+> box, pending the framing measurement). WP-B is replaced by the `Recognizer` seam
+> (B3/B4's confidence and eval work stays). WP-E is removed.
 
 **WP-A · Edge: board detection & rectification**
 - A1 board detection (Canny→Hough→cluster→RANSAC homography) on the edge
@@ -901,6 +1020,13 @@ Jetson.
 ## 9. Risks & open questions
 
 **Top risks**
+- **One third-party, noncommercial model (D10).** ChessQ's weights are PolyForm
+  Noncommercial 1.0.0 and come from one upstream. Mitigation: pin the revision,
+  verify the SHA-256, keep a local copy; ChessCam v2 behind the same seam is the
+  hedge.
+- **Orientation is inferred by the model (D10, reverses #15).** A misread board
+  rotation shows up as a whole board wrong at once. Guard: the rotation diagnostics
+  in `eval` and `eval-session`.
 - **Per-frame recognition accuracy is now the binding constraint** (no in-CV
   legality/temporal crutch). Mitigated by calibration + burst voting + confidences;
   must be validated early on real footage (M1/M2). The bet is that good per-square
@@ -916,9 +1042,10 @@ Jetson.
 - **Placement encoding → full 64×13 distribution.** The canonical output is a full
   per-square class distribution; the 8×8 scalar grid and `placement` string are
   derived from it. Rationale in D2/§5.
-- **Square indexing/orientation → fixed canonical + metadata.** Rectify to a
+- ~~**Square indexing/orientation → fixed canonical + metadata.** Rectify to a
   deterministic frame set at setup, report it in an `orientation` field; the CV
-  layer never infers "White's view." See §5.
+  layer never infers "White's view." See §5.~~ **Reversed 2026-11-24 (D10):** the
+  chess frame, resolved per frame by the recognizer.
 - **Clock → embedded field (v1).** `clock.running` rides inside each position event
   as drafted. A separate clock topic (decoupling the ~1–2 Hz clock cadence from
   frame cadence) is noted as a possible v2 refinement.
