@@ -116,7 +116,7 @@ dev: ui
 	@test -f "$(BR_CHESSQ)" \
 	  && echo "  recognition ChessQ Lite V6 ($(BR_CHESSQ))" \
 	  || echo "!! $(BR_CHESSQ) missing — the node serves the STUB recognizer; run 'make models'"
-	@echo "  gpu        $(if $(CUDA_ENV),hidden — the same recognizer on CPU; nothing of ours can reach the display's card,visible — onnxruntime capped at $${BR_GPU_MEM_LIMIT_MB:-1024} MiB/session so the display keeps its VRAM)"
+	@echo "  gpu        $(if $(CUDA_ENV),hidden — the same recognizer on CPU; nothing of ours can reach the display\'s card,visible — onnxruntime capped at $${BR_GPU_MEM_LIMIT_MB:-1024} MiB/session so the display keeps its VRAM)"
 	@echo "  inference  http://$(HOST):$(INFERENCE_PORT)   (the viewer prints the page URLs)"
 	@BR_CHESSQ=$(BR_CHESSQ) \
 	BR_SAVE_UPLOADS=$(BR_SAVE_UPLOADS) \
