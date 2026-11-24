@@ -35,6 +35,7 @@ from board_reader_core.wiremodel import (
     Unit,
     Wire,
     absent,
+    parse,
     tag,
     wire,
 )
@@ -139,26 +140,22 @@ class Frame:
 
     @classmethod
     def from_header(cls, header: dict, image: np.ndarray) -> Frame:
-        """The frame a header describes.
+        """The frame a header describes; ``ValueError`` names the field it refuses.
 
-        Still the lenient parse (``int("4")`` is a seq), not :class:`FrameHeader`:
-        ``test_recording_ingest`` pins that coercion, and refusing it is an open
-        decision (DESIGN.md §4.5).
+        Strict like every wire message: ``"seq": "4"`` is refused, not coerced,
+        because an edge that sends a string has a bug the node must not hide.
         """
+        h = parse(FrameHeader, header)
         return cls(
-            board_id=header["board_id"],
-            seq=int(header["seq"]),
-            capture_ts=float(header["capture_ts"]),
+            board_id=h.board_id,
+            seq=h.seq,
+            capture_ts=h.capture_ts,
             image=image,
-            stability=float(header.get("stability", 1.0)),
-            sharpness=(
-                float(header["sharpness"])
-                if header.get("sharpness") is not None
-                else None
-            ),
-            clock=header.get("clock", "none"),
-            burst_id=header.get("burst_id"),
-            corners=header.get("corners"),
+            stability=h.stability,
+            sharpness=h.sharpness,
+            clock=h.clock,
+            burst_id=h.burst_id,
+            corners=h.corners,
         )
 
     def encode(self, quality: int = 90) -> tuple[dict, bytes]:

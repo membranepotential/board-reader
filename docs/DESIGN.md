@@ -495,9 +495,10 @@ message (`wire.FrameHeader`: `type`, `board_id`, `seq`, `capture_ts`, `stability
 `sharpness` or null, `clock`, `burst_id` or null), then its JPEG as the next, binary
 message. The node reads the two in lockstep, so nothing may be sent between them; the
 JPEG is outside the JSON Schema (D13). The header may carry the legacy `corners`,
-which is parsed and ignored, and which the JSON Schema leaves out. The node still
-parses headers leniently (`"seq": "4"` is a seq) rather than through `FrameHeader`;
-refusing that is open. The `control` message kind is reserved; nothing uses it.
+which is parsed and ignored, and which the JSON Schema leaves out. The node parses
+every header strictly through `FrameHeader`: `"seq": "4"` or an unknown key refuses
+the frame (an error reply, nothing recorded), because a string where the wire says
+number is an edge bug the node must not hide. The `control` message kind is reserved; nothing uses it.
 
 **Egress (WebSocket `/viewer`).** Position events as JSON (§5), the latest per board
 on connect, interleaved with motion updates (§5, display only, never retained).

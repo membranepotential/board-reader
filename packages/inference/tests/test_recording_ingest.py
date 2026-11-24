@@ -106,19 +106,18 @@ def test_the_photo_path_records_its_corners(recorded):
     assert np.allclose(rec.frame().corners, quad)
 
 
-def test_the_recording_holds_the_normalised_header_not_the_raw_json(recorded):
-    """Whatever an edge puts on the wire, the recording holds validated values."""
+def test_a_header_with_a_stringly_number_is_refused_and_not_recorded(recorded):
+    """The wire is strict: ``"seq": "4"`` is an edge bug, not a seq to coerce."""
     client, root = recorded
     frame = _frame(4)
     header, jpeg = frame.encode()
     with client.websocket_connect("/ingest") as ws:
         ws.send_text(json.dumps({**header, "seq": "4", "stability": "0.25"}))
         ws.send_bytes(jpeg)
-        ws.receive_json()
+        reply = ws.receive_json()
 
-    (rec,) = list(Recording.open(root))
-    assert rec.header["seq"] == 4  # an int, as the wire defines it
-    assert rec.header["stability"] == 0.25
+    assert "error" in reply, reply
+    assert not list(root.rglob("*.jpg"))
 
 
 def test_frames_the_prefilter_drops_are_still_recorded(recorded):
