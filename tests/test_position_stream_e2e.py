@@ -42,7 +42,6 @@ from board_reader_edge.client import stream_to_gateway
 from board_reader_edge.source import GameSource
 from board_reader_inference.hub import PositionHub
 from board_reader_inference.positions import stream_to
-from board_reader_inference.recognizer import RecognizerEstimator
 from board_reader_inference.server import create_app
 
 PLACEMENTS = SAMPLE_GAME_PLACEMENTS[:4]
@@ -140,7 +139,7 @@ async def _wait_drained(port: int, sent: int, timeout: float = 10.0) -> None:
 def test_a_frame_stream_becomes_a_capturable_position_stream(tmp_path):
     port = _free_port()
     capture = tmp_path / "run.ndjson"
-    app = create_app(RecognizerEstimator(SimRecognizer()), PositionHub())
+    app = create_app(SimRecognizer(), PositionHub())
 
     with _ServerThread(port, app):
         _wait_healthy(port)

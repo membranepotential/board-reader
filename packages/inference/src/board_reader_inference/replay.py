@@ -6,13 +6,13 @@ need another take. But every served run already keeps its own input
 (:mod:`board_reader_core.recording`: ``frames.ndjson`` + the JPEGs) and its own
 output (``events.ndjson``, scored by :mod:`.trial`), so the take is repeatable —
 what was missing is the middle, the thing that pushes the recorded *frames*
-through today's estimator and writes fresh events. That is this module.
+through today's recognizer and writes fresh events. That is this module.
 
     board-reader-inference replay recordings/20260813-193308 --score
 
 **It replays the live path, not a copy of it.** The frames go through the same
-:func:`~board_reader_inference.routing.route_for` decision the ``/ingest`` worker
-takes, the same
+:func:`~board_reader_inference.recognizer.frame_reader` read the ``/ingest``
+worker runs, the same
 :func:`~board_reader_inference.ingest._read_with_prior` (estimate -> prior repair
 -> :class:`~board_reader_inference.stabilize.BoardStabilizer`), and the same
 :func:`~board_reader_inference.server.event_line` writer. A replayed event is
@@ -139,10 +139,8 @@ from board_reader_core.recording import (
 )
 from board_reader_core.wire import decode_jpeg
 
-from board_reader_inference.estimator import Estimator
 from board_reader_inference.ingest import _read_with_prior
-from board_reader_inference.recognizer import RecognizerEstimator, build_from_env
-from board_reader_inference.routing import route_for
+from board_reader_inference.recognizer import FrameRead, build_from_env, frame_reader
 from board_reader_inference.schedule import (
     EveryFrame,
     FramePolicy,
@@ -428,22 +426,12 @@ class ReplayResult:
     restamp: bool = False
 
 
-def build_estimator() -> Estimator:
-    """The estimator the environment asks for — the gateway's own builder.
-
-    Deliberately calls the gateway's builder (:func:`.recognizer.build_from_env`)
-    rather than growing a second way to read the environment: a replay whose
-    estimator is assembled differently from the served one benchmarks something
-    nobody runs.
-    """
-    return build_from_env()
-
-
 def replay(
     recording: Recording,
     out_dir: str | Path,
     *,
-    estimator: Estimator,
+    read: FrameRead,
+    reader: str,
     board_id: str | None = None,
     policy: FramePolicy | None = None,
     restamp: bool = False,
@@ -451,7 +439,9 @@ def replay(
     limit: int | None = None,
     log: TextIO | None = sys.stderr,
 ) -> ReplayResult:
-    """Push ``recording``'s frames through ``estimator`` and write a replay directory.
+    """Push ``recording``'s frames through ``read`` and write a replay directory.
+
+    ``reader`` names what reads (the recognizer's class), for the manifest.
 
     The estimate/repair/debounce is :func:`~board_reader_inference.ingest._read_with_prior`
     — the ingest worker's own body — and the stabilizer is fed the frame's
@@ -558,7 +548,7 @@ def replay(
                     header=entry.header, jpeg=jpeg, received_ts=entry.received_ts
                 ).frame()
                 try:
-                    event = _read_with_prior(route_for(estimator, frame), stabilizer)
+                    event = _read_with_prior(read, frame, stabilizer)
                 except Exception as e:  # one bad frame is not the end of the stream
                     stats.frames_failed += 1
                     _say(log, f"  seq {entry.seq}: estimation failed ({e})")
@@ -589,10 +579,7 @@ def replay(
         restamp=restamp,
     )
     _link_source(out, recording)
-    reader = (
-        estimator.recognizer if isinstance(estimator, RecognizerEstimator) else estimator
-    )
-    _write_manifest(result, recording, policy, type(reader).__name__)
+    _write_manifest(result, recording, policy, reader)
     return result
 
 
@@ -841,7 +828,11 @@ def run(
     restamp: bool = False,
     log: TextIO | None = sys.stderr,
 ) -> ReplayResult:
-    """Open ``source``, build the environment's estimator, and replay into it.
+    """Open ``source``, build the environment's recognizer, and replay through it.
+
+    The recognizer comes from the gateway's own builder
+    (:func:`.recognizer.build_from_env`): a replay read differently from the served
+    node benchmarks something nobody runs.
 
     The entry point behind ``board-reader-inference replay``; ``--score`` is the
     caller's business (:func:`board_reader_inference.trial.run` on the returned
@@ -853,10 +844,12 @@ def run(
         if name
         else default_name(policy=policy or EveryFrame(), restamp=restamp)
     )
+    recognizer = build_from_env()
     return replay(
         recording,
         recording.path / REPLAYS_DIR / chosen_name,
-        estimator=build_estimator(),
+        read=frame_reader(recognizer),
+        reader=type(recognizer).__name__,
         board_id=board_id,
         policy=policy,
         restamp=restamp,

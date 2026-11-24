@@ -115,7 +115,7 @@ def cmd_eval(args: argparse.Namespace) -> int:
             json_out=args.json,
         )
     except ValueError as e:
-        # Misconfiguration (no photo-capable estimator, unreadable photo) — say so
+        # An unreadable photo or a misconfigured recognizer — say so
         # in one line rather than a traceback; the message names the fix.
         print(f"cannot evaluate: {e}", file=sys.stderr)
         return 2
@@ -185,8 +185,8 @@ def cmd_replay(args: argparse.Namespace) -> int:
         print(f"cannot replay: {e}", file=sys.stderr)
         return 2
     except ValueError as e:
-        # An empty board, an unreadable model file, a misconfigured pair of
-        # BR_MODEL_* — one line naming the fix, not a traceback.
+        # An empty board or an unreadable model file — one line naming the fix,
+        # not a traceback.
         print(f"cannot replay {args.recording}: {e}", file=sys.stderr)
         return 2
     print(render(result))
@@ -275,7 +275,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     e = sub.add_parser(
         "eval",
-        help="score the deployed estimator on labeled boards (perfect-board rate)",
+        help="score the deployed recognizer on labeled boards (perfect-board rate)",
     )
     e.add_argument(
         "paths",
@@ -312,7 +312,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     r = sub.add_parser(
         "replay",
-        help="re-read a recorded take through today's estimator stack, writing a "
+        help="re-read a recorded take through today's recognizer, writing a "
         "recording-shaped directory eval-session can score",
     )
     r.add_argument(

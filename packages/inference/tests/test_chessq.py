@@ -35,13 +35,12 @@ from board_reader_inference.chessq import (
 )
 from board_reader_inference.hub import PositionHub
 from board_reader_inference.recognizer import (
-    RecognizerEstimator,
+    FrameRead,
     StubRecognizer,
     build_from_env,
+    frame_reader,
 )
-from board_reader_inference.routing import PhotoRead, route_for
 from board_reader_inference.server import create_app
-from board_reader_inference.squares import full_frame_corners
 
 # Not left-right or top-bottom symmetric, so a transposed or flipped square order
 # cannot read back as itself.
@@ -63,9 +62,9 @@ def test_class_order_is_the_published_contract() -> None:
     assert "".join([".", "P", "N", "B", "R", "Q", "K", "p", "n", "b", "r", "q", "k"]) == CHESSQ_CLASSES
 
 
-def _served(model) -> RecognizerEstimator:
-    """ChessQ over ``model`` as the gateway serves it."""
-    return RecognizerEstimator(ChessQRecognizer(model))
+def _served(model) -> FrameRead:
+    """ChessQ over ``model`` as the gateway reads frames with it."""
+    return frame_reader(ChessQRecognizer(model))
 
 
 def _fake_model(placement: str):
@@ -138,47 +137,32 @@ def test_module_is_self_contained():
     assert ours == {"board_reader_inference.onnxrt"}
 
 
-def test_estimate_reads_the_whole_frame_and_ignores_corners():
+def test_a_read_takes_the_whole_frame_and_ignores_corners():
     model = _fake_model(RUY_LOPEZ)
-    est = _served(model)
+    read = _served(model)
     frame = _frame(RUY_LOPEZ)
-    event = est.estimate(frame)
+    event = read(frame)
     assert event.placement == RUY_LOPEZ
     assert (event.board_id, event.seq, event.status) == ("A1", 3, "ok")
-    # A quad that would crop most of the board away changes nothing: the model
-    # was handed the same whole-frame tensor.
+    # A legacy quad that would crop most of the board away changes nothing: the
+    # model was handed the same whole-frame tensor.
     corners = np.array([[10, 10], [60, 10], [60, 60], [10, 60]], dtype=np.float32)
-    assert est.estimate_photo(frame, corners).placement == RUY_LOPEZ
+    assert read(_frame(RUY_LOPEZ, corners=corners)).placement == RUY_LOPEZ
     np.testing.assert_array_equal(model.seen[0], model.seen[1])
     np.testing.assert_array_equal(model.seen[0], preprocess_frame(frame.image))
 
 
 def test_black_bishop_demotion_is_not_applied():
-    # A narrow b-over-p win (margin 0.1 < ATTRACTOR_MARGIN) — read_event would
-    # swap it to p; ChessQ's read must keep the model's own argmax.
+    # A narrow b-over-p win (margin 0.1) — the old crop-classifier stack would have
+    # swapped it to p; ChessQ's read must keep the model's own argmax.
     logits = _logits_for(START_PLACEMENT)
     c8 = 2  # FEN index of c8, a black bishop in the start position
     logits[0, c8] = -10.0
     logits[0, c8, CHESSQ_CLASSES.index("b")] = np.log(0.55)
     logits[0, c8, CHESSQ_CLASSES.index("p")] = np.log(0.45)
-    event = _served(lambda batch: logits).estimate(_frame())
+    event = _served(lambda batch: logits)(_frame())
     assert event.placement == START_PLACEMENT
     assert event.square_dist[0, 2].argmax() == CLASS_INDEX["b"]
-
-
-def test_routes_through_photo_path_with_original_pixels():
-    # With corners on the frame, a non-photo estimator would be handed a server-side
-    # warp (RectifiedRead). ChessQ must get the frame as shot.
-    est = _served(_fake_model(START_PLACEMENT))
-    frame = _frame(corners=full_frame_corners(render_board()) * 0.5)
-    route = route_for(est, frame)
-    assert isinstance(route, PhotoRead)
-    assert route.frame.image is frame.image
-
-
-# --------------------------------------------------------------------------- #
-# Integration: selection and serving
-# --------------------------------------------------------------------------- #
 
 
 @pytest.fixture
@@ -192,29 +176,27 @@ def chessq_env(tmp_path, monkeypatch):
 
 
 def test_br_chessq_serves_chessq_from_its_file(chessq_env):
-    est = build_from_env()
-    assert isinstance(est, RecognizerEstimator)
-    assert isinstance(est.recognizer, ChessQRecognizer)
-    assert est.recognizer.model_path == str(chessq_env)
+    recognizer = build_from_env()
+    assert isinstance(recognizer, ChessQRecognizer)
+    assert recognizer.model_path == str(chessq_env)
 
 
 def test_missing_weights_degrade_to_the_stub_loudly(tmp_path, monkeypatch, capsys):
     """A fresh clone has no weights (plan decision D2): the node still starts, on
     the stub, says so at startup, and ``/healthz`` carries the reason."""
     monkeypatch.setenv("BR_CHESSQ", str(tmp_path / "absent.onnx"))
-    est = build_from_env()
-    assert isinstance(est, RecognizerEstimator)
-    assert isinstance(est.recognizer, StubRecognizer)
-    assert "make models" in (est.fallback or "")
+    recognizer = build_from_env()
+    assert isinstance(recognizer, StubRecognizer)
+    assert "make models" in (recognizer.fallback or "")
     assert "STUB recognizer" in capsys.readouterr().err
-    health = TestClient(create_app(est, PositionHub())).get("/healthz").json()
+    health = TestClient(create_app(recognizer, PositionHub())).get("/healthz").json()
     assert health["recognizer"]["name"] == "stub"
     assert "absent.onnx" in health["recognizer"]["fallback"]
 
 
 def test_ingest_publishes_chessq_read_with_prior(gateway, drain_ingest):
-    client = gateway(create_app(_served(_fake_model(RUY_LOPEZ)), PositionHub()))
-    frame = _frame(RUY_LOPEZ, corners=full_frame_corners(render_board()))
+    client = gateway(create_app(ChessQRecognizer(_fake_model(RUY_LOPEZ)), PositionHub()))
+    frame = _frame(RUY_LOPEZ, corners=np.array([[0, 0], [384, 0], [384, 384], [0, 384]], dtype=np.float32))
     header, jpeg = frame.encode()
     with client.websocket_connect("/ingest") as ws:
         ws.send_text(json.dumps(header))
@@ -250,5 +232,5 @@ def test_real_v6_reads_a_held_out_midgame_still():
 
     label = json.loads(_STILL.read_text())
     image = cv2.imread(str(_STILL.parent / label["photo"]))
-    event = _served(_V6).estimate(Frame(board_id="still", seq=0, capture_ts=0.0, image=image))
+    event = _served(_V6)(Frame(board_id="still", seq=0, capture_ts=0.0, image=image))
     assert event.placement == label["placement"]

@@ -8,7 +8,7 @@ the source recording is not written to; a multi-session directory replays one
 session rather than splicing two; and the frame-selection policy is genuinely
 asked, because the next milestone (move-triggered estimation) plugs in there.
 
-No GPU and no model: the estimator is a scripted fake, which is also the only way
+No GPU and no model: the read is a scripted fake, which is also the only way
 to assert on settle timing — a real model's answers are the thing under test
 everywhere else, but here the *timing* is.
 """
@@ -39,13 +39,11 @@ from board_reader_inference.hub import PositionHub
 from board_reader_inference.ingest import FrameIngest
 from board_reader_inference.replay import (
     ReplayResult,
-    build_estimator,
     check_name,
     default_name,
     find_sessions,
     replay,
 )
-from board_reader_inference.routing import route_for
 from board_reader_inference.schedule import (
     ENTER_BURST,
     EXIT_BURST,
@@ -66,24 +64,19 @@ FRAME_DT = 0.5
 
 
 # --------------------------------------------------------------------------- #
-# Fixtures: a tiny recording and a scripted estimator
+# Fixtures: a tiny recording and a scripted read
 # --------------------------------------------------------------------------- #
 
 
-class ScriptedEstimator:
-    """Reads a placement per frame ``seq`` off a script, at no cost.
-
-    Deliberately not photo-mode and given corner-less frames, so
-    :func:`~board_reader_inference.routing.route_for` picks the whole-frame branch
-    and the test exercises the live routing rather than bypassing it.
-    """
+class ScriptedRead:
+    """A frame read that answers a placement per frame ``seq`` off a script, at no cost."""
 
     def __init__(self, script: dict[int, str], default: str = START_PLACEMENT) -> None:
         self.script = script
         self.default = default
         self.seen: list[int] = []
 
-    def estimate(self, frame: Frame) -> PositionEvent:
+    def __call__(self, frame: Frame) -> PositionEvent:
         self.seen.append(frame.seq)
         placement = self.script.get(frame.seq, self.default)
         return PositionEvent.from_square_dist(
@@ -123,11 +116,12 @@ def source(tmp_path):
     return Recording(tmp_path / "recordings" / "src")
 
 
-def _run(source: Recording, name: str, estimator=None, **kwargs) -> ReplayResult:
+def _run(source: Recording, name: str, read=None, **kwargs) -> ReplayResult:
     return replay(
         source,
         source.path / "replays" / name,
-        estimator=estimator or ScriptedEstimator({}),
+        read=read or ScriptedRead({}),
+        reader="ScriptedRead",
         log=None,
         **kwargs,
     )
@@ -152,9 +146,9 @@ def test_settles_on_recorded_time_not_wall_time(source):
     milliseconds. A wall-clock stabilizer would settle on the very next read.
     """
     # Every frame from seq 1 on reads e4; seq 0 is the board the stream adopts.
-    estimator = ScriptedEstimator(dict.fromkeys(range(1, 8), E4))
+    read = ScriptedRead(dict.fromkeys(range(1, 8), E4))
     started = time.monotonic()
-    result = _run(source, "clock", estimator)
+    result = _run(source, "clock", read)
     elapsed = time.monotonic() - started
 
     settled = [e["settled"]["placement"] for e in _events(result)]
@@ -192,8 +186,8 @@ def test_two_replays_of_one_recording_are_byte_identical(source):
     thing the harness is for.
     """
     script = dict.fromkeys(range(3, 8), E4)
-    a = _run(source, "a", ScriptedEstimator(script))
-    b = _run(source, "b", ScriptedEstimator(script))
+    a = _run(source, "a", ScriptedRead(script))
+    b = _run(source, "b", ScriptedRead(script))
     assert (a.path / EVENTS_NAME).read_bytes() == (b.path / EVENTS_NAME).read_bytes()
     assert (a.path / INDEX_NAME).read_bytes() == (b.path / INDEX_NAME).read_bytes()
 
@@ -260,7 +254,8 @@ def test_a_replay_must_sit_two_levels_under_its_recording(source):
         replay(
             source,
             source.path / "shallow",
-            estimator=ScriptedEstimator({}),
+            read=ScriptedRead({}),
+            reader="ScriptedRead",
             log=None,
         )
 
@@ -325,7 +320,7 @@ def test_manifest_records_the_provenance(source, monkeypatch):
     assert block["board_id"] == "phone"
     assert block["env"]["BR_CHESSQ"]["value"] == "models/chessq/cq.onnx"
     assert block["policy"] == "every-frame"
-    assert block["estimator"] == "ScriptedEstimator"
+    assert block["estimator"] == "ScriptedRead"
     assert block["frames"]["frames_estimated"] == 8
     assert block["settle_seconds"] == SETTLE_SECONDS
     # Recording-shaped at the top, so `Recording` opens it like any other session.
@@ -392,12 +387,12 @@ def test_the_policy_decides_which_frames_are_estimated(source):
     recording, and a timing block that hid the frames the policy declined would
     make a sparse policy look like a slow camera.
     """
-    estimator = ScriptedEstimator({})
+    read = ScriptedRead({})
     policy = EvenSeqs()
-    result = _run(source, "policy", estimator, policy=policy)
+    result = _run(source, "policy", read, policy=policy)
 
     assert policy.asked == list(range(8))  # asked once each, in order
-    assert estimator.seen == [0, 2, 4, 6]  # and the skipped frames cost nothing
+    assert read.seen == [0, 2, 4, 6]  # and the skipped frames cost nothing
     assert [e["frame_seq"] for e in _events(result)] == [0, 2, 4, 6]
     assert result.stats.frames_skipped_policy == 4
     assert result.path.joinpath(INDEX_NAME).read_text().count("\n") == 8
@@ -411,11 +406,11 @@ def test_limit_truncates_the_take_rather_than_thinning_it(source):
     read one frame in 249 — a timing claim about a run that never happened. The
     policy is not consulted for frames nobody saw either.
     """
-    estimator = ScriptedEstimator({})
+    read = ScriptedRead({})
     policy = EvenSeqs()
-    result = _run(source, "limited", estimator, limit=2, policy=policy)
+    result = _run(source, "limited", read, limit=2, policy=policy)
 
-    assert estimator.seen == [0, 2]
+    assert read.seen == [0, 2]
     assert policy.asked == [0, 1, 2]  # asked up to the last frame it read, no further
     assert result.stats.truncated is True
     assert result.stats.frames_total == 3
@@ -423,9 +418,9 @@ def test_limit_truncates_the_take_rather_than_thinning_it(source):
 
 
 def test_every_frame_is_the_default_policy(source):
-    estimator = ScriptedEstimator({})
-    _run(source, "default", estimator)
-    assert estimator.seen == list(range(8))
+    read = ScriptedRead({})
+    _run(source, "default", read)
+    assert read.seen == list(range(8))
     assert EveryFrame().name == "every-frame"
 
 
@@ -434,7 +429,7 @@ def test_every_frame_is_the_default_policy(source):
 # --------------------------------------------------------------------------- #
 
 
-def _ingest_event_lines(frames: list[Frame], estimator) -> list[dict]:
+def _ingest_event_lines(frames: list[Frame], read) -> list[dict]:
     """Drive the real :class:`FrameIngest` over ``frames`` and collect its events.
 
     One frame at a time, draining after each: the live inbox is latest-wins
@@ -446,7 +441,7 @@ def _ingest_event_lines(frames: list[Frame], estimator) -> list[dict]:
     async def _drive() -> list[dict]:
         lines: list[dict] = []
         ingest = FrameIngest(
-            lambda frame: route_for(estimator, frame),
+            read,
             PositionHub(),
             on_event=lambda event, frame: lines.append(
                 event_line(event, frame, published_ts=None)
@@ -475,9 +470,9 @@ def test_replay_publishes_exactly_what_the_live_worker_would(source):
     publish and the one thing an offline replay has no honest value for.
     """
     script = dict.fromkeys(range(3, 8), E4)
-    replayed = _events(_run(source, "parity", ScriptedEstimator(script)))
+    replayed = _events(_run(source, "parity", ScriptedRead(script)))
     live = _ingest_event_lines(
-        [recorded.frame() for recorded in source.frames()], ScriptedEstimator(script)
+        [recorded.frame() for recorded in source.frames()], ScriptedRead(script)
     )
 
     assert len(replayed) == 8
@@ -506,7 +501,9 @@ def test_cli_replay_and_score(tmp_path, monkeypatch, capsys):
     replayed = recording / "replays" / "cli"
     # The environment names no model, so the stack the harness builds is the
     # walking skeleton — the same one `serve` would run with this environment.
-    assert build_estimator().recognizer.name == "stub"
+    assert json.loads((replayed / "manifest.json").read_text())["replay"][
+        "estimator"
+    ] == "StubRecognizer"
     assert (replayed / EVENTS_NAME).read_text().count("\n") == 4
 
     # No truth in the source: --score says so and exits 2 rather than pretending.

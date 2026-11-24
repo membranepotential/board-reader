@@ -22,10 +22,9 @@ from board_reader_core.protocol import (
 from board_reader_core.sim import render_board
 from board_reader_core.wire import Frame
 
-from board_reader_inference.estimator import StubEstimator
 from board_reader_inference.hub import PositionHub
 from board_reader_inference.ingest import FrameIngest
-from board_reader_inference.routing import route_for
+from board_reader_inference.recognizer import StubRecognizer, frame_reader
 from board_reader_inference.server import create_app
 
 # The start position with e1 holding a second white king: impossible, and
@@ -34,7 +33,7 @@ TWO_WHITE_KINGS = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNK"
 
 
 def _estimate(placement: str) -> dict:
-    client = TestClient(create_app(estimator=StubEstimator(placement)))
+    client = TestClient(create_app(recognizer=StubRecognizer(placement)))
     _, buf = cv2.imencode(".jpg", render_board(START_PLACEMENT, square_px=32))
     response = client.post(
         "/estimate", content=buf.tobytes(), headers={"content-type": "image/jpeg"}
@@ -94,16 +93,12 @@ def test_the_live_stream_carries_the_repair_beside_the_raw_read():
     """The WS path is what the /camera panel displays — the two-kings fix must
     reach it, not just the HTTP endpoints (it shipped without, and a trial's live
     panel showed two kings that no /estimate response would have)."""
-
-
-
-    est = StubEstimator(TWO_WHITE_KINGS)
     published: list = []
 
     async def run():
         hub = PositionHub()
         ingest = FrameIngest(
-            lambda frame: route_for(est, frame),
+            frame_reader(StubRecognizer(TWO_WHITE_KINGS)),
             hub,
             on_event=lambda event, frame: published.append((event, frame)),
         )

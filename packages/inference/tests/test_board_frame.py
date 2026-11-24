@@ -10,13 +10,13 @@ from board_reader_core.protocol import START_PLACEMENT
 from board_reader_core.sim import render_board
 from board_reader_core.wire import Frame, decode_jpeg
 
-from board_reader_inference.estimator import StubEstimator
 from board_reader_inference.hub import PositionHub
+from board_reader_inference.recognizer import StubRecognizer
 from board_reader_inference.server import create_app
 
 
 def _client() -> TestClient:
-    return TestClient(create_app(StubEstimator(START_PLACEMENT), PositionHub()))
+    return TestClient(create_app(StubRecognizer(START_PLACEMENT), PositionHub()))
 
 
 def _send_frame(ws, board_id: str, seq: int, corners=None) -> bytes:
@@ -80,28 +80,13 @@ def test_board_frame_is_independent_per_board():
 QUAD = [[12.0, 30.0], [480.0, 28.0], [496.0, 500.0], [4.0, 496.0]]  # a8,h8,h1,a1
 
 
-def test_board_frame_reports_the_corners_the_stream_carried():
+def test_board_frame_never_reports_the_corners_a_legacy_stream_carried():
+    """Older edges still send ``corners``; the node reads the whole frame and no
+    longer passes the quad on (``X-Corners`` is gone)."""
     client = _client()
     with client.websocket_connect("/ingest") as ingest:
         _send_frame(ingest, "A1", seq=1, corners=QUAD)
-        ingest.receive_json()
-
-    r = client.get("/boards/A1/frame", headers={"Origin": "http://viewer.local"})
-    assert r.status_code == 200
-    # Same spelling ``POST /estimate?corners=`` takes, so the viewer can pass it on.
-    assert [float(v) for v in r.headers["x-corners"].split(",")] == [
-        v for xy in QUAD for v in xy
-    ]
-    # ...and the browser is allowed to read it cross-origin.
-    exposed = r.headers["access-control-expose-headers"].lower()
-    assert "x-corners" in exposed
-
-
-def test_board_frame_omits_corners_when_the_stream_had_none():
-    client = _client()
-    with client.websocket_connect("/ingest") as ingest:
-        _send_frame(ingest, "A1", seq=1)
-        ingest.receive_json()
+        assert ingest.receive_json() == {"ack": 1, "board_id": "A1"}
 
     r = client.get("/boards/A1/frame")
     assert r.status_code == 200

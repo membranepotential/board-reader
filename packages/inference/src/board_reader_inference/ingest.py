@@ -36,9 +36,9 @@ The workers belong to the ingest object, not to a connection: a reconnecting edg
 never interrupts an estimate in flight, and shutdown is the only thing that stops
 them (:meth:`FrameIngest.lifespan`).
 
-What a worker *does* with a frame is not this module's decision: it asks
-:mod:`board_reader_inference.routing` — the same function ``POST /estimate`` asks —
-and runs the :class:`~board_reader_inference.routing.Route` it gets back.
+What a worker *does* with a frame is not this module's decision: it runs the
+:data:`~board_reader_inference.recognizer.FrameRead` it was built with — the same
+read ``POST /estimate`` runs (:func:`~board_reader_inference.recognizer.frame_reader`).
 """
 
 from __future__ import annotations
@@ -55,7 +55,7 @@ from board_reader_core.wire import Frame
 
 from board_reader_inference.hub import PositionHub
 from board_reader_inference.prior import decode
-from board_reader_inference.routing import Route
+from board_reader_inference.recognizer import FrameRead
 from board_reader_inference.schedule import DUE_EPS, EveryFrame, FramePolicy, stability_of
 from board_reader_inference.stabilize import BoardStabilizer
 
@@ -120,15 +120,17 @@ def prefer_frame(
     return queued if fq.sharpness > fi.sharpness else incoming
 
 
-def _read_with_prior(route: Route, stabilizer: BoardStabilizer) -> PositionEvent:
+def _read_with_prior(
+    read: FrameRead, frame: Frame, stabilizer: BoardStabilizer
+) -> PositionEvent:
     """One estimate plus its hard-constraint repair, both off the event loop.
 
     The repair rides the event as :attr:`PositionEvent.prior` (raw ``placement``
     and ``square_dist`` untouched), so every consumer of the stream — the viewer,
     ``GET /boards/{id}``, a recording — sees the same repaired board the HTTP
     endpoints already serve beside their reads. ``quarter_turns`` is deliberately
-    not passed: the stream's orientation is operator-claimed, not established,
-    and a guessed frame makes the back-rank constraint circular (see
+    not passed: the chess frame is the recognizer's inference, not established,
+    and an inferred frame makes the back-rank constraint circular (see
     :mod:`.prior`).
 
     The repaired read then feeds the board's :class:`.stabilize.BoardStabilizer`,
@@ -136,10 +138,10 @@ def _read_with_prior(route: Route, stabilizer: BoardStabilizer) -> PositionEvent
     despite the worker thread because each board's worker estimates strictly one
     frame at a time, in order, which is exactly the stream a debounce needs.
     """
-    event = route.read()
+    event = read(frame)
     repair = decode(event.square_dist)
     event.prior = repair.to_repair()
-    event.settled = stabilizer.observe(repair.placement, route.frame.capture_ts)
+    event.settled = stabilizer.observe(repair.placement, frame.capture_ts)
     return event
 
 
@@ -167,19 +169,18 @@ class _BoardWorker:
 class FrameIngest:
     """Latest-wins frame ingress: :meth:`submit` never blocks on the model.
 
-    The route is resolved *per frame* through a callable: the frame decides the
-    branch (:func:`~board_reader_inference.routing.route_for`).
+    ``read`` is the gateway's one read (module docstring).
     """
 
     def __init__(
         self,
-        route: Callable[[Frame], Route],
+        read: FrameRead,
         hub: PositionHub,
         *,
         on_event: Callable[[PositionEvent, Frame], None] | None = None,
         policy: Callable[[], FramePolicy] = EveryFrame,
     ) -> None:
-        self._route = route
+        self._read = read
         self._hub = hub
         #: Builds this board's read scheduler — a *factory*, because a policy is
         #: stateful and each board owns its own (and gets a fresh one when its
@@ -307,7 +308,6 @@ class FrameIngest:
             while True:
                 frame, received = await inbox.get()
                 try:
-                    route = self._route(frame)
                     now = time.monotonic()
                     if not policy.due(*_schedule_signal(frame)):
                         if now - last_read < backstop_s - DUE_EPS:
@@ -325,7 +325,7 @@ class FrameIngest:
                                 board_id, now - last_read,
                             )
                     last_read = now
-                    event = await asyncio.to_thread(_read_with_prior, route, stabilizer)
+                    event = await asyncio.to_thread(_read_with_prior, self._read, frame, stabilizer)
                 except asyncio.CancelledError:
                     raise
                 except Exception:

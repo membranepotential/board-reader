@@ -32,11 +32,10 @@ import numpy as np
 import pytest
 from starlette.testclient import TestClient, WebSocketTestSession
 
-from board_reader_core.protocol import PositionEvent
 from board_reader_core.recording import EVENTS_NAME, Recording
-from board_reader_core.wire import Frame
+from board_reader_core.wire import Frame, decode_jpeg
 
-from board_reader_inference.estimator import StubEstimator
+from board_reader_inference.recognizer import StubRecognizer
 from board_reader_inference.replay import find_sessions
 from board_reader_inference.server import create_app
 
@@ -99,25 +98,27 @@ def record_root(tmp_path, monkeypatch):
     return root
 
 
-class _GatedEstimator:
-    """A stub that parks the estimate of one frame in its worker thread.
+class _GatedRecognizer(StubRecognizer):
+    """A stub that parks the read of one frame in its worker thread.
 
     The point is to make the publish order — not the arrival order — the thing
     under test: exactly one frame's read is held open across a roll, and the test
-    thread decides when it completes.
+    thread decides when it completes. A recognizer sees pixels only, so the gated
+    frame is told apart by its image (each ``_frame`` is distinct noise).
     """
 
-    def __init__(self, gate_ts: float) -> None:
-        self._inner = StubEstimator()
-        self._gate_ts = gate_ts
+    def __init__(self, gate: Frame) -> None:
+        super().__init__()
+        # What the gateway will decode off the wire for this frame.
+        self._gate_image = decode_jpeg(gate.encode()[1])
         self.entered = threading.Event()  # set once the gated read is in flight
         self.release = threading.Event()  # set by the test to let it finish
 
-    def estimate(self, frame: Frame) -> PositionEvent:
-        if frame.capture_ts == self._gate_ts:
+    def read(self, image: np.ndarray) -> np.ndarray:
+        if np.array_equal(image, self._gate_image):
             self.entered.set()
             self.release.wait(timeout=10.0)
-        return self._inner.estimate(frame)
+        return super().read(image)
 
 
 def test_a_reconnecting_edge_rolls_the_gateway_onto_a_second_directory(record_root):
@@ -128,7 +129,7 @@ def test_a_reconnecting_edge_rolls_the_gateway_onto_a_second_directory(record_ro
     leaving its ``with`` block runs the lifespan, which closes the recorder and
     finalises the second manifest.
     """
-    with TestClient(create_app(estimator=StubEstimator())) as client:
+    with TestClient(create_app(recognizer=StubRecognizer())) as client:
         _stream(client, [_frame(s, t0=SESSION_A_T0) for s in range(5)])
         _stream(client, [_frame(s, t0=SESSION_B_T0) for s in range(3)])
         assert client.get("/healthz").json()["recording"]["sessions"] == 2
@@ -157,7 +158,7 @@ def test_each_directorys_events_belong_to_the_session_beside_them(
     record_root, gateway, drain_ingest
 ):
     """Outputs land with the inputs that produced them, on both sides of the roll."""
-    client = gateway(create_app(estimator=StubEstimator()))
+    client = gateway(create_app(recognizer=StubRecognizer()))
     _stream(client, [_frame(s, t0=SESSION_A_T0) for s in range(3)])
     drain_ingest(client)
     _stream(client, [_frame(s, t0=SESSION_B_T0) for s in range(3)])
@@ -200,8 +201,8 @@ def test_an_estimate_that_outlives_the_roll_is_recorded_in_its_own_session(
     not by the connection, and reconnecting here would drain the parked read at
     disconnect and dissolve the race being tested.
     """
-    est = _GatedEstimator(gate_ts=SESSION_A_T0 + 2)
-    client = gateway(create_app(estimator=est))
+    est = _GatedRecognizer(_frame(2, t0=SESSION_A_T0))
+    client = gateway(create_app(recognizer=est))
 
     with client.websocket_connect("/ingest") as ws:
         _send(ws, _frame(0, t0=SESSION_A_T0))
@@ -233,7 +234,7 @@ def test_replay_finds_exactly_one_stream_inside_each_rolled_directory(record_roo
     could hold several takes. Run over each rolled directory it now finds one —
     and over the two concatenated it still finds two, so the check has teeth.
     """
-    with TestClient(create_app(estimator=StubEstimator())) as client:
+    with TestClient(create_app(recognizer=StubRecognizer())) as client:
         _stream(client, [_frame(s, t0=SESSION_A_T0) for s in range(5)])
         _stream(client, [_frame(s, t0=SESSION_B_T0) for s in range(4)])
 

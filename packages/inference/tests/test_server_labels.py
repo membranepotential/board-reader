@@ -2,9 +2,9 @@
 
 The snapshot page's correction panel is the only place a human states what a
 board really holds. These tests pin the contract that turns those statements into
-eval data: they attach to a retained photo, they are stored in the corner frame
-rather than the model's guessed orientation, and a hostile upload id can never
-walk out of the retention directory.
+eval data: they attach to a retained photo, they are stored in the frame the read
+was made in (the chess frame; older corner-frame uploads keep theirs), and a
+hostile upload id can never walk out of the retention directory.
 """
 
 from __future__ import annotations
@@ -18,9 +18,9 @@ from board_reader_core.protocol import START_PLACEMENT
 from board_reader_core.sim import render_board
 from board_reader_core.wire import encode_jpeg
 
-from board_reader_inference.estimator import StubEstimator
 from board_reader_inference.hub import PositionHub
 from board_reader_inference.labels import LABEL_SUFFIX, rotate_placement
+from board_reader_inference.recognizer import StubRecognizer
 from board_reader_inference.server import create_app
 
 MIDGAME = "r2qk2r/1b1pbppp/p1n1p3/1ppnP3/5B2/1BNP1N2/PPP2PPP/R2Q1RK1"
@@ -31,13 +31,12 @@ def retaining(tmp_path, monkeypatch):
     """A gateway with photo retention on, sandboxed to ``tmp_path``."""
     monkeypatch.setenv("BR_SAVE_UPLOADS", str(tmp_path))
     monkeypatch.chdir(tmp_path)
-    return TestClient(create_app(StubEstimator(START_PLACEMENT), PositionHub()))
+    return TestClient(create_app(StubRecognizer(START_PLACEMENT), PositionHub()))
 
 
-def _estimate(client: TestClient, corners: str | None = "0,0,80,0,80,80,0,80") -> dict:
-    query = f"?corners={corners}" if corners else ""
+def _estimate(client: TestClient) -> dict:
     r = client.post(
-        f"/estimate{query}",
+        "/estimate",
         content=encode_jpeg(render_board()),
         headers={"Content-Type": "image/jpeg"},
     )
@@ -55,7 +54,7 @@ def test_estimate_omits_the_upload_id_when_retention_is_off(tmp_path, monkeypatc
     page is never offered the affordance in the first place."""
     monkeypatch.delenv("BR_SAVE_UPLOADS", raising=False)
     monkeypatch.chdir(tmp_path)
-    client = TestClient(create_app(StubEstimator(START_PLACEMENT), PositionHub()))
+    client = TestClient(create_app(StubRecognizer(START_PLACEMENT), PositionHub()))
     assert "upload" not in _estimate(client)
 
 
@@ -79,16 +78,32 @@ def test_confirming_a_read_writes_a_label_beside_the_photo(retaining, tmp_path):
     assert meta["predicted"] == START_PLACEMENT
 
 
-def test_a_label_is_stored_in_the_corner_frame_not_the_rotated_one(
-    retaining, tmp_path
-):
-    """An autorotated read is confirmed as displayed; truth on disk undoes the
-    turn, so it never depends on a model output."""
+def _make_legacy(sidecar, **meta: object) -> None:
+    """Rewrite a retained upload's sidecar as an older, corner-frame read."""
+    current = json.loads(sidecar.read_text())
+    current.update(frame="corners", **meta)
+    sidecar.write_text(json.dumps(current))
+
+
+def test_a_read_is_labeled_in_the_chess_frame_without_corners(retaining, tmp_path):
     upload = _estimate(retaining)["upload"]
-    sidecar = tmp_path / f"{upload}.json"
-    meta = json.loads(sidecar.read_text())
-    meta["autorotated"] = 180
-    sidecar.write_text(json.dumps(meta))
+    r = retaining.post(f"/labels/{upload}", json={"placement": MIDGAME})
+    assert r.status_code == 200
+    assert r.json()["frame"] == "chess"
+    meta = json.loads((tmp_path / f"{upload}{LABEL_SUFFIX}").read_text())
+    assert (meta["frame"], meta["placement"], meta["corners"]) == ("chess", MIDGAME, None)
+
+    from board_reader_inference.labels import load_labels
+
+    [board] = load_labels([tmp_path])
+    assert (board.frame, board.corners) == ("chess", None)
+
+
+def test_a_legacy_autorotated_read_is_stored_in_the_corner_frame(retaining, tmp_path):
+    """An older autorotated read is confirmed as displayed; truth on disk undoes
+    the turn, so it never depends on a model output."""
+    upload = _estimate(retaining)["upload"]
+    _make_legacy(tmp_path / f"{upload}.json", corners="0,0,80,0,80,80,0,80", autorotated=180)
 
     shown = rotate_placement(MIDGAME, 2)
     r = retaining.post(f"/labels/{upload}", json={"placement": shown})
@@ -110,7 +125,7 @@ def test_relabelling_overwrites_so_the_last_word_wins(retaining, tmp_path):
 def test_labeling_is_refused_when_retention_is_off(tmp_path, monkeypatch):
     monkeypatch.delenv("BR_SAVE_UPLOADS", raising=False)
     monkeypatch.chdir(tmp_path)
-    client = TestClient(create_app(StubEstimator(START_PLACEMENT), PositionHub()))
+    client = TestClient(create_app(StubRecognizer(START_PLACEMENT), PositionHub()))
     r = client.post(
         "/labels/20260806-210118-0000-estimate", json={"placement": MIDGAME}
     )
@@ -125,10 +140,11 @@ def test_labeling_an_unknown_upload_is_404(retaining):
     assert r.status_code == 404
 
 
-def test_a_read_without_corners_cannot_be_labeled(retaining, tmp_path):
-    """A placement is only true in a stated frame. Without corners the photo can
-    never be re-cropped, so the label would be data no eval could ever load."""
-    upload = _estimate(retaining, corners=None)["upload"]
+def test_a_legacy_read_without_corners_cannot_be_labeled(retaining, tmp_path):
+    """A corner-frame placement is only true with its corners: without them the
+    label would be data no eval could ever load."""
+    upload = _estimate(retaining)["upload"]
+    _make_legacy(tmp_path / f"{upload}.json")
     r = retaining.post(f"/labels/{upload}", json={"placement": MIDGAME})
     assert r.status_code == 422
     assert "corners" in r.json()["error"]
@@ -159,60 +175,14 @@ def test_a_hostile_upload_id_never_reaches_the_filesystem(retaining, hostile):
     assert r.status_code in (400, 404)
 
 
-def test_labels_do_not_change_the_running_estimator(retaining):
-    """Ground truth is scoring data only. Feeding it back into the bank would
-    recreate exactly the contamination it exists to measure."""
-    before = retaining.app.state.estimator
+def test_labels_do_not_change_the_running_recognizer(retaining):
+    """Ground truth is scoring data only: nothing reads it back into recognition."""
+    before = retaining.app.state.recognizer
     upload = _estimate(retaining)["upload"]
     retaining.post(f"/labels/{upload}", json={"placement": MIDGAME, "corrections": 4})
-    assert retaining.app.state.estimator is before
+    assert retaining.app.state.recognizer is before
 
 
 # --------------------------------------------------------------------------- #
 # Chess frame (DESIGN D10): a recognizer's read needs no corners and is never turned
 # --------------------------------------------------------------------------- #
-
-
-@pytest.fixture
-def recognizing(tmp_path, monkeypatch):
-    """A retaining gateway serving a recognizer that reads ``MIDGAME``."""
-    from board_reader_inference.recognizer import RecognizerEstimator, StubRecognizer
-
-    monkeypatch.setenv("BR_SAVE_UPLOADS", str(tmp_path))
-    monkeypatch.chdir(tmp_path)
-    est = RecognizerEstimator(StubRecognizer(MIDGAME))
-    return TestClient(create_app(est, PositionHub()))
-
-
-def test_a_recognizer_read_ignores_autorotate(recognizing):
-    r = recognizing.post(
-        "/estimate?autorotate=1&corners=0,0,80,0,80,80,0,80",
-        content=encode_jpeg(render_board()),
-        headers={"Content-Type": "image/jpeg"},
-    )
-    body = r.json()
-    assert body["placement"] == MIDGAME
-    assert "autorotated" not in body
-
-
-def test_a_recognizer_read_is_labeled_in_the_chess_frame_without_corners(
-    recognizing, tmp_path
-):
-    upload = _estimate(recognizing, corners=None)["upload"]
-    r = recognizing.post(f"/labels/{upload}", json={"placement": MIDGAME})
-    assert r.status_code == 200
-    assert r.json()["frame"] == "chess"
-    meta = json.loads((tmp_path / f"{upload}{LABEL_SUFFIX}").read_text())
-    assert (meta["frame"], meta["placement"], meta["corners"]) == ("chess", MIDGAME, None)
-
-    from board_reader_inference.labels import load_labels
-
-    [board] = load_labels([tmp_path])
-    assert (board.frame, board.corners) == ("chess", None)
-
-
-def test_a_corner_frame_read_is_still_labeled_in_the_corner_frame(retaining, tmp_path):
-    upload = _estimate(retaining)["upload"]
-    assert retaining.post(f"/labels/{upload}", json={"placement": MIDGAME}).json()["frame"] == (
-        "corners"
-    )

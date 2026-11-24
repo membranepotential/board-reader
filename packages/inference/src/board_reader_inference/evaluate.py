@@ -852,7 +852,7 @@ def run(
     if recognizer is None:
         from board_reader_inference.recognizer import build_from_env
 
-        recognizer = build_from_env().recognizer
+        recognizer = build_from_env()
     report = evaluate(recognizer, boards, prior=prior, temperature=temperature)
     if json_out:
         Path(json_out).write_text(json.dumps(report.to_dict(), indent=2))

@@ -19,8 +19,8 @@ from board_reader_core.protocol import START_PLACEMENT
 from board_reader_core.sim import render_board
 from board_reader_core.wire import encode_jpeg
 
-from board_reader_inference.estimator import StubEstimator
 from board_reader_inference.hub import PositionHub
+from board_reader_inference.recognizer import StubRecognizer
 from board_reader_inference.server import create_app
 
 MIDGAME = "r2qk2r/1b1pbppp/p1n1p3/1ppnP3/5B2/1BNP1N2/PPP2PPP/R2Q1RK1"
@@ -31,13 +31,12 @@ def retaining(tmp_path, monkeypatch):
     """A gateway with photo retention on, sandboxed to ``tmp_path``."""
     monkeypatch.setenv("BR_SAVE_UPLOADS", str(tmp_path))
     monkeypatch.chdir(tmp_path)
-    return TestClient(create_app(StubEstimator(START_PLACEMENT), PositionHub()))
+    return TestClient(create_app(StubRecognizer(START_PLACEMENT), PositionHub()))
 
 
-def _estimate(client: TestClient, corners: str | None = "0,0,80,0,80,80,0,80") -> dict:
-    query = f"?corners={corners}" if corners else ""
+def _estimate(client: TestClient) -> dict:
     r = client.post(
-        f"/estimate{query}",
+        "/estimate",
         content=encode_jpeg(render_board()),
         headers={"Content-Type": "image/jpeg"},
     )
@@ -48,7 +47,7 @@ def _estimate(client: TestClient, corners: str | None = "0,0,80,0,80,80,0,80") -
 def test_uploads_report_retention_off(tmp_path, monkeypatch):
     monkeypatch.delenv("BR_SAVE_UPLOADS", raising=False)
     monkeypatch.chdir(tmp_path)
-    client = TestClient(create_app(StubEstimator(START_PLACEMENT), PositionHub()))
+    client = TestClient(create_app(StubRecognizer(START_PLACEMENT), PositionHub()))
     r = client.get("/uploads")
     assert r.status_code == 200
     assert r.json() == {"retention": False, "uploads": []}
@@ -71,7 +70,7 @@ def test_uploads_lists_newest_first_with_labeled_and_unlabeled_entries(retaining
     assert labeled["label_placement"] == MIDGAME
     assert labeled["label_corrections"] == 2
     assert labeled["kind"] == "estimate"
-    assert labeled["corners"] == "0,0,80,0,80,80,0,80"
+    assert "corners" not in labeled and "autorotated" not in labeled
     assert labeled["placement"] == START_PLACEMENT  # what the server predicted
 
     unlabeled = body["uploads"][1]
@@ -109,7 +108,7 @@ def test_uploads_skips_an_entry_whose_photo_is_missing(retaining, tmp_path):
 def test_photo_retention_off_is_422(tmp_path, monkeypatch):
     monkeypatch.delenv("BR_SAVE_UPLOADS", raising=False)
     monkeypatch.chdir(tmp_path)
-    client = TestClient(create_app(StubEstimator(START_PLACEMENT), PositionHub()))
+    client = TestClient(create_app(StubRecognizer(START_PLACEMENT), PositionHub()))
     r = client.get("/uploads/20260806-213500-0001-estimate/photo")
     assert r.status_code == 422
 
@@ -127,7 +126,7 @@ def test_photo_unknown_id_is_404(retaining):
 def test_photo_serves_the_stored_bytes_verbatim(retaining):
     body = encode_jpeg(render_board())
     r = retaining.post(
-        "/estimate?corners=0,0,80,0,80,80,0,80",
+        "/estimate",
         content=body,
         headers={"Content-Type": "image/jpeg"},
     )

@@ -37,10 +37,9 @@ from board_reader_core.protocol import START_PLACEMENT, PositionEvent
 from board_reader_core.recording import Recording
 from board_reader_core.wire import Frame
 
-from board_reader_inference.estimator import StubEstimator
 from board_reader_inference.hub import PositionHub
 from board_reader_inference.ingest import BACKSTOP_SLACK, FrameIngest
-from board_reader_inference.routing import WholeFrameRead
+from board_reader_inference.recognizer import StubRecognizer, frame_reader
 from board_reader_inference.schedule import (
     DEFAULT_POLICY_SPEC,
     BurstTriggered,
@@ -80,11 +79,11 @@ class _Recorder:
 
     def __init__(self) -> None:
         self.seen: list[tuple[str, int]] = []
-        self._stub = StubEstimator(START_PLACEMENT)
+        self._stub = frame_reader(StubRecognizer(START_PLACEMENT))
 
     def estimate(self, frame: Frame) -> PositionEvent:
         self.seen.append((frame.board_id, frame.seq))
-        return self._stub.estimate(frame)
+        return self._stub(frame)
 
     def seqs(self, board_id: str = "A1") -> list[int]:
         return [seq for board, seq in self.seen if board == board_id]
@@ -106,7 +105,7 @@ async def _drive(
     """
     est = _Recorder()
     ingest = FrameIngest(
-        lambda frame: WholeFrameRead(est, frame), PositionHub(), policy=policy
+        est.estimate, PositionHub(), policy=policy
     )
     for seq, stability in enumerate(stabilities):
         ingest.submit(_frame(seq, stability=stability, board_id=board_id))
@@ -190,7 +189,7 @@ def test_boards_schedule_independently():
     async def run():
         est = _Recorder()
         ingest = FrameIngest(
-            lambda frame: WholeFrameRead(est, frame), PositionHub(), policy=SHIPPED
+            est.estimate, PositionHub(), policy=SHIPPED
         )
         busy, quiet = _one_move(), [1.0] * 60
         for seq, (moving, still) in enumerate(zip(busy, quiet)):
@@ -222,14 +221,14 @@ class _GatedEstimator:
         self.seen: list[int] = []
         self.entered = threading.Event()
         self.release = threading.Event()
-        self._stub = StubEstimator(START_PLACEMENT)
+        self._stub = frame_reader(StubRecognizer(START_PLACEMENT))
 
     def estimate(self, frame: Frame) -> PositionEvent:
         self.seen.append(frame.seq)
         if not self.entered.is_set():
             self.entered.set()
             assert self.release.wait(timeout=10.0), "the test never released the worker"
-        return self._stub.estimate(frame)
+        return self._stub(frame)
 
 
 def test_a_burst_end_read_gets_the_sharper_contender_the_inbox_kept():
@@ -246,7 +245,7 @@ def test_a_burst_end_read_gets_the_sharper_contender_the_inbox_kept():
     async def run():
         est = _GatedEstimator()
         ingest = FrameIngest(
-            lambda frame: WholeFrameRead(est, frame), PositionHub(), policy=SHIPPED
+            est.estimate, PositionHub(), policy=SHIPPED
         )
         ingest.submit(_frame(0))  # the stream's first read — parks the worker
         while not est.entered.is_set():
@@ -285,7 +284,7 @@ def test_the_policy_sees_every_arriving_frame_not_just_the_ones_it_reads():
     async def run():
         est = _GatedEstimator()
         ingest = FrameIngest(
-            lambda frame: WholeFrameRead(est, frame), PositionHub(), policy=SHIPPED
+            est.estimate, PositionHub(), policy=SHIPPED
         )
         ingest.submit(_frame(0))
         while not est.entered.is_set():
@@ -324,7 +323,7 @@ def test_a_frozen_capture_clock_falls_back_to_the_nodes_own_keepalive():
         est = _Recorder()
         policy = BurstTriggered(keepalive_s=0.06, burst_end_reads=1, spacing_s=0.02)
         ingest = FrameIngest(
-            lambda frame: WholeFrameRead(est, frame), PositionHub(), policy=lambda: policy
+            est.estimate, PositionHub(), policy=lambda: policy
         )
         deadline = time.monotonic() + 5.0
         seq = 0
@@ -352,7 +351,7 @@ def test_a_declined_frame_publishes_nothing_at_all():
         hub = PositionHub()
         events: list[PositionEvent] = []
         ingest = FrameIngest(
-            lambda frame: WholeFrameRead(est, frame),
+            est.estimate,
             hub,
             on_event=lambda event, frame: events.append(event),
             policy=SHIPPED,
@@ -395,7 +394,7 @@ def test_frame_ingest_reads_everything_unless_it_is_given_a_policy():
 
     async def run():
         est = _Recorder()
-        ingest = FrameIngest(lambda frame: WholeFrameRead(est, frame), PositionHub())
+        ingest = FrameIngest(est.estimate, PositionHub())
         for seq in range(5):
             ingest.submit(_frame(seq))
             await asyncio.wait_for(ingest.drain(), timeout=5.0)
@@ -437,7 +436,7 @@ def test_br_schedule_chooses_the_gateways_policy(
     measured is literally the string the node runs — and it reaches the live
     socket, not just a constructor."""
     monkeypatch.setenv("BR_SCHEDULE", spec)
-    client = gateway(create_app(StubEstimator(START_PLACEMENT), PositionHub()))
+    client = gateway(create_app(StubRecognizer(START_PLACEMENT), PositionHub()))
     _stream(client, [_frame(seq) for seq in range(10)])
     drain_ingest(client)
 
@@ -458,7 +457,7 @@ def test_an_unparseable_schedule_fails_at_startup_not_on_the_first_frame(monkeyp
     a whole session read by a scheduler nobody asked for."""
     monkeypatch.setenv("BR_SCHEDULE", "burst-end:keepalve_s=3")
     with pytest.raises(ValueError, match="no parameter 'keepalve_s'"):
-        create_app(StubEstimator(START_PLACEMENT), PositionHub())
+        create_app(StubRecognizer(START_PLACEMENT), PositionHub())
 
 
 def test_serve_defaults_the_schedule_to_the_shipped_policy(monkeypatch):
@@ -500,7 +499,7 @@ def test_the_ingress_recording_keeps_the_frames_the_scheduler_declined(
 
     monkeypatch.setenv("BR_SCHEDULE", DEFAULT_POLICY_SPEC)
     monkeypatch.setenv("BR_RECORD_DIR", str(tmp_path / "rec"))
-    with TestClient(create_app(StubEstimator(START_PLACEMENT), PositionHub())) as client:
+    with TestClient(create_app(StubRecognizer(START_PLACEMENT), PositionHub())) as client:
         _stream(client, [_frame(seq) for seq in range(10)])
         assert client.app.state.ingest.frames_estimated <= 1
 

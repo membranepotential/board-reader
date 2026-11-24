@@ -8,10 +8,8 @@ no corners, crops nothing and is never calibrated. ChessQ Lite
 implementing this protocol.
 
 :func:`event_from_dist` is the one place a recognizer's distribution becomes a
-:class:`~board_reader_core.protocol.PositionEvent`.
-
-The gateway still speaks :class:`~.estimator.Estimator`, so a recognizer serves
-through :class:`RecognizerEstimator`.
+:class:`~board_reader_core.protocol.PositionEvent`, and :func:`frame_reader` the
+one read the gateway, the ingest stream and replay all run.
 
 **Missing weights degrade, loudly** (plan decision D2). ``BR_CHESSQ`` is set by
 both entry points, but the weights are never in git, so a fresh clone has none.
@@ -25,6 +23,7 @@ from __future__ import annotations
 
 import os
 import sys
+from collections.abc import Callable
 from pathlib import Path
 from typing import Literal, Protocol
 
@@ -40,14 +39,13 @@ from board_reader_core.protocol import (
 from board_reader_core.wire import Frame
 
 from board_reader_inference.chessq import ChessQRecognizer
-from board_reader_inference.estimator import Estimator
-from board_reader_inference.labels import BoardFrame
-from board_reader_inference.routing import RECTIFIED_GEOMETRY
-from board_reader_inference.squares import CropGeometry
 
 #: The ``orientation`` every recognizer event carries. Reserved since D10: the
 #: placement is always in the chess frame, so this never varies.
 ORIENTATION = "a1_bottom_left"
+
+#: One frame in, its position event out — what a read *is*, for every caller.
+FrameRead = Callable[[Frame], PositionEvent]
 
 
 class Recognizer(Protocol):
@@ -66,14 +64,26 @@ class Recognizer(Protocol):
 
 
 class StubRecognizer:
-    """Ignores the pixels and reads one authored placement (the walking skeleton)."""
+    """Ignores the pixels and reads one authored placement (the walking skeleton).
+
+    ``fallback`` says why the stub serves in place of the recognizer the
+    environment asked for (``/healthz`` reports it); ``None`` when a test or a
+    caller asked for the stub itself.
+    """
 
     name = "stub"
     frame: Literal["chess"] = "chess"
     model_path: str | None = None
 
-    def __init__(self, placement: str = START_PLACEMENT, *, confidence: float = 0.95) -> None:
+    def __init__(
+        self,
+        placement: str = START_PLACEMENT,
+        *,
+        confidence: float = 0.95,
+        fallback: str | None = None,
+    ) -> None:
         self.placement = placement
+        self.fallback = fallback
         self._dist = dist_from_placement(placement, confidence)
 
     def read(self, image: np.ndarray) -> np.ndarray:
@@ -98,55 +108,30 @@ def event_from_dist(frame: Frame, square_dist: np.ndarray) -> PositionEvent:
     )
 
 
-class RecognizerEstimator:
-    """A :class:`Recognizer` behind the gateway's estimator interface.
+def frame_reader(recognizer: Recognizer) -> FrameRead:
+    """``recognizer`` as a read: the frame's whole image in, its event out.
 
-    It declares the photo path (``crop_mode``) so routing hands it the ORIGINAL
-    pixels rather than a server-side warp, and it ignores any corners the frame
-    carries.
+    Any ``corners`` the frame carries (older edges and recordings send them) are
+    ignored — the recognizer finds the board itself.
     """
 
-    crop_mode = "photo"
-    # What ``?debug=1`` draws over the frame: the flat squares of the quad the
-    # frame carries. The recognizer cut no boxes, so this is the operator's view
-    # of where the corners say the board is, labeled with what was read there.
-    geometry: CropGeometry = RECTIFIED_GEOMETRY
-    square_size: int | None = None
-    orientation = ORIENTATION
+    def read(frame: Frame) -> PositionEvent:
+        return event_from_dist(frame, recognizer.read(frame.image))
 
-    def __init__(self, recognizer: Recognizer, *, fallback: str | None = None) -> None:
-        self.recognizer = recognizer
-        #: Why this recognizer serves instead of the one the environment asked
-        #: for (missing weights), or ``None`` when it is the one asked for.
-        self.fallback = fallback
-
-    def estimate(self, frame: Frame) -> PositionEvent:
-        return event_from_dist(frame, self.recognizer.read(frame.image))
-
-    def estimate_photo(self, frame: Frame, corners: np.ndarray) -> PositionEvent:
-        """The photo path routing sends original pixels to; ``corners`` are unused."""
-        return self.estimate(frame)
+    return read
 
 
-def read_frame(estimator: Estimator) -> BoardFrame:
-    """The frame ``estimator``'s placements are in: the recognizer's own (chess), or
-    the frame the frame's corners define for any other estimator."""
-    if isinstance(estimator, RecognizerEstimator):
-        return estimator.recognizer.frame
-    return "corners"
-
-
-def _stub(reason: str) -> RecognizerEstimator:
+def _stub(reason: str) -> StubRecognizer:
     """The stub recognizer, announced: a fixed start position is not a read."""
     print(
         f"!! {reason}\n!! serving the STUB recognizer: a fixed start position, "
         "not a read of the board",
         file=sys.stderr,
     )
-    return RecognizerEstimator(StubRecognizer(), fallback=reason)
+    return StubRecognizer(fallback=reason)
 
 
-def build_from_env() -> RecognizerEstimator:
+def build_from_env() -> Recognizer:
     """The recognizer the environment asks for.
 
     ``BR_CHESSQ=<path>`` -> ChessQ Lite; the stub, loudly, when the variable is
@@ -158,4 +143,4 @@ def build_from_env() -> RecognizerEstimator:
     if not Path(path).is_file():
         return _stub(f"BR_CHESSQ={path!r} does not name a model file; run `make models`")
     print(f"serving ChessQ from BR_CHESSQ={path!r}")
-    return RecognizerEstimator(ChessQRecognizer(path))
+    return ChessQRecognizer(path)

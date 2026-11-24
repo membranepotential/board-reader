@@ -18,7 +18,7 @@ from starlette.testclient import TestClient
 from board_reader_core.recording import INDEX_NAME, Recording
 from board_reader_core.wire import Frame
 
-from board_reader_inference.estimator import StubEstimator
+from board_reader_inference.recognizer import StubRecognizer
 from board_reader_inference.server import create_app
 
 
@@ -68,7 +68,7 @@ def recorded(tmp_path, monkeypatch):
     """A gateway recording into ``tmp_path/rec``. Yields (client, record_root)."""
     root = tmp_path / "rec"
     monkeypatch.setenv("BR_RECORD_DIR", str(root))
-    with TestClient(create_app(estimator=StubEstimator())) as client:
+    with TestClient(create_app(recognizer=StubRecognizer())) as client:
         yield client, root
 
 
@@ -152,7 +152,7 @@ def test_recording_is_off_unless_asked_for(tmp_path, monkeypatch):
     """
     monkeypatch.delenv("BR_RECORD_DIR", raising=False)
     monkeypatch.chdir(tmp_path)
-    with TestClient(create_app(estimator=StubEstimator())) as client:
+    with TestClient(create_app(recognizer=StubRecognizer())) as client:
         _send(client, _frame(0))
         assert "recording" not in client.get("/healthz").json()
 
@@ -165,7 +165,7 @@ def test_a_recording_failure_does_not_break_the_stream(tmp_path, monkeypatch):
     blocker.write_text("not a directory")
     monkeypatch.setenv("BR_RECORD_DIR", str(blocker))
 
-    with TestClient(create_app(estimator=StubEstimator())) as client:
+    with TestClient(create_app(recognizer=StubRecognizer())) as client:
         _send(client, _frame(0), _frame(1))
         health = client.get("/healthz").json()
         assert health["status"] == "ok"
@@ -177,7 +177,7 @@ def test_max_mb_caps_the_session(tmp_path, monkeypatch):
     monkeypatch.setenv("BR_RECORD_DIR", str(tmp_path / "rec"))
     monkeypatch.setenv("BR_RECORD_MAX_MB", "0.001")  # 1000 bytes
 
-    with TestClient(create_app(estimator=StubEstimator())) as client:
+    with TestClient(create_app(recognizer=StubRecognizer())) as client:
         _send(client, *(_frame(i) for i in range(5)))
         assert client.get("/healthz").json()["recording"]["active"] is False
 
@@ -218,7 +218,7 @@ def test_published_events_land_in_the_session_beside_their_frames(recorded):
 def test_a_refused_frame_is_counted_and_the_socket_survives():
     """A stream that is ALL refusals must not look like one that never sent —
     the refusal used to reach only the phone's banner."""
-    with TestClient(create_app(estimator=StubEstimator())) as client:
+    with TestClient(create_app(recognizer=StubRecognizer())) as client:
         with client.websocket_connect("/ingest") as ws:
             ws.send_text(json.dumps({"type": "frame", "board_id": "A1", "seq": 0}))
             ws.send_bytes(b"not a jpeg")

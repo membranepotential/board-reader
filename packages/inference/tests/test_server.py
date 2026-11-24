@@ -10,13 +10,13 @@ from board_reader_core.protocol import START_PLACEMENT
 from board_reader_core.sim import render_board
 from board_reader_core.wire import Frame
 
-from board_reader_inference.estimator import StubEstimator
 from board_reader_inference.hub import PositionHub
+from board_reader_inference.recognizer import StubRecognizer
 from board_reader_inference.server import create_app
 
 
 def _client(**kw):
-    return TestClient(create_app(StubEstimator(START_PLACEMENT), PositionHub()))
+    return TestClient(create_app(StubRecognizer(START_PLACEMENT), PositionHub()))
 
 
 def _send_frame(ws, seq=0):
@@ -43,7 +43,7 @@ def test_boards_404_before_any_frame():
 def test_ingest_frame_then_board_snapshot_available(gateway, drain_ingest):
     # The ack means "received", not "estimated" — hence gateway + drain_ingest
     # rather than a bare client (see conftest.py).
-    client = gateway(create_app(StubEstimator(START_PLACEMENT), PositionHub()))
+    client = gateway(create_app(StubRecognizer(START_PLACEMENT), PositionHub()))
     with client.websocket_connect("/ingest") as ingest:
         _send_frame(ingest, seq=5)
         ack = ingest.receive_json()
@@ -60,7 +60,7 @@ def test_end_to_end_ingest_to_viewer_stream(gateway):
     # `websocket_connect` gets its own portal, so the hub's subscriber queue would
     # live on the viewer's loop while `publish` runs on the ingest loop — waking a
     # future across loops, which strands `receive_text()` below forever.
-    client = gateway(create_app(StubEstimator(START_PLACEMENT), PositionHub()))
+    client = gateway(create_app(StubRecognizer(START_PLACEMENT), PositionHub()))
     with (
         client.websocket_connect("/viewer") as viewer,
         client.websocket_connect("/ingest") as ingest,
@@ -101,35 +101,20 @@ def test_estimate_rejects_garbage_bytes():
     assert "error" in r.json()
 
 
-def test_estimate_with_corners_falls_back_to_server_side_warp():
-    """A photo + corners against a rectified-mode estimator still estimates.
-
-    The stub has no photo path, so the gateway warps the photo to the canonical
-    crop server-side and runs the normal path.
-    """
-    from board_reader_core.sim import simulate_angled_view
-    from board_reader_core.wire import encode_jpeg
-
-    photo, quad = simulate_angled_view(render_board())
-    corners = ",".join(f"{x:.1f},{y:.1f}" for x, y in quad)
-    r = _client().post(
-        f"/estimate?corners={corners}",
-        content=encode_jpeg(photo),
-        headers={"Content-Type": "image/jpeg"},
-    )
-    assert r.status_code == 200
-    assert r.json()["placement"] == START_PLACEMENT
-
-
-def test_estimate_rejects_malformed_corners():
+def test_estimate_reads_the_whole_photo_and_ignores_legacy_query_params():
+    """``?corners``, ``?debug`` and ``?autorotate`` were the crop-classifier stack's;
+    an old client sending them still gets the recognizer's read of the whole photo."""
     from board_reader_core.wire import encode_jpeg
 
     r = _client().post(
-        "/estimate?corners=1,2,3",
+        "/estimate?corners=1,2,3&debug=1&autorotate=1",
         content=encode_jpeg(render_board()),
         headers={"Content-Type": "image/jpeg"},
     )
-    assert r.status_code == 400
+    assert r.status_code == 200
+    body = r.json()
+    assert body["placement"] == START_PLACEMENT
+    assert not {"debug", "autorotated", "warnings"} & body.keys()
 
 
 def test_detect_endpoint_success_and_no_board(monkeypatch):
@@ -201,7 +186,7 @@ def test_detect_does_not_block_the_event_loop(monkeypatch):
     monkeypatch.setitem(sys.modules, "board_reader_core.boarddetect", fake)
 
     body = encode_jpeg(render_board())
-    app = create_app(StubEstimator(START_PLACEMENT), PositionHub())
+    app = create_app(StubRecognizer(START_PLACEMENT), PositionHub())
     # A shared portal (single event loop) is required: without `with`, each
     # TestClient call gets its own throwaway portal/loop and would never
     # contend for the same loop regardless of whether the handler blocks it.
@@ -244,7 +229,7 @@ def test_viewer_replays_retained_latest_on_connect(gateway, drain_ingest):
     # Draining first is what keeps this test from HANGING the suite: if the frame
     # is never estimated, nothing is retained, and `receive_text()` below waits
     # forever for an event that will never come (see conftest.py).
-    client = gateway(create_app(StubEstimator(START_PLACEMENT), PositionHub()))
+    client = gateway(create_app(StubRecognizer(START_PLACEMENT), PositionHub()))
     with client.websocket_connect("/ingest") as ingest:
         _send_frame(ingest, seq=9)
         ingest.receive_json()
@@ -255,55 +240,12 @@ def test_viewer_replays_retained_latest_on_connect(gateway, drain_ingest):
     assert event["seq"] == 9
 
 
-def _assert_valid_jpeg_b64(b64: str) -> None:
-    import base64
-
-    import cv2
-    import numpy as np
-
-    raw = base64.b64decode(b64)
-    arr = np.frombuffer(raw, dtype=np.uint8)
-    decoded = cv2.imdecode(arr, cv2.IMREAD_COLOR)
-    assert decoded is not None, "debug image did not decode as a valid JPEG"
-
-
-def test_estimate_debug_off_by_default():
-    from board_reader_core.wire import encode_jpeg
-
-    r = _client().post(
-        "/estimate",
-        content=encode_jpeg(render_board()),
-        headers={"Content-Type": "image/jpeg"},
-    )
-    assert r.status_code == 200
-    assert "debug" not in r.json()
-
-
-def test_estimate_debug_on_returns_valid_images_and_does_not_leak_into_snapshot():
-    from board_reader_core.wire import encode_jpeg
-
-    client = _client()
-    r = client.post(
-        "/estimate?debug=1",
-        content=encode_jpeg(render_board()),
-        headers={"Content-Type": "image/jpeg"},
-    )
-    assert r.status_code == 200
-    body = r.json()
-    assert set(body["debug"].keys()) == {"boxes", "mosaic"}
-    _assert_valid_jpeg_b64(body["debug"]["boxes"])
-    _assert_valid_jpeg_b64(body["debug"]["mosaic"])
-    # The debug key is HTTP-response-only; the hub's retained event has none.
-    snap = client.get("/boards/snapshot").json()
-    assert "debug" not in snap
-
-
 def test_uploads_saved_when_retention_enabled(tmp_path, monkeypatch):
     from board_reader_core.wire import encode_jpeg
 
     monkeypatch.setenv("BR_SAVE_UPLOADS", str(tmp_path))
     monkeypatch.chdir(tmp_path)
-    client = TestClient(create_app(StubEstimator(START_PLACEMENT), PositionHub()))
+    client = TestClient(create_app(StubRecognizer(START_PLACEMENT), PositionHub()))
     body = encode_jpeg(render_board())
 
     r = client.post("/estimate", content=body, headers={"Content-Type": "image/jpeg"})
@@ -328,7 +270,7 @@ def test_uploads_not_saved_by_default(tmp_path, monkeypatch):
 
     monkeypatch.delenv("BR_SAVE_UPLOADS", raising=False)
     monkeypatch.chdir(tmp_path)  # any accidental relative write would land here
-    client = TestClient(create_app(StubEstimator(START_PLACEMENT), PositionHub()))
+    client = TestClient(create_app(StubRecognizer(START_PLACEMENT), PositionHub()))
     r = client.post(
         "/estimate", content=encode_jpeg(render_board()),
         headers={"Content-Type": "image/jpeg"},
@@ -351,30 +293,3 @@ def test_low_light_warning_on_dark_photos():
         headers={"Content-Type": "image/jpeg"},
     )
     assert "warnings" not in r.json()
-
-
-def test_estimate_warns_on_very_low_camera_angle():
-    """A corner quad compressed to <0.62 aspect (camera nearly board-level) gets
-    a very_low_angle warning — recognition measurably collapses there."""
-
-    from board_reader_core.wire import encode_jpeg
-
-    # The warning comes from the quad's aspect alone, before any recognition runs.
-    photo = render_board()
-    h, w = photo.shape[:2]
-    client = _client()
-    flat = f"0,0,{w},0,{w},{int(h * 0.4)},0,{int(h * 0.4)}"  # aspect 0.4
-    r = client.post(
-        f"/estimate?corners={flat}",
-        content=encode_jpeg(photo),
-        headers={"Content-Type": "image/jpeg"},
-    )
-    assert "very_low_angle" in r.json().get("warnings", [])
-
-    square = f"0,0,{w},0,{w},{h},0,{h}"
-    r2 = client.post(
-        f"/estimate?corners={square}",
-        content=encode_jpeg(photo),
-        headers={"Content-Type": "image/jpeg"},
-    )
-    assert "very_low_angle" not in r2.json().get("warnings", [])

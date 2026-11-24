@@ -11,7 +11,7 @@ Runs on the inference node. Three surfaces:
 * ``GET /boards/{id}`` + ``GET /boards/{id}/frame`` + ``GET /healthz`` — latest
   position snapshot, latest raw ingested JPEG, and liveness.
 
-The gateway holds the shared estimator and the position hub. It never imports the
+The gateway holds the recognizer and the position hub. It never imports the
 edge package; it only speaks the wire (:mod:`board_reader_core.wire`).
 """
 
@@ -33,33 +33,21 @@ from fastapi import FastAPI, Query, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
 
-from board_reader_core.boarddetect import LOW_ANGLE_ASPECT, quad_aspect
-from board_reader_core.corners import parse_corners
 from board_reader_core.protocol import PositionEvent, square_evidence
 from board_reader_core.recording import FrameRecorder
 from board_reader_core.wire import Frame, decode_jpeg
 
-from board_reader_inference.estimator import Estimator
 from board_reader_inference.hub import PositionHub
 from board_reader_inference.ingest import FrameIngest
 from board_reader_inference.recognizer import (
-    RecognizerEstimator,
+    Recognizer,
+    StubRecognizer,
     build_from_env,
-    read_frame,
+    frame_reader,
 )
-from board_reader_inference.routing import ReadView, route_for
 from board_reader_inference.schedule import EveryFrame, FramePolicy, parse_policy
-from board_reader_inference.squares import (
-    crop_squares_photo,
-    square_boxes,
-)
 
 log = logging.getLogger(__name__)
-
-
-def _parse_debug(spec: str | None) -> bool:
-    """``?debug=1|true`` -> on; absent/anything else -> off."""
-    return spec is not None and spec.lower() in ("1", "true")
 
 
 def _id_epoch(upload_id: str) -> float:
@@ -111,15 +99,6 @@ def _record_max_bytes() -> int | None:
 # Below this mean pixel value a photo is dim enough that recognition measurably
 # degrades (evening-room shots measured ~37/255) — responses carry a warning.
 LOW_LIGHT_MEAN = 55.0
-
-# Projected board aspect below which the camera is too close to board level for
-# recognition to survive; defined in core beside the detector. Warn, don't block.
-LOW_ANGLE_HW = LOW_ANGLE_ASPECT
-
-# The metric and its threshold live in core beside the detector that produces the
-# quads, so the serving warning and the capture-side stream QC (tools/video) can
-# never drift apart.
-_quad_aspect = quad_aspect
 
 
 def _prior_decode(event):
@@ -204,11 +183,12 @@ def event_line(
 
 
 def create_app(
-    estimator: Estimator | None = None,
+    recognizer: Recognizer | None = None,
     hub: PositionHub | None = None,
 ) -> FastAPI:
-    """Build the gateway app. Estimator and hub are injectable for tests."""
-    est: Estimator = estimator if estimator is not None else build_from_env()
+    """Build the gateway app. Recognizer and hub are injectable for tests."""
+    recognizer_ = recognizer if recognizer is not None else build_from_env()
+    read = frame_reader(recognizer_)
     hub_: PositionHub = hub if hub is not None else PositionHub()
 
     def _record_published(event, frame) -> None:
@@ -218,10 +198,10 @@ def create_app(
         if not recorder.record_event(event_line(event, frame, published_ts=time.time())):
             print(f"frame recording stopped: {recorder.stopped_reason}")
 
-    # Streaming ingress (WP-G1/G2): frames are estimated off the event loop by
-    # per-board workers, through the same routing decision ``POST /estimate`` takes.
+    # Streaming ingress (WP-G1/G2): frames are read off the event loop by
+    # per-board workers, through the same read ``POST /estimate`` runs.
     ingest_ = FrameIngest(
-        lambda frame: route_for(est, frame),
+        read,
         hub_,
         on_event=_record_published,
         policy=_frame_policy(),
@@ -264,9 +244,9 @@ def create_app(
         allow_origins=os.environ.get("BR_ALLOW_ORIGINS", "*").split(","),
         allow_methods=["*"],
         allow_headers=["*"],
-        expose_headers=["X-Seq", "X-Capture-Ts", "X-Corners"],
+        expose_headers=["X-Seq", "X-Capture-Ts"],
     )
-    app.state.estimator = est
+    app.state.recognizer = recognizer_
     app.state.hub = hub_
     app.state.ingest = ingest_
     app.state.recorder = recorder
@@ -310,12 +290,14 @@ def create_app(
             health["recording"] = recorder.stats()
         # Which recognizer reads, from which file — and, when the weights were
         # missing, that the stub is serving instead and why (D2: degrade loudly).
-        if isinstance(est, RecognizerEstimator):
-            health["recognizer"] = {
-                "name": est.recognizer.name,
-                "model": est.recognizer.model_path,
-                **({"fallback": est.fallback} if est.fallback else {}),
-            }
+        fallback = (
+            recognizer_.fallback if isinstance(recognizer_, StubRecognizer) else None
+        )
+        health["recognizer"] = {
+            "name": recognizer_.name,
+            "model": recognizer_.model_path,
+            **({"fallback": fallback} if fallback else {}),
+        }
         return health
 
     @app.get("/boards/{board_id}")
@@ -330,9 +312,7 @@ def create_app(
         """Most recent raw JPEG ingested for ``board_id`` — a video-like preview.
 
         Served as-received (no re-encode) so the viewer can show what the camera
-        actually sent, independent of whatever the estimator made of it. When the
-        stream carried the playing-surface quad, ``X-Corners`` reports it in the
-        same ``x0,y0,...,x3,y3`` spelling ``?corners=`` takes.
+        actually sent, independent of whatever the recognizer made of it.
         """
         entry = latest_frames.get(board_id)
         if entry is None:
@@ -343,18 +323,10 @@ def create_app(
             "X-Capture-Ts": str(header["capture_ts"]),
             "Cache-Control": "no-store",
         }
-        corners = header.get("corners")
-        if corners:
-            headers["X-Corners"] = ",".join(str(v) for v in corners)
         return Response(content=jpeg, media_type="image/jpeg", headers=headers)
 
-    # One-shot HTTP ingress for the phone snapshot page (viewer /snapshot).
-    #
-    # Without ``corners`` the body is an already-rectified top-down crop (the
-    # original M1 contract). With ``corners=x0,y0,...,x3,y3`` (a8,h8,h1,a1, pixel
-    # coords of the POSTED image) the body is the ORIGINAL photo and recognition
-    # prefers tall full-piece boxes cut from it (Chesscog-style) — a warped square
-    # decapitates pieces, which is exactly what hurt real-photo accuracy.
+    # One-shot HTTP ingress for the phone snapshot page (viewer /snapshot): the
+    # body is the photo as shot, and the recognizer finds the board in it.
     snapshot_seq = itertools.count()
 
     # Opt-in raw-photo retention (``BR_SAVE_UPLOADS=<dir>``): every decodable
@@ -367,8 +339,6 @@ def create_app(
     def _save_upload(
         kind: str,
         body: bytes,
-        *,
-        corners: str | None = None,
     ) -> Path | None:
         """Returns the sidecar path so callers can append response metadata."""
         if not save_dir:
@@ -379,8 +349,6 @@ def create_app(
             stem = f"{time.strftime('%Y%m%d-%H%M%S')}-{next(upload_seq):04d}-{kind}"
             (d / f"{stem}.jpg").write_bytes(body)
             meta: dict[str, object] = {"kind": kind, "ts": time.time()}
-            if corners is not None:
-                meta["corners"] = corners
             sidecar = d / f"{stem}.json"
             sidecar.write_text(json.dumps(meta))
             return sidecar
@@ -399,63 +367,21 @@ def create_app(
         except (OSError, ValueError):
             pass
 
-    def _debug_payload(view: ReadView, square_dist) -> dict:
-        """The opt-in ``?debug=1`` visualisation pair, from what the branch saw."""
-        from board_reader_inference.diagnostics import (
-            crop_mosaic,
-            draw_boxes,
-            to_b64_jpeg,
-        )
-
-        boxes = square_boxes(view.corners, view.geometry, view.image.shape)
-        crops = crop_squares_photo(
-            view.image, view.corners, geometry=view.geometry, size=view.size
-        )
-        return {
-            "boxes": to_b64_jpeg(draw_boxes(view.image, boxes, square_dist)),
-            "mosaic": to_b64_jpeg(crop_mosaic(crops, square_dist)),
-        }
-
     @app.post("/estimate")
-    async def estimate(
-        request: Request,
-        board_id: str = "snapshot",
-        corners: str | None = None,
-        debug: str | None = None,
-    ) -> JSONResponse:
+    async def estimate(request: Request, board_id: str = "snapshot") -> JSONResponse:
         body = await request.body()
         try:
             image = decode_jpeg(body)
         except ValueError as e:
             return JSONResponse({"error": str(e)}, status_code=400)
-        sidecar = _save_upload("estimate", body, corners=corners)
-        quad = None
-        if corners is not None:
-            try:
-                quad = parse_corners(corners)
-            except ValueError as e:
-                return JSONResponse({"error": str(e)}, status_code=400)
-
-        debug_on = _parse_debug(debug)
+        sidecar = _save_upload("estimate", body)
         warns = ["low_light"] if float(image.mean()) < LOW_LIGHT_MEAN else []
-        if quad is not None and _quad_aspect(quad) < LOW_ANGLE_HW:
-            warns.append("very_low_angle")
-
         frame = Frame(
-            board_id=board_id,
-            seq=next(snapshot_seq),
-            capture_ts=time.time(),
-            image=image,
-            corners=quad,
+            board_id=board_id, seq=next(snapshot_seq), capture_ts=time.time(), image=image
         )
-        # The one routing decision — the same one the live stream takes (§4.5,
-        # :mod:`.routing`), so a photo posted here and the same photo streamed can
-        # never be read through different branches. The read is real model work —
-        # off the event loop, so /ingest acks and /viewer never stall behind a
-        # snapshot upload.
-        route = route_for(est, frame)
-        event = await asyncio.to_thread(route.read)
-        frame_of_read = read_frame(est)
+        # The same read the live stream runs. It is real model work — off the event
+        # loop, so /ingest acks and /viewer never stall behind a snapshot upload.
+        event = await asyncio.to_thread(read, frame)
         # Repair attached before the publish — the hub's subscribers draw
         # ``prior.placement``, so publishing bare would show an impossible board
         # on the one surface the repair exists for. ``result`` inherits it.
@@ -465,7 +391,7 @@ def create_app(
         result = event.to_dict()
         _annotate_upload(
             sidecar,
-            frame=frame_of_read,
+            frame=recognizer_.frame,
             placement=event.placement,
             prior_flips=[f.square for f in repair.flips],
         )
@@ -476,12 +402,6 @@ def create_app(
             result["upload"] = sidecar.stem
         if warns:
             result["warnings"] = warns
-        if debug_on:
-            # Recompute crops/boxes purely for visualisation — the estimator above
-            # already cropped internally; debug is opt-in so this extra pass is
-            # acceptable. The view comes from the route, so it is always the
-            # geometry recognition used.
-            result["debug"] = _debug_payload(route.view(), event.square_dist)
         return JSONResponse(result)
 
     @app.post("/labels/{upload_id}")
@@ -604,9 +524,7 @@ def create_app(
                     "id": stem,
                     "ts": float(ts) if isinstance(ts, (int, float)) else _id_epoch(stem),
                     "kind": str(meta["kind"]),
-                    "corners": meta.get("corners"),
                     "placement": meta.get("placement"),
-                    "autorotated": meta.get("autorotated"),
                     "labeled": False,
                     "label_placement": None,
                     "label_corrections": None,
