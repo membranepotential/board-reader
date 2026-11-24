@@ -3,8 +3,9 @@
 This module is the spine of the system and is imported by BOTH the edge (Pi) and
 the inference node. It carries NO node-specific logic: only the canonical
 position-event shape, the 13-class vocabulary, and pure derivations over the
-per-square distribution. Kept dependency-light (numpy only) so the same contract
-runs on the Pi, the inference node, and the eventual browser port.
+per-square distribution. Kept dependency-light (numpy and pydantic) so the same
+contract runs on the Pi and the inference node; the browser gets it generated
+(:mod:`.schema`).
 
 Canonical output is the full 8x8x13 ``square_dist`` (decision #14); ``placement``
 (FEN field 1) and ``confidence`` are *derived* from it, never authored alongside.
@@ -12,18 +13,45 @@ Canonical output is the full 8x8x13 ``square_dist`` (decision #14); ``placement`
 
 from __future__ import annotations
 
-import json
-from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from typing import Annotated, Literal, get_args
 
 import numpy as np
+from pydantic import (
+    AfterValidator,
+    Discriminator,
+    Field,
+    PlainSerializer,
+    PlainValidator,
+    SerializationInfo,
+    StrictBool,
+    StrictFloat,
+    StrictStr,
+    Tag,
+    WithJsonSchema,
+)
+
+from board_reader_core.wiremodel import (
+    BoardId,
+    Message,
+    Natural,
+    Unit,
+    Wire,
+    absent,
+    adapter,
+    checked,
+    message,
+    parse,
+    rounded,
+    tag,
+    wire,
+)
 
 # 13-class vocabulary. Index order is canonical and travels in every event so a
 # consumer can map every per-square vector. Uppercase = white, lowercase = black,
 # ``empty`` is index 0 (DESIGN.md §5).
-CLASSES: tuple[str, ...] = (
-    "empty", "P", "N", "B", "R", "Q", "K", "p", "n", "b", "r", "q", "k",
-)
+ClassName = Literal["empty", "P", "N", "B", "R", "Q", "K", "p", "n", "b", "r", "q", "k"]
+CLASSES: tuple[ClassName, ...] = get_args(ClassName)
 NUM_CLASSES = len(CLASSES)
 EMPTY = 0
 CLASS_INDEX: dict[str, int] = {c: i for i, c in enumerate(CLASSES)}
@@ -58,9 +86,14 @@ def square_name_at(index: int) -> str:
 
 # ``status`` deliberately has no ``illegal`` value — legality is not ours to judge
 # (DESIGN.md §5). An illegal-looking placement is reported as ``ok``.
-VALID_STATUS: tuple[str, ...] = ("ok", "recalibrating", "needs_setup", "stale")
-VALID_RUNNING: tuple[str, ...] = ("white", "black", "none")
-DEFAULT_ORIENTATION = "a1_bottom_left"
+Status = Literal["ok", "recalibrating", "needs_setup", "stale"]
+VALID_STATUS: tuple[Status, ...] = get_args(Status)
+#: Which side's clock is running (DESIGN.md D7). ``none`` = neither/unknown.
+Running = Literal["white", "black", "none"]
+VALID_RUNNING: tuple[Running, ...] = get_args(Running)
+#: The only frame an event names (reserved): the placement is in the chess frame.
+Orientation = Literal["a1_bottom_left"]
+DEFAULT_ORIENTATION: Orientation = "a1_bottom_left"
 
 # Distributions are floating point; allow a little slack when checking they sum to 1.
 _SUM_TOL = 1e-3
@@ -79,7 +112,7 @@ def iso_utc(ts: float) -> str:
 def parse_placement(placement: str) -> list[list[str]]:
     """FEN field 1 -> 8x8 grid of class symbols ("empty" for empties).
 
-    Row 0 is rank 8, column 0 is file a.
+    Row 0 is rank 8, column 0 is file a. A digit is a run of 1 to 8 empty squares.
     """
     rows = placement.split("/")
     if len(rows) != GRID:
@@ -88,7 +121,7 @@ def parse_placement(placement: str) -> list[list[str]]:
     for rank in rows:
         cells: list[str] = []
         for ch in rank:
-            if ch.isdigit():
+            if ch in "12345678":
                 cells.extend(["empty"] * int(ch))
             elif ch in CLASS_INDEX and ch != "empty":
                 cells.append(ch)
@@ -199,62 +232,117 @@ def square_evidence(
     ]
 
 
-@dataclass
-class ClockState:
+# ---- the wire models (DESIGN.md §5) -------------------------------------------
+
+
+def _placement(value: str) -> str:
+    parse_placement(value)  # raises on a malformed board
+    return value
+
+
+#: FEN field 1, eight ranks of eight squares each (the ``isPlacement`` check).
+Placement = Annotated[
+    StrictStr, AfterValidator(_placement), Field(json_schema_extra=checked("isPlacement"))
+]
+#: An algebraic square name, ``a1`` .. ``h8``.
+Square = Annotated[StrictStr, Field(pattern=r"^[a-h][1-8]$")]
+#: RFC 3339 UTC with a ``Z``; :func:`iso_utc` writes milliseconds.
+Utc = Annotated[
+    StrictStr,
+    Field(pattern=r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]+)?Z$"),
+]
+#: A unit-interval score, rounded on the way in (see :func:`.schema.rounded`).
+Score = Annotated[Unit, AfterValidator(rounded(6))]
+
+
+def _classes(value: tuple[str, ...]) -> tuple[ClassName, ...]:
+    if value != CLASSES:
+        raise ValueError("event 'classes' does not match this protocol's CLASSES")
+    return CLASSES
+
+
+#: The class order every per-square vector is in; always exactly :data:`CLASSES`.
+Classes = Annotated[
+    tuple[StrictStr, ...],
+    AfterValidator(_classes),
+    WithJsonSchema({"type": "array", "const": list(CLASSES)}),
+]
+
+#: How many decimals ``to_dict``/``to_json`` keep of each probability by default.
+ROUND_DIST = 4
+
+_DIST_ROWS = adapter(list[list[list[StrictFloat]]])
+
+
+def _square_dist(value: object) -> np.ndarray:
+    """``value`` as the (8, 8, 13) float32 distribution, every entry in [0, 1].
+
+    An array (the recognizers') is taken as it is; anything else must be nested
+    JSON numbers, checked strictly so a ``true`` is not a probability.
+    """
+    if isinstance(value, np.ndarray):
+        exact = value
+    else:
+        exact = np.asarray(_DIST_ROWS.validate_python(value), dtype=np.float64)
+    if exact.shape != (GRID, GRID, NUM_CLASSES):
+        raise ValueError(
+            f"square_dist must be {GRID}x{GRID}x{NUM_CLASSES}, got {exact.shape}"
+        )
+    if not np.isfinite(exact).all() or exact.min() < 0 or exact.max() > 1:
+        raise ValueError("square_dist entries must be probabilities in [0, 1]")
+    return exact.astype(np.float32, copy=False)
+
+
+def _square_dist_json(arr: np.ndarray, info: SerializationInfo) -> list:
+    ndigits = (info.context or {}).get("round_dist", ROUND_DIST)
+    out = np.asarray(arr, dtype=float)
+    return (out if ndigits is None else np.round(out, ndigits)).tolist()
+
+
+def _fixed(items: dict, n: int) -> dict:
+    return {"type": "array", "items": items, "minItems": n, "maxItems": n}
+
+
+#: The canonical 8x8x13 distribution: rank 8 -> rank 1, file a -> h, :data:`CLASSES`.
+SquareDist = Annotated[
+    np.ndarray,
+    PlainValidator(_square_dist),
+    PlainSerializer(_square_dist_json),
+    WithJsonSchema(
+        _fixed(_fixed(_fixed({"type": "number", "minimum": 0, "maximum": 1}, NUM_CLASSES), GRID), GRID)
+    ),
+]
+
+
+@wire(frozen=False)
+class ClockState(Wire):
     """Which side's clock is running (DESIGN.md D7). ``none`` = neither/unknown."""
 
-    running: str = "none"
-
-    def __post_init__(self) -> None:
-        if self.running not in VALID_RUNNING:
-            raise ValueError(f"clock.running must be one of {VALID_RUNNING}")
-
-    def to_dict(self) -> dict:
-        return {"running": self.running}
+    running: Running = "none"
 
     @classmethod
-    def from_dict(cls, d: dict | None) -> ClockState:
-        if not d:
-            return cls()
-        return cls(running=d.get("running", "none"))
+    def from_dict(cls, raw: object) -> ClockState:
+        return cls() if not raw else parse(cls, raw)
 
 
-@dataclass(frozen=True)
-class PriorFlip:
+@wire
+class PriorFlip(Wire):
     """One square the hard-constraint decoder relabelled, as it travels on the wire.
 
     The producer is the inference node's prior decoder; this is only its wire
-    shape. ``cost`` is the log-probability margin given up, in nats.
+    shape. ``cost`` is the log-probability margin given up, in nats; it may be
+    negative on a square's second flip.
     """
 
-    square: str  # algebraic, e.g. "d8"
-    from_class: str
-    to_class: str
-    cost: float
-    constraint: str
-
-    def to_dict(self) -> dict:
-        return {
-            "square": self.square,
-            "from": self.from_class,
-            "to": self.to_class,
-            "cost": round(self.cost, 4),
-            "constraint": self.constraint,
-        }
-
-    @classmethod
-    def from_dict(cls, d: dict) -> PriorFlip:
-        return cls(
-            square=str(d["square"]),
-            from_class=str(d["from"]),
-            to_class=str(d["to"]),
-            cost=float(d.get("cost", 0.0)),
-            constraint=str(d.get("constraint", "")),
-        )
+    square: Square
+    from_class: Annotated[ClassName, Field(alias="from")]
+    to_class: Annotated[ClassName, Field(alias="to")]
+    cost: Annotated[StrictFloat, AfterValidator(rounded(4))]
+    constraint: Annotated[StrictStr, Field(min_length=1)]
 
 
-@dataclass(frozen=True)
-class PriorRepair:
+@wire
+class PriorRepair(Wire):
     """The nearest *possible* board to a read, served beside it (never instead).
 
     ``square_dist`` and ``placement`` stay exactly what the estimator produced —
@@ -264,28 +352,13 @@ class PriorRepair:
     per-constraint excess the decoder could not repair (empty = fully possible).
     """
 
-    placement: str
+    placement: Placement
     flips: tuple[PriorFlip, ...] = ()
-    residual: dict[str, int] = field(default_factory=dict)
-
-    def to_dict(self) -> dict:
-        return {
-            "placement": self.placement,
-            "flips": [f.to_dict() for f in self.flips],
-            "residual": dict(self.residual),
-        }
-
-    @classmethod
-    def from_dict(cls, d: dict) -> PriorRepair:
-        return cls(
-            placement=str(d["placement"]),
-            flips=tuple(PriorFlip.from_dict(f) for f in d.get("flips") or ()),
-            residual={str(k): int(v) for k, v in (d.get("residual") or {}).items()},
-        )
+    residual: dict[StrictStr, Natural] = Field(default_factory=dict)
 
 
-@dataclass(frozen=True)
-class SettledBoard:
+@wire
+class SettledBoard(Wire):
     """A temporally debounced board, served beside the raw read (never instead).
 
     The producer is the inference node's ingest stabilizer: a square must hold the
@@ -300,46 +373,39 @@ class SettledBoard:
     smoothing ignores this block entirely.
     """
 
-    placement: str
-    pending: tuple[str, ...] = ()  # algebraic squares, board order
-
-    def to_dict(self) -> dict:
-        return {"placement": self.placement, "pending": list(self.pending)}
-
-    @classmethod
-    def from_dict(cls, d: dict) -> SettledBoard:
-        return cls(
-            placement=str(d["placement"]),
-            pending=tuple(str(s) for s in d.get("pending") or ()),
-        )
+    placement: Placement
+    pending: tuple[Square, ...] = ()  # board order
 
 
-@dataclass
-class PositionEvent:
+@wire(frozen=False, kw_only=True)
+class PositionEvent(Wire):
     """One L3 position event (DESIGN.md §5).
 
     Construct via :meth:`from_square_dist` so ``placement`` and ``confidence`` stay
     derived from the canonical ``square_dist`` and can never drift out of sync.
+    Every field is validated on construction and on assignment; :meth:`validate`
+    adds the checks that need the whole distribution.
     """
 
-    board_id: str
-    seq: int
-    utc: str
-    square_dist: np.ndarray  # (8, 8, 13) float, rank 8 -> rank 1, file a -> h
-    placement: str
-    confidence: float
-    stability: float = 1.0
-    clock: ClockState = field(default_factory=ClockState)
-    status: str = "ok"
-    orientation: str = DEFAULT_ORIENTATION
+    board_id: BoardId
+    utc: Utc
+    seq: Natural
+    orientation: Orientation = DEFAULT_ORIENTATION
+    classes: Classes = CLASSES
+    placement: Placement
+    square_dist: SquareDist
+    confidence: Score
+    stability: Score = 1.0
+    clock: ClockState = Field(default_factory=ClockState)
+    status: Status = "ok"
     #: Optional hard-constraint repair of this read, produced by the inference
     #: node's prior decoder. ``placement`` above stays the raw argmax; a display
     #: that must never show an impossible board draws ``prior.placement`` instead.
-    prior: PriorRepair | None = None
+    prior: PriorRepair | None = Field(default=None, exclude_if=absent)
     #: Optional debounced board, produced by the ingest stabilizer on streamed
     #: frames only (a one-shot ``/estimate`` has no stream to settle over). A
     #: display that must not flicker draws ``settled.placement``.
-    settled: SettledBoard | None = None
+    settled: SettledBoard | None = Field(default=None, exclude_if=absent)
 
     @classmethod
     def from_square_dist(
@@ -351,15 +417,11 @@ class PositionEvent:
         square_dist: np.ndarray,
         stability: float = 1.0,
         clock: ClockState | None = None,
-        status: str = "ok",
-        orientation: str = DEFAULT_ORIENTATION,
+        status: Status = "ok",
+        orientation: Orientation = DEFAULT_ORIENTATION,
         confidence_reduce: str = "mean",
     ) -> PositionEvent:
-        arr = np.asarray(square_dist, dtype=np.float32)
-        if arr.shape != (GRID, GRID, NUM_CLASSES):
-            raise ValueError(
-                f"square_dist must be {(GRID, GRID, NUM_CLASSES)}, got {arr.shape}"
-            )
+        arr = _square_dist(np.asarray(square_dist, dtype=np.float32))
         return cls(
             board_id=board_id,
             seq=seq,
@@ -374,83 +436,24 @@ class PositionEvent:
         )
 
     def validate(self) -> PositionEvent:
-        """Structural self-check; raises ``ValueError`` on any violation. Returns self."""
-        arr = np.asarray(self.square_dist)
-        if arr.shape != (GRID, GRID, NUM_CLASSES):
-            raise ValueError(f"square_dist shape {arr.shape} != {(GRID, GRID, NUM_CLASSES)}")
-        if arr.min() < -_SUM_TOL or arr.max() > 1.0 + _SUM_TOL:
-            raise ValueError("square_dist entries must be probabilities in [0, 1]")
-        sums = arr.sum(axis=-1)
+        """The whole-distribution checks; raises ``ValueError``. Returns self.
+
+        Each square's distribution sums to 1 and ``placement`` is its argmax. Not
+        part of parsing, because a distribution rounded for the wire can tie two
+        classes the unrounded one did not.
+        """
+        sums = self.square_dist.sum(axis=-1)
         if np.any(np.abs(sums - 1.0) > _SUM_TOL):
             raise ValueError("each square distribution must sum to 1")
-        if self.placement != placement_from_dist(arr):
+        if self.placement != placement_from_dist(self.square_dist):
             raise ValueError("placement is not the argmax of square_dist")
-        for name, v in (("confidence", self.confidence), ("stability", self.stability)):
-            if not 0.0 <= v <= 1.0:
-                raise ValueError(f"{name} must be in [0, 1], got {v}")
-        if self.status not in VALID_STATUS:
-            raise ValueError(f"status must be one of {VALID_STATUS}")
-        if self.clock.running not in VALID_RUNNING:
-            raise ValueError(f"clock.running must be one of {VALID_RUNNING}")
-        if self.seq < 0:
-            raise ValueError("seq must be non-negative")
-        if self.prior is not None:
-            parse_placement(self.prior.placement)  # raises on a malformed repair
-        if self.settled is not None:
-            parse_placement(self.settled.placement)
         return self
 
-    def to_dict(self, *, round_dist: int | None = 4) -> dict:
+    def to_dict(self, *, round_dist: int | None = ROUND_DIST) -> dict:
         """Serialise to the §5 JSON shape. ``round_dist`` trims distribution noise."""
-        arr = np.asarray(self.square_dist, dtype=float)
-        if round_dist is not None:
-            arr = np.round(arr, round_dist)
-        d = {
-            "board_id": self.board_id,
-            "utc": self.utc,
-            "seq": self.seq,
-            "orientation": self.orientation,
-            "classes": list(CLASSES),
-            "placement": self.placement,
-            "square_dist": arr.tolist(),
-            "confidence": round(self.confidence, 6),
-            "stability": round(self.stability, 6),
-            "clock": self.clock.to_dict(),
-            "status": self.status,
-        }
-        if self.prior is not None:
-            d["prior"] = self.prior.to_dict()
-        if self.settled is not None:
-            d["settled"] = self.settled.to_dict()
-        return d
-
-    def to_json(self) -> str:
-        return json.dumps(self.to_dict())
-
-    @classmethod
-    def from_dict(cls, d: dict) -> PositionEvent:
-        classes = d.get("classes")
-        if classes is not None and tuple(classes) != CLASSES:
-            raise ValueError("event 'classes' does not match this protocol's CLASSES")
-        arr = np.asarray(d["square_dist"], dtype=np.float32)
-        return cls(
-            board_id=d["board_id"],
-            seq=int(d["seq"]),
-            utc=d["utc"],
-            square_dist=arr,
-            placement=d.get("placement") or placement_from_dist(arr),
-            confidence=float(d.get("confidence", position_confidence(arr))),
-            stability=float(d.get("stability", 1.0)),
-            clock=ClockState.from_dict(d.get("clock")),
-            status=d.get("status", "ok"),
-            orientation=d.get("orientation", DEFAULT_ORIENTATION),
-            prior=PriorRepair.from_dict(d["prior"]) if d.get("prior") else None,
-            settled=SettledBoard.from_dict(d["settled"]) if d.get("settled") else None,
+        return adapter(PositionEvent).dump_python(
+            self, mode="json", context={"round_dist": round_dist}
         )
-
-    @classmethod
-    def from_json(cls, s: str) -> PositionEvent:
-        return cls.from_dict(json.loads(s))
 
 
 #: The ``type`` of a :class:`MotionUpdate` on ``WS /viewer``. A position event
@@ -458,8 +461,8 @@ class PositionEvent:
 MOTION_TYPE = "motion"
 
 
-@dataclass(frozen=True, slots=True)
-class MotionUpdate:
+@message
+class MotionUpdate(Message):
     """Whether a hand is over the board right now: display state, not a read.
 
     The inference node sends one per ingested frame on ``WS /viewer`` (rate-limited
@@ -471,48 +474,37 @@ class MotionUpdate:
     node's verdict on it, and ``ts`` the frame's ``capture_ts`` (edge clock).
     """
 
-    board_id: str
-    moving: bool
-    stability: float
-    ts: float
-
-    def to_dict(self) -> dict:
-        return {
-            "type": MOTION_TYPE,
-            "board_id": self.board_id,
-            "moving": self.moving,
-            "stability": round(self.stability, 6),
-            "ts": self.ts,
-        }
-
-    def to_json(self) -> str:
-        return json.dumps(self.to_dict())
-
-    @classmethod
-    def from_dict(cls, d: dict) -> MotionUpdate:
-        return cls(
-            board_id=str(d["board_id"]),
-            moving=bool(d["moving"]),
-            stability=float(d["stability"]),
-            ts=float(d["ts"]),
-        )
+    type: Literal["motion"] = tag(MOTION_TYPE)
+    board_id: BoardId
+    moving: StrictBool
+    stability: Score
+    ts: StrictFloat
 
 
-#: Everything ``WS /viewer`` sends.
-ViewerMessage = PositionEvent | MotionUpdate
+def _viewer_kind(raw: object) -> str | None:
+    if isinstance(raw, PositionEvent | MotionUpdate):
+        return "position" if isinstance(raw, PositionEvent) else MOTION_TYPE
+    if isinstance(raw, dict):
+        return raw.get("type", "position")
+    return None
 
 
-def parse_viewer_message(raw: str) -> ViewerMessage:
+#: Everything ``WS /viewer`` sends: a position event (no ``type``) or a motion update.
+ViewerMessage = Annotated[
+    Annotated[PositionEvent, Tag("position")] | Annotated[MotionUpdate, Tag(MOTION_TYPE)],
+    Discriminator(
+        _viewer_kind,
+        custom_error_type="viewer_message_type",
+        custom_error_message="unknown /viewer message type",
+    ),
+]
+
+
+def parse_viewer_message(raw: str) -> PositionEvent | MotionUpdate:
     """One ``WS /viewer`` text message as what it is.
 
     No ``type`` is a position event (§5); ``"motion"`` a :class:`MotionUpdate`.
     Any other ``type`` raises, because it would be our own egress sending
     something this protocol does not define.
     """
-    d = json.loads(raw)
-    kind = d.get("type")
-    if kind is None:
-        return PositionEvent.from_dict(d)
-    if kind == MOTION_TYPE:
-        return MotionUpdate.from_dict(d)
-    raise ValueError(f"unknown /viewer message type {kind!r}")
+    return parse(ViewerMessage, raw)

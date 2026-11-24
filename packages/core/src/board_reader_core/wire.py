@@ -11,17 +11,65 @@ node-specific behaviour — only the wire shape and JPEG (de)serialisation.
 playing-surface quad on every frame, the JPEG then being the original camera
 image. No producer sets it any more, but it still parses, because old recordings
 carry it and replay through this class unchanged. :data:`CONTROL` stays reserved.
+
+**The header is a wire model** (:class:`FrameHeader`, :mod:`.schema`), so its rules
+hold in the browser edge too. The JPEG is not in it: on ``WS /ingest`` every header
+is one TEXT message and its JPEG the BINARY message right after it, and the node
+reads the two in lockstep. Nothing may be sent between them.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Annotated, Literal
 
 import cv2
 import numpy as np
+from pydantic import Field, StrictFloat, StrictStr
+from pydantic.json_schema import SkipJsonSchema
+
+from board_reader_core.protocol import Running
+from board_reader_core.wiremodel import (
+    BoardId,
+    Natural,
+    Unit,
+    Wire,
+    absent,
+    tag,
+    wire,
+)
 
 FRAME = "frame"  # header "type" discriminator on the ingress socket
 CONTROL = "control"  # reserved for hello/control messages (later milestones)
+
+
+@wire
+class FrameHeader(Wire):
+    """The JSON header of one ingest frame; its JPEG follows as the next message.
+
+    ``capture_ts`` is epoch seconds, stamped at capture on the edge (DESIGN D5).
+    ``sharpness`` is the edge's focus score (tenengrad), unitless and comparable
+    only between neighbouring frames of one board; ``None`` from an edge that
+    does not measure it. ``corners`` is the legacy quad (see the module note):
+    parsed for old recordings, never sent, and not in the JSON Schema.
+    """
+
+    type: Literal["frame"] = tag(FRAME)
+    board_id: BoardId
+    seq: Natural
+    capture_ts: StrictFloat
+    stability: Unit = 1.0
+    sharpness: Annotated[StrictFloat, Field(ge=0)] | None = None
+    clock: Running = "none"
+    burst_id: StrictStr | None = None
+    corners: SkipJsonSchema[
+        Annotated[tuple[StrictFloat, ...], Field(min_length=8, max_length=8)] | None
+    ] = Field(default=None, exclude_if=absent)
+
+
+#: The keys a header may carry. A recording index line adds its own (where the JPEG
+#: went, when it arrived, a replay's restamp marker), which are not the wire's.
+HEADER_KEYS = frozenset(FrameHeader.__dataclass_fields__)
 
 
 def encode_jpeg(image: np.ndarray, quality: int = 90) -> bytes:
@@ -76,23 +124,27 @@ class Frame:
             self.corners = quad.reshape(4, 2)
 
     def header(self) -> dict:
-        """JSON-safe header (everything except the image bytes)."""
-        header = {
-            "type": FRAME,
-            "board_id": self.board_id,
-            "seq": self.seq,
-            "capture_ts": self.capture_ts,
-            "stability": self.stability,
-            "sharpness": self.sharpness,
-            "clock": self.clock,
-            "burst_id": self.burst_id,
-        }
-        if self.corners is not None:
-            header["corners"] = self.corners.reshape(-1).tolist()
-        return header
+        """JSON-safe header (everything except the image bytes), validated."""
+        corners = None if self.corners is None else tuple(self.corners.reshape(-1).tolist())
+        return FrameHeader(
+            board_id=self.board_id,
+            seq=self.seq,
+            capture_ts=self.capture_ts,
+            stability=self.stability,
+            sharpness=self.sharpness,
+            clock=self.clock,  # type: ignore[arg-type]  # validated by the model
+            burst_id=self.burst_id,
+            corners=corners,
+        ).to_dict()
 
     @classmethod
     def from_header(cls, header: dict, image: np.ndarray) -> Frame:
+        """The frame a header describes.
+
+        Still the lenient parse (``int("4")`` is a seq), not :class:`FrameHeader`:
+        ``test_recording_ingest`` pins that coercion, and refusing it is an open
+        decision (DESIGN.md §4.5).
+        """
         return cls(
             board_id=header["board_id"],
             seq=int(header["seq"]),

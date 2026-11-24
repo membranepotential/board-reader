@@ -45,7 +45,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TextIO
 
-from board_reader_core.wire import Frame, decode_jpeg
+from board_reader_core.wire import HEADER_KEYS, Frame, decode_jpeg
 
 FORMAT = 1
 
@@ -121,8 +121,14 @@ class RecordedFrame:
         return float(self.header["capture_ts"])
 
     def frame(self) -> Frame:
-        """Decode to the in-memory :class:`~board_reader_core.wire.Frame`."""
-        return Frame.from_header(self.header, decode_jpeg(self.jpeg))
+        """Decode to the in-memory :class:`~board_reader_core.wire.Frame`.
+
+        Only the wire's own keys are parsed: a replay marks the headers it
+        restamps (``stability_restamped``), and the header model refuses keys the
+        wire does not have.
+        """
+        wire = {key: value for key, value in self.header.items() if key in HEADER_KEYS}
+        return Frame.from_header(wire, decode_jpeg(self.jpeg))
 
 
 def _board_seq(header: dict) -> tuple[str, int] | None:

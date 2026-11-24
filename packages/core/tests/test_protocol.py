@@ -55,6 +55,8 @@ def test_parse_placement_rejects_malformed():
         parse_placement("9/8/8/8/8/8/8/8")  # rank overflows
     with pytest.raises(ValueError):
         parse_placement("xxxxxxxx/8/8/8/8/8/8/8")  # invalid symbol
+    with pytest.raises(ValueError):
+        parse_placement("08/8/8/8/8/8/8/8")  # a run is 1 to 8 squares; 0 is no run
 
 
 def test_dist_from_placement_is_valid_distribution_and_argmax_consistent():
@@ -138,14 +140,19 @@ def test_to_dict_has_protocol_shape():
     assert d["status"] == "ok"  # never "illegal" — legality is not ours to judge
 
 
-def test_validate_rejects_bad_shape():
+def test_an_event_refuses_a_distribution_of_the_wrong_shape_or_range():
     ev = PositionEvent.from_square_dist(
         board_id="A1", seq=0, utc=iso_utc(0.0),
         square_dist=dist_from_placement(START_PLACEMENT),
     )
-    ev.square_dist = np.zeros((8, 8, 5), dtype=np.float32)
+    with pytest.raises(ValueError, match="square_dist must be"):
+        ev.square_dist = np.zeros((8, 8, 5), dtype=np.float32)
+    with pytest.raises(ValueError, match="probabilities"):
+        ev.square_dist = np.full((GRID, GRID, NUM_CLASSES), 1.5, dtype=np.float32)
+    nested = ev.to_dict()["square_dist"]
+    nested[0][0][0] = True  # a bool is not a probability, though numpy would say 1.0
     with pytest.raises(ValueError):
-        ev.validate()
+        ev.square_dist = nested
 
 
 def test_validate_rejects_non_normalised_distribution():
@@ -168,18 +175,18 @@ def test_validate_rejects_placement_not_matching_argmax():
         ev.validate()
 
 
-def test_validate_rejects_out_of_range_and_bad_enums():
+def test_an_event_refuses_out_of_range_values_and_bad_enums():
     dist = dist_from_placement(START_PLACEMENT)
     ev = PositionEvent.from_square_dist(
         board_id="A1", seq=0, utc=iso_utc(0.0), square_dist=dist
     )
-    ev.stability = 1.5
     with pytest.raises(ValueError):
-        ev.validate()
-    ev.stability = 1.0
-    ev.status = "illegal"  # deliberately not a valid status
+        ev.stability = 1.5
     with pytest.raises(ValueError):
-        ev.validate()
+        ev.status = "illegal"  # deliberately not a valid status
+    with pytest.raises(ValueError):
+        ev.seq = -1
+    assert (ev.stability, ev.status, ev.seq) == (1.0, "ok", 0)
 
 
 def test_from_dict_rejects_mismatched_classes():
@@ -221,16 +228,15 @@ def test_prior_repair_rides_the_event_and_round_trips():
     }
 
 
-def test_validate_rejects_a_malformed_prior_placement():
+def test_a_malformed_prior_placement_is_refused():
     from board_reader_core.protocol import PriorRepair
 
     dist = dist_from_placement(START_PLACEMENT)
     ev = PositionEvent.from_square_dist(
         board_id="A1", seq=0, utc=iso_utc(0.0), square_dist=dist
     )
-    ev.prior = PriorRepair(placement="not/a/board")
-    with pytest.raises(ValueError):
-        ev.validate()
+    with pytest.raises(ValueError, match="8 ranks"):
+        ev.prior = PriorRepair(placement="not/a/board")
 
 
 def test_settled_board_rides_the_event_and_round_trips():
@@ -255,16 +261,15 @@ def test_settled_board_rides_the_event_and_round_trips():
     }
 
 
-def test_validate_rejects_a_malformed_settled_placement():
+def test_a_malformed_settled_placement_is_refused():
     from board_reader_core.protocol import SettledBoard
 
     dist = dist_from_placement(START_PLACEMENT)
     ev = PositionEvent.from_square_dist(
         board_id="A1", seq=0, utc=iso_utc(0.0), square_dist=dist
     )
-    ev.settled = SettledBoard(placement="not/a/board")
-    with pytest.raises(ValueError):
-        ev.validate()
+    with pytest.raises(ValueError, match="8 ranks"):
+        ev.settled = SettledBoard(placement="not/a/board")
 
 
 # --------------------------------------------------------------------------- #

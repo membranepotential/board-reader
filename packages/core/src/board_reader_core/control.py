@@ -7,8 +7,8 @@ inference node, and **pushed to the edge, which applies it**. The edge still cro
 and measures motion on its own crop, so the L1->L2 wire (:mod:`board_reader_core.wire`)
 is unchanged: frames arrive already cropped, exactly as before.
 
-Three shapes make up the camera's state, each validated here once so neither end
-trusts the other's JSON:
+Three shapes make up the camera's state, each validated here once (they are wire
+models, :mod:`.schema`) so neither end trusts the other's JSON:
 
 * :class:`CameraConfig` — what the control UI chose.
 * :class:`CameraReport` — what the camera actually is (its lenses, the frame it
@@ -35,15 +35,41 @@ message is a JSON object whose ``type`` names it:
     phone link; :class:`PreviewMessage` and :class:`FrameMessage` (images as
     base64); :class:`HealthMessage` about once a second; :class:`RefusedMessage`.
 
+Previews and frames carry their JPEG as standard base64 text, because a page can
+show that as a ``data:`` URL as it stands; binary would need a second message to say
+which picture it is.
+
 Like the rest of core this is contract only: no transport, no storage.
 """
 
 from __future__ import annotations
 
 import base64
-import json
-from dataclasses import dataclass
-from typing import ClassVar, Literal, cast, get_args
+from typing import Annotated, Literal, Self
+
+from pydantic import (
+    BeforeValidator,
+    Field,
+    PlainSerializer,
+    StrictBool,
+    StrictBytes,
+    StrictFloat,
+    StrictStr,
+    WithJsonSchema,
+    model_validator,
+)
+
+from board_reader_core.wiremodel import (
+    Message,
+    Natural,
+    Positive,
+    Wire,
+    checked,
+    message,
+    parse,
+    tag,
+    wire,
+)
 
 #: Capture resolutions the control UI offers, by name. The edge asks for these as
 #: ``ideal`` constraints, so a camera that cannot deliver one gets the nearest it
@@ -63,62 +89,34 @@ MIN_CROP_SIDE = 0.05
 #: How the edge reports its stream (the browser edge's ``IngestStatus``).
 IngestState = Literal["idle", "connecting", "streaming", "reconnecting"]
 
+#: How many lenses a report may list; more is not a phone.
+MAX_DEVICES = 32
 
-def _number(raw: object, name: str) -> float:
-    # ``bool`` is an ``int`` in Python; ``true`` is not a coordinate.
-    if isinstance(raw, bool) or not isinstance(raw, int | float):
-        raise ValueError(f"{name} must be a number")
-    return float(raw)
-
-
-def _record(raw: object, name: str, keys: frozenset[str]) -> dict[str, object]:
-    """``raw`` as a JSON object with no keys outside ``keys``.
-
-    Unknown keys are refused rather than ignored: a misspelt ``"streming": true``
-    silently doing nothing is exactly the bug a strict boundary exists to catch.
-    """
-    if not isinstance(raw, dict):
-        raise ValueError(f"{name} must be an object")
-    unknown = set(raw) - keys
-    if unknown:
-        raise ValueError(f"{name}: unknown field(s) {', '.join(sorted(map(str, unknown)))}")
-    return cast(dict[str, object], raw)
+#: A non-empty piece of text: a lens label, a reason.
+Text = Annotated[StrictStr, Field(min_length=1)]
+#: A fraction of the frame along one axis.
+Start = Annotated[StrictFloat, Field(ge=0, le=1)]
+Side = Annotated[StrictFloat, Field(ge=MIN_CROP_SIDE, le=1)]
 
 
-@dataclass(frozen=True, slots=True)
-class CropRect:
+@wire(json_schema_extra=checked("cropInside"))
+class CropRect(Wire):
     """An axis-aligned rectangle in fractions of the full camera frame.
 
-    ``x, y`` is the top-left corner; the rectangle lies wholly inside the frame.
+    ``x, y`` is the top-left corner; the rectangle lies wholly inside the frame
+    (the ``cropInside`` check: ``x + w <= 1`` and ``y + h <= 1``).
     """
 
-    x: float
-    y: float
-    w: float
-    h: float
+    x: Start
+    y: Start
+    w: Side
+    h: Side
 
-    def __post_init__(self) -> None:
-        for name in ("x", "y", "w", "h"):
-            _number(getattr(self, name), f"crop.{name}")
-        if self.x < 0 or self.y < 0:
-            raise ValueError("crop must start inside the frame (x, y >= 0)")
-        if self.w < MIN_CROP_SIDE or self.h < MIN_CROP_SIDE:
-            raise ValueError(f"crop sides must be at least {MIN_CROP_SIDE} of the frame")
+    @model_validator(mode="after")
+    def _inside(self) -> Self:
         if self.x + self.w > 1 or self.y + self.h > 1:
             raise ValueError("crop must end inside the frame (x + w <= 1, y + h <= 1)")
-
-    @classmethod
-    def from_dict(cls, raw: object) -> CropRect:
-        data = _record(raw, "crop", frozenset({"x", "y", "w", "h"}))
-        missing = {"x", "y", "w", "h"} - set(data)
-        if missing:
-            raise ValueError(f"crop: missing field(s) {', '.join(sorted(missing))}")
-        return cls(
-            x=_number(data["x"], "crop.x"),
-            y=_number(data["y"], "crop.y"),
-            w=_number(data["w"], "crop.w"),
-            h=_number(data["h"], "crop.h"),
-        )
+        return self
 
     @classmethod
     def parse(cls, spec: str) -> CropRect:
@@ -130,10 +128,7 @@ class CropRect:
             x, y, w, h = (float(p) for p in parts)
         except ValueError as e:
             raise ValueError("needs 4 numbers: x,y,w,h (fractions of the frame)") from e
-        return cls(x=x, y=y, w=w, h=h)
-
-    def to_dict(self) -> dict[str, float]:
-        return {"x": self.x, "y": self.y, "w": self.w, "h": self.h}
+        return parse(cls, {"x": x, "y": y, "w": w, "h": h})
 
     def pixels(self, width: int, height: int) -> tuple[int, int, int, int]:
         """``(x0, y0, x1, y1)`` in pixels of a ``width`` x ``height`` frame.
@@ -147,11 +142,8 @@ class CropRect:
         return x0, y0, x1, y1
 
 
-_CONFIG_KEYS = frozenset({"crop", "device", "resolution", "streaming"})
-
-
-@dataclass(frozen=True, slots=True)
-class CameraConfig:
+@wire
+class CameraConfig(Wire):
     """What the control UI chose for one board's camera.
 
     * ``crop`` — the part of the frame the edge sends; ``None`` sends the whole frame.
@@ -160,62 +152,30 @@ class CameraConfig:
       session); ``None`` leaves the edge on its default rear camera.
     * ``resolution`` — the capture resolution asked for.
     * ``streaming`` — whether the edge streams frames to ``/ingest``.
+
+    Omitted fields take their defaults, so ``{}`` is the default config.
     """
 
     crop: CropRect | None = None
-    device: str | None = None
+    device: Text | None = None
     resolution: Resolution = DEFAULT_RESOLUTION
-    streaming: bool = False
-
-    def __post_init__(self) -> None:
-        if self.resolution not in RESOLUTIONS:
-            raise ValueError(
-                f"resolution must be one of {', '.join(RESOLUTIONS)}, not {self.resolution!r}"
-            )
-        if self.device is not None and (not isinstance(self.device, str) or not self.device):
-            raise ValueError("device must be a non-empty label, or null")
-        if not isinstance(self.streaming, bool):
-            raise ValueError("streaming must be true or false")
-
-    @classmethod
-    def from_dict(cls, raw: object) -> CameraConfig:
-        """A complete config; omitted fields take their defaults."""
-        data = _record(raw, "config", _CONFIG_KEYS)
-        crop = data.get("crop")
-        resolution = data.get("resolution", DEFAULT_RESOLUTION)
-        if resolution not in get_args(Resolution):
-            raise ValueError(f"resolution must be one of {', '.join(RESOLUTIONS)}")
-        device = data.get("device")
-        if device is not None and not isinstance(device, str):
-            raise ValueError("device must be a string label, or null")
-        return cls(
-            crop=None if crop is None else CropRect.from_dict(crop),
-            device=device,
-            resolution=cast(Resolution, resolution),
-            streaming=cast(bool, data.get("streaming", False)),
-        )
-
-    def to_dict(self) -> dict[str, object]:
-        return {
-            "crop": None if self.crop is None else self.crop.to_dict(),
-            "device": self.device,
-            "resolution": self.resolution,
-            "streaming": self.streaming,
-        }
+    streaming: StrictBool = False
 
 
-@dataclass(frozen=True, slots=True)
-class CameraDevice:
+@wire
+class CameraDevice(Wire):
     """One lens the edge can open."""
 
-    id: str
-    label: str
+    id: StrictStr
+    label: StrictStr
 
 
-@dataclass(frozen=True, slots=True)
-class FrameSize:
-    width: int
-    height: int
+@wire
+class FrameSize(Wire):
+    """A frame's size in whole pixels."""
+
+    width: Positive
+    height: Positive
 
     @property
     def portrait(self) -> bool:
@@ -223,244 +183,132 @@ class FrameSize:
         return self.height > self.width
 
 
-_REPORT_KEYS = frozenset({"devices", "device", "frame", "ingest"})
-_MAX_DEVICES = 32
-
-
-def _text(raw: object, name: str) -> str:
-    if not isinstance(raw, str):
-        raise ValueError(f"{name} must be a string")
-    return raw
-
-
-@dataclass(frozen=True, slots=True)
-class CameraReport:
+@wire
+class CameraReport(Wire):
     """What the edge says about its camera.
 
     ``device`` is the label of the lens actually open and ``frame`` the size it
     actually delivers — both ``None`` until the camera is live.
     """
 
-    devices: tuple[CameraDevice, ...]
-    device: str | None
-    frame: FrameSize | None
-    ingest: IngestState
-
-    @classmethod
-    def from_dict(cls, raw: object) -> CameraReport:
-        data = _record(raw, "report", _REPORT_KEYS)
-        devices_raw = data.get("devices", [])
-        if not isinstance(devices_raw, list) or len(devices_raw) > _MAX_DEVICES:
-            raise ValueError(f"devices must be a list of at most {_MAX_DEVICES}")
-        devices = []
-        for entry in devices_raw:
-            item = _record(entry, "device", frozenset({"id", "label"}))
-            devices.append(
-                CameraDevice(
-                    id=_text(item.get("id"), "device.id"),
-                    label=_text(item.get("label"), "device.label"),
-                )
-            )
-        device = data.get("device")
-        frame_raw = data.get("frame")
-        frame = None
-        if frame_raw is not None:
-            size = _record(frame_raw, "frame", frozenset({"width", "height"}))
-            width, height = size.get("width"), size.get("height")
-            if (
-                isinstance(width, bool) or isinstance(height, bool)
-                or not isinstance(width, int) or not isinstance(height, int)
-                or width <= 0 or height <= 0
-            ):
-                raise ValueError("frame must be {width, height} in positive whole pixels")
-            frame = FrameSize(width=width, height=height)
-        ingest = data.get("ingest", "idle")
-        if ingest not in get_args(IngestState):
-            raise ValueError(f"ingest must be one of {', '.join(get_args(IngestState))}")
-        return cls(
-            devices=tuple(devices),
-            device=None if device is None else _text(device, "device"),
-            frame=frame,
-            ingest=cast(IngestState, ingest),
-        )
-
-    def to_dict(self) -> dict[str, object]:
-        return {
-            "devices": [{"id": d.id, "label": d.label} for d in self.devices],
-            "device": self.device,
-            "frame": (
-                None
-                if self.frame is None
-                else {"width": self.frame.width, "height": self.frame.height}
-            ),
-            "ingest": self.ingest,
-        }
+    devices: Annotated[tuple[CameraDevice, ...], Field(max_length=MAX_DEVICES)] = ()
+    device: StrictStr | None = None
+    frame: FrameSize | None = None
+    ingest: IngestState = "idle"
 
 
 # ---- messages on the two control sockets -------------------------------------
 
 
-def _message(text: str, kinds: dict[str, frozenset[str]]) -> tuple[str, dict[str, object]]:
-    """``text`` as a JSON object of one of ``kinds`` (type -> its other keys)."""
-    try:
-        raw = json.loads(text)
-    except ValueError as e:
-        raise ValueError(f"message is not JSON: {e}") from e
-    if not isinstance(raw, dict):
-        raise ValueError("message must be an object")
-    kind = raw.get("type")
-    if not isinstance(kind, str) or kind not in kinds:
-        raise ValueError(f"message type must be one of {', '.join(kinds)}, not {kind!r}")
-    data = _record(raw, f"{kind} message", kinds[kind] | {"type"})
-    missing = kinds[kind] - set(data)
-    if missing:
-        raise ValueError(f"{kind} message: missing field(s) {', '.join(sorted(missing))}")
-    return kind, data
-
-
-def _jpeg_text(jpeg: bytes) -> str:
-    # A page can show base64 as a data: URL as it stands; binary would need a
-    # second message to say which picture it is.
-    return base64.b64encode(jpeg).decode("ascii")
-
-
-@dataclass(frozen=True, slots=True)
-class ReportMessage:
+@message
+class ReportMessage(Message):
     """Phone -> node: what the camera is now."""
 
-    TYPE: ClassVar[str] = "report"
+    type: Literal["report"] = tag("report")
     report: CameraReport
 
 
 def parse_phone_message(text: str) -> ReportMessage:
     """One text message from the phone's socket; ``ValueError`` says why not."""
-    _, data = _message(text, {ReportMessage.TYPE: frozenset({"report"})})
-    return ReportMessage(report=CameraReport.from_dict(data["report"]))
+    return parse(ReportMessage, text)
 
 
-@dataclass(frozen=True, slots=True)
-class ConfigureMessage:
+@message
+class ConfigureMessage(Message):
     """Control page -> node: replace the board's config with this whole one."""
 
-    TYPE: ClassVar[str] = "configure"
+    type: Literal["configure"] = tag("configure")
     config: CameraConfig
 
 
 def parse_control_message(text: str) -> ConfigureMessage:
     """One text message from a control page's socket; ``ValueError`` says why not."""
-    _, data = _message(text, {ConfigureMessage.TYPE: frozenset({"config"})})
-    return ConfigureMessage(config=CameraConfig.from_dict(data["config"]))
+    return parse(ConfigureMessage, text)
 
 
-@dataclass(frozen=True, slots=True)
-class ConfigMessage:
+@message
+class ConfigMessage(Message):
     """Node -> phone: the config to apply."""
 
-    TYPE: ClassVar[str] = "config"
+    type: Literal["config"] = tag("config")
     config: CameraConfig
 
-    def to_json(self) -> str:
-        return json.dumps({"type": self.TYPE, "config": self.config.to_dict()})
 
-
-@dataclass(frozen=True, slots=True)
-class PreviewsMessage:
+@message
+class PreviewsMessage(Message):
     """Node -> phone: send whole-frame previews (``on``) or stop.
 
     On exactly while at least one control page watches the board, so an
     unwatched phone spends no uplink on pictures nobody sees.
     """
 
-    TYPE: ClassVar[str] = "previews"
-    on: bool
-
-    def to_json(self) -> str:
-        return json.dumps({"type": self.TYPE, "on": self.on})
+    type: Literal["previews"] = tag("previews")
+    on: StrictBool
 
 
-@dataclass(frozen=True, slots=True)
-class RefusedMessage:
+@message
+class RefusedMessage(Message):
     """Node -> either client: one message was refused; the socket stays open."""
 
-    TYPE: ClassVar[str] = "refused"
-    reason: str
-
-    def to_json(self) -> str:
-        return json.dumps({"type": self.TYPE, "reason": self.reason})
+    type: Literal["refused"] = tag("refused")
+    reason: Text
 
 
-@dataclass(frozen=True, slots=True)
-class StateMessage:
+@message
+class StateMessage(Message):
     """Node -> control page: the board's camera as the node holds it.
 
     ``report`` is the phone's last report (kept after it disconnects, so the lens
     list survives a reload); ``phone_connected`` says whether its socket is open.
     """
 
-    TYPE: ClassVar[str] = "state"
+    type: Literal["state"] = tag("state")
     config: CameraConfig
     report: CameraReport | None
-    phone_connected: bool
-
-    def to_json(self) -> str:
-        return json.dumps(
-            {
-                "type": self.TYPE,
-                "config": self.config.to_dict(),
-                "report": None if self.report is None else self.report.to_dict(),
-                "phone_connected": self.phone_connected,
-            }
-        )
+    phone_connected: StrictBool
 
 
-@dataclass(frozen=True, slots=True)
-class PreviewMessage:
+def _from_base64(value: object) -> object:
+    return base64.b64decode(value, validate=True) if isinstance(value, str) else value
+
+
+#: A JPEG's bytes; standard base64 text on the wire (see the module note).
+Jpeg = Annotated[
+    StrictBytes,
+    BeforeValidator(_from_base64),
+    Field(min_length=1),
+    PlainSerializer(lambda jpeg: base64.b64encode(jpeg).decode("ascii"), when_used="json"),
+    WithJsonSchema({"type": "string", "contentEncoding": "base64", "minLength": 1}),
+]
+
+
+@message
+class PreviewMessage(Message):
     """Node -> control page: the phone's latest whole-frame preview."""
 
-    TYPE: ClassVar[str] = "preview"
-    jpeg: bytes
-    width: int
-    height: int
-
-    def to_json(self) -> str:
-        return json.dumps(
-            {
-                "type": self.TYPE,
-                "width": self.width,
-                "height": self.height,
-                "jpeg": _jpeg_text(self.jpeg),
-            }
-        )
+    type: Literal["preview"] = tag("preview")
+    jpeg: Jpeg
+    width: Positive
+    height: Positive
 
 
-@dataclass(frozen=True, slots=True)
-class FrameMessage:
+@message
+class FrameMessage(Message):
     """Node -> control page: the latest frame ``/ingest`` received for the board."""
 
-    TYPE: ClassVar[str] = "frame"
-    seq: int
-    jpeg: bytes
-    width: int
-    height: int
-
-    def to_json(self) -> str:
-        return json.dumps(
-            {
-                "type": self.TYPE,
-                "seq": self.seq,
-                "width": self.width,
-                "height": self.height,
-                "jpeg": _jpeg_text(self.jpeg),
-            }
-        )
+    type: Literal["frame"] = tag("frame")
+    seq: Natural
+    jpeg: Jpeg
+    width: Positive
+    height: Positive
 
 
 #: Which edge of the image White's back rank lies along.
 WhiteSide = Literal["bottom", "left", "top", "right"]
 
 
-@dataclass(frozen=True, slots=True)
-class BoardDirection:
+@wire
+class BoardDirection(Wire):
     """Which way the board lies in the camera's image, as the recognizer reads it.
 
     ``degrees`` is the direction of the board's e1->e8 axis in the image, counted
@@ -471,56 +319,42 @@ class BoardDirection:
     resolution change: the camera (or the board) was moved.
     """
 
-    degrees: float
+    degrees: Annotated[StrictFloat, Field(ge=-180, le=180)]
     white_side: WhiteSide
-    camera_moved: bool
-
-    def to_dict(self) -> dict[str, object]:
-        return {
-            "degrees": self.degrees,
-            "white_side": self.white_side,
-            "camera_moved": self.camera_moved,
-        }
+    camera_moved: StrictBool
 
 
-@dataclass(frozen=True, slots=True)
-class HealthMessage:
+#: A duration or a rate, never negative.
+NonNegative = Annotated[StrictFloat, Field(ge=0)]
+
+
+@message
+class HealthMessage(Message):
     """Node -> control page, about once a second: the recognizer and the stream.
 
     Ages and rates are measured on the node's clock, so the page needs none: the
     phone, the laptop and the node need not agree on the time.
     """
 
-    TYPE: ClassVar[str] = "health"
-    recognizer: str
+    type: Literal["health"] = tag("health")
+    recognizer: StrictStr
     #: Why the stub serves instead of the model, when it does (DESIGN D2).
-    fallback: str | None
+    fallback: StrictStr | None
     #: Node-wide ``/ingest`` counters, as ``/healthz`` has them.
-    received: int
-    refused: int
+    received: Natural
+    refused: Natural
     #: Seconds since the board's last frame arrived; ``None`` before the first.
-    frame_age_s: float | None
+    frame_age_s: NonNegative | None
     #: Frames per second received since the previous health message, if measurable.
-    fps: float | None
+    fps: NonNegative | None
     #: How the board lies in the image; ``None`` before the first read with one.
     direction: BoardDirection | None
 
-    def to_json(self) -> str:
-        return json.dumps(
-            {
-                "type": self.TYPE,
-                "recognizer": self.recognizer,
-                "fallback": self.fallback,
-                "received": self.received,
-                "refused": self.refused,
-                "frame_age_s": self.frame_age_s,
-                "fps": self.fps,
-                "direction": None if self.direction is None else self.direction.to_dict(),
-            }
-        )
-
 
 #: What the node sends the phone.
-PhoneDown = ConfigMessage | PreviewsMessage | RefusedMessage
+PhoneDown = Annotated[ConfigMessage | PreviewsMessage | RefusedMessage, Field(discriminator="type")]
 #: What the node sends a control page.
-ControlDown = StateMessage | PreviewMessage | FrameMessage | HealthMessage | RefusedMessage
+ControlDown = Annotated[
+    StateMessage | PreviewMessage | FrameMessage | HealthMessage | RefusedMessage,
+    Field(discriminator="type"),
+]
