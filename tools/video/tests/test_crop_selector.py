@@ -12,7 +12,7 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from crop_selector import RectSelector  # noqa: E402
+from crop_selector import RectSelector
 
 
 def _selector(w: int = 640, h: int = 360) -> RectSelector:

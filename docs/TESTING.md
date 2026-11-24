@@ -1033,7 +1033,7 @@ eval and replays are all in the chess frame.
    chess frame).
 4. Run `make gate GATE_NAME=<new-name>` on an idle GPU. Expected: seven
    `replaying ...` lines (about two minutes in all), then the gate table
-   `guard-only → <new-name>` with a total row. An unchanged pipeline prints every
+   `energy → <new-name>` with a total row. An unchanged pipeline prints every
    cell once (no `→`): 341/361 raw, 314/361 settled perfect. For a board whose
    rules are `free`, add `GATE_FLAGS="--rules free"`.
    `uv run python tools/gate_table.py tkr-shipped cq-v6` prints the adoption gate.

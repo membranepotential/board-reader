@@ -229,7 +229,7 @@ models:
 # (docs/reports/2026-11-24-prior-backrank.md). Its predecessor sp03-settle05-7 still
 # had the decoder: 341/361 raw, 315/361 settled.
 GATE_NAME ?= gate
-GATE_BASE ?= guard-only
+GATE_BASE ?= energy
 # Extra replay flags for every take, e.g. GATE_FLAGS="--rules free" to gate a board
 # whose settle guard is off.
 GATE_FLAGS ?=
