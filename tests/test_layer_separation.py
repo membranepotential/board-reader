@@ -4,11 +4,16 @@ These tests are guardrails: the architecture says the edge (Pi) and the inferenc
 node never share code, only the wire contract in ``board_reader_core``. We check it
 two ways — statically (no forbidden imports in source) and structurally (the
 package manifests declare no cross-dependency).
+
+The viewer is a Node server (``packages/viewer/ui/server``), so it cannot import a
+Python package at all; what is checked for it is that the server stays network glue
+built on Node alone.
 """
 
 from __future__ import annotations
 
 import ast
+import re
 from pathlib import Path
 
 import tomllib
@@ -74,4 +79,24 @@ def test_core_does_not_depend_on_any_sibling():
     core_deps = " ".join(_deps("core"))
     assert "board-reader-edge" not in core_deps
     assert "board-reader-inference" not in core_deps
-    assert "board-reader-viewer" not in core_deps
+
+
+_VIEWER = _PKGS / "viewer" / "ui"
+_TS_IMPORT = re.compile(r"""^\s*(?:import|export)\b[^'"]*?from\s+['"]([^'"]+)['"]""", re.M)
+
+
+def test_the_viewer_server_imports_only_node_its_siblings_and_runtime_deps():
+    """The custom server (``server/*.ts``) runs outside the SvelteKit bundle, from the
+    image's pruned ``node_modules``: every import must be a ``node:`` built-in, a
+    sibling module, or a package declared under ``dependencies`` (devDependencies are
+    pruned). A frontend module (``$lib``, ``../src``) here would make the relay a
+    participant in the protocol rather than a pipe, and break the image at startup."""
+    import json
+
+    runtime = json.loads((_VIEWER / "package.json").read_text(encoding="utf-8"))["dependencies"]
+    modules = sorted(p for p in (_VIEWER / "server").glob("*.ts") if not p.name.endswith(".test.ts"))
+    assert len(modules) >= 3, modules
+    for module in modules:
+        for spec in _TS_IMPORT.findall(module.read_text(encoding="utf-8")):
+            ok = spec.startswith(("node:", "./")) or spec in runtime
+            assert ok, f"{module.name} imports {spec!r}"

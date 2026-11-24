@@ -8,10 +8,11 @@ docs/
 .learnings.ndjson
 .claude/
 
-# Frontend build inputs the image regenerates for itself. A host `node_modules/`
+# Frontend build inputs the viewer image regenerates for itself. A host `node_modules/`
 # shipped in the build context is both large and wrong (native deps are built for the
 # host, not the image), and pnpm refuses to clobber a foreign store without a TTY.
-# The Dockerfile's ui-build stage installs from the lockfile instead.
+# docker/viewer.Dockerfile installs from the lockfile instead.
 **/node_modules/
 **/.svelte-kit/
-packages/viewer/src/board_reader_viewer/web/
+packages/viewer/ui/build/
+packages/viewer/ui/test-results/

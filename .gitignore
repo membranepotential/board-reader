@@ -55,11 +55,9 @@ docs/commit-rewrite-pre.bundle
 # OS / editor
 .DS_Store
 
-# Frontend: node deps and the generated bundle. The UI sources live in
-# packages/viewer/ui/; `make ui` builds them into the Python package's web/ dir,
-# which the viewer ships as package data. Generated — never committed.
+# Frontend: node deps and the generated build. The viewer lives in packages/viewer/ui/;
+# `make ui` builds it into packages/viewer/ui/build/. Generated — never committed.
 node_modules/
-packages/viewer/src/board_reader_viewer/web/
 
 # Secrets (RUNPOD_API_KEY etc) — repo is public
 .env

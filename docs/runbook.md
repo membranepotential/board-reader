@@ -49,7 +49,7 @@ docker compose up --build                 # then open http://localhost:8080
 
 ```bash
 uv run board-reader-inference serve       # gateway  :8000
-uv run board-reader-viewer --port 8080    # UI       :8080  -> open it
+make ui && node packages/viewer/ui/server/main.ts --port 8080   # UI :8080 -> open it
 uv run board-reader-edge feed             # synthetic feed
 uv run board-reader-edge feed --video clip.mp4 --throttle   # or a real clip
 ```
@@ -155,12 +155,25 @@ Read it as *positions only*: the tail diffs consecutive placements for legibilit
 smooths nothing, so a flickering square shows a transition on every frame. See
 [[architecture#Temporal consistency — the layer nobody has built]].
 
-**Viewer node**
+**Viewer node** — a Node server, `node packages/viewer/ui/server/main.ts` (Node 22.18
+or newer runs the TypeScript directly), serving the build `make ui` writes to
+`packages/viewer/ui/build/`. It refuses to start without that build and says what to run.
+
+| Flag | Effect |
+|---|---|
+| `--host` | Bind address (default `127.0.0.1`; `0.0.0.0` to reach it from a phone). |
+| `--port` | The plain http port (default `8080`). |
+| `--tls-port` | Also serve https on this port, with a self-signed certificate cached in `$XDG_CACHE_HOME/board-reader/viewer-tls/` and reused until it nears expiry or stops naming this machine's addresses. `/camera` on a phone needs it. `make dev` passes `8443`. |
 
 | Variable | Effect |
 |---|---|
-| `BR_INFERENCE_WS` | Where the *viewer* opens the position stream it relays. |
+| `BR_INFERENCE_WS` | The node's `/viewer` socket URL; its origin is where the viewer relays every `/ws/<path>` socket (`/ws/ingest`, `/ws/viewer`, `/ws/boards/{id}/camera`, `/ws/boards/{id}/control`, and any the node adds). |
 | `BR_INFERENCE_HTTP` | Where the *viewer* forwards `/api/<path>` requests. |
+| `BR_CLIENT_LOG_DIR` | Where the phone's trial notes (`POST /api/client-log`) are appended, one NDJSON file per viewer start (default `client-logs`; empty drops them). |
+
+The viewer logs its startup banner and one line per relay or server error, nothing per
+request. `pnpm dev` in `packages/viewer/ui` (Vite, hot reload) relays `/api` and `/ws` to
+the same two variables, so it works against a running node.
 
 > [!note] Neither reaches the browser
 > The pages are same-origin and relative throughout, so these address the viewer's own

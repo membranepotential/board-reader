@@ -36,6 +36,9 @@ _ROOT = Path(__file__).resolve().parent.parent
 _COMPOSE = _ROOT / "compose.yaml"
 _MAKEFILE = _ROOT / "Makefile"
 
+#: The viewer's entry point (packages/viewer/ui/server/main.ts), run by Node.
+_VIEWER_ENTRY = "server/main.ts"
+
 # The env family that decides *how boards are read*. These must agree between
 # the two entry points: a difference here means the demo and the dev path
 # disagree about what the system is, which is exactly the bug this module
@@ -99,16 +102,16 @@ def _make_dev_env(target: str = "dev", **overrides: str) -> dict[str, str]:
     proc = subprocess.run(
         cmd, cwd=_ROOT, capture_output=True, text=True, timeout=120, check=True
     )
-    # Assignments accumulate until a `uv run <entry point>` consumes them; only
-    # the inference server's block is ours (the viewer's BR_INFERENCE_* pair is
-    # a different service's configuration).
+    # Assignments accumulate until an entry point consumes them; only the inference
+    # server's block is ours (the viewer's BR_INFERENCE_* pair is a different
+    # service's configuration).
     pending: dict[str, str] = {}
     for line in proc.stdout.splitlines():
         for key, value in re.findall(r"\b(BR_[A-Z0-9_]+)=(\S*)", line):
             pending[key] = value
         if "uv run board-reader-inference serve" in line:
             return pending
-        if "uv run board-reader-" in line:
+        if "uv run board-reader-" in line or _VIEWER_ENTRY in line:
             pending = {}
     raise AssertionError("`make -n dev` never starts board-reader-inference serve")
 
@@ -289,3 +292,19 @@ def test_dev_cpu_differs_from_dev_only_in_the_hardware_choice() -> None:
     assert {k: v for k, v in cpu.items() if k != "BR_CHESSQ"} == {
         k: v for k, v in gpu.items() if k != "BR_CHESSQ"
     }
+
+
+def test_both_entry_points_start_the_same_viewer_against_the_node() -> None:
+    """The Node viewer, pointed at the node by the same two variables, in both."""
+    spec = yaml.safe_load(_COMPOSE.read_text(encoding="utf-8"))["services"]["viewer"]
+    assert _VIEWER_ENTRY in " ".join(spec["command"])
+    assert {"BR_INFERENCE_HTTP", "BR_INFERENCE_WS"} <= spec["environment"].keys()
+
+    dry_run = subprocess.run(
+        ["make", "-n", "dev"], cwd=_ROOT, capture_output=True, text=True, timeout=120, check=True
+    ).stdout
+    viewer = next((line for line in dry_run.splitlines() if _VIEWER_ENTRY in line), None)
+    assert viewer is not None, "`make dev` no longer starts the Node viewer"
+    head = dry_run[: dry_run.index(viewer) + len(viewer)]
+    tail = head.rsplit("uv run board-reader-inference serve", 1)[-1]
+    assert "BR_INFERENCE_HTTP=" in tail and "BR_INFERENCE_WS=" in tail

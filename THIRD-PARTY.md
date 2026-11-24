@@ -19,13 +19,13 @@ the **cburnett** piece sprites (`GPLv2+`, © Colin M.L. Burnett, per
 [lila's COPYING.md](https://github.com/lichess-org/lila/blob/master/COPYING.md)) as
 data URIs.
 
-`make ui` links these into `packages/viewer/src/board_reader_viewer/web/`. That output
+`make ui` links these into `packages/viewer/ui/build/`. That output
 is a combined work:
 
 - **Our source stays Apache-2.0.** Apache-2.0 is one-way compatible with GPLv3, so our
   code may be combined into the GPL work. (cburnett is GPLv2-*or-later*, so it can be
   taken as v3 and combined too.)
-- **The bundle is GPL-3.0-or-later.** Anyone distributing the built `web/` directory —
+- **The bundle is GPL-3.0-or-later.** Anyone distributing the built `build/` directory (or the viewer image) —
   a wheel with package data, a Docker image, a tarball — is distributing under
   GPL-3.0-or-later and owes recipients the corresponding source and a copy of the GPL.
 - **The repository itself carries no GPL code.** The bundle is git-ignored; the sources

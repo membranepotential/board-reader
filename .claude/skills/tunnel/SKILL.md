@@ -15,11 +15,11 @@ real cert means no self-signed interstitial to accept on the phone.
 
 Tunnel **8080 only** — the plain-HTTP viewer bind. All three pages are
 same-origin: every inference endpoint they touch is relayed by the viewer itself
-(`packages/viewer/src/board_reader_viewer/proxy.py`), so the browser never needs
+(`/api` by `packages/viewer/ui/src/routes/api/[...path]`, `/ws` by `packages/viewer/ui/server/ws.ts`), so the browser never needs
 to reach `:8000`, and nothing is injected into the HTML that could hardcode a LAN
 address.
 
-Do **not** tunnel the `--ssl` bind on 8443. `cloudflared` would have to talk
+Do **not** tunnel the TLS port on 8443 (`--tls-port`). `cloudflared` would have to talk
 HTTPS to a self-signed origin, which buys nothing — the tunnel already terminates
 TLS at Cloudflare's edge. The 8443 bind exists for LAN use, where there is no
 edge to do it.
@@ -66,13 +66,12 @@ page:
 
 ```bash
 H=<host>.trycloudflare.com
-curl -sS -o /dev/null -w '%{http_code}\n' https://$H/healthz          # 200 from the viewer
 curl -sS -o /dev/null -w '%{http_code}\n' https://$H/camera           # 200, page loads
 curl -sS https://$H/api/uploads?limit=1 | head -c 200; echo           # 200 => relay reaches inference
 ```
 
-The third is the one that matters. The first two pass even when the inference
-node is down, because the viewer serves its own static pages.
+The second is the one that matters. The first passes even when the inference
+node is down, because the viewer serves its own prerendered pages.
 
 ## Teardown
 
@@ -85,7 +84,7 @@ pgrep -f "cloudflared tunnel" >/dev/null && pkill -9 -f "cloudflared tunnel"
 `cloudflared` does not always go down on SIGTERM — verify rather than assume, or
 you leave a public URL onto the user's camera running unattended. Same for the
 stack itself: `make stop`, then confirm with
-`pgrep -f "board-reader-(inference|viewer)"`.
+`pgrep -f "board-reader-inference|viewer/ui/server/main.ts"`.
 
 The hostname dies with the process and is never reissued. Every restart hands out
 a different one, so treat the URL as single-session and re-scrape it each time.

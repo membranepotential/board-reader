@@ -3,7 +3,9 @@
 # pins the resolver, and holds shared dev tooling. See docs/DESIGN.md.
 
 [tool.uv.workspace]
-members = ["packages/*"]
+# Explicit, not `packages/*`: packages/viewer is a Node package (packages/viewer/ui),
+# and a glob would demand a pyproject.toml there.
+members = ["packages/core", "packages/edge", "packages/inference"]
 
 [tool.uv]
 # Supply-chain hardening: 7-day dependency "seasoning". Only resolve to releases
@@ -15,7 +17,6 @@ exclude-newer = "2026-06-09T00:00:00Z"
 board-reader-core = { workspace = true }
 board-reader-edge = { workspace = true }
 board-reader-inference = { workspace = true }
-board-reader-viewer = { workspace = true }
 
 [dependency-groups]
 # Installed into the workspace venv for local dev + the test suite.
@@ -23,7 +24,6 @@ dev = [
     "board-reader-core",
     "board-reader-edge",
     "board-reader-inference",
-    "board-reader-viewer",
     "pytest>=8",
     # Parallel test execution (`make test` / `pytest -n auto`). The suite is
     # CPU-bound and independent per test, so this roughly halves wall clock.
@@ -106,7 +106,6 @@ known-first-party = ["board_reader_core"]
 known-local-folder = [
     "board_reader_edge",
     "board_reader_inference",
-    "board_reader_viewer",
 ]
 
 [tool.pytest.ini_options]

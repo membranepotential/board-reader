@@ -7,8 +7,8 @@
 #
 # Data flow:  edge --(WS frames)--> inference --(WS position events)--> viewer --> browser
 # The browser only ever talks to `viewer`, which relays the node's sockets and HTTP
-# API (packages/viewer/.../proxy.py). One origin, so the demo works unchanged over
-# https and behind a tunnel.
+# API (packages/viewer/ui/server/relay.ts). One origin, so the demo works unchanged
+# over https and behind a tunnel.
 
 services:
   inference:
@@ -78,12 +78,13 @@ services:
         condition: service_healthy
 
   viewer:
+    # A Node server (the SvelteKit app + server/main.ts), not a Python package.
+    # Plain http only: the demo is opened on this machine. A phone's /camera needs
+    # the TLS port `make dev` adds with --tls-port.
     build:
       context: .
-      dockerfile: docker/Dockerfile
-      args:
-        PACKAGE: board-reader-viewer
-    command: ["board-reader-viewer", "--host", "0.0.0.0", "--port", "8080"]
+      dockerfile: docker/viewer.Dockerfile
+    command: ["node", "server/main.ts", "--host", "0.0.0.0", "--port", "8080"]
     environment:
       # The viewer's own hop to the node, over the compose network — the browser never
       # sees these. Every page is same-origin and reaches the node through the viewer's

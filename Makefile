@@ -1,9 +1,9 @@
 # board-reader — one command to run it locally.
 #
-#   make dev     start inference + both viewers; Ctrl-C stops all three
+#   make dev     start inference + the viewer (http + https); Ctrl-C stops both
 #   make dev-cpu the same stack with the GPU hidden — for when the card is
 #                also driving your screens (see CUDA_ENV below)
-#   make ui      build the SvelteKit viewer frontend into the Python package
+#   make ui      build the SvelteKit viewer (packages/viewer/ui/build/)
 #   make models  fetch the recognizer weights (pinned, SHA-256 verified)
 #   make stop    stop anything left running
 #   make test     the suite in parallel, minus the GPU tests
@@ -11,9 +11,9 @@
 #   make test-all everything, GPU included
 #   make gate     replay the four gate takes and print them against sp03-settle05
 #
-# `dev` depends on `ui`, unconditionally: the viewer server (server.py) refuses to
-# start if packages/viewer/src/board_reader_viewer/web/ is missing, and that
-# directory is generated + gitignored, so a fresh checkout has none. Rebuilding it
+# `dev` depends on `ui`, unconditionally: the viewer (packages/viewer/ui/server/main.ts)
+# refuses to start if packages/viewer/ui/build/ is missing, and that directory is
+# generated + gitignored, so a fresh checkout has none. Rebuilding it
 # on every `make dev` also means an edit under packages/viewer/ui/ is never served
 # stale — there is no separate "did the UI change" check to fall out of date.
 #
@@ -24,22 +24,21 @@
 # `make models` fetches and exports them; without them the node serves the stub
 # recognizer and says so.
 #
-# The viewer runs TWICE, but only for convenience now — either bind serves all three
-# pages. Every page is same-origin: the viewer relays the whole inference API under
-# /api and the sockets under /ws (packages/viewer/.../proxy.py), so nothing the browser
-# fetches names a second host, and there is no mixed content to block. (This used to be
-# load-bearing: / and /snapshot were handed an absolute `http://<lan-ip>:8000` origin
-# injected into their HTML, which no https origin could use.)
+# The viewer is one Node process on two ports, and either port serves every page.
+# Every page is same-origin: the viewer relays the whole inference API under /api and
+# the sockets under /ws (packages/viewer/ui/server/relay.ts), so nothing the browser
+# fetches names a second host, and there is no mixed content to block. It prints its
+# own banner with the URLs to open once both ports listen.
 #
-# What each bind is for:
+# What each port is for:
 #   * https :8443 — /camera needs a SECURE context (getUserMedia is refused over plain
 #     http on a phone), so the phone uses this one, with the cached self-signed cert
-#     `--ssl` mints, and warns once.
-#   * http :8080 — the desktop live page, with no cert warning to click through. Also
+#     the viewer mints, and warns once.
+#   * http :8080 — the desktop pages, with no cert warning to click through. Also
 #     the port to tunnel: `.claude/skills/tunnel` puts a real certificate in front of
 #     it, which is why the tunnel needs no TLS from us.
 #
-# Teardown kills the three children by PID, never `kill 0`: the process group
+# Teardown kills the two children by PID, never `kill 0`: the process group
 # includes this shell, so a group kill re-enters its own TERM trap, which kills
 # the group again — bash recurses until it overflows its stack and segfaults.
 # The trap disarms itself first for the same reason.
@@ -49,7 +48,7 @@
 # `wait -n` below is a bashism, and the teardown relies on bash trap semantics.
 SHELL := /bin/bash
 
-# Primary LAN address, so /snapshot works from a phone. Falls back to localhost.
+# Primary LAN address, for the banner's inference line. Falls back to localhost.
 HOST := $(shell ip route get 1.1.1.1 2>/dev/null | grep -oP 'src \K[\d.]+' || echo 127.0.0.1)
 
 # The recognizer, so the dev path reads boards the same way the canonical
@@ -105,11 +104,10 @@ INFERENCE_PORT  ?= 8000
 VIEWER_PORT     ?= 8080
 VIEWER_TLS_PORT ?= 8443
 
-# Prerenders the live / snapshot / camera pages (adapter-static) straight into
-# packages/viewer/src/board_reader_viewer/web/, which ships as that package's data
-# (packages/viewer/pyproject.toml). `--frozen-lockfile` matches `uv sync --frozen`'s
-# discipline on the Python side: this installs exactly pnpm-lock.yaml, never a
-# resolution that drifts from what is committed.
+# Builds the SvelteKit app (adapter-node, every page prerendered) into
+# packages/viewer/ui/build/, which server/main.ts serves. `--frozen-lockfile` matches
+# `uv sync --frozen`'s discipline on the Python side: this installs exactly
+# pnpm-lock.yaml, never a resolution that drifts from what is committed.
 ui:
 	cd packages/viewer/ui && pnpm install --frozen-lockfile && pnpm build
 
@@ -118,11 +116,7 @@ dev: ui
 	  && echo "  recognition ChessQ Lite V6 ($(BR_CHESSQ))" \
 	  || echo "!! $(BR_CHESSQ) missing — the node serves the STUB recognizer; run 'make models'"
 	@echo "  gpu        $(if $(CUDA_ENV),hidden — the same recognizer on CPU; nothing of ours can reach the display's card,visible — onnxruntime capped at $${BR_GPU_MEM_LIMIT_MB:-1024} MiB/session so the display keeps its VRAM)"
-	@echo "  camera     https://$(HOST):$(VIEWER_TLS_PORT)/camera   (accept the warning once)"
-	@echo "  control    http://$(HOST):$(VIEWER_PORT)/control   (crop, lens, start/stop for the phone)"
-	@echo "  snapshot   http://$(HOST):$(VIEWER_PORT)/snapshot"
-	@echo "  live       http://$(HOST):$(VIEWER_PORT)"
-	@echo "  inference  http://$(HOST):$(INFERENCE_PORT)"
+	@echo "  inference  http://$(HOST):$(INFERENCE_PORT)   (the viewer prints the page URLs)"
 	@BR_CHESSQ=$(BR_CHESSQ) \
 	BR_SAVE_UPLOADS=$(BR_SAVE_UPLOADS) \
 	OPENCV_OPENCL_RUNTIME=$(OPENCV_OPENCL_RUNTIME) \
@@ -131,17 +125,14 @@ dev: ui
 	inference=$$!; \
 	BR_INFERENCE_HTTP=http://127.0.0.1:$(INFERENCE_PORT) \
 	BR_INFERENCE_WS=ws://127.0.0.1:$(INFERENCE_PORT)/viewer \
-	  uv run board-reader-viewer --host 0.0.0.0 --port $(VIEWER_PORT) & \
+	  node packages/viewer/ui/server/main.ts --host 0.0.0.0 \
+	    --port $(VIEWER_PORT) --tls-port $(VIEWER_TLS_PORT) & \
 	viewer=$$!; \
-	BR_INFERENCE_HTTP=http://127.0.0.1:$(INFERENCE_PORT) \
-	BR_INFERENCE_WS=ws://127.0.0.1:$(INFERENCE_PORT)/viewer \
-	  uv run board-reader-viewer --host 0.0.0.0 --port $(VIEWER_TLS_PORT) --ssl & \
-	secure=$$!; \
-	trap 'kill $$inference $$viewer $$secure 2>/dev/null; \
-	      wait $$inference $$viewer $$secure 2>/dev/null' EXIT; \
+	trap 'kill $$inference $$viewer 2>/dev/null; \
+	      wait $$inference $$viewer 2>/dev/null' EXIT; \
 	trap 'trap - EXIT INT TERM; \
-	      kill $$inference $$viewer $$secure 2>/dev/null; \
-	      wait $$inference $$viewer $$secure 2>/dev/null; \
+	      kill $$inference $$viewer 2>/dev/null; \
+	      wait $$inference $$viewer 2>/dev/null; \
 	      exit 0' INT TERM; \
 	wait -n; status=$$?; \
 	echo "!! a server exited on its own (status $$status) — stopping the others"; \
@@ -186,10 +177,11 @@ test:
 # The frontend's two test layers. `make test` is the Python suite only, and most of
 # what the viewer does now lives in packages/viewer/ui — these are not optional.
 #
-#   test-ui   Vitest: the tracker maths, the FEN sanitizer, the stores (~1s)
-#   test-e2e  Playwright: the three pages driven in a real Chromium against a stubbed
+#   test-ui   Vitest: the library maths, the stores, and the viewer server — relay,
+#             TLS certificate, client log — against real sockets (~2s)
+#   test-e2e  Playwright: the pages driven in a real Chromium against a stubbed
 #             inference node — no GPU, no model. It runs `vite build` first and serves
-#             the result with `vite preview`, so what is driven is what ships (~15s).
+#             the result with the real viewer server, so what is driven is what ships.
 test-ui:
 	cd packages/viewer/ui && pnpm install --frozen-lockfile && pnpm test
 
@@ -261,4 +253,4 @@ lint-fix:
 # The bracket keeps the pattern from matching this recipe's own command line.
 # Verified, not assumed — see tools/stop.sh for why "stopped" used to be a lie.
 stop:
-	@tools/stop.sh "[b]oard-reader-inference serve" "[b]oard-reader-viewer"
+	@tools/stop.sh "[b]oard-reader-inference serve" "[v]iewer/ui/server/main.ts"
