@@ -44,6 +44,25 @@
   const pgn = $derived(gamePgn(game));
   const lichess = $derived(lichessAnalysisUrl(game));
   const provisional = $derived(game.moves.filter((move) => !move.committed).length);
+  /** Keeps the move list's scroll position right: a list the user left at the bottom
+   *  follows the game as rows arrive; one they scrolled up stays where they put it. */
+  function followTail(el: HTMLElement): () => void {
+    let following = true;
+    const onScroll = () => {
+      following = el.scrollTop + el.clientHeight >= el.scrollHeight - 4;
+    };
+    const rowsChanged = new MutationObserver(() => {
+      if (following) el.scrollTop = el.scrollHeight;
+    });
+    el.addEventListener('scroll', onScroll, { passive: true });
+    rowsChanged.observe(el, { childList: true, subtree: true, characterData: true });
+    el.scrollTop = el.scrollHeight;
+    return () => {
+      rowsChanged.disconnect();
+      el.removeEventListener('scroll', onScroll);
+    };
+  }
+
   /** Moves in pairs, as a score sheet: one row per move number. */
   const rows = $derived(
     Array.from({ length: Math.ceil(game.moves.length / 2) }, (_, i) => ({
@@ -105,7 +124,7 @@
   {#if game.moves.length === 0}
     <p class="empty">No moves yet. The game starts from the initial position.</p>
   {:else}
-    <ol class="moves">
+    <ol class="moves" {@attach followTail}>
       {#each rows as row (row.number)}
         <li>
           <span class="number">{row.number}.</span>
@@ -144,17 +163,26 @@
 </section>
 
 <style>
+  /* Fills the board card's game drawer (GameDrawer.svelte), which is as tall as the
+     board: the header, notes and buttons keep their height and only the move list
+     scrolls, so the card never grows with the game. */
   .game-panel {
-    background: #1b1f26;
+    box-sizing: border-box;
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+    background: #161a20;
     border: 1px solid #272b33;
-    border-radius: 10px;
-    padding: 14px;
-    width: 260px;
+    border-radius: 6px;
+    padding: 10px;
     font-size: 13px;
+  }
+  .game-panel > * {
+    flex: none;
   }
   h3 {
     font-size: 14px;
-    margin: 0 0 10px;
+    margin: 0 0 8px;
     display: flex;
     justify-content: space-between;
     align-items: baseline;
@@ -166,13 +194,17 @@
   }
   .empty {
     color: #9aa3ad;
-    margin: 0 0 10px;
+    margin: 0 0 8px;
+  }
+  .game-panel > .moves,
+  .game-panel > .empty {
+    flex: 1 1 auto;
+    min-height: 0;
   }
   .moves {
     list-style: none;
-    margin: 0 0 10px;
+    margin: 0 0 8px;
     padding: 0;
-    max-height: 260px;
     overflow-y: auto;
     font-family: ui-monospace, monospace;
   }
@@ -219,7 +251,10 @@
     cursor: pointer;
     color: #9aa3ad;
   }
+  /* Its own scroll box, so opening the PGN does not push the buttons off the panel. */
   .pgn {
+    max-height: 7.5em;
+    overflow-y: auto;
     white-space: pre-wrap;
     word-break: break-word;
     font-size: 12px;

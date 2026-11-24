@@ -26,6 +26,8 @@
   import { RATE_WINDOW_MS, STALE_MS, formatAge } from '#lib/stores/liveness.ts';
   import type { BoardLiveness, BoardState } from '#lib/stores/positions.svelte.ts';
   import FramePreview from './FramePreview.svelte';
+  import GameDrawer from './GameDrawer.svelte';
+  import GamePanel from '#lib/components/game/GamePanel.svelte';
   import { boardShapes } from './shapes';
 
   interface Props {
@@ -36,6 +38,8 @@
   const { board, liveness }: Props = $props();
 
   let previewOpen = $state(false);
+  /** Open by default: the game is what a player watches during a game. */
+  let gameOpen = $state(true);
 
   const event = $derived(board.event);
   const placement = $derived(gridToFen(board.grid));
@@ -108,6 +112,10 @@
         <div>utc <code>{event.utc}</code> · clock <code>{event.clock.running}</code></div>
       </div>
     </div>
+
+    <GameDrawer open={gameOpen} onToggle={() => (gameOpen = !gameOpen)}>
+      <GamePanel {event} />
+    </GameDrawer>
   </div>
 </div>
 
@@ -189,9 +197,9 @@
     }
   }
 
-  /* ---- card body: [preview][board column] ------------------------------------
-     The preview docks to the board's left (see FramePreview.svelte); this is just
-     the two-column layout that holds it and the board next to each other. */
+  /* ---- card body: [preview][board column][game] ------------------------------
+     The preview docks to the board's left (FramePreview.svelte), the game to its
+     right (GameDrawer.svelte); this is the row that holds the three. */
   .card-body {
     display: flex;
     align-items: flex-start;

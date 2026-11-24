@@ -69,3 +69,52 @@ test('new reads keep the PGN expander open and the move list scrolled', async ({
   await expect(panel.locator('details')).toHaveAttribute('open', '');
   expect(await moves.evaluate((el) => el.scrollTop)).toBe(40);
 });
+
+test('the move list follows the game while left at the bottom', async ({ page }) => {
+  const socket = await FakeViewerSocket.install(page);
+  await page.goto('/');
+
+  let seq = 1;
+  const send = (placement: string) => {
+    socket.send(read(placement, seq++));
+    socket.send(read(placement, seq++));
+  };
+  send(START_PLACEMENT);
+  for (let round = 0; round < 10; round++) KNIGHT_CYCLE.forEach(send);
+
+  const moves = page.locator('.game-panel .moves');
+  await expect(page.locator('.game-panel .count')).toHaveText(/^40 plies/);
+  const atBottom = () => moves.evaluate((el) => el.scrollHeight - el.clientHeight - el.scrollTop <= 4);
+  await expect.poll(atBottom).toBe(true);
+
+  send(KNIGHT_CYCLE[0]!);
+  send(KNIGHT_CYCLE[1]!);
+  await expect(page.locator('.game-panel .count')).toHaveText(/^42 plies/);
+  await expect.poll(atBottom).toBe(true);
+});
+
+test('the game drawer hides the panel but keeps decoding', async ({ page }) => {
+  const socket = await FakeViewerSocket.install(page);
+  await page.goto('/');
+
+  let seq = 1;
+  const send = (placement: string) => {
+    socket.send(read(placement, seq++));
+    socket.send(read(placement, seq++));
+  };
+  send(START_PLACEMENT);
+  send(KNIGHT_CYCLE[0]!);
+
+  const card = page.locator('.board-card');
+  const tab = card.locator('.drawer-tab');
+  await expect(card.locator('.game-panel')).toBeVisible();
+  await expect(tab).toHaveAttribute('aria-expanded', 'true');
+
+  await tab.click();
+  await expect(tab).toHaveAttribute('aria-expanded', 'false');
+  await expect.poll(() => card.locator('.drawer-pane').evaluate((el) => el.getBoundingClientRect().width)).toBe(0);
+
+  send(KNIGHT_CYCLE[1]!);
+  await tab.click();
+  await expect(card.locator('.game-panel .count')).toHaveText(/^2 plies/);
+});

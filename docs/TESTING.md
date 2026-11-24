@@ -1043,8 +1043,11 @@ Automated: `test_labels.py`, `test_server_labels.py`, `test_evaluate.py` and
 
 ### Option Q — Record a game to PGN on the live page (WP-H3)
 
-Each board card on the live page has a **game** panel beside it. The panel decodes that
-board's reads into a legal game, starting from the initial position
+Each board card on the live page has a **game** drawer on its right, open by default
+(the vertical **game** tab hides and shows it). The panel decodes that board's reads into
+a legal game, starting from the initial position, and keeps decoding while hidden. It is
+as tall as the board: only the move list scrolls, it follows the latest move while left
+at the bottom, and it stays put once scrolled up. New reads never close the PGN expander
 ([docs/plans/2026-11-24-pgn-decoder.md](plans/2026-11-24-pgn-decoder.md)).
 
 1. Run `make dev`, open `/camera` on the phone and `http://localhost:8080` on the
