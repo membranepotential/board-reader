@@ -7,7 +7,7 @@ _reconciled: 2026-11-24 @ `480a5ea`_ · decisions: [docs/DESIGN.md](docs/DESIGN.
 A camera reads a live OTB board and streams timestamped **piece placements + per-square
 confidences**. No moves, no legality, no PGN — those belong to the downstream application layer.
 
-## Now (2 agents, files partitioned)
+## Now (3 agents, files partitioned)
 
 - **hand-signal probe DONE** (`8645523`): ChessQ frame energy (−logsumexp, mean of top-4 squares) flags hand
   frames at AUC 0.97; as a no-commit gate: resting-hand take 9 wrong boards → 0, gate 314 → 311/361.
@@ -21,6 +21,8 @@ confidences**. No moves, no legality, no PGN — those belong to the downstream 
   ingest.py, replay).
 - **energy gate** — obscured reads never commit (chessq.py score, stabilize.py, `obscured` on the event,
   "hand?" chip); wires ingest.py after the refine commit — running (agent).
+- **latency round 3 (measure only)** — every-frame ChessQ cache + offline sweep of calm hold, settle window
+  and the obscured rule; build only what wins — running (agent; tools/probes/latency3_*).
 
 ## Done (2026-11-24 — the ChessQ rebuild; plan: [docs/plans/2026-11-24-simplify-around-chessq.md](docs/plans/2026-11-24-simplify-around-chessq.md))
 
@@ -43,9 +45,7 @@ confidences**. No moves, no legality, no PGN — those belong to the downstream 
 
 ## Next
 
-1. **Latency round 3** (after the energy gate): read the first calm frame instead of holding 0.7 s; shorter
-   settle once obscured reads cannot commit; gate sweep, keep only no-loss settings (~2 s → ~0.5–0.8 s?).
-2. **Resting-hand re-test** (you) — after the energy gate lands: rest a hand on the board mid-game.
+1. **Resting-hand re-test** (you) — after the energy gate lands: rest a hand on the board mid-game.
 3. **Record more varied games** — second set, second camera, other light. All gate takes are one
    set; the settle defaults are fitted to it.
 4. **Python edge on the control channel** (today: static `--roi`) — needed for a Pi/Jetson camera.
