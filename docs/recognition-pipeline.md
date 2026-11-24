@@ -125,8 +125,12 @@ tall, and when the phone is upright.
 - **Hands read as confident empties** (p ≥ 0.96). Confidence cannot flag a hand, so hands
   are kept out by read scheduling (burst-end reads, `schedule.py`) and the settle debounce,
   not by thresholds. A shorter settle window lets more hand frames through; the 08-13 take
-  must settle every scored read (35/35 under the shipped schedule). The 2026-11-24 retune
-  to 1.0 s settled no hand ([[2026-11-24-settle-tuning]]).
+  must settle every scored read. The settle window must stay strictly between the burst-end
+  spacing and the run's span (shipped: 0.3 s spacing < 0.5 s window ≤ 0.6 s span): a window two
+  reads can span let a hand settle in 19 of 30 swept configs ([[2026-11-24-latency-round2]]).
+- **A hand that rests still** on the board reads as rest to the motion meter, so no burst
+  protects it: on live take 2 a hand held over f6 for ~2.5 s settled (every config did so). This is
+  a meter limit; only a direct hand signal would fix it.
 - **Small boards in a wide frame** fail (table above).
 - **One third-party, noncommercial model.** The revision is pinned and the SHA-256 checked;
   ChessCam v2 is the hedge.

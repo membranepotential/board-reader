@@ -179,10 +179,10 @@ a leave-one-out fit per board and, unlike the decoder, it does not serve.
 
 **The replay gate.** `make gate GATE_NAME=<new>` replays the four gate takes
 through `BR_CHESSQ` with the schedule `serve` ships (`schedule.DEFAULT_POLICY_SPEC`),
-scores each, and prints `tools/gate_table.py`'s table against `ka2-tuned`: raw
+scores each, and prints `tools/gate_table.py`'s table against `sp03-settle05`: raw
 per-square and raw / prior / settled perfect boards per take, with a pooled total.
-The reference is 110/119 raw and 104/119 settled perfect boards
-([[2026-11-24-settle-tuning]]). Until 2026-11-24 the gate replayed plain
+The reference is 145/156 raw and 140/156 settled perfect boards
+([[2026-11-24-latency-round2]]). Until 2026-11-24 the gate replayed plain
 `burst-end` (one read per move), which `serve` never ran; `cq-v6` (92/101 raw,
 84/101 settled, [[2026-11-24-chessq-v6-replay-gate]]) is that older reference. A change that should not move the reader must
 print every cell once.
