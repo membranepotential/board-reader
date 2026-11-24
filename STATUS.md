@@ -7,7 +7,7 @@ _reconciled: 2026-11-24 @ `480a5ea`_ · decisions: [docs/DESIGN.md](docs/DESIGN.
 A camera reads a live OTB board and streams timestamped **piece placements + per-square
 confidences**. No moves, no legality, no PGN — those belong to the downstream application layer.
 
-## Now (2 agents, files partitioned)
+## Now (3 agents, files partitioned)
 
 - **hand-signal probe** — is a square occluded? ChessQ intermediate outputs vs simple CV (edges,
   long-term median) on the gate takes + live take 2 — running (read-only on src) — report in docs/reports.
@@ -16,6 +16,8 @@ confidences**. No moves, no legality, no PGN — those belong to the downstream 
   `changed_utc` (median 1.45 s after the true change vs 3.12 s); gate base `guard-only` 314/361, 0 leaks.
 - **PGN builder** — temporal decoder (research ChessCam vs Viterbi/beam over legal moves) → live PGN panel
   with copy + Lichess analysis link; offline accuracy on the gate takes — running (agent; viewer lib/game/).
+- **changed_utc backtrack** — after a settle, binary-search the held frames for the first one showing the
+  new board (off the latency path); truth + score for live take 2 — running (agent; stream/ + replay).
 
 ## Done (2026-11-24 — the ChessQ rebuild; plan: [docs/plans/2026-11-24-simplify-around-chessq.md](docs/plans/2026-11-24-simplify-around-chessq.md))
 
@@ -39,7 +41,6 @@ confidences**. No moves, no legality, no PGN — those belong to the downstream 
 ## Next
 
 1. **Hand signal, built** — implement the probe's recommendation (feeds the scheduler or stabilizer).
-2. **Score live take 2** — build `truth.json` for `20261124-221950` and add it to the gate.
 3. **Record more varied games** — second set, second camera, other light. All gate takes are one
    set; the settle defaults are fitted to it.
 4. **Python edge on the control channel** (today: static `--roi`) — needed for a Pi/Jetson camera.
