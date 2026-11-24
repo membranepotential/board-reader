@@ -10,7 +10,7 @@ Two layers, both required by the project's "user-testable from the start" princi
 
 ## 0. Read this first (the 60-second version)
 
-The suite is **fast — ~16 s for all ~858 tests**. If testing is costing you more
+The suite is **fast — ~16 s for all ~859 tests**. If testing is costing you more
 than that, you are doing one of the things in this section. Read it before you run
 anything; do not read the remaining 600 lines unless you are adding a test.
 
@@ -23,12 +23,12 @@ uv run pytest packages/inference/tests/test_server.py -q    # one file, while it
 
 | Want | Run | Cost (measured 2026-11-24, one suite at a time) |
 |---|---|---|
-| The gate (before committing) | `make test` | **~16 s** — all ~858 |
+| The gate (before committing) | `make test` | **~16 s** — all ~859 |
 | One file / one test | `uv run pytest <path>[::<test>] -q` | 1–8 s |
-| One package | `uv run pytest packages/<pkg> -q` | core 9 s (110) · edge 4 s (130) · viewer 11 s (56) · inference 12 s (435) |
+| One package | `uv run pytest packages/<pkg> -q` | core 9 s (115) · edge 4 s (81) · viewer 11 s (58) · inference 12 s (459) |
 | Recognition changes only | `make test-gpu` | a few s, **needs an idle GPU** |
 
-The rest of the ~858 are `tests/` (42) and `tools/video/tests` (85). A package runs
+The rest of the ~859 are `tests/` (48) and `tools/video/tests` (98). A package runs
 *serially*, so scoping to `packages/inference` costs about as much as `make test`.
 Narrow to a file, or just run the gate.
 
@@ -130,7 +130,8 @@ What's covered today — the main files (`git ls-files 'packages/*/tests/*.py'
 | Gateway | `packages/inference/tests/test_server.py` | ingest → viewer over WS (in-process) |
 | **Read scheduling** | `packages/inference/tests/test_schedule.py` | **burst detection matches the forwarder's hysteresis; the keepalive floor survives a dead, stuck, absent or NaN meter and a backwards clock; no config spelling switches it off; a new move cancels the last one's owed reads; spec strings round-trip** |
 | **Scheduling, live** | `packages/inference/tests/test_ingest_schedule.py` | **the policy is observed on every arriving frame and asked at the drain, so a burst-end read gets `prefer_frame`'s sharper contender; per-board isolation; a frozen `capture_ts` falls back to the node's own keepalive; `BR_SCHEDULE` reaches the socket and `every-frame` restores the old gateway** |
-| Viewer | `packages/viewer/tests/test_viewer_server.py` | UI served, WS URL injected |
+| **Camera control** | `packages/core/tests/test_control.py`, `packages/inference/tests/test_camera_control.py` | **the config and report contract refuses malformed input; the node holds a config per board and answers the phone's report with it; the preview round-trips** |
+| Viewer | `packages/viewer/tests/test_viewer_server.py`, `test_proxy.py` | the four prerendered pages served; `/api` and `/ws` reach the relay; no page names an absolute origin; the client log |
 | **Layer split** | `tests/test_layer_separation.py` | edge/inference never import each other |
 | **Deploy parity** | `tests/test_deploy_parity.py` | compose and `make dev` serve the same recognizer |
 | **End-to-end** | `tests/test_end_to_end.py`, `test_m2_stream.py` | real uvicorn + edge client + viewer WS; the adaptive stream |
@@ -226,11 +227,15 @@ You should see:
   the snapshot page uses,
 - the position **changing as the game moves** — each changed square ringed
   **green**, fading pale and gone within a second,
-- the rhythm of an adaptive stream: **~1 ev/s at rest** (keepalive), jumping to
-  **~10–12 ev/s** with a pulsing **“moving”** chip whenever the synthetic hand
-  reaches over the board — the **stability** bar dips at the same moments,
-- squares under the hand ringed **yellow** (low per-square confidence — honest
-  occlusion, not a guess); the legend under the board names both rings,
+- the rhythm of a **scheduled** stream (DESIGN §4.3): about one event every 3 s at
+  rest (the node's keepalive read), none while the synthetic hand is over the board,
+  then three events ~0.6 s apart once it leaves (the burst-end reads). The edge still
+  forwards ~12 fps through the hand; `curl -s localhost:8000/healthz | jq .ingest`
+  shows `unscheduled` climbing while `estimated` crawls. `BR_SCHEDULE=every-frame`
+  on the `inference` service restores one event per frame and the pulsing
+  **“moving”** chip,
+- squares under the confidence threshold, if any, ringed **yellow**; the legend under
+  the board names both rings,
 - the **preview** tab on the board's left sliding open onto the **latest frame the
   node ingested**, refreshing as events arrive — it reads “no frame yet” until one
   has been forwarded, and closing it stops fetching,
@@ -245,9 +250,9 @@ sideways with the picture, like turning a printed diagram. Manual check: clickin
 cycles 0→90→180→270→0, a second board's card is unaffected, and the choice
 survives a reload (persisted per board id in localStorage).
 
-This runs three containers: `edge` (game feed) → `inference` (estimator +
-gateway) → `viewer` (UI). The browser loads the UI from `viewer` but connects for
-*data* straight to `inference` on `localhost:8000`.
+This runs three containers: `edge` (game feed) → `inference` (recognizer +
+gateway) → `viewer` (UI). The browser talks only to `viewer`, which relays the node's
+sockets and HTTP API; the published port 8000 is for debugging.
 
 Stop it with `docker compose down`.
 
@@ -292,7 +297,7 @@ To send only the board's part of a wide shot, add `--roi x,y,w,h` (Option D).
 
 ### Option D — Send only the board's rectangle (`--roi`)
 
-The edge never looks for the board (DESIGN D10, "dumb camera"). It sends the whole
+The edge never looks for the board (DESIGN D11). It sends the whole
 frame, or the static rectangle `--roi x,y,w,h` selects, in fractions of the frame
 (top-left corner, width, height). Motion for `--adaptive` is measured inside the
 rectangle too.
@@ -317,7 +322,7 @@ rectangle too.
 ### Option F — Phone snapshot → Lichess
 
 Photograph a real board with your phone, get the position + a Lichess link. The
-snapshot page is an application-layer consumer (DESIGN WP-H3): the CV side still
+snapshot page is an application-layer consumer (DESIGN WP-H3, §2.3): the CV side still
 only produces placement + confidences; side-to-move, castling guess, and the
 Lichess URL are assembled in the page.
 
@@ -507,7 +512,8 @@ uv run board-reader-viewer --host 0.0.0.0 --port 8443 --ssl
    the Status panel and the **recognizer** named (`chessq`, or `stub` with the reason).
 9. Open the live page `http://localhost:8080` and move a piece. Expected: a burst on the
    phone (fps rises to ~12 while the hand moves) and the new position on the live page
-   within a second or two of the hand leaving.
+   about three seconds after the hand leaves (three burst-end reads, then the 1 s settle;
+   the gate's median move-to-settle time is 3.0 s).
 10. Press **Stop streaming** on `/control`. Expected: the phone's status line reads
     `not streaming` within ~1 s, and no new frames reach the node.
 
@@ -627,7 +633,7 @@ Three more places to look after a phone trial:
 - `curl -s localhost:8000/healthz | jq .ingest` — `received/estimated/dropped/
   failed/refused/unscheduled/backstopped` counters; all zeros while the
   phone claims to stream means the frames never arrived. `unscheduled` far above
-  `estimated` is the **read scheduler working** (`BR_SCHEDULE`, ~12x fewer reads),
+  `estimated` is the **read scheduler working** (`BR_SCHEDULE`),
   not a stall; `backstopped` above zero means that edge's `capture_ts` stopped
   advancing and the node is reading on its own clock to keep the board alive.
 
@@ -658,8 +664,8 @@ What to check:
 
 - against the Docker demo (Option A), the tail's transitions match the squares the
   viewer rings green, at the same moments;
-- `--changes-only` collapses the ~1 ev/s keepalive to nothing while the board is at
-  rest, and prints a burst of lines through a move;
+- `--changes-only` collapses the keepalive reads (one every ~3 s) to nothing while the
+  board is at rest, and prints a burst of lines through a move;
 - `jq -r .placement run.ndjson | uniq` reads the game's positions back out in order, and
   `wc -l run.ndjson` matches the "wrote N position events" line on stderr. Under
   `--changes-only` that line also names what it held back ("… (7 unchanged, not written)"),
@@ -716,8 +722,8 @@ label is only as good as the estimator that produced it):
 > Since the move-trigger milestone the node does **not** publish one event per
 > frame. `BR_SCHEDULE` defaults to `burst-end:burst_end_reads=3,spacing_s=0.6`:
 > three reads 0.6 s apart when a move finishes, then roughly one every 3 s while the board
-> rests, ~12× fewer events than the frames that arrived
-> ([the sweep](reports/2026-08-27-move-trigger-sweep.md)). `frames.ndjson` is
+> rests — far fewer events than the frames that arrived
+> ([the 08-27 sweep](reports/2026-08-27-move-trigger-sweep.md), [the settle tuning](reports/2026-11-24-settle-tuning.md)). `frames.ndjson` is
 > unchanged — every arriving frame is still recorded, because recording happens in
 > the `/ingest` handler ahead of the scheduler — so **`from_seq` still means a
 > frame seq and is unaffected**, but `events.ndjson` now has holes in it.
@@ -932,9 +938,9 @@ committed descriptors name, checks the SHA-256, and exports the fp32 ONNX.
    node starts anyway, its log prints `!! BR_CHESSQ=... does not name a model file`,
    and `/healthz` shows `"recognizer": {"name": "stub", ..., "fallback": "..."}`.
    The live page shows the start position whatever the camera sees.
-3. Open `/camera` on the phone (Option J) and point it at a board. Expected: the
-   live page shows positions within ~1 s per read (ChessQ fp32 runs ~0.2 s on the
-   GPU; int8 ~0.6–1.1 s on CPU).
+3. Open `/camera` on the phone (Option J) and point it at a board. Expected: each read
+   takes ~0.2 s (ChessQ fp32 on the GPU; int8 ~0.6–1.1 s on CPU), and a moved piece
+   settles on the live page about three seconds after the hand leaves.
 4. Replay a take with ChessQ (Option N), with **only** `BR_CHESSQ` set:
    `BR_CHESSQ=models/chessq/cq-vit-s-644-v6-seed1-onnx-int8-r1.onnx uv run
    board-reader-inference replay recordings/20260828-111421 --policy burst-end
@@ -970,8 +976,8 @@ eval and replays are all in the chess frame.
    chess frame).
 4. Run `make gate GATE_NAME=<new-name>` on an idle GPU. Expected: four
    `replaying ...` lines (about a minute in all), then the gate table
-   `cq-v6 → <new-name>` with a total row. An unchanged pipeline prints every cell
-   once (no `→`): 92/101 raw, 92/101 prior, 84/101 settled perfect.
+   `cq-v6-tuned → <new-name>` with a total row. An unchanged pipeline prints every
+   cell once (no `→`): 110/119 raw, 110/119 prior, 104/119 settled perfect.
    `uv run python tools/gate_table.py tkr-shipped cq-v6` prints the adoption gate.
 
 Automated: `test_labels.py`, `test_server_labels.py`, `test_evaluate.py` and
