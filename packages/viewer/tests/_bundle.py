@@ -28,8 +28,13 @@ def _web_dir() -> Path:
 
 WEB = _web_dir()
 
-#: The three prerendered pages ``server.py`` serves, by the route that serves each.
-PAGES = {"/": "index.html", "/snapshot": "snapshot.html", "/camera": "camera.html"}
+#: The prerendered pages ``server.py`` serves, by the route that serves each.
+PAGES = {
+    "/": "index.html",
+    "/snapshot": "snapshot.html",
+    "/camera": "camera.html",
+    "/control": "control.html",
+}
 
 #: ``server._require_web`` treats the bundle as present exactly when ``index.html`` is,
 #: so this suite uses that same definition rather than a second one that could drift.

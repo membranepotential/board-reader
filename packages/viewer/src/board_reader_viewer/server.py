@@ -1,9 +1,10 @@
 """board-reader-viewer — serves the live-position web UI (DESIGN.md §6 viewer).
 
-A deliberately thin server. It renders no board logic: it ships three pages — the live
-page (``/``), ``/snapshot`` (one photo, read once) and ``/camera``, the DESIGN §4.1
-"virtual Pi" browser edge that streams live frames into the node — plus the hashed
-``/_app/...`` assets those pages load.
+A deliberately thin server. It renders no board logic: it ships four pages — the live
+page (``/``), ``/snapshot`` (one photo, read once), ``/camera``, the DESIGN §4.1
+"virtual Pi" browser edge that streams live frames into the node, and ``/control``, the
+laptop page that configures that camera — plus the hashed ``/_app/...`` assets those
+pages load.
 
 The pages themselves are a prerendered SvelteKit build (``packages/viewer/ui``, built
 by ``make ui`` / ``pnpm build``) that lands in ``web/`` next to this file. This module
@@ -92,7 +93,7 @@ def create_app() -> FastAPI:
     async def healthz() -> dict:
         return {"status": "ok"}
 
-    # All three pages are served with nothing injected: every endpoint they use is
+    # All four pages are served with nothing injected: every endpoint they use is
     # same-origin and relative, and :mod:`board_reader_viewer.proxy` relays it. That is
     # the whole point — one origin, one certificate to accept, and an address the
     # browser can always reach because it is the one it already loaded the page from.
@@ -110,8 +111,13 @@ def create_app() -> FastAPI:
 
     @app.get("/camera", response_class=HTMLResponse)
     async def camera() -> HTMLResponse:
-        """Phone camera page: the browser edge (DESIGN §4.1 "virtual Pi")."""
+        """Phone camera page: the browser edge, a dumb camera (DESIGN D10)."""
         return _page(_WEB, "camera.html")
+
+    @app.get("/control", response_class=HTMLResponse)
+    async def control() -> HTMLResponse:
+        """Laptop control page: sets what the phone camera films and streams."""
+        return _page(_WEB, "control.html")
 
     # The phone's trial log sink — registered BEFORE proxy.install so the /api
     # catch-all never relays it to the inference node: these notes are about the
@@ -205,6 +211,7 @@ def _banner(host: str, port: int, *, cert: tls.Certificate | None) -> list[str]:
         ]
     lines.append("  camera page:")
     lines += [f"    {url}" for url in tls.camera_urls(host, port, scheme=scheme)]
+    lines.append(f"  control page (on this machine): {scheme}://localhost:{port}/control")
     if host.startswith("127.") or host == "localhost":
         lines.append(f"  (bound to {host} — pass --host 0.0.0.0 to reach it from a phone)")
     return lines

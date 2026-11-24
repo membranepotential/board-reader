@@ -47,16 +47,16 @@ def test_healthz(client):
 @pytest.mark.parametrize(("route", "filename"), sorted(PAGES.items()))
 def test_each_page_route_serves_its_own_prerendered_file(client, route, filename):
     """Byte-identical to the file on disk: the server injects nothing, and the route
-    table maps each path to the right one of three near-identical documents."""
+    table maps each path to the right one of several near-identical documents."""
     response = client.get(route)
     assert response.status_code == 200
     assert response.headers["content-type"].startswith("text/html")
     assert response.text == (WEB / filename).read_text(encoding="utf-8")
 
 
-def test_the_three_pages_are_actually_different_documents(client):
+def test_the_pages_are_actually_different_documents(client):
     bodies = {route: client.get(route).text for route in PAGES}
-    assert len(set(bodies.values())) == 3
+    assert len(set(bodies.values())) == len(PAGES)
 
 
 def test_the_hashed_assets_a_page_loads_all_resolve(client):
@@ -228,6 +228,8 @@ def test_startup_prints_the_https_address_to_type_on_the_phone(monkeypatch, tmp_
     assert str(cert.certfile) in banner
     assert "192.168.1.7" in banner  # what the certificate is valid for
     assert "your phone will warn once" in banner
+    # The phone has no controls; the operator configures it from this machine.
+    assert "https://localhost:8080/control" in banner
 
 
 def test_startup_without_ssl_says_why_the_camera_will_refuse():
