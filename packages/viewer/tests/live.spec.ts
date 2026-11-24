@@ -154,44 +154,6 @@ test('a card shows pending squares as dashed rings and no confidence readouts', 
   await expect(card.locator('cg-container svg [stroke-dasharray]')).toHaveCount(0);
 });
 
-test('the rotate button turns the board and remembers the choice per board', async ({ page }) => {
-  const socket = await FakeViewerSocket.install(page);
-  await page.goto('/');
-
-  socket.send(positionEvent({ board_id: 'alpha' }));
-  socket.send(positionEvent({ board_id: 'beta', seq: 2 }));
-  await expect(page.locator('.board-card')).toHaveCount(2);
-
-  const alphaRotate = page.locator('.board-card').first().locator('button.rotate');
-  const alphaWrap = page.locator('.board-card').first().locator('.board-wrap');
-  const betaWrap = page.locator('.board-card').nth(1).locator('.board-wrap');
-
-  await expect(alphaRotate).toHaveText('↻ 0°');
-  await expect(alphaWrap).toHaveCSS('transform', 'matrix(1, 0, 0, 1, 0, 0)');
-
-  await alphaRotate.click();
-  await expect(alphaRotate).toHaveText('↻ 90°');
-  await expect(alphaWrap).toHaveCSS('transform', 'matrix(0, 1, -1, 0, 0, 0)');
-  // The other board's card is untouched — rotation is per board, not global.
-  await expect(betaWrap).toHaveCSS('transform', 'matrix(1, 0, 0, 1, 0, 0)');
-
-  await alphaRotate.click();
-  await alphaRotate.click();
-  await alphaRotate.click();
-  await expect(alphaRotate).toHaveText('↻ 0°');
-  await expect(alphaWrap).toHaveCSS('transform', 'matrix(1, 0, 0, 1, 0, 0)');
-
-  await alphaRotate.click();
-  await expect(alphaRotate).toHaveText('↻ 90°');
-
-  // Persisted per board id, across a reload — not just in-memory component state.
-  // The route installed by `FakeViewerSocket.install` above survives the reload and
-  // re-attaches to the new socket the reloaded page opens.
-  await page.reload();
-  socket.send(positionEvent({ board_id: 'alpha' }));
-  await expect(page.locator('.board-card button.rotate')).toHaveText('↻ 90°');
-});
-
 test('the frame preview fetches only while it is open', async ({ page }) => {
   const frameRequests: string[] = [];
   await page.route('**/api/boards/**/frame**', (route) => {

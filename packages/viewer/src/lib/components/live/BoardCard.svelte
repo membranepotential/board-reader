@@ -4,8 +4,8 @@
    * `render`, minus the DOM bookkeeping: `PositionStream` already derives the
    * sanitized grid, change rings, pending squares, motion, staleness and
    * events/sec (see `#lib/stores/positions.svelte`), so this component only lays
-   * them out and owns the UI-only state index.html kept per card (whether the
-   * preview is open and the display rotation).
+   * them out and owns the one UI-only state index.html kept per card: whether the
+   * preview is open.
    *
    * What it does NOT show, on purpose: a confidence bar or confidence rings (the
    * recognizer reports ~1.0 on its wrong squares too — /snapshot's inspector keeps
@@ -24,9 +24,7 @@
   import { RATE_WINDOW_MS, STALE_MS, formatAge } from '#lib/stores/liveness.ts';
   import type { BoardLiveness, BoardState } from '#lib/stores/positions.svelte.ts';
   import FramePreview from './FramePreview.svelte';
-  import { nextRotation, parseStoredRotation, rotationKey, type BoardRotation } from './rotation';
   import { boardShapes } from './shapes';
-  import { untrack } from 'svelte';
 
   interface Props {
     board: BoardState;
@@ -36,35 +34,6 @@
   const { board, liveness }: Props = $props();
 
   let previewOpen = $state(false);
-
-  // `board.id` is this instance's key in the `{#each}` on the live page (never
-  // reassigned to a different board), so reading it once at construction is
-  // deliberate — `untrack` says so instead of leaving it looking like a missed
-  // dependency.
-  let rotation = $state<BoardRotation>(
-    untrack(() => parseStoredRotation(readLocal(rotationKey(board.id))))
-  );
-
-  function readLocal(key: string): string | null {
-    try {
-      return localStorage.getItem(key);
-    } catch {
-      return null; // private mode: preferences simply do not persist
-    }
-  }
-
-  function writeLocal(key: string, value: string): void {
-    try {
-      localStorage.setItem(key, value);
-    } catch {
-      /* private mode */
-    }
-  }
-
-  function rotateBoard(): void {
-    rotation = nextRotation(rotation);
-    writeLocal(rotationKey(board.id), String(rotation));
-  }
 
   const event = $derived(board.event);
   const placement = $derived(gridToFen(board.grid));
@@ -106,18 +75,11 @@
     />
 
     <div class="board-col">
-      <div class="board-wrap" style="transform: rotate({rotation}deg)">
+      <div class="board-wrap">
         <Board {placement} {shapes} />
       </div>
 
       <div class="board-actions">
-        <button
-          class="rotate"
-          title="rotate this board's on-screen picture — display only, saved for this board"
-          onclick={rotateBoard}
-        >
-          ↻ {rotation}°
-        </button>
         <span class="legend">
           <span><i class="ch"></i>just changed</span>
           <span><i class="pd"></i>not settled yet</span>
@@ -231,41 +193,17 @@
   .board-card.stale .meta > :not(.live) {
     filter: saturate(0.15) brightness(0.62);
   }
-  /* Square box: rotating it in 90° steps never changes its bounding box, so this
-     never fights the layout above. Own rule so the transform transition is scoped
-     to the board and does not also apply to the .meta rows sharing the filter one. */
-  .board-wrap {
-    transition:
-      filter 150ms linear,
-      transform 200ms ease;
-  }
-
   .board-actions {
     display: flex;
     align-items: center;
     gap: 10px;
     margin-top: 10px;
     flex-wrap: wrap;
-    /* Unconstrained, this row grows to fit its widest content instead of wrapping —
-       and `.board-wrap` above it is `width: auto`, so it grows to match and carries
-       the extra width into its own rotate transform. Same cap `.meta`
+    /* Unconstrained, this row grows to fit its widest content instead of wrapping,
+       and `.board-wrap` above it (`width: auto`) grows to match. Same cap `.meta`
        already use, so a third legend chip wraps onto its own line instead of
        widening the whole card. */
     max-width: var(--board-size, 360px);
-  }
-  .rotate {
-    font: inherit;
-    font-size: 13px;
-    padding: 6px 10px;
-    border-radius: 8px;
-    border: 1px solid #35404e;
-    background: #1c222b;
-    color: #9aa3ad;
-    cursor: pointer;
-  }
-  .rotate:hover {
-    background: #232b36;
-    color: #c8cdd4;
   }
   .legend {
     font-size: 12px;

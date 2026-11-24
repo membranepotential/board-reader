@@ -254,14 +254,6 @@ You should see:
 - the **age** readout ticking and the card fading to **stale** if you stop the
   edge container (`docker compose stop edge`) — and recovering when it returns.
 
-The **rotate** button under each board turns the card's board picture in 90° steps —
-purely cosmetic (CSS transform on the rendered card; the placement stays
-white's-view a8-first on the wire), for matching the screen to however you're
-standing relative to the physical board. At 90°/270° the coordinates turn
-sideways with the picture, like turning a printed diagram. Manual check: clicking
-cycles 0→90→180→270→0, a second board's card is unaffected, and the choice
-survives a reload (persisted per board id in localStorage).
-
 This runs three containers: `edge` (game feed) → `inference` (recognizer +
 gateway) → `viewer` (UI). The browser talks only to `viewer`, which relays the node's
 sockets and HTTP API; the published port 8000 is for debugging.
