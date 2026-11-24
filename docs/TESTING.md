@@ -119,7 +119,7 @@ What's covered today — the main files (`git ls-files 'packages/*/tests/*.py'
 | Edge adapter | `packages/edge/tests/test_adapter.py` | frames → wire envelopes, throttle, **static `--roi` crop, motion measured inside it, no `corners` sent** |
 | **Recognizer seam** | `packages/inference/tests/recognition/test_recognizer.py` | **the stub, the event a distribution becomes, the one frame read, the environment builder and its loud fallback** |
 | **ChessQ** | `packages/inference/tests/recognition/test_chessq.py` | **preprocessing and output mapping on a fake model; one `gpu` test reads a held-out still with the real V6** |
-| **Repair + settle** | `packages/inference/tests/stream/test_prior.py`, `test_stabilize.py` | **an impossible board is repaired at its weakest square and a possible one is left byte-for-byte; the per-square debounce behind `settled`** |
+| **Settle + guard** | `packages/inference/tests/stream/test_stabilize.py`, `test_rules.py` | **the per-square debounce behind `settled`; under `standard` rules a settle never makes the board more impossible (≤1 king per colour, ≤16 pieces, the promotion budget), under `free` it settles whatever the reads agree on** |
 | **Recording format** | `packages/core/tests/test_recording.py` | **byte-exact round trip, corners survive, truncated session still replays, size cap** |
 | **Ingress recording** | `packages/inference/tests/test_recording_ingest.py` | **every `/ingest` frame lands on disk (incl. pre-filter drops); off unless asked; a write failure never breaks the stream** |
 | **Replay (edge)** | `packages/edge/tests/test_recording_replay.py` | **replays the recorded bytes without re-encoding, paces by capture time, refuses to reprocess** |
@@ -352,8 +352,8 @@ at the same size. The board renders with low-confidence squares outlined red, pl
 **Read position** reads the same photo again.
 
 **The page is the diagnostic surface for the reader** (viewer aspect). Under the
-photo and the board, the four stages of the read are listed in the order they run —
-*capture · read · impossible-board repair · position output*. Each row always shows
+photo and the board, the three stages of the read are listed in the order they run —
+*capture · read · position output*. Each row always shows
 its state and headline numbers; expanding it shows the full evidence:
 
 1. **Capture** — posted size (downscaled in the browser to a 1600 px long side;
@@ -362,10 +362,7 @@ its state and headline numbers; expanding it shows the full evidence:
 2. **Read** — mean/weakest per-square confidence, an 8×8 confidence map (click a
    cell to inspect that square), the least-confident squares, and any `warnings`
    the server volunteered. The read is always in the chess frame (rank 8 on top).
-3. **Impossible-board repair** — every square the hard-constraint decoder
-   relabelled (two kings, a pawn on the back rank, too many pieces), cheapest first.
-   The board above shows the repaired position; the raw distribution is untouched.
-4. **Position output** — the FEN, side-to-move, Lichess links, copy FEN / copy raw
+3. **Position output** — the FEN, side-to-move, Lichess links, copy FEN / copy raw
    event, the corrections made by hand, and a material census (two kings, ≤8 pawns).
 
 **Correcting a square:** click it once to inspect — the inspector beside the board
@@ -397,7 +394,7 @@ Notes:
 - Without the ChessQ weights you get the stub (fixed start position) — fine for
   testing the plumbing, useless for real photos.
 - Set `BR_SAVE_UPLOADS=data/uploads` on `serve` to keep every posted photo (+ its
-  sidecar: predicted placement, read frame, prior flips) — real-world shots become
+  sidecar: predicted placement, read frame) — real-world shots become
   eval data.
 
 ### Option I — Confirm ground truth, then score the reader
@@ -414,8 +411,8 @@ labels through normal use, then run the deployed stack against them.
    saving a flawless read is exactly as much a label as fixing four squares, and
    the perfect-board rate is made of both.
 3. A `data/uploads/<stem>.label.json` appears next to the photo, holding the
-   position in the chess frame (`"frame": "chess"`), the squares the decoder
-   repaired (`prior_flips`), and what the server predicted at the time. Editing a
+   position in the chess frame (`"frame": "chess"`) and what the server predicted
+   at the time. Editing a
    square after saving turns the button into **Update labelling** — a label
    describes one exact position.
 
@@ -427,7 +424,6 @@ labels through normal use, then run the deployed stack against them.
 ```bash
 uv run board-reader-inference eval                    # data/eval + data/uploads
 uv run board-reader-inference eval --json report.json
-uv run board-reader-inference eval --no-prior         # the raw read, no repair
 ```
 
 The harness builds the recognizer from the environment exactly as `serve` does,
@@ -564,9 +560,16 @@ the track is dead outright, and the page reopens the lens. The watchdog reads
 stall of a few seconds escalates play → reopen with backoff. Every attempt is in
 `client-logs/` (see Option K's post-mortem kit).
 
-**Impossible boards.** The live panel draws the node's prior-repaired placement:
-force a two-kings read (swap the queen for a spare king mid-stream) and the panel shows one king, the repaired square ringed red,
-`repaired N` in the status line. The raw argmax stays on the wire untouched.
+**Impossible boards and the `rules` switch.** With the board's **rules** at
+*standard chess* (the default), the settled board never becomes more impossible:
+put a spare queen of a colour on the board while that side still has all 16 pieces
+(a 17th piece). Expected: the live page keeps the old board and rings the new
+square amber as pending, and the raw read on the wire carries the 17th piece. Now
+choose *free (extra pieces, variants)* under **rules** on `/control`. Expected:
+within a second the live page adopts the 17th piece. Switch back to *standard
+chess* and remove the queen: the board settles as usual. A node restart keeps each
+board's setting (`data/camera-config.json`), and every `events.ndjson` line records
+the setting its read settled under (`jq -r .rules`).
 
 ### Option K — Reproduce a run from its recording (WP-H2)
 
@@ -615,11 +618,11 @@ rotating, so a capped recording keeps its beginning.
 **What a trial leaves behind (the post-mortem kit).** Beside `frames.ndjson`
 (the inputs) a session also holds `events.ndjson` — every *published* position,
 one compact line each (`square_dist` stripped; `frame_seq`/`capture_ts`/
-`published_ts` join it to the exact frame it came from, and `prior` records what
-the hard-constraint decoder repaired):
+`published_ts` join it to the exact frame it came from, and `rules` records the
+board's settle setting):
 
 ```bash
-tail -f recordings/*/events.ndjson | jq -c '{seq, placement, prior: .prior.flips}'
+tail -f recordings/*/events.ndjson | jq -c '{seq, placement, settled: .settled.placement, rules}'
 ```
 
 Each line also carries `evidence`: the **top-2 digest**, 64 squares in board
@@ -723,7 +726,7 @@ uv run board-reader-inference eval-session recordings/20260813-193308
 
 Redirect that skeleton into place and fill in the boards, one segment per
 position, `from_seq` being the frame seq the position started holding from
-(`jq -r '[.frame_seq, .prior.placement] | @tsv' recordings/<s>/events.ndjson`
+(`jq -r '[.frame_seq, .placement] | @tsv' recordings/<s>/events.ndjson`
 is a good way to find the boundaries — read the *board*, not the page, or the
 label is only as good as the estimator that produced it):
 
@@ -780,10 +783,9 @@ a run that left no artifact, and neither number could be reproduced afterwards.
 
 What to check:
 
-- the three streams are scored apart — raw `placement`, the hard-constraint repair
-  (`prior.placement`) and the debounce (`settled.placement`). A repair that fixes
-  as many squares as it breaks shows up as an unchanged per-square number with a
-  *different* perfect-board rate, which is the whole reason they are not summed;
+- the two streams are scored apart — raw `placement` and the debounce
+  (`settled.placement`). Two streams can tie per square with a *different*
+  perfect-board rate, which is the whole reason they are not summed;
 - `settled: DERIVED` in the header means the recording predates the settled block
   and that row was replayed offline through today's `BoardStabilizer` — a
   prediction, not a measurement;
@@ -809,7 +811,7 @@ printed) or a `truth.json` that cannot be trusted.
 
 Option M grades the events a run *published*. This one produces fresh ones: it
 pushes the recorded frames back through the recognizer the environment builds
-today — the same read, the same prior repair, the same debounce, the same event
+today — the same read, the same debounce and its guard, the same event
 writer the live gateway uses — and writes them as a new
 recording-shaped directory. **A recorded take replaces a live one for
 iteration:** change the code, replay, score, diff. No phone, no board, no server.
@@ -999,8 +1001,9 @@ eval and replays are all in the chess frame.
    chess frame).
 4. Run `make gate GATE_NAME=<new-name>` on an idle GPU. Expected: seven
    `replaying ...` lines (about two minutes in all), then the gate table
-   `sp03-settle05-7 → <new-name>` with a total row. An unchanged pipeline prints every
-   cell once (no `→`): 341/361 raw, 341/361 prior, 315/361 settled perfect.
+   `guard-only → <new-name>` with a total row. An unchanged pipeline prints every
+   cell once (no `→`): 341/361 raw, 314/361 settled perfect. For a board whose
+   rules are `free`, add `GATE_FLAGS="--rules free"`.
    `uv run python tools/gate_table.py tkr-shipped cq-v6` prints the adoption gate.
 
 Automated: `test_labels.py`, `test_server_labels.py`, `test_evaluate.py` and

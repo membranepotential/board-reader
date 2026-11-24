@@ -19,6 +19,8 @@ dependencies = [
     "nvidia-cufft-cu12>=11.4.1.4",
     "nvidia-cuda-runtime-cu12>=12.9.79",
     "nvidia-cuda-nvrtc-cu12>=12.9.86",
+    # python-chess counts the settle guard's conditions. GPL-3.0-or-later: see
+    # THIRD-PARTY.md §5 before distributing a build that bundles it.
     "chess>=1.11",
 ]
 

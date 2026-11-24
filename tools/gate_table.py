@@ -12,7 +12,7 @@ with a total row (per-square pooled over every scored square, perfect boards
 summed). ``make gate`` replays the takes under a new name and prints this against
 the Makefile's ``GATE_BASE``.
 
-    uv run python tools/gate_table.py sp03-settle05-7 my-candidate
+    uv run python tools/gate_table.py guard-only my-candidate
     uv run python tools/gate_table.py --replay-args   # what `make gate` replays
 """
 

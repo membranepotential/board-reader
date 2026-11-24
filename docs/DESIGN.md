@@ -30,9 +30,9 @@ and how sure am I?"* It keeps no game state. Specifically, the CV layer:
   application layer can decide when a position is at rest and reconstruct the move
   sequence itself, including two pieces in motion at once.
 
-Two advisory blocks ride beside the raw read: `prior`, a repair to the nearest
-*possible* board, and `settled`, a display debounce (§5). Neither replaces the raw
-read, and neither is chess logic.
+One advisory block rides beside the raw read: `settled`, a display debounce (§5),
+guarded so that it never becomes more impossible than it is (D14). It does not
+replace the raw read, and it is not legality.
 
 ### Locked decisions
 
@@ -111,7 +111,7 @@ For most of the literature, per-frame whole-board recognition on real angled boa
 the weak link. ChessQueries changed that: on our own replay gate, then four takes,
 ChessQ Lite V6 read 92/101 raw boards perfectly, cold, where our eight-month in-house
 stack read 5/101 ([reports/2026-11-24-chessq-v6-replay-gate.md](reports/2026-11-24-chessq-v6-replay-gate.md)). The gate now has seven takes
-(base `sp03-settle05-7`: 341/361 raw and 315/361 settled perfect).
+(base `guard-only`: 341/361 raw and 314/361 settled perfect).
 Sources: [plans/2026-10-09-chessqueries-handoff.md](plans/2026-10-09-chessqueries-handoff.md),
 [plans/2026-11-24-chesscam-camerachess.md](plans/2026-11-24-chesscam-camerachess.md).
 
@@ -138,7 +138,7 @@ downstream application can use to reconstruct moves, legality, PGN or broadcasts
   bursts during motion), and the node reads only what is worth reading (burst ends plus
   a keepalive floor), so compute scales to many boards.
 - **Honest output.** We never block on a clean frame; we stream what we read. Raw reads
-  stay byte-identical on the wire beside the advisory `prior` and `settled` blocks.
+  stay byte-identical on the wire beside the advisory `settled` block.
 - **Accurate timestamps.** Stamp at **capture time on the edge**, not at server
   receive. Target: tens of ms.
 - **No hardware purchase yet.** A local simulation: a phone as the camera and edge, the
@@ -161,9 +161,8 @@ downstream application can use to reconstruct moves, legality, PGN or broadcasts
 Frame in → 8×8 placement + per-square distribution + advisory stability out. No game
 state, no legality, no move tracking. This is the load-bearing decision.
 
-Two pieces of node state exist and are allowed because they never change the read:
-the prior repair (a pure function of one read) and the `settled` debounce (state over
-*published* reads, served beside them). `square_dist` and `placement` on every event
+One piece of node state exists and is allowed because it never changes the read:
+the `settled` debounce (state over *published* reads, served beside them). `square_dist` and `placement` on every event
 are exactly what the recognizer produced.
 
 ### D2 — Output is piece placement plus a full per-square distribution
@@ -261,10 +260,10 @@ settled perfect, with no crop of ours, no warp, no bank and no calibration
   reports none). It never enters the `PositionEvent`. On every gate take it read
   87–91°, within ±2° inside a take. The **orientation guard**
   (`ingest.OrientationGuard`) keeps each board's circular median of its last 9
-  published directions and drops a read more than **45°** off it, before the prior
-  repair and the debounce: such a read is almost certainly the board read turned. A
+  published directions and drops a read more than **45°** off it, before the
+  debounce: such a read is almost certainly the board read turned. A
   seq that does not advance starts the guard afresh; 5 drops in a row re-anchor it on
-  the new direction (the camera really turned). It runs in `ingest._read_with_prior`,
+  the new direction (the camera really turned). It runs in `ingest._read_and_settle`,
   which the live worker and replay share, so the gate counts the same drops
   (`/healthz` `ingest.misoriented`, replay `frames_misoriented`, a WARNING per drop).
   Not on `POST /estimate`: a snapshot may be taken from any side. The gate is
@@ -380,6 +379,37 @@ TypeScript parsers defaulted fields the Python ones required, and the other way 
 then found at runtime. A pydantic `BaseModel`: it takes no positional arguments, which
 the nodes use throughout.
 
+### D14 — No per-read repair; the settle guard plays standard chess unless a board says `free` (2026-11-24)
+
+**Status:** accepted (user, 2026-11-24).
+
+**Context.** The hard-constraint decoder (`stream/prior.py`) repaired an impossible
+read to the nearest possible one, rode the wire as `PositionEvent.prior` and fed the
+debounce. Under ChessQ it repaired 2 of 446 gate reads and changed one settled board
+in 361; the debounce's guard alone kept every impossible board off the settled
+stream ([report](reports/2026-11-24-prior-backrank.md)).
+
+**Decision.**
+- **The decoder and the `prior` block are gone.** The stabilizer settles the raw read.
+- **The settle guard stays** (`stabilize._excess`, conditions in `stream/rules.py`): a
+  commit may not make the settled board more impossible. The conditions hold in any
+  position of a standard game, whoever is to move: ≤1 king per colour (0 is fine, a
+  hand hides kings), ≤16 pieces per colour, surplus officers plus pawns ≤8 per colour.
+  Extra checks (both kings in check, three or more checkers, a pawn on rank 1/8) were
+  measured and left out: no ChessQ read or settle on the gate takes breaks one.
+- **`rules: "standard" | "free"` per board** in the camera config, set on `/control`,
+  persisted with the rest (`BR_CAMERA_CONFIG`; an older file loads as `standard`).
+  `free` turns the guard off for a board with extra material or a variant. The node
+  reads the setting before every read; each `events.ndjson` line records it, and
+  `replay --rules` reproduces it.
+- **python-chess** (GPL-3.0-or-later) builds the board the conditions are counted on;
+  see [THIRD-PARTY.md](../THIRD-PARTY.md) §5.
+
+**Rejected.** Keeping the decoder for `/estimate`: a snapshot then shows a board the
+recognizer did not read, and the snapshot page's own material table already flags an
+impossible count. `chess.Board.status()` alone for the counts: its `TOO_MANY_KINGS`
+lets two white kings pass and it has no promotion budget.
+
 ---
 
 ## Superseded decisions
@@ -401,6 +431,7 @@ commit whose DESIGN.md carried every section with its dated amendments.
 | **D8's "occluded squares get low confidence"; the optional burst voter** (§4.2, §4.4; the voter was never built) | D8 as rewritten: burst-end reads plus the `settled` debounce. | [settle tuning](reports/2026-11-24-settle-tuning.md) | `git show 7f56f58:docs/DESIGN.md` (D8, §4.4) |
 | **Corner-carrying frames** (`corners` on every wire frame; `POST /estimate?corners=`) | `corners` is a legacy wire field: still parsed so old recordings replay, never sent, ignored. `/estimate` takes the photo alone. | plan, Phase B–C | `git show 7f56f58:docs/DESIGN.md` (§4.5) |
 | **The ~2.5 s / 2-read settle window and the one-read `burst-end` schedule; then 1.0 s with three reads 0.6 s apart** | 0.5 s / 2 reads / 2 stale windows, with `burst-end:keepalive_s=2,burst_end_reads=3,spacing_s=0.3` and the forwarder tail (D4). | [settle tuning](reports/2026-11-24-settle-tuning.md); [live latency](reports/2026-11-24-live-latency.md); [latency round 2](reports/2026-11-24-latency-round2.md) | `git show 53c1468:docs/DESIGN.md` (§5) |
+| **The hard-constraint prior decoder** (`stream/prior.py`, `PositionEvent.prior`, `/estimate`'s repair, `eval --no-prior`, the trial's `prior` stream) | D14: the settle guard alone, with a per-board `rules` switch. | [prior report](reports/2026-11-24-prior-backrank.md) | `git show f5cc37e:packages/inference/src/board_reader_inference/stream/prior.py` |
 | **Old §7 milestones M1/M5 and §8 work packages WP-A, WP-B, WP-E as written for the DINOv2 pipeline** | §7 and §8 below, with a status per item. | — | `git show 7f56f58:docs/DESIGN.md` (§7, §8) |
 
 ---
@@ -423,7 +454,7 @@ commit whose DESIGN.md carried every section with its dated amendments.
 │                    HTTP: camera control channel, snapshot, labels           │
 ├──────────────────────────────────────────────────────────────────────────┤
 │ L2  INFERENCE      ingest → read scheduler → Recognizer (ChessQ)           │
-│     (stateless     → prior repair (advisory) → settled debounce (advisory) │
+│     (stateless     → settled debounce + its guard (advisory)               │
 │      estimator)    → hub (latest per board) + recorder                     │
 ├──────────────────────────────────────────────────────────────────────────┤
 │ L3  POSITION STREAM  timestamped {placement, square_dist, stability, …}    │
@@ -440,7 +471,7 @@ commit whose DESIGN.md carried every section with its dated amendments.
 |---|---|---|
 | `board-reader-core` | the shared contract | `protocol` (L3 events, §5), `wire` (L1→L2 frames, §4.5), `control` (camera config and report), `wiremodel` (how those are modelled) and `schema` (their JSON Schema, D13), `recording` (session directories), `sim` (synthetic renders, §6) |
 | `board-reader-edge` | the Python edge ("Pi") | `source` (camera, video, images, synthetic game, recording), `motion` (stability), `forwarder` (adaptive rate), `client` (WebSocket), `adapter` (pacing), `cli` (`feed`) |
-| `board-reader-inference` | the inference node ("Jetson") | at the root `server` (FastAPI gateway), `cli`, `positions` (headless `/viewer` client); `recognition/`: `recognizer` + `chessq` + `onnxrt` (the read); `stream/`: `ingest` (inbox + workers), `schedule` (read policy), `prior` (repair), `stabilize` (debounce), `hub`; `control/`: `camera` (the camera control channel); `measurement/`: `replay` / `evaluate` / `trial`, `labels`, `calibration` (temperature scaling for eval only) |
+| `board-reader-inference` | the inference node ("Jetson") | at the root `server` (FastAPI gateway), `cli`, `positions` (headless `/viewer` client); `recognition/`: `recognizer` + `chessq` + `onnxrt` (the read); `stream/`: `ingest` (inbox + workers), `schedule` (read policy), `stabilize` (debounce), `rules` (its guard's conditions), `hub`; `control/`: `camera` (the camera control channel); `measurement/`: `replay` / `evaluate` / `trial`, `labels`, `calibration` (temperature scaling for eval only) |
 | `packages/viewer` (Node) | the viewer: a SvelteKit app whose pages are prerendered, with `/api/*` and `/api/client-log` as routes, served by `server/main.ts`, which adds the `/ws/*` relay and the TLS port (D12) | `src/routes/api`, `server/{main,ws,tls}.ts`; pages `/`, `/camera`, `/control`, `/snapshot` |
 
 **Separation rule.** `edge` and `inference` never import each other; they meet only on
@@ -466,8 +497,8 @@ the wire. `core` imports neither. `tests/test_layer_separation.py` enforces it.
 5. A due frame goes to `Recognizer.read` in a worker thread, giving a chess-frame
    `square_dist` and the board's direction, then a `PositionEvent`.
 6. The orientation guard drops the read if the board points more than 45° from its
-   recent reads (D10). Otherwise `prior.decode` attaches the repaired board (`prior`)
-   and `BoardStabilizer` the debounced board (`settled`).
+   recent reads (D10). Otherwise `BoardStabilizer` attaches the debounced board
+   (`settled`), under the board's `rules` setting (D14).
 7. The hub publishes the event to `/viewer` subscribers and keeps the latest per board;
    the recorder writes every ingested frame to a session directory for replay, and the
    read's direction goes to the camera registry (D11).
@@ -486,7 +517,7 @@ There is deliberately **no** "find the legal move" or "commit a move" step.
 - **Low confidence.** Emitted verbatim; the consumer decides.
 - **Missing weights.** The stub recognizer serves, loudly (D10).
 - **Impossible board** (two white kings, a pawn on rank 8). Reported as read, status
-  `ok`; `prior` carries the nearest possible board beside it.
+  `ok`; under `standard` rules the `settled` board does not adopt it (D14).
 
 ### 4.5 The inference node's interfaces (gateway, wire, hub)
 
@@ -538,7 +569,6 @@ every message in this section is `board_reader_core.schema`'s). One event per re
   "stability": 0.12,
   "clock": { "running": "none" },
   "status": "ok",
-  "prior":   { "placement": "…", "flips": [], "residual": {} },
   "settled": { "placement": "…", "pending": [] }
 }
 ```
@@ -562,19 +592,12 @@ every message in this section is `board_reader_core.schema`'s). One event per re
   `confidence` and `stability` too. Unknown keys are refused. That each square sums
   to 1 and that `placement` is the argmax is checked by `PositionEvent.validate()`,
   not by parsing: a distribution rounded to four decimals can tie two classes.
-- `prior` (optional, left out when absent) — the hard-constraint decoder's repair,
-  served **beside** the raw fields: `{placement, flips: [{square, from, to, cost,
-  constraint}], residual}`. The
-  constraints are necessary conditions on the piece multiset (≤1 king per side, ≤16
-  pieces per side, the promotion budget, no back-rank pawns when the frame is passed
-  in). They are not legality. The node currently passes no frame, so the back-rank
-  constraint is skipped. A consumer that smooths the raw distribution ignores this
-  block and cannot double-count it.
-- `settled` (optional, left out when absent; streamed frames only) — a display debounce of the repaired reads:
+- `settled` (optional, left out when absent; streamed frames only) — a display debounce of the raw reads:
   `{placement, pending: [squares reading differently, not yet adopted]}`. A square
   changes only after it held the same class on every read across **0.5 s** and **≥2
-  reads**. A settlement is committed only if it does not make the board less possible
-  than it already is; a square blocked that way gives up after **2 windows** and the
+  reads**. Under the board's `rules: standard` (D14) a settlement is committed only if
+  it does not make the board less possible than it already is (≤1 king per colour,
+  ≤16 pieces per colour, the promotion budget); a square blocked that way gives up after **2 windows** and the
   contested set falls through to the current read. The window is time, not a read
   count, because the read rate varies with load. Knobs: `BR_SETTLE_SECONDS`,
   `BR_SETTLE_MIN_READS`, `BR_SETTLE_STALE_WINDOWS`; `/healthz` reports them. Evidence:
@@ -586,7 +609,7 @@ every message in this section is `board_reader_core.schema`'s). One event per re
   stay strictly between the burst-end spacing and the run's span (0.3 < 0.5 ≤ 0.6):
   in the sweep a window that two reads span let a hand settle in 19 of 30 configs.
   This is not the downstream smoother (D3): it uses no move model and no legality. The
-  live viewer draws `settled.placement`, and `prior.placement` where there is no
+  live viewer draws `settled.placement`, and `placement` where there is no
   `settled`; it marks `pending` squares with dashed amber rings and shows no
   confidence or stability bars.
 
@@ -743,7 +766,5 @@ What is open now, in rough order:
   calibrated distribution goes on the wire is undecided.
 - **Does `stability` earn its keep for consumers?** Internally it drives the forwarder
   and the scheduler.
-- **The back-rank-pawn constraint.** The chess frame is now always known, so `prior`
-  could pass it; today it does not.
 - **Clock as its own topic?** `clock.running` rides inside each event; a separate topic
   at the clock's ~1–2 Hz may fit better in v2.

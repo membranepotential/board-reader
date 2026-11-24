@@ -20,7 +20,7 @@ Per-square accuracy is the natural metric and the wrong headline. 94.5% of 64
 squares is ~3.5 wrong squares per board, and a position with three wrong squares
 is not a position — you cannot play from it, analyse it, or send it to Lichess.
 
-ChessQ Lite V6 on every chess-frame label (`eval data/eval data/uploads --no-prior`,
+ChessQ Lite V6 on every chess-frame label (`eval data/eval data/uploads`,
 2026-11-24, [[2026-11-24-chessq-v6-replay-gate]]):
 
 | Metric | Value |
@@ -114,14 +114,6 @@ to the retained photo (`POST /labels/{upload}`), in the chess frame. Saving a
 flawless read counts just as much as fixing four squares — the perfect-board rate is
 made of both.
 
-> [!warning] A confirmed label can inherit the *decoder's* answer
-> Since the repaired board is what the page displays, saving a read with no
-> corrections can hand back truth that came from the hard-constraint decoder rather
-> than from the board. The label therefore records `prior_flips` — the squares the
-> decoder relabelled — so an eval can find these boards later. It does not make the
-> label wrong; it makes the risk **detectable**. When labelling, read the repaired
-> squares off the board deliberately.
-
 > [!danger] Labels only score
 > Nothing reads a label back into the reader. A label's only job is to score; a reader
 > fitted on labels would make the score meaningless again.
@@ -157,7 +149,6 @@ The full numbers are in [[calibration-and-the-bank]], [[training-and-data]] and
 ```bash
 uv run board-reader-inference eval                    # data/eval + data/uploads
 uv run board-reader-inference eval --json report.json
-uv run board-reader-inference eval --no-prior           # the raw recognizer alone
 uv run board-reader-inference eval --temperature        # + temperature scaling
 ```
 
@@ -166,29 +157,27 @@ The harness builds its recognizer from the environment through the same
 and prints that configuration above every report. With `BR_CHESSQ` unset or its file
 missing, that is the stub — the banner says so.
 
-The **hard-constraint decode is on by default**, for the same "measure what serves"
-reason: `/estimate` returns a repaired board beside every read, so a harness that
-skipped the repair would stop scoring the product. It is reported as a second block
-rather than folded into the headline — the recognizer's own numbers stay first, and
-the decode's **fixed** and **broken** squares are printed apart, because a repair that
-trades a right square for a wrong one is not an improvement. Pass `--no-prior` to
-isolate the raw recognizer.
-
 `--temperature` adds the block described above. It is off by default because it costs
-a leave-one-out fit per board and, unlike the decoder, it does not serve.
+a leave-one-out fit per board and does not serve. (Until 2026-11-24 the eval also
+scored the hard-constraint decoder's repair, on by default; the decoder is gone,
+DESIGN D14.)
 
 **The replay gate.** `make gate GATE_NAME=<new>` replays the seven gate takes
 through `BR_CHESSQ` with the schedule `serve` ships (`schedule.DEFAULT_POLICY_SPEC`),
-scores each, and prints `tools/gate_table.py`'s table against `sp03-settle05-7`: raw
-per-square and raw / prior / settled perfect boards per take, with a pooled total.
+scores each, and prints `tools/gate_table.py`'s table against `guard-only`: raw
+per-square and raw / settled perfect boards per take, with a pooled total.
 The seven takes are the four of [[2026-11-24-chessq-v6-replay-gate]] and the three
 held-out takes 20260827-163352, -170333 and -172736, whose truth
 [[2026-11-24-heldout-truth-completion]] completed. The held-out takes and 08-13 replay
 with `--restamp-stability`: they were recorded before the motion-meter fix, and without
-it every schedule collapses to the keepalive. The reference is 341/361 raw, 341/361
-prior and 315/361 settled perfect boards, .9982 raw per square (2026-11-24, the shipped
-stack; on the first four takes alone it is 145/156 raw and 140/156 settled, the old
-`sp03-settle05` row of [[2026-11-24-latency-round2]]). Until 2026-11-24 the gate replayed plain
+it every schedule collapses to the keepalive. The reference is 341/361 raw and 314/361
+settled perfect boards, .9982 raw per square (`guard-only`, 2026-11-24, the shipped
+stack: no prior decoder, the settle guard under standard rules,
+[[2026-11-24-prior-backrank]]). Its predecessor `sp03-settle05-7` still ran the decoder
+and settled 315/361; on the first four takes alone it is 145/156 raw and 140/156
+settled, the old `sp03-settle05` row of [[2026-11-24-latency-round2]]. A board with
+`rules: free` gates as `make gate GATE_FLAGS="--rules free"` (`guard-free`: 314/361
+settled, with 3 impossible settled boards). Until 2026-11-24 the gate replayed plain
 `burst-end` (one read per move), which `serve` never ran; `cq-v6` (92/101 raw,
 84/101 settled, [[2026-11-24-chessq-v6-replay-gate]]) is that older reference. A change that should not move the reader must
 print every cell once.

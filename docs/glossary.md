@@ -94,8 +94,11 @@ loudly, when `BR_CHESSQ` is unset or names no file.
 **Frame read** — `recognizer.frame_reader(recognizer)`: the one function from a wire frame to
 its position event, run by `/estimate`, the ingest workers and replay.
 
-**Prior / repair** — the hard-constraint decoder (`prior.py`): the nearest possible board to a
-read, riding beside it as `prior`; the read itself is never rewritten.
+**Rules** — a board's settle setting (`CameraConfig.rules`, set on `/control`):
+`standard` keeps the settled board from becoming more impossible (`rules.py`: ≤1 king per
+colour, ≤16 pieces per colour, the promotion budget), `free` turns that guard off for extra
+material or a variant. Until 2026-11-24 a per-read **prior** decoder (`prior.py`) also
+repaired impossible reads; it is gone (DESIGN D14).
 
 **Settled** — the debounced board (`stabilize.py`): the last placement that held for the
 settle window, riding on stream events as `settled`.

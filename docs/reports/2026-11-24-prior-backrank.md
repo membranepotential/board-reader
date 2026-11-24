@@ -92,3 +92,60 @@ A ChessQ read takes about 200 ms on the GPU, so neither cost matters.
   (`response.prior?.placement`). Without the decoder a snapshot could show two kings.
   `eval` on the labeled stills (`--prior` versus `--no-prior`) would measure how often;
   it was not run here.
+
+## Follow-up: the decoder removed, the guard kept (same day)
+
+The user took the recommendation (DESIGN D14): `prior.py` and the wire's `prior`
+block are gone, the stabilizer settles the raw read, and the guard's count
+conditions live in `stream/rules.py`, counted on a python-chess board. A new
+per-board setting, `rules: standard | free` on `/control`, turns the guard off for a
+board with extra material or a variant.
+
+**Final gate** (`make gate`, fp32 V6, the `serve` schedule), against the base
+`sp03-settle05-7`:
+
+| take | raw perfect | base settled | `guard-only` (standard) | `guard-free` (free) |
+|---|---|---|---|---|
+| 20260813-193308 | 42/47 | 46/47 | 46/47 | 46/47 |
+| 20260827-175539 | 15/15 | 12/15 | 11/15 | 11/15 |
+| 20260828-111421 | 31/34 | 31/34 | 31/34 | 31/34 |
+| 20260827-181802 | 57/60 | 51/60 | 51/60 | 51/60 |
+| 20260827-163352 | 21/22 | 14/22 | 14/22 | 14/22 |
+| 20260827-170333 | 62/63 | 56/63 | 56/63 | 56/63 |
+| 20260827-172736 | 113/120 | 105/120 | 105/120 | 105/120 |
+| **total** | 341/361 | 315/361 | 314/361 | 314/361 |
+| leaks | | 0 | 0 | 0 |
+| impossible settled boards (of 446 events) | | 0 | 0 | 3 |
+
+Raw per square is .9982 in all three. All 446 raw placements equal the base's.
+`guard-only` reproduces variant A above on every one of the 446 settled boards, and
+`guard-free` reproduces variant B on every one: the product code does what the
+scratch runner predicted. `guard-only` is the new gate base (`GATE_BASE`).
+
+**Extra impossibility checks, measured.** Three more conditions hold in any position
+of a standard game whoever is to move, so the guard could count them: (a) both kings
+in check at once, (b) no side to move is possible because of the checks (a king
+attacked by three or more pieces, or by two that no single move can have uncovered:
+python-chess's `TOO_MANY_CHECKERS` and `IMPOSSIBLE_CHECK`, with `OPPOSITE_CHECK`, set
+for both sides to move), and (c) a pawn on rank 1 or 8 (safe now, the frame is known).
+A double check is legal and is not one of them. Each was counted on the raw and the
+settled boards of every replay of the seven gate takes, and the stabilizer was re-run
+offline over the base's 446 raw reads with each one added to the guard:
+
+| | (a) both kings in check | (b) impossible checks | (c) pawn on rank 1/8 |
+|---|---|---|---|
+| truth segments it fires on | 0 | 0 | 0 |
+| ChessQ raw reads it fires on (3252, all ChessQ replays) | 0 | 0 | 0 |
+| ChessQ settled boards it fires on (3252) | 0 | 0 | 0 |
+| settled perfect with it added to the guard | 314/361 | 314/361 | 314/361 |
+| settled boards it changes | 0 | 0 | 0 |
+| older-stack raw reads it fires on (14937) | 6 (2 not caught by the counts) | 0 | 3035 (107) |
+| older-stack settled boards it fires on (14937) | 0 | 0 | 1070 (922) |
+| of those, true boards | 0 | 0 | 0 |
+
+Under ChessQ none of the three ever fires, so none would block anything, and all
+three stay out (the keep rule: block something wrong, never a true board). The
+older stacks' numbers show the checks are not vacuous, and that (c) would have
+mattered for them; those replays partly predate the chess frame, so they are no
+evidence for the deployed reader.
+

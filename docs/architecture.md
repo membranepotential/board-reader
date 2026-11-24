@@ -61,8 +61,8 @@ photo: the whole JPEG through the recognizer
 (`recognizer.frame_reader`), which finds the board and its orientation itself
 ([[recognition-pipeline]]) and reports the board's direction in the image beside the
 read (DESIGN D10). A per-board **orientation guard** drops a streamed read whose
-direction is more than 45° off the board's recent reads, before the repair and the
-debounce see it. Old recordings carry a legacy **`corners`** field (the
+direction is more than 45° off the board's recent reads, before the debounce sees
+it. Old recordings carry a legacy **`corners`** field (the
 playing-surface quad the edge used to send): `wire.Frame` still parses it so they replay,
 the recording keeps it, and recognition ignores it. No edge sends it any more.
 
@@ -179,7 +179,7 @@ See [[recognition-pipeline]].
 |---|---|
 | `WS /ingest` | edge → gateway frame stream |
 | `WS /viewer` | position-event stream out (retained latest per board first, then live), interleaved with motion updates (DESIGN §5) |
-| `POST /estimate` | one photo → one position event (+ `prior`, `upload`, `warnings`) |
+| `POST /estimate` | one photo → one position event (+ `upload`, `warnings`) |
 | `POST /labels/{upload}` · `GET /uploads` · `GET /uploads/{id}/photo` | ground-truth labels for retained photos (`BR_SAVE_UPLOADS`), in the chess frame |
 | `GET /boards/{id}` | latest retained event for a board |
 | `GET /boards/{id}/frame` | latest raw JPEG ingested for a board (video-like preview) |
@@ -192,9 +192,9 @@ See [[recognition-pipeline]].
 | Surface | Purpose |
 |---|---|
 | `GET /` | live-position UI (chessground), one card per board |
-| `GET /snapshot` | the phone page: capture → read → repair → output (a photo → a position, correctable and labelable) |
+| `GET /snapshot` | the phone page: capture → read → output (a photo → a position, correctable and labelable) |
 | `GET /camera` | the phone page: a dumb camera that streams what the control UI configured (the browser edge) |
-| `GET /control` | the laptop page: crop rectangle on the phone's full-frame preview, lens, resolution, start/stop, health |
+| `GET /control` | the laptop page: crop rectangle on the phone's full-frame preview, lens, resolution, the board's settle `rules`, start/stop, health |
 | `WS /ws/<path>` | same-origin relays to the inference node's sockets (`ingest`, `viewer`, `boards/{id}/camera`, `boards/{id}/control`) |
 | `/api/<path>` | same-origin relay of the inference node's whole HTTP API |
 
@@ -341,9 +341,9 @@ stateless estimator emits, and precisely the argument for the layer above it.
 One narrow exception ships since 08-13: the gateway attaches an advisory `settled` block
 to *streamed* events (DESIGN §5) — a per-square display debounce (an unbroken 0.5 s of
 consistent reads, at least two, `board_reader_inference.stream.stabilize`, never composing a board *less*
-possible than the one it already holds, and never stale by more than ~3 settle windows)
-over the repaired placements, born from the first
-phone trial where a hand mid-move and a coin-flip two-kings repair made the live board
+possible than the one it already holds unless the board's `rules` are `free`, and never
+stale by more than ~3 settle windows) over the raw placements, born from the first
+phone trial where a hand mid-move and a coin-flip two-kings read made the live board
 flicker at burst rate. It is a debounce, not the missing layer: no move model, no
 legality, no use of `stability`, and it holds whatever the reads converge to — the trial's
 persistent d8/e8 misread settles *wrong*, just stably. The raw fields stay untouched

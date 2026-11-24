@@ -80,8 +80,8 @@ from `/control` on the laptop) forwards a rectangle crop in which the board fill
 the width, adaptively since M2: a ~1 fps keepalive at rest, a burst
 through motion, with a measured `stability` on every frame. The **inference** node reads each
 frame with one model call — ChessQ Lite V6 finds the board and its orientation and returns the
-8×8 distribution in the chess frame — repairs impossible boards beside the read, debounces a
-settled board, and publishes a position event. It does not read every frame: a burst-end
+8×8 distribution in the chess frame — debounces a settled board (never a more impossible one,
+unless the board's rules are `free`), and publishes a position event. It does not read every frame: a burst-end
 scheduler reads three times at the end of each move plus a keepalive every 2 s
 (`BR_SCHEDULE`, see [[runbook]]). The **viewer** renders the stream; the headless `board-reader-inference positions`
 tails or captures it. Edge and inference never import each other — they meet only on the wire.

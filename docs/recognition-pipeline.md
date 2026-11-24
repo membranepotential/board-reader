@@ -19,8 +19,7 @@ flowchart TD
   read --> cq["ChessQRecognizer.read(image)<br/>whole frame → 644×644 → logits (64, 13)"]
   cq --> dist["square_dist (8, 8, 13), chess frame"]
   dist --> event["event_from_dist → PositionEvent (status ok)"]
-  event --> prior["prior.decode — hard-constraint repair, rides as event.prior"]
-  prior --> settle["BoardStabilizer — debounced board, rides as event.settled"]
+  event --> settle["BoardStabilizer — debounced board under the board's rules, rides as event.settled"]
   settle --> out[hub + recorder + HTTP response]
 ```
 
@@ -31,8 +30,7 @@ The code, in order:
 | Read | `recognizer.frame_reader` | Hands the frame's whole image to the recognizer. Any `corners` an older edge or recording still sends are ignored. |
 | Model | `chessq.ChessQRecognizer` | Resizes the BGR frame to 644×644 (aspect ignored, `INTER_AREA`), RGB, ImageNet-normalised; runs the ONNX model; softmaxes the `logits` output into protocol class order. The second output, `direction`, is not used. |
 | Event | `recognizer.event_from_dist` | Builds the position event (`PositionEvent`) from the distribution, uncalibrated, always `status: ok` (DESIGN D1). |
-| Repair | `prior.decode` | The hard-constraint decoder: at most one king per colour, piece-count and promotion budgets. Its answer rides beside the read as `prior`; `placement` and `square_dist` stay the model's own. |
-| Settle | `stabilize.BoardStabilizer` | Holds a board until it has read the same for the settle window; rides as `settled` on stream events. |
+| Settle | `stabilize.BoardStabilizer` | Holds a board until it has read the same for the settle window; rides as `settled` on stream events. Under the board's `rules: standard` it never commits a board more impossible than the one it holds (`rules.py`: at most one king per colour, piece-count and promotion budgets, DESIGN D14); `placement` and `square_dist` stay the model's own. |
 
 ## The recognizer seam
 
@@ -109,10 +107,11 @@ tall, and when the phone is upright.
 ## Measured
 
 - **Replay gate** — the seven gate takes replayed through the shipped stack (base
-  `sp03-settle05-7`): **341/361 raw, 315/361 settled** perfect boards. On the original
+  `guard-only`): **341/361 raw, 314/361 settled** perfect boards. On the original
   four takes ChessQ first read 92/101 raw and 84/101 settled, against the old crop stack's
   5 and 35 ([[2026-11-24-chessq-v6-replay-gate]]). `make gate` reruns it; every deletion step of the
-  simplification was held to identical placements, prior and settled boards.
+  simplification was held to identical placements, prior and settled boards (the prior
+  decoder is gone since, DESIGN D14).
 - **Stills** — `eval data/eval`: 20/21 perfect boards; with the upload labels, 41/47
   ([[measuring-accuracy]]).
 - **Latency** — on the GTX 1650 the fp32 export runs at ~205 ms per read; the int8 file

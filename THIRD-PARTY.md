@@ -1,13 +1,15 @@
 # Third-party licenses and redistribution notes
 
-board-reader's own source is **Apache-2.0** ([LICENSE](LICENSE)). Two things do not
-follow from that, and both matter before you redistribute anything:
+board-reader's own source is **Apache-2.0** ([LICENSE](LICENSE)). Three things do not
+follow from that, and all matter before you redistribute anything:
 
 1. The **built viewer bundle** incorporates GPL-licensed code, so the bundle as
    distributed is **GPL-3.0-or-later**.
 2. The **model artifacts** are **not redistributable at all**: the core recognizer
    (ChessQ Lite V6) is PolyForm Noncommercial, and our older trained models derive
    from non-commercially-licensed training data. They are git-ignored on purpose.
+3. The **inference node imports python-chess** (GPL-3.0-or-later), so a distributed
+   build that bundles it must meet the GPL's terms (§5).
 
 ---
 
@@ -31,10 +33,10 @@ is a combined work:
 - **The repository itself carries no GPL code.** The bundle is git-ignored; the sources
   here only reference the package by name.
 
-Nothing outside `packages/viewer` touches chessground. `board-reader-core`,
-`board-reader-edge` and `board-reader-inference` have **no GPL dependencies** and are
-plain Apache-2.0 — the wire protocol and the estimator are reusable without any
-copyleft obligation.
+Nothing outside `packages/viewer` touches chessground. `board-reader-core` and
+`board-reader-edge` have **no GPL dependencies**: the wire protocol and the edge are
+reusable without any copyleft obligation. `board-reader-inference` imports
+python-chess (§5).
 
 ## 2. Model artifacts are NOT redistributable
 
@@ -88,7 +90,7 @@ and is never committed** — `data/`, `recordings/` and `*.mp4|mkv|webm` are git
 
 ## 4. Runtime dependencies
 
-All Python runtime dependencies are permissive:
+All Python runtime dependencies but python-chess (§5) are permissive:
 
 | Package | License |
 |---|---|
@@ -106,3 +108,21 @@ replace the library. Source distribution is unaffected.
 
 The frontend build toolchain (Svelte, Vite, SvelteKit, Vitest, Playwright, TypeScript)
 is MIT and build-time only — it does not enter the bundle.
+
+## 5. The inference node imports python-chess (GPL-3.0-or-later)
+
+`board-reader-inference` depends on **[python-chess](https://github.com/niklasf/python-chess)**
+(PyPI `chess`, `GPL-3.0-or-later`). The settle guard (`stream/rules.py`) counts its
+conditions on a `chess.Board` (DESIGN D14).
+
+- **Our source stays Apache-2.0.** The repository holds no python-chess code; the
+  sources only import it by name, and `uv` installs it.
+- **Running the node, or publishing our source, triggers nothing.** The GPL's
+  obligations attach to distributing the program, not to running it or to sharing
+  code that merely names a dependency.
+- **A distributed build that bundles python-chess** (the inference Docker image, a
+  wheel or tarball with the dependency inside) is, on the FSF's reading, a combined
+  work that must be distributed under the GPL's terms: recipients get the
+  corresponding source and a copy of the GPL. That reading of importing as combining
+  is contested, but it is the safe one to follow. Our Apache-2.0 code permits it,
+  because Apache-2.0 is one-way compatible with GPLv3.

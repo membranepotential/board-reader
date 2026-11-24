@@ -13,7 +13,7 @@ plan in `docs/plans/` and a gate like any other challenger._
 Run recognition in the phone's browser, so the phone is the whole system. Feasible
 because ChessQ Lite int8 targets browser WASM (Lichess runs it client-side) and ChessCam
 runs in the browser at ~100 ms per frame on a Pixel 7a CPU. The control channel and the
-recognizer contract carry over; the read scheduler, prior repair and settle debounce
+recognizer contract carry over; the read scheduler and the settle debounce with its guard
 would need a TypeScript port. Open: the **sink** (Lichess broadcast or PGN, a WebSocket
 endpoint, a local file) and latency on a mid-range phone. Full note, with a first
 experiment: [[on-phone-app]].
@@ -22,7 +22,7 @@ experiment: [[on-phone-app]].
 
 The static UI mockups (`docs/mockups/`, deleted 2026-11-24; `git show 7f56f58:docs/mockups/viewer.html`)
 carried two proposals that were never built: a **numbers** toggle on the live card
-printing each square's top-class probability, and a **raw · prior · settled** switch naming
+printing each square's top-class probability, and a **raw · prior · settled** switch (the prior is gone since, DESIGN D14) naming
 which board the card draws. The user asked for future mockups as interactive simulations,
 not storyboards.
 
