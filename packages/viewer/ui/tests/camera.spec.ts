@@ -158,7 +158,8 @@ test.describe('held upright', () => {
 
     await expect(page.getByTestId('camera-status')).toContainText('portrait');
     await expect.poll(() => node.frames.length, { timeout: 8_000 }).toBeGreaterThan(0);
-    expect(node.lastReport?.['frame']).toEqual({ width: 720, height: 1280 });
+    // Polled: a frame can reach the node before the next report names the frame size.
+    await expect.poll(() => node.lastReport?.['frame']).toEqual({ width: 720, height: 1280 });
   });
 });
 
