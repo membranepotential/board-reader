@@ -19,16 +19,19 @@
    */
   import { onMount } from 'svelte';
   import { resolve } from '$app/paths';
-  import { RESOLUTION_NAMES, type CameraConfig, type CropRect, type Resolution } from '$lib/protocol';
+  import { RESOLUTION_NAMES, type Resolution } from '$lib/protocol';
+  import type {
+    CameraConfig,
+    ControlDown,
+    CropRect,
+    FrameMessage,
+    HealthMessage,
+    PreviewMessage,
+    StateMessage
+  } from '$lib/protocol/generated';
   import { DEFAULT_BOARD_ID, boardIdFrom } from '$lib/components/camera/state';
   import { ControlLink } from '$lib/control/link';
-  import type {
-    CameraState,
-    ControlDown,
-    NodeHealth,
-    Picture,
-    ReceivedFrame
-  } from '$lib/control/messages';
+  import { jpegSrc } from '$lib/control/messages';
   import { WHOLE_FRAME } from '$lib/control/crop';
   import { FRAMING_COPY, framingWarnings } from '$lib/control/framing';
   import { formatAge } from '$lib/control/status';
@@ -37,10 +40,10 @@
 
   /** `null` until mounted: the board comes from `?board=`, which prerendering cannot read. */
   let boardId = $state<string | null>(null);
-  let camera = $state.raw<CameraState | null>(null);
-  let preview = $state.raw<Picture | null>(null);
-  let received = $state.raw<ReceivedFrame | null>(null);
-  let health = $state.raw<NodeHealth | null>(null);
+  let camera = $state.raw<StateMessage | null>(null);
+  let preview = $state.raw<PreviewMessage | null>(null);
+  let received = $state.raw<FrameMessage | null>(null);
+  let health = $state.raw<HealthMessage | null>(null);
   /** Whether this page's socket to the node is open. */
   let up = $state(false);
   /** The rectangle being edited and not yet saved; `null` shows the node's. */
@@ -80,16 +83,16 @@
   function receive(message: ControlDown): void {
     switch (message.type) {
       case 'state':
-        camera = message.state;
+        camera = message;
         break;
       case 'preview':
-        preview = message.picture;
+        preview = message;
         break;
       case 'frame':
-        received = message.frame;
+        received = message;
         break;
       case 'health':
-        health = message.health;
+        health = message;
         break;
       case 'refused':
         failure = `not saved: ${message.reason}`;
@@ -168,7 +171,7 @@
       <figcaption>The phone's whole view — drag the rectangle to choose what it sends</figcaption>
       {#if camera !== null && frame !== null}
         <CropEditor
-          src={preview?.src ?? null}
+          src={preview === null ? null : jpegSrc(preview.jpeg)}
           {frame}
           rect={shownCrop ?? WHOLE_FRAME}
           whole={shownCrop === null}
@@ -209,7 +212,7 @@
       {#if received !== null}
         <img
           class="received"
-          src={received.src}
+          src={jpegSrc(received.jpeg)}
           alt="the latest frame the node received for board {boardId}"
         />
       {:else}

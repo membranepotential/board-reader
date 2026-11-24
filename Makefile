@@ -10,6 +10,7 @@
 #   make test-gpu the GPU tests alone (needs an idle GPU)
 #   make test-all everything, GPU included
 #   make gate     replay the seven gate takes and print them against sp03-settle05-7
+#   make protocol regenerate the viewer's wire types from the Python models
 #
 # `dev` depends on `ui`, unconditionally: the viewer (packages/viewer/ui/server/main.ts)
 # refuses to start if packages/viewer/ui/build/ is missing, and that directory is
@@ -43,7 +44,7 @@
 # the group again — bash recurses until it overflows its stack and segfaults.
 # The trap disarms itself first for the same reason.
 
-.PHONY: dev dev-cpu ui models stop test test-gpu test-all test-ui test-e2e test-front lint lint-fix gate
+.PHONY: dev dev-cpu ui models stop test test-gpu test-all test-ui test-e2e test-front lint lint-fix gate protocol
 
 # `wait -n` below is a bashism, and the teardown relies on bash trap semantics.
 SHELL := /bin/bash
@@ -242,6 +243,13 @@ gate:
 # `uvx`, so every checkout and every agent lints with the same ruleset — a gate
 # whose rules drift by machine is not a gate. Config and the reasoning behind
 # each selected/ignored rule live in pyproject.toml's [tool.ruff.lint].
+# The viewer's wire types and zod validators (packages/viewer/ui/src/lib/protocol/
+# generated.ts) are generated from the pydantic models in packages/core, the one
+# source of truth for every message both ends speak. Run this after changing a
+# model; tests/test_protocol_ts.py fails in `make test` until you do.
+protocol:
+	uv run python tools/gen_protocol.py
+
 lint:
 	uv run ruff check .
 

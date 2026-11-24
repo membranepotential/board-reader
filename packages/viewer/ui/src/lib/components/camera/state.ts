@@ -15,14 +15,8 @@
  * Everything here is pure and DOM-free so it is tested directly (`state.test.ts`).
  */
 
-import {
-  RESOLUTIONS,
-  type CameraConfig,
-  type CameraDevice,
-  type CropRect,
-  type FrameSize,
-  type Resolution
-} from '$lib/protocol';
+import { RESOLUTIONS, type Resolution } from '$lib/protocol';
+import type { CameraConfig, CameraDevice, CropRect, FrameSize } from '$lib/protocol/generated';
 
 // ---- constants ---------------------------------------------------------------
 

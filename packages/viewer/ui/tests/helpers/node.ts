@@ -36,22 +36,27 @@ export interface EventOverrides {
   readonly seq?: number;
   readonly placement?: string;
   readonly status?: 'ok' | 'recalibrating' | 'needs_setup' | 'stale';
-  readonly confidence?: number | null;
-  readonly stability?: number | null;
+  readonly confidence?: number;
+  readonly stability?: number;
   readonly square_dist?: readonly (readonly (readonly number[])[])[];
 }
 
-/** One `/ws/viewer` position event, as the node spells it (DESIGN §5). */
+/**
+ * One `/ws/viewer` position event, as the node spells it (DESIGN §5): every key, or
+ * the page's validator (`$lib/protocol/generated`) refuses it whole.
+ */
 export function positionEvent(overrides: EventOverrides = {}): Record<string, unknown> {
   return {
     board_id: 'phone',
     seq: 1,
     utc: '2026-08-07T12:00:00.000Z',
+    orientation: 'a1_bottom_left',
+    classes: [...CLASSES],
     placement: START_PLACEMENT,
+    square_dist: squareDist(['empty']),
     confidence: 0.93,
     stability: 1,
     status: 'ok',
-    orientation: 'white',
     clock: { running: 'none' },
     ...overrides
   };

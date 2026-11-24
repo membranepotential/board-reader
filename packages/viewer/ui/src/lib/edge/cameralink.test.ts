@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { fakeNetwork } from '../fake-socket';
-import { DEFAULT_CAMERA_CONFIG, type CameraReport } from '../protocol';
+import { DEFAULT_CAMERA_CONFIG } from '../protocol';
+import type { CameraReport } from '../protocol/generated';
 import { CameraLink } from './cameralink';
 
 const REPORT: CameraReport = { devices: [], device: null, frame: null, ingest: 'idle' };

@@ -9,7 +9,8 @@
  */
 
 import type { BoardGrid } from '$lib/board/fen';
-import { LOW_CONFIDENCE, type EstimateResponse, type PriorDecode } from '$lib/protocol';
+import { LOW_CONFIDENCE, type EstimateResponse } from '$lib/protocol';
+import type { PriorRepair } from '$lib/protocol/generated';
 import { kv, kvIf, type KvRow } from './kv';
 import { confidenceSummary, fmt, materialCensus } from './reading';
 
@@ -22,7 +23,7 @@ export function readTable(
   if (response === null) return [];
   const summary = confidenceSummary(response.event.square_dist);
   return [
-    kv('position confidence', fmt(response.event.confidence ?? 0, 3)),
+    kv('position confidence', fmt(response.event.confidence, 3)),
     kv('mean square confidence', fmt(summary.mean, 3)),
     kvIf('weakest square', fmt(summary.min, 3), summary.min < LOW_CONFIDENCE),
     kvIf(`squares below ${LOW_CONFIDENCE}`, String(summary.low), summary.low > 0),
@@ -37,7 +38,7 @@ export function readTable(
  * The repair, cheapest flip first. An empty `flips` list is the GOOD case — the read was
  * already a possible board — and is reported as such rather than hidden.
  */
-export function repairTable(prior: PriorDecode | null): readonly KvRow[] {
+export function repairTable(prior: PriorRepair | null): readonly KvRow[] {
   if (prior === null) return [kv('served', 'this build of the server does not decode a repair')];
   const rows: KvRow[] = prior.flips.map((flip, i) =>
     kv(

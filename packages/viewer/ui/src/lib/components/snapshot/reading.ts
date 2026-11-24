@@ -373,9 +373,8 @@ export function rawEventJson(response: EstimateResponse): string {
     stability: response.event.stability,
     status: response.event.status,
     orientation: response.event.orientation,
-    clock: { running: response.event.clock },
-    square_dist:
-      response.event.square_dist === null ? null : '[8 x 8 x 13 floats — see the confidence map]',
+    clock: response.event.clock,
+    square_dist: '[8 x 8 x 13 floats — see the confidence map]',
     prior: response.prior,
     upload: response.upload,
     warnings: response.warnings

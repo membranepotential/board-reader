@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { DEFAULT_CAMERA_CONFIG, type CameraConfig } from '$lib/protocol';
+import { DEFAULT_CAMERA_CONFIG } from '$lib/protocol';
+import type { CameraConfig } from '$lib/protocol/generated';
 import {
   boardIdFrom,
   cropBox,

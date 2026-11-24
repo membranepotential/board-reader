@@ -106,8 +106,7 @@ export function readFlags(read: SessionRead, upload: UploadRecord | null): reado
 /** The metadata line under a session read's placement. */
 export function readMeta(read: SessionRead): string {
   const bits = [read.at.toLocaleTimeString()];
-  const confidence = read.response.event.confidence;
-  if (confidence !== null) bits.push(`conf ${fmt(confidence, 3)}`);
+  bits.push(`conf ${fmt(read.response.event.confidence, 3)}`);
   if (read.estimateMs !== null) bits.push(`${read.estimateMs.toFixed(0)} ms`);
   return bits.join(' · ');
 }

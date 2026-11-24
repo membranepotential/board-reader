@@ -16,7 +16,8 @@
 
 import { VIEWER_SOCKET, wsUrl } from '../api';
 import { changedSquares, fenToGrid, type BoardGrid } from '../board/fen';
-import { parsePositionEvent, type PositionEvent, type SquareKey } from '../protocol';
+import { isSquareKey, parseWire, type SquareKey } from '../protocol';
+import { MotionUpdate, PositionEvent, ViewerMessage } from '../protocol/generated';
 import {
   changeRings,
   eventsPerSecond,
@@ -25,43 +26,21 @@ import {
   withinWindow,
   type ChangeRing
 } from './liveness';
-import {
-  motionReadout,
-  parseMotionMessage,
-  type MotionMessage,
-  type MotionReadout,
-  type MotionSample
-} from './positions-motion';
+import { motionReadout, type MotionReadout, type MotionSample } from './positions-motion';
 
 export type ConnectionState = 'connecting' | 'live' | 'disconnected';
 
-function parseJson(raw: string): unknown {
-  try {
-    return JSON.parse(raw) as unknown;
-  } catch {
-    return undefined;
-  }
-}
-
 /**
- * The prior's flip squares, kept only when they name real squares — the wire is
- * untrusted, and a stray string must not reach chessground as a shape origin.
+ * The squares the prior decoder relabelled. The validator already refused any
+ * event whose square is not one; the guard only narrows `string` to `SquareKey`.
  */
 function flippedSquares(event: PositionEvent): SquareKey[] {
-  if (event.prior === null) return [];
-  return event.prior.flips
-    .map((flip) => flip.square)
-    .filter((square): square is SquareKey => /^[a-h][1-8]$/.test(square));
+  return (event.prior?.flips ?? []).map((flip) => flip.square).filter(isSquareKey);
 }
 
-/**
- * The settled board's pending squares, kept only when they name real squares —
- * same defensive filter as `flippedSquares`, for the same reason: the wire is
- * untrusted, and a stray string must not reach chessground as a shape origin.
- */
+/** The settled board's pending squares, narrowed the same way. */
 function pendingSquares(event: PositionEvent): SquareKey[] {
-  if (event.settled === null) return [];
-  return event.settled.pending.filter((square): square is SquareKey => /^[a-h][1-8]$/.test(square));
+  return (event.settled?.pending ?? []).filter(isSquareKey);
 }
 
 /** Everything one card knows about its board. Replaced wholesale on every event. */
@@ -194,13 +173,25 @@ export class PositionStream {
   }
 
   /**
-   * Fold one raw socket payload in. Public so a page (or a test) can replay events
-   * without a socket; malformed input is dropped and reported, never rendered.
+   * Fold one position event in (decoded JSON or its text). Public so a page (or a
+   * test) can replay events without a socket; anything that is not a valid event
+   * returns `null` and changes nothing.
    */
   ingest(raw: unknown): PositionEvent | null {
-    const parsed = parsePositionEvent(raw);
-    if (!parsed.ok) return null;
-    const event = parsed.value;
+    const parsed = parseWire(PositionEvent, raw);
+    return parsed.ok ? this.#foldEvent(parsed.value) : null;
+  }
+
+  /**
+   * Fold one per-frame motion update in (see `./positions-motion`). Anything else —
+   * a position event, garbage — returns `null` and changes nothing.
+   */
+  ingestMotion(raw: unknown): MotionUpdate | null {
+    const parsed = parseWire(MotionUpdate, raw);
+    return parsed.ok ? this.#foldMotion(parsed.value) : null;
+  }
+
+  #foldEvent(event: PositionEvent): PositionEvent {
     const now = this.#clock();
     this.#now = now;
 
@@ -228,13 +219,7 @@ export class PositionStream {
     return event;
   }
 
-  /**
-   * Fold one per-frame motion message in (see `./positions-motion`). Anything else —
-   * a position event, garbage — returns `null` and changes nothing.
-   */
-  ingestMotion(raw: unknown): MotionMessage | null {
-    const message = parseMotionMessage(raw);
-    if (message === null) return null;
+  #foldMotion(message: MotionUpdate): MotionUpdate {
     const now = this.#clock();
     this.#now = now;
     const { moving, stability } = message;
@@ -257,9 +242,12 @@ export class PositionStream {
     socket.onmessage = (message: MessageEvent) => {
       if (socket !== this.#socket) return;
       if (typeof message.data !== 'string') return;
-      const data = parseJson(message.data);
-      // One stream, two message kinds: per-frame motion, and position events.
-      if (this.ingestMotion(data) === null) this.ingest(data);
+      // One stream, two message kinds: a motion update names its `type`, a
+      // position event has none.
+      const parsed = parseWire(ViewerMessage, message.data);
+      if (!parsed.ok) return;
+      if ('type' in parsed.value) this.#foldMotion(parsed.value);
+      else this.#foldEvent(parsed.value);
     };
     socket.onerror = () => socket.close();
     socket.onclose = () => {

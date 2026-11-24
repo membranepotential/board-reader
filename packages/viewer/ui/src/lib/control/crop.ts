@@ -10,7 +10,7 @@
  * Save can never be refused for a rectangle the operator was allowed to draw.
  */
 
-import type { CropRect } from '$lib/protocol';
+import type { CropRect } from '$lib/protocol/generated';
 
 /** `board_reader_core.control.MIN_CROP_SIDE`: below this it is a slip, not a board. */
 export const MIN_CROP_SIDE = 0.05;

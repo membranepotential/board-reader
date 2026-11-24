@@ -1,6 +1,6 @@
 /**
  * How sharp is this frame? — the focus score the camera page stamps on every
- * streamed frame (`IngestFrameHeader.sharpness`).
+ * streamed frame (`FrameHeader.sharpness`).
  *
  * A phone is handheld: micro-shake smears roughly half of its frames, so the node
  * prefers the crisp frame of a shaky second, and "crisp" is this number.

@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { positionEvent } from '$lib/protocol/fixtures';
 import {
   historyNote,
   historyRows,
@@ -54,13 +55,7 @@ function read(
   };
 }
 
-const position = {
-  board_id: 'snapshot',
-  seq: 1,
-  utc: '2026-08-07T10:00:00Z',
-  placement: START_PLACEMENT,
-  confidence: 0.9
-};
+const position = positionEvent({ board_id: 'snapshot', placement: START_PLACEMENT, confidence: 0.9 });
 
 function upload(id: string, ts: number | null, extra: Partial<UploadRecord> = {}): UploadRecord {
   return {

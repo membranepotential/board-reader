@@ -26,7 +26,9 @@ describe('the control link', () => {
     net.sockets[0]!.deliver({ type: 'state', config: 'garbage' }); // dropped, not half-shown
     expect(onMessage).toHaveBeenCalledExactlyOnceWith({
       type: 'state',
-      state: { config: DEFAULT_CAMERA_CONFIG, report: null, phone_connected: false }
+      config: DEFAULT_CAMERA_CONFIG,
+      report: null,
+      phone_connected: false
     });
   });
 

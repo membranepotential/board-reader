@@ -325,7 +325,7 @@
       'read',
       summary.low ? 'warn' : 'ok',
       `mean per-square confidence ${fmt(summary.mean, 3)} · ${summary.low} square(s) below ` +
-        `${LOW_CONFIDENCE} · position confidence ${fmt(response.event.confidence ?? 0, 3)}`
+        `${LOW_CONFIDENCE} · position confidence ${fmt(response.event.confidence, 3)}`
     );
 
     const prior = response.prior;

@@ -1,22 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
 import { PositionStream } from './positions.svelte';
 import { START_PLACEMENT } from '../protocol';
+import { positionEvent } from '../protocol/fixtures';
 import { FLASH_MS, STALE_MS } from './liveness';
 import { MOTION_STALE_MS } from './positions-motion';
-
-function event(over: Record<string, unknown> = {}): Record<string, unknown> {
-  return {
-    board_id: 'phone',
-    seq: 1,
-    utc: '2026-08-07T10:00:00.000Z',
-    placement: START_PLACEMENT,
-    confidence: 0.9,
-    stability: 0.95,
-    clock: { running: 'none' },
-    status: 'ok',
-    ...over
-  };
-}
 
 function motion(over: Record<string, unknown> = {}): Record<string, unknown> {
   return { type: 'motion', board_id: 'phone', moving: false, stability: 1, ts: 1000, ...over };
@@ -31,8 +18,8 @@ describe('PositionStream', () => {
   it('keys boards by board_id and keeps them in a stable order', () => {
     const clock = { now: 0 };
     const stream = streamAt(clock);
-    stream.ingest(event({ board_id: 'b' }));
-    stream.ingest(event({ board_id: 'a' }));
+    stream.ingest(positionEvent({ board_id: 'b' }));
+    stream.ingest(positionEvent({ board_id: 'a' }));
     expect(stream.boards.map((b) => b.id)).toEqual(['a', 'b']);
   });
 
@@ -42,19 +29,19 @@ describe('PositionStream', () => {
     expect(stream.boards).toHaveLength(0);
   });
 
-  it('sanitizes the placement once, at ingest', () => {
+  it('refuses a placement that is not a board (isPlacement), rather than drawing a guess', () => {
     const stream = streamAt({ now: 0 });
-    stream.ingest(event({ placement: 'rxbqkbnr/8/8/8/8/8/8/8' }));
-    expect(stream.board('phone')?.grid[0]).toEqual(['r', '', 'b', 'q', 'k', 'b', 'n', 'r']);
+    expect(stream.ingest(positionEvent({ placement: 'rxbqkbnr/8/8/8/8/8/8/8' }))).toBeNull();
+    expect(stream.boards).toHaveLength(0);
   });
 
   it('marks only the squares that changed, diffed against the previous grid', () => {
     const clock = { now: 1000 };
     const stream = streamAt(clock);
-    stream.ingest(event());
+    stream.ingest(positionEvent());
     expect(Object.keys(stream.board('phone')!.changedAt)).toEqual([]);
     clock.now = 1100;
-    stream.ingest(event({ seq: 2, placement: 'rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR' }));
+    stream.ingest(positionEvent({ seq: 2, placement: 'rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR' }));
     expect(Object.keys(stream.board('phone')!.changedAt).sort()).toEqual(['e2', 'e4']);
   });
 
@@ -63,11 +50,11 @@ describe('PositionStream', () => {
     // must not resurrect the first one's squares.
     const clock = { now: 0 };
     const stream = streamAt(clock);
-    stream.ingest(event());
+    stream.ingest(positionEvent());
     clock.now = 100;
-    stream.ingest(event({ seq: 2, placement: 'rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR' }));
+    stream.ingest(positionEvent({ seq: 2, placement: 'rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR' }));
     clock.now = 200;
-    stream.ingest(event({ seq: 3, placement: 'rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR' }));
+    stream.ingest(positionEvent({ seq: 3, placement: 'rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR' }));
     // e2/e4 are still fading (they are inside FLASH_MS) but nothing NEW changed.
     const board = stream.board('phone')!;
     expect(Object.keys(board.changedAt).sort()).toEqual(['e2', 'e4']);
@@ -77,18 +64,18 @@ describe('PositionStream', () => {
   it('forgets a ring once it has finished fading', () => {
     const clock = { now: 0 };
     const stream = streamAt(clock);
-    stream.ingest(event());
+    stream.ingest(positionEvent());
     clock.now = 100;
-    stream.ingest(event({ seq: 2, placement: 'rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR' }));
+    stream.ingest(positionEvent({ seq: 2, placement: 'rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR' }));
     clock.now = 100 + FLASH_MS + 1;
-    stream.ingest(event({ seq: 3, placement: 'rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR' }));
+    stream.ingest(positionEvent({ seq: 3, placement: 'rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR' }));
     expect(Object.keys(stream.board('phone')!.changedAt)).toEqual([]);
   });
 
   it('reads motion from its own messages: none until one arrives, then moving or still', () => {
     const clock = { now: 0 };
     const stream = streamAt(clock);
-    stream.ingest(event({ stability: 0.1 })); // the READ frame's stability is not motion
+    stream.ingest(positionEvent({ stability: 0.1 })); // the READ frame's stability is not motion
     const board = stream.board('phone')!;
     expect(stream.liveness(board).motion).toEqual({ kind: 'none' });
 
@@ -101,10 +88,10 @@ describe('PositionStream', () => {
   it('a motion message that stops arriving goes stale instead of claiming "moving"', () => {
     const clock = { now: 0 };
     const stream = streamAt(clock);
-    stream.ingest(event());
+    stream.ingest(positionEvent());
     stream.ingestMotion(motion({ moving: true }));
     clock.now = MOTION_STALE_MS + 1;
-    stream.ingest(event({ seq: 2 })); // reads may keep coming; motion is judged on its own
+    stream.ingest(positionEvent({ seq: 2 })); // reads may keep coming; motion is judged on its own
     expect(stream.liveness(stream.board('phone')!).motion).toEqual({ kind: 'stale' });
   });
 
@@ -112,7 +99,19 @@ describe('PositionStream', () => {
     const stream = streamAt({ now: 0 });
     expect(stream.ingest(motion())).toBeNull(); // a motion message is not a board
     expect(stream.boards).toHaveLength(0);
-    expect(stream.ingestMotion(event())).toBeNull(); // nor is a position event motion
+    expect(stream.ingestMotion(positionEvent())).toBeNull(); // nor is a position event motion
+  });
+
+  it.each([
+    ['a stability outside [0, 1]', { stability: 1.7 }],
+    ['a moving flag that is not a boolean', { moving: 'yes' }],
+    ['an empty board id', { board_id: '' }],
+    ['no timestamp', { ts: null }]
+  ])('refuses a motion update with %s, as the node would', (_label, over) => {
+    const stream = streamAt({ now: 0 });
+    stream.ingest(positionEvent());
+    expect(stream.ingestMotion(motion(over))).toBeNull();
+    expect(stream.liveness(stream.board('phone')!).motion).toEqual({ kind: 'none' });
   });
 
   it('reads a 1 fps keepalive as 1.0 ev/s and goes stale when it stops', () => {
@@ -120,7 +119,7 @@ describe('PositionStream', () => {
     const stream = streamAt(clock);
     for (let i = 0; i <= 3; i++) {
       clock.now = i * 1000;
-      stream.ingest(event({ seq: i }));
+      stream.ingest(positionEvent({ seq: i }));
     }
     const board = stream.board('phone')!;
     expect(stream.liveness(board).eventsPerSecond).toBeCloseTo(1.0, 9);
@@ -183,7 +182,7 @@ describe('PositionStream', () => {
       }
     });
     stream.start();
-    socket.onmessage?.({ data: JSON.stringify(event()) } as MessageEvent);
+    socket.onmessage?.({ data: JSON.stringify(positionEvent()) } as MessageEvent);
     socket.onmessage?.({ data: JSON.stringify(motion({ moving: true })) } as MessageEvent);
     socket.onmessage?.({ data: 'not json' } as MessageEvent);
     const board = stream.board('phone')!;
@@ -195,12 +194,12 @@ describe('PositionStream', () => {
   it('reports staleness against the ticker, not against event.utc', () => {
     const clock = { now: 1000 };
     const stream = streamAt(clock);
-    stream.ingest(event());
+    stream.ingest(positionEvent());
     const board = stream.board('phone')!;
     expect(stream.liveness(board).stale).toBe(false);
     // Nothing arrives for longer than STALE_MS; the store's own clock is what says so.
     clock.now = 1000 + STALE_MS + 1;
-    stream.ingest(event({ board_id: 'other' })); // advances the shared clock
+    stream.ingest(positionEvent({ board_id: 'other' })); // advances the shared clock
     expect(stream.liveness(board).stale).toBe(true);
   });
 });
@@ -216,7 +215,7 @@ describe('prior repair on the stream', () => {
 
   it('draws the repaired board, never the impossible raw one', () => {
     const stream = streamAt({ now: 0 });
-    stream.ingest(event({ placement: TWO_KINGS, prior }));
+    stream.ingest(positionEvent({ placement: TWO_KINGS, prior }));
     const board = stream.board('phone')!;
     expect(board.grid[0]).toEqual(['r', 'n', 'b', 'k', 'q', 'b', 'n', 'r']);
     expect(board.event.placement).toBe(TWO_KINGS); // the raw read stays readable
@@ -226,26 +225,22 @@ describe('prior repair on the stream', () => {
   it('diffs change rings against the repaired grid, so a stable repair is quiet', () => {
     const clock = { now: 1000 };
     const stream = streamAt(clock);
-    stream.ingest(event({ placement: TWO_KINGS, prior }));
+    stream.ingest(positionEvent({ placement: TWO_KINGS, prior }));
     clock.now = 2000;
-    stream.ingest(event({ seq: 2, placement: TWO_KINGS, prior }));
+    stream.ingest(positionEvent({ seq: 2, placement: TWO_KINGS, prior }));
     expect(Object.keys(stream.board('phone')!.changedAt)).toEqual([]);
   });
 
-  it('ignores flip squares that are not squares', () => {
+  it('refuses an event whose flip names no square, rather than drawing it', () => {
     const stream = streamAt({ now: 0 });
-    stream.ingest(
-      event({
-        placement: TWO_KINGS,
-        prior: { ...prior, flips: [...prior.flips, { square: 'z9', from: 'k', to: 'q', cost: 1, constraint: 'kings' }] }
-      })
-    );
-    expect(stream.board('phone')!.flipped).toEqual(['e8']);
+    const flips = [...prior.flips, { square: 'z9', from: 'k', to: 'q', cost: 1, constraint: 'kings' }];
+    expect(stream.ingest(positionEvent({ placement: TWO_KINGS, prior: { ...prior, flips } }))).toBeNull();
+    expect(stream.boards).toHaveLength(0);
   });
 
   it('an event without a prior draws its own placement and flips nothing', () => {
     const stream = streamAt({ now: 0 });
-    stream.ingest(event());
+    stream.ingest(positionEvent());
     expect(stream.board('phone')!.flipped).toEqual([]);
   });
 });
@@ -256,7 +251,7 @@ describe('settled board on the stream', () => {
 
   it('draws the settled board ahead of the raw one, and exposes its pending squares', () => {
     const stream = streamAt({ now: 0 });
-    stream.ingest(event({ placement: START_PLACEMENT, settled }));
+    stream.ingest(positionEvent({ placement: START_PLACEMENT, settled }));
     const board = stream.board('phone')!;
     expect(board.grid[3]).toEqual(['', '', '', '', 'p', '', '', '']); // rank 5, e5
     expect(board.event.placement).toBe(START_PLACEMENT); // the raw read stays readable
@@ -266,30 +261,29 @@ describe('settled board on the stream', () => {
   it('prefers settled over prior when an event carries both', () => {
     const stream = streamAt({ now: 0 });
     const prior = { placement: START_PLACEMENT, flips: [], residual: {} };
-    stream.ingest(event({ placement: START_PLACEMENT, prior, settled }));
+    stream.ingest(positionEvent({ placement: START_PLACEMENT, prior, settled }));
     expect(stream.board('phone')!.grid[3]).toEqual(['', '', '', '', 'p', '', '', '']);
   });
 
   it('diffs change rings against the settled grid, so a quiet debounce is quiet', () => {
     const clock = { now: 1000 };
     const stream = streamAt(clock);
-    stream.ingest(event({ placement: START_PLACEMENT, settled }));
+    stream.ingest(positionEvent({ placement: START_PLACEMENT, settled }));
     clock.now = 2000;
-    stream.ingest(event({ seq: 2, placement: START_PLACEMENT, settled }));
+    stream.ingest(positionEvent({ seq: 2, placement: START_PLACEMENT, settled }));
     expect(Object.keys(stream.board('phone')!.changedAt)).toEqual([]);
   });
 
-  it('ignores pending squares that are not squares', () => {
+  it('refuses an event whose pending squares are not squares', () => {
     const stream = streamAt({ now: 0 });
-    stream.ingest(
-      event({ settled: { placement: START_PLACEMENT, pending: ['e4', 'z9'] } })
-    );
-    expect(stream.board('phone')!.pending).toEqual(['e4']);
+    const bad = positionEvent({ settled: { placement: START_PLACEMENT, pending: ['e4', 'z9'] } });
+    expect(stream.ingest(bad)).toBeNull();
+    expect(stream.boards).toHaveLength(0);
   });
 
   it('an event without a settled board draws its prior (or raw) placement and exposes no pending squares', () => {
     const stream = streamAt({ now: 0 });
-    stream.ingest(event());
+    stream.ingest(positionEvent());
     expect(stream.board('phone')!.pending).toEqual([]);
   });
 });

@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { positionEvent } from '$lib/protocol/fixtures';
 import { readTable, materialTable, repairTable } from './tables';
 import type { KvRow } from './kv';
 import { fenToGrid } from '$lib/board/fen';
@@ -13,13 +14,7 @@ function parsed(raw: Record<string, unknown>): EstimateResponse {
   return result.value;
 }
 
-const POSITION = {
-  board_id: 'snapshot',
-  seq: 4,
-  utc: '2026-08-07T10:00:00Z',
-  placement: START_PLACEMENT,
-  confidence: 0.9
-};
+const POSITION = positionEvent({ board_id: 'snapshot', seq: 4, confidence: 0.9 });
 
 describe('the read table', () => {
   it('reports the read and its confidence', () => {

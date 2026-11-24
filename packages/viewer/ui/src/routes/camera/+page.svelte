@@ -32,18 +32,13 @@
     sampleThumbnail
   } from '$lib/edge/motion';
   import type { ForwardDecision } from '$lib/edge/motion';
-  import { IngestClient } from '$lib/edge/ingest';
+  import { IngestClient, type IngestState } from '$lib/edge/ingest';
   import { CameraLink } from '$lib/edge/cameralink';
   import { tenengrad, toGray } from '$lib/edge/sharpness';
   import { TrialLog } from '$lib/edge/triallog';
   import { Heartbeat } from '$lib/edge/heartbeat';
-  import {
-    DEFAULT_CAMERA_CONFIG,
-    type CameraConfig,
-    type CameraDevice,
-    type CameraReport,
-    type IngestState
-  } from '$lib/protocol';
+  import { DEFAULT_CAMERA_CONFIG } from '$lib/protocol';
+  import type { CameraConfig, CameraDevice, CameraReport } from '$lib/protocol/generated';
 
   import BlockedNotice from '$lib/components/camera/BlockedNotice.svelte';
   import {

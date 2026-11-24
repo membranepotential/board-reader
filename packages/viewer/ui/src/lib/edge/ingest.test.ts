@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { IngestClient } from './ingest';
 import type { WebSocketLike } from '../socket';
+import { FrameHeader } from '../protocol/generated';
 
 /** A `WebSocket` that records what was sent, in order and by frame kind. */
 class FakeSocket implements WebSocketLike {
@@ -79,8 +80,12 @@ describe('the two-frame ingest wire', () => {
       seq: 0,
       capture_ts: 1_754_560_800.5,
       stability: 0.9,
+      sharpness: null,
+      clock: 'none',
       burst_id: 'phone:b0'
     });
+    // Every key the schema states, so the node's strict `FrameHeader` accepts it.
+    expect(FrameHeader.safeParse(header).success).toBe(true);
   });
 
   it('never puts corners on the wire: the recognizer finds the board itself', () => {

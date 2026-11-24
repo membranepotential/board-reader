@@ -15,8 +15,9 @@
  */
 
 import { cameraSocket, wsUrl } from '$lib/api';
-import { parsePhoneDown, reportMessage } from '$lib/control/messages';
-import type { CameraConfig, CameraReport } from '$lib/protocol';
+import { reportMessage } from '$lib/control/messages';
+import { parseWire } from '$lib/protocol';
+import { PhoneDown, type CameraConfig, type CameraReport } from '$lib/protocol/generated';
 import { ReconnectingSocket, type SocketOptions } from '$lib/socket';
 
 export interface CameraLinkOptions extends Partial<SocketOptions> {
@@ -51,7 +52,7 @@ export class CameraLink {
           onLink(false, reason);
         },
         onText: (text) => {
-          const parsed = parsePhoneDown(text);
+          const parsed = parseWire(PhoneDown, text);
           if (!parsed.ok) return; // a newer node's message; not ours to mind
           const message = parsed.value;
           if (message.type === 'config') onConfig(message.config);

@@ -1,6 +1,8 @@
 /** What the control page says about the way the board lies in the camera's image. */
 
-import type { WhiteSide } from './messages';
+import type { BoardDirection } from '$lib/protocol/generated';
+
+type WhiteSide = BoardDirection['white_side'];
 
 const SIDE_COPY: Record<WhiteSide, string> = {
   bottom: 'at the bottom',

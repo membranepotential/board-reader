@@ -9,9 +9,10 @@
  */
 
 import { controlSocket, wsUrl } from '$lib/api';
-import type { CameraConfig } from '$lib/protocol';
+import { parseWire } from '$lib/protocol';
+import { ControlDown, type CameraConfig } from '$lib/protocol/generated';
 import { ReconnectingSocket, type SocketOptions } from '$lib/socket';
-import { configureMessage, parseControlDown, type ControlDown } from './messages';
+import { configureMessage } from './messages';
 
 export interface ControlLinkOptions extends Partial<SocketOptions> {
   readonly boardId: string;
@@ -31,7 +32,7 @@ export class ControlLink {
         onOpen: () => onLink(true, 'connected'),
         onLost: (reason) => onLink(false, reason),
         onText: (text) => {
-          const parsed = parseControlDown(text);
+          const parsed = parseWire(ControlDown, text);
           // A message this page cannot read is the node speaking a newer contract;
           // dropping it keeps the last good state on screen.
           if (parsed.ok) onMessage(parsed.value);

@@ -16,7 +16,7 @@
  * the rectangle's shape alone.
  */
 
-import type { CropRect, FrameSize } from '$lib/protocol';
+import type { CropRect, FrameSize } from '$lib/protocol/generated';
 
 /**
  * Pixel width / height above which the board likely fills less than half the

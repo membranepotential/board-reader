@@ -12,7 +12,7 @@
    * `onchange` and the parent decides what to show.
    */
   import { CORNERS, dragRect, type Handle } from '$lib/control/crop';
-  import type { CropRect, FrameSize } from '$lib/protocol';
+  import type { CropRect, FrameSize } from '$lib/protocol/generated';
 
   interface Props {
     /** The preview image, or `null` while the phone has sent none. */

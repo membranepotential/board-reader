@@ -133,7 +133,7 @@
           · seq <code>{event.seq}</code>
         </div>
         <div>placement: <code class="pl">{event.placement}</code></div>
-        <div>utc <code>{event.utc}</code> · clock <code>{event.clock}</code></div>
+        <div>utc <code>{event.utc}</code> · clock <code>{event.clock.running}</code></div>
       </div>
     </div>
   </div>

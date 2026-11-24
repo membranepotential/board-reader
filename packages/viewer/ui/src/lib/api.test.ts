@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { positionEvent } from '$lib/protocol/fixtures';
 import {
   API_PREFIX,
   apiPath,
@@ -117,7 +118,7 @@ describe('failures carry the node own wording', () => {
     const fetchSpy = vi.fn(
       async () =>
         new Response(
-          JSON.stringify({ board_id: 'snapshot', seq: 0, utc: 'now', placement: '8/8/8/8/8/8/8/8' })
+          JSON.stringify(positionEvent({ board_id: 'snapshot', seq: 0, placement: '8/8/8/8/8/8/8/8' }))
         )
     );
     vi.stubGlobal('fetch', fetchSpy);

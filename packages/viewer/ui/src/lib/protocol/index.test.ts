@@ -3,12 +3,12 @@ import {
   CLASSES,
   NUM_CLASSES,
   START_PLACEMENT,
-  parseCameraConfig,
   parseEstimateResponse,
   parseIngestReply,
-  parsePositionEvent,
-  parseUploadsResponse
-} from './protocol';
+  parseUploadsResponse,
+  parseWire
+} from '$lib/protocol';
+import { CameraConfig, PositionEvent } from './generated';
 
 function distFor(placementPeak = 0.9): number[][][] {
   const other = (1 - placementPeak) / (NUM_CLASSES - 1);
@@ -33,128 +33,92 @@ const validEvent = {
   status: 'ok'
 };
 
-describe('parsePositionEvent', () => {
+const parseEvent = (raw: unknown) => parseWire(PositionEvent, raw);
+
+describe('a position event off the wire', () => {
   it('accepts a well-formed event', () => {
-    const parsed = parsePositionEvent(validEvent);
+    const parsed = parseEvent(validEvent);
     expect(parsed.ok).toBe(true);
     if (!parsed.ok) return;
     expect(parsed.value.board_id).toBe('phone');
     expect(parsed.value.seq).toBe(12);
-    expect(parsed.value.clock).toBe('white');
-    expect(parsed.value.status).toBe('ok');
-    expect(parsed.value.square_dist).not.toBeNull();
+    expect(parsed.value.clock.running).toBe('white');
+    expect(parsed.value.square_dist).toHaveLength(8);
   });
 
   it('parses the JSON string form the socket delivers', () => {
-    const parsed = parsePositionEvent(JSON.stringify(validEvent));
-    expect(parsed.ok).toBe(true);
+    expect(parseEvent(JSON.stringify(validEvent)).ok).toBe(true);
   });
 
-  it('carries the prior repair when the event has one, and null when not', () => {
-    const bare = parsePositionEvent(validEvent);
-    expect(bare.ok && bare.value.prior).toBeNull();
+  it('carries the prior repair and the settled board when the event has them', () => {
+    const bare = parseEvent(validEvent);
+    expect(bare.ok && bare.value.prior).toBeUndefined();
 
-    const parsed = parsePositionEvent({
+    const parsed = parseEvent({
       ...validEvent,
       prior: {
         placement: '8/8/8/8/8/8/8/8',
         flips: [{ square: 'e8', from: 'k', to: 'q', cost: 0.74, constraint: 'kings' }],
         residual: { kings: 1 }
-      }
-    });
-    expect(parsed.ok).toBe(true);
-    if (!parsed.ok) return;
-    expect(parsed.value.prior?.placement).toBe('8/8/8/8/8/8/8/8');
-    expect(parsed.value.prior?.flips[0]).toEqual({
-      square: 'e8', from: 'k', to: 'q', cost: 0.74, constraint: 'kings'
-    });
-    expect(parsed.value.prior?.residual).toEqual({ kings: 1 });
-  });
-
-  it('carries the settled board when the event has one, and null when not', () => {
-    const bare = parsePositionEvent(validEvent);
-    expect(bare.ok && bare.value.settled).toBeNull();
-
-    const parsed = parsePositionEvent({
-      ...validEvent,
+      },
       settled: { placement: '8/8/8/8/8/8/8/8', pending: ['e4', 'e2'] }
     });
     expect(parsed.ok).toBe(true);
     if (!parsed.ok) return;
-    expect(parsed.value.settled?.placement).toBe('8/8/8/8/8/8/8/8');
+    expect(parsed.value.prior?.flips[0]).toEqual({
+      square: 'e8', from: 'k', to: 'q', cost: 0.74, constraint: 'kings'
+    });
+    expect(parsed.value.prior?.residual).toEqual({ kings: 1 });
     expect(parsed.value.settled?.pending).toEqual(['e4', 'e2']);
   });
 
-  it('reads a settled block with no pending field as settled but quiescent', () => {
-    const parsed = parsePositionEvent({
-      ...validEvent,
-      settled: { placement: START_PLACEMENT }
-    });
-    expect(parsed.ok).toBe(true);
-    if (!parsed.ok) return;
-    expect(parsed.value.settled?.pending).toEqual([]);
-  });
+  it.each(['board_id', 'seq', 'utc', 'placement', 'stability', 'status', 'square_dist'])(
+    'refuses an event missing %s, as the schema states every key the node sends',
+    (field) => {
+      const broken: Record<string, unknown> = { ...validEvent };
+      delete broken[field];
+      expect(parseEvent(broken).ok).toBe(false);
+    }
+  );
 
-  it('reads a settled block with no usable placement as absent, not partial', () => {
-    const parsed = parsePositionEvent({ ...validEvent, settled: { pending: ['e4'] } });
-    expect(parsed.ok).toBe(true);
-    if (!parsed.ok) return;
-    expect(parsed.value.settled).toBeNull();
-  });
-
-  it.each(['board_id', 'seq', 'utc', 'placement'])('refuses an event missing %s', (field) => {
-    const broken: Record<string, unknown> = { ...validEvent };
-    delete broken[field];
-    expect(parsePositionEvent(broken).ok).toBe(false);
-  });
-
+  // Strict exactly where pydantic is (`board_reader_core.wiremodel`): an event the
+  // node would refuse is refused here too, whole, rather than shown with holes.
   it.each([
     ['not JSON at all', '{oops'],
     ['a bare array', [1, 2, 3]],
-    ['null', null],
     ['a negative seq', { ...validEvent, seq: -1 }],
-    ['a fractional seq', { ...validEvent, seq: 1.5 }]
+    ['a fractional seq', { ...validEvent, seq: 1.5 }],
+    ['an unknown status', { ...validEvent, status: 'illegal' }],
+    ['an unknown clock', { ...validEvent, clock: { running: 'sideways' } }],
+    ['a stability above 1', { ...validEvent, stability: 1.2 }],
+    ['seven ranks of distribution', { ...validEvent, square_dist: distFor().slice(0, 7) }],
+    ['a placement of seven ranks', { ...validEvent, placement: '8/8/8/8/8/8/8' }],
+    ['a settled board with no placement', { ...validEvent, settled: { pending: ['e4'] } }],
+    [
+      'a flip on a square that is not one',
+      {
+        ...validEvent,
+        prior: {
+          placement: START_PLACEMENT,
+          flips: [{ square: 'z9', from: 'k', to: 'q', cost: 0, constraint: 'kings' }],
+          residual: {}
+        }
+      }
+    ],
+    ['a key the protocol does not define', { ...validEvent, streming: true }]
   ])('refuses %s', (_label, raw) => {
-    expect(parsePositionEvent(raw).ok).toBe(false);
+    expect(parseEvent(raw).ok).toBe(false);
   });
 
-  it('falls back to the protocol default for an unknown status or clock', () => {
-    const parsed = parsePositionEvent({
-      ...validEvent,
-      status: 'illegal',
-      clock: { running: 'sideways' }
-    });
-    expect(parsed.ok).toBe(true);
-    if (!parsed.ok) return;
-    // `status` has no `illegal` member by design (DESIGN §5) — an unrecognised chip
-    // must not blank the whole reading.
-    expect(parsed.value.status).toBe('ok');
-    expect(parsed.value.clock).toBe('none');
-  });
-
-  it('keeps a missing stability distinguishable from "at rest"', () => {
-    const { stability: _drop, confidence: _drop2, ...bare } = validEvent;
-    const parsed = parsePositionEvent(bare);
-    expect(parsed.ok).toBe(true);
-    if (!parsed.ok) return;
-    expect(parsed.value.stability).toBeNull();
-    expect(parsed.value.confidence).toBeNull();
-  });
-
-  it.each([
-    ['a missing distribution', undefined],
-    ['seven ranks', distFor().slice(0, 7)],
-    ['twelve classes on a square', distFor().map((r) => r.map((c) => c.slice(0, 12)))],
-    ['a non-numeric entry', [['x']]]
-  ])('reads %s as no distribution rather than a partial one', (_label, dist) => {
-    const parsed = parsePositionEvent({ ...validEvent, square_dist: dist });
-    expect(parsed.ok).toBe(true);
-    if (!parsed.ok) return;
-    expect(parsed.value.square_dist).toBeNull();
+  it('says why in one line, each problem prefixed with where it is', () => {
+    const parsed = parseEvent({ ...validEvent, seq: -1, clock: { running: 'sideways' } });
+    expect(parsed.ok).toBe(false);
+    if (parsed.ok) return;
+    expect(parsed.error).toMatch(/^clock\.running: .+; seq: .+$|^seq: .+; clock\.running: .+$/);
   });
 });
 
-describe('parseCameraConfig', () => {
+describe('a camera config off the wire', () => {
   const config = {
     crop: { x: 0.1, y: 0.2, w: 0.5, h: 0.6 },
     device: 'Back Camera',
@@ -163,17 +127,18 @@ describe('parseCameraConfig', () => {
   };
 
   it('reads what board_reader_core.control writes', () => {
-    expect(parseCameraConfig(config)).toEqual({ ok: true, value: config });
-    expect(parseCameraConfig({ ...config, crop: null, device: null }).ok).toBe(true);
+    expect(parseWire(CameraConfig, config)).toEqual({ ok: true, value: config });
+    expect(parseWire(CameraConfig, { ...config, crop: null, device: null }).ok).toBe(true);
   });
 
   it.each([
     ['an unknown resolution', { ...config, resolution: '4k' }],
     ['a crop missing a side', { ...config, crop: { x: 0, y: 0, w: 1 } }],
+    ['a crop that ends past the frame (cropInside)', { ...config, crop: { x: 0.6, y: 0, w: 0.5, h: 1 } }],
     ['a streaming flag that is not a boolean', { ...config, streaming: 'yes' }],
     ['a device that is not a label', { ...config, device: 3 }]
   ])('refuses %s', (_label, raw) => {
-    expect(parseCameraConfig(raw).ok).toBe(false);
+    expect(parseWire(CameraConfig, raw).ok).toBe(false);
   });
 });
 

@@ -3,8 +3,8 @@
  *
  * **The framing is two frames per image and must stay that way**: a JSON header as
  * a TEXT frame, immediately followed by its JPEG as a BINARY frame
- * (`board_reader_core.wire`, and `proxy.py::_client_to_upstream`, which forwards
- * whichever kind arrived precisely so the pair survives the relay). Collapsing them
+ * (`board_reader_core.wire`, and the viewer's socket relay, `server/ws.ts`, which
+ * forwards whichever kind arrived precisely so the pair survives the relay). Collapsing them
  * into one frame, reordering them, or letting anything else be sent between them
  * corrupts the stream from that point on — the node reads header/JPEG in lockstep
  * (`server.ingest`). That is why `sendFrame` is the only way to send: the two
@@ -15,7 +15,8 @@
  * acknowledged frame for a fresher one (DESIGN D3/D4).
  */
 
-import { FRAME_TYPE, parseIngestReply, type IngestFrameHeader, type IngestState } from '../protocol';
+import { parseIngestReply } from '../protocol';
+import type { CameraReport, FrameHeader } from '../protocol/generated';
 import { INGEST_SOCKET, wsUrl } from '../api';
 import {
   OPEN,
@@ -28,7 +29,8 @@ import {
 /** ~3 frames' worth: above this the link is behind and another frame only makes the reading staler. */
 export const MAX_BUFFERED = 192 * 1024;
 
-/** What the operator is told about the link, in the words the page shows. */
+/** The link's state, in the words the phone reports it (`CameraReport.ingest`). */
+export type IngestState = CameraReport['ingest'];
 
 export type SendOutcome =
   | 'sent'
@@ -203,14 +205,17 @@ export class IngestClient {
       return 'behind';
     }
     this.streamingBoardId = frame.boardId;
-    const header: IngestFrameHeader = {
-      type: FRAME_TYPE,
+    // Every key, as the schema states what an edge sends; the browser edge has
+    // no clock input, so it says `none` (DESIGN D7).
+    const header: FrameHeader = {
+      type: 'frame',
       board_id: frame.boardId,
       seq: this.seq++,
       capture_ts: frame.captureTs,
       stability: frame.stability,
-      burst_id: frame.burstId,
-      ...(frame.sharpness === undefined ? {} : { sharpness: frame.sharpness })
+      sharpness: frame.sharpness ?? null,
+      clock: 'none',
+      burst_id: frame.burstId
     };
     socket.send(JSON.stringify(header));
     socket.send(frame.jpeg);

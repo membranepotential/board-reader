@@ -27,12 +27,13 @@ import {
   NUM_CLASSES,
   START_PLACEMENT,
   parseEstimateResponse,
-  parseSquareDist,
   type ClassName,
   type ClassScores,
   type EstimateResponse,
   type SquareDist
 } from '$lib/protocol';
+import { PositionEvent } from '$lib/protocol/generated';
+import { positionEvent } from '$lib/protocol/fixtures';
 
 function scores(peaks: Partial<Record<ClassName, number>>): number[] {
   const cell = CLASSES.map((cls) => peaks[cls] ?? 0);
@@ -48,9 +49,7 @@ function distOf(
   const raw = Array.from({ length: 8 }, (_, r) =>
     Array.from({ length: 8 }, (_, c) => scores(overrides.get(`${r},${c}`) ?? base))
   );
-  const parsed = parseSquareDist(raw);
-  if (parsed === null) throw new Error('test distribution is malformed');
-  return parsed;
+  return PositionEvent.shape.square_dist.parse(raw);
 }
 
 const flatCell = (): ClassScores => {
@@ -177,16 +176,16 @@ describe('the census and the FEN', () => {
 
 describe('the raw event block', () => {
   const positionRaw = {
-    board_id: 'snapshot',
-    seq: 3,
-    utc: '2026-08-07T10:00:00Z',
-    placement: START_PLACEMENT,
-    confidence: 0.91,
-    square_dist: Array.from({ length: 8 }, () =>
-      Array.from({ length: 8 }, () => Array.from({ length: NUM_CLASSES }, () => 1 / NUM_CLASSES))
-    ),
+    ...positionEvent({
+      board_id: 'snapshot',
+      seq: 3,
+      confidence: 0.91,
+      square_dist: Array.from({ length: 8 }, () =>
+        Array.from({ length: 8 }, () => Array.from({ length: NUM_CLASSES }, () => 1 / NUM_CLASSES))
+      ),
+      prior: { placement: 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBN1', flips: [], residual: {} }
+    }),
     upload: 'u1',
-    prior: { placement: 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBN1', flips: [], residual: {} },
     warnings: ['low_light']
   };
 
