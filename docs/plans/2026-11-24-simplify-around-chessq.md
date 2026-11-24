@@ -146,7 +146,7 @@ replay invariant above.
 
 | # | Decision | Resolution |
 |---|---|---|
-| D1 | Edge framing: quad tracker / operator rectangle / whole frame | Decide after step 13's measurement |
+| D1 | Edge framing: quad tracker / operator rectangle / whole frame | **Measured 2026-11-24 ([report](../reports/2026-11-24-chessq-framing.md)): keep a board-dominant crop (board ≥ ~50 % of frame width; 35 % collapses perfect boards, portrait costs too). → B: a plain rectangle crop with margin; no corner labels, no quad tracker. Whole frame is out.** |
 | D2 | Missing weights on a fresh clone | Degrade to the stub, loudly; `make models` |
 | D3 | What the compose demo reads | Measure ChessQ on sim renders in step 5 |
 | D4 | Prior repair | Keep (cheap safety net; the stabilizer needs `tally`/`violation`) |
