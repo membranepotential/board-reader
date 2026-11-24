@@ -1,4 +1,4 @@
-"""The recognizer seam (:mod:`board_reader_inference.recognizer`, DESIGN D10).
+"""The recognizer seam (:mod:`board_reader_inference.recognition.recognizer`, DESIGN D10).
 
 ChessQ's own contract is in ``test_chessq.py``; this file pins what every
 recognizer gets from the seam: the stub, the event a distribution becomes, the
@@ -15,7 +15,7 @@ from board_reader_core.protocol import CLASSES, START_PLACEMENT, parse_placement
 from board_reader_core.sim import render_board
 from board_reader_core.wire import Frame
 
-from board_reader_inference.recognizer import (
+from board_reader_inference.recognition.recognizer import (
     ORIENTATION,
     Recognition,
     StubRecognizer,

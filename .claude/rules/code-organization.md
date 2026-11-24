@@ -9,8 +9,8 @@ paths:
 - Organize `board_reader_inference` like this, and put a new module into the group whose concern it serves:
   - `recognition/` — what turns pixels into a distribution: `recognizer.py`, `chessq.py`, `onnxrt.py`.
   - `stream/` — the live read path after recognition: `ingest.py`, `schedule.py`, `stabilize.py`, `prior.py`, `hub.py`.
-  - `control/` — the camera control channel: `camera_control.py`.
+  - `control/` — the camera control channel: `camera.py`.
   - `measurement/` — replay, scoring and labels: `replay.py`, `trial.py`, `evaluate.py`, `labels.py`, `calibration.py`.
   - the root — `server.py` (the app factory), `cli.py`, and `positions.py` (the headless `/viewer` client).
 - Move modules with `git mv` in one change that also updates every import, `pyproject.toml` entry points, the `paths:` globs in `.claude/rules/`, doc links, and the learnings store's scopes (`learnings rescope`, so `learnings audit` stays at 0), because a move is what breaks those references, not an edit. Add no re-export shims for old import paths; update the callers instead.
-- Keep dependencies between the groups one-directional: `recognition` imports nothing from the others, `stream` may import `recognition`, `measurement` may import both, and only the root wires everything together, because that is what keeps the replay harness running the same read path as the live node. The one import that breaks this today, `replay` taking `server.event_line` (the `events.ndjson` line writer), is fixed by moving `event_line` into `stream/` with the move.
+- Keep dependencies between the groups one-directional: `recognition` imports nothing from the others, `stream` may import `recognition`, `measurement` may import both, `control` imports none of them, and only the root wires everything together, because that is what keeps the replay harness running the same read path as the live node. Keep `event_line` (the `events.ndjson` line writer) in `stream/ingest.py` for the same reason: in `server.py` it made `replay` import the root. `tests/test_inference_layers.py` checks the rule with an AST scan.

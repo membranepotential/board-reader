@@ -1,10 +1,6 @@
 ---
 paths:
-  - 'packages/inference/src/board_reader_inference/replay.py'
-  - 'packages/inference/src/board_reader_inference/trial.py'
-  - 'packages/inference/src/board_reader_inference/evaluate.py'
-  - 'packages/inference/src/board_reader_inference/labels.py'
-  - 'packages/inference/src/board_reader_inference/calibration.py'
+  - 'packages/inference/src/board_reader_inference/measurement/**'
   - 'packages/inference/tests/test_replay.py'
   - 'packages/inference/tests/test_trial.py'
   - 'packages/inference/tests/test_evaluate.py'

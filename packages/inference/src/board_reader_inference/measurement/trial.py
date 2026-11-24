@@ -31,7 +31,7 @@ they fail differently: the raw argmax (``placement``), the hard-constraint repai
 point — it is what says whether the repair and the debounce earn their keep on a
 real stream, which no single-photo eval can answer. Recordings made before the
 settled block existed get it **derived** here, by replaying the same
-:class:`~board_reader_inference.stabilize.BoardStabilizer` the gateway now runs
+:class:`~board_reader_inference.stream.stabilize.BoardStabilizer` the gateway now runs
 live; the report says so, because a replayed number is not a recorded one.
 
 **The truth-frame check.** Truth is written in the chess frame (DESIGN D10), and a
@@ -65,9 +65,9 @@ from board_reader_core.protocol import (
 )
 from board_reader_core.recording import EVENTS_NAME, Recording
 
-from board_reader_inference.evaluate import square_errors
-from board_reader_inference.labels import best_rotation
-from board_reader_inference.stabilize import (
+from board_reader_inference.measurement.evaluate import square_errors
+from board_reader_inference.measurement.labels import best_rotation
+from board_reader_inference.stream.stabilize import (
     SETTLE_MIN_READS,
     SETTLE_SECONDS,
     BoardStabilizer,

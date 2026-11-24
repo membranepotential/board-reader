@@ -1,4 +1,4 @@
-"""Tests for the whole-board evaluation harness (:mod:`board_reader_inference.evaluate`).
+"""Tests for the whole-board evaluation harness (:mod:`board_reader_inference.measurement.evaluate`).
 
 The harness's whole point is to report the *unflattering* number, so these tests
 pin the arithmetic that makes it unflattering: one wrong square costs a whole
@@ -24,15 +24,15 @@ from board_reader_core.protocol import (
 from board_reader_core.sim import render_board
 from board_reader_core.wire import encode_jpeg
 
-from board_reader_inference.evaluate import (
+from board_reader_inference.measurement.evaluate import (
     error_kind,
     evaluate,
     reliability,
     run,
     score_board,
 )
-from board_reader_inference.labels import LabeledBoard, save_label
-from board_reader_inference.recognizer import Recognition, StubRecognizer
+from board_reader_inference.measurement.labels import LabeledBoard, save_label
+from board_reader_inference.recognition.recognizer import Recognition, StubRecognizer
 
 MIDGAME = "r2qk2r/1b1pbppp/p1n1p3/1ppnP3/5B2/1BNP1N2/PPP2PPP/R2Q1RK1"
 CORNERS = np.array([[0, 0], [100, 0], [100, 100], [0, 100]], dtype=np.float32)
@@ -413,7 +413,7 @@ def test_ranking_auc_is_the_signal_the_confidence_gap_hides():
     construction, so the gap alone would report a harmless change as a loss. AUC
     is the rank-based number that actually decides whether a consumer can
     threshold on confidence."""
-    from board_reader_inference.evaluate import _ranking_auc
+    from board_reader_inference.measurement.evaluate import _ranking_auc
 
     assert _ranking_auc([0.9, 0.8], [0.2, 0.1]) == 1.0
     assert _ranking_auc([0.2, 0.1], [0.9, 0.8]) == 0.0
@@ -427,7 +427,7 @@ def test_ranking_auc_is_the_signal_the_confidence_gap_hides():
 
 def test_temperature_report_is_absent_unless_asked_for():
     """It costs a leave-one-out fit per board; the default eval must not pay it."""
-    from board_reader_inference.evaluate import Report
+    from board_reader_inference.measurement.evaluate import Report
 
     assert Report(boards=[], estimator="x").temperature is None
 
@@ -456,7 +456,7 @@ def test_a_recognizer_reads_chess_labels_whole_and_skips_corner_frame_ones():
 
 
 def test_a_turned_read_is_flagged_by_the_frame_diagnostic():
-    from board_reader_inference.labels import rotate_placement
+    from board_reader_inference.measurement.labels import rotate_placement
 
     report = evaluate(StubRecognizer(rotate_placement(MIDGAME, 2)), [_chess_board()], prior=False)
     assert report.boards[0].rotation == 2

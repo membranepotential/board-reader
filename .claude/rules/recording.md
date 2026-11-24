@@ -6,7 +6,7 @@ paths:
   - 'packages/core/tests/test_recording.py'
   - 'packages/core/tests/test_wire.py'
   - 'packages/inference/src/board_reader_inference/server.py'
-  - 'packages/inference/src/board_reader_inference/replay.py'
+  - 'packages/inference/src/board_reader_inference/measurement/replay.py'
   - 'packages/inference/tests/test_recording_*.py'
   - 'packages/edge/tests/test_recording_replay.py'
 ---

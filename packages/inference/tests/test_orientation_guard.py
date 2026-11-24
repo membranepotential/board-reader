@@ -18,21 +18,21 @@ import pytest
 from board_reader_core.protocol import START_PLACEMENT, dist_from_placement
 from board_reader_core.wire import Frame
 
-from board_reader_inference.hub import PositionHub
-from board_reader_inference.ingest import (
-    MAX_TURN_DEG,
-    REANCHOR_AFTER,
-    FrameIngest,
-    Misoriented,
-    OrientationGuard,
-)
-from board_reader_inference.recognizer import (
+from board_reader_inference.recognition.recognizer import (
     FrameReading,
     Recognition,
     StubRecognizer,
     event_from_dist,
 )
 from board_reader_inference.server import create_app
+from board_reader_inference.stream.hub import PositionHub
+from board_reader_inference.stream.ingest import (
+    MAX_TURN_DEG,
+    REANCHOR_AFTER,
+    FrameIngest,
+    Misoriented,
+    OrientationGuard,
+)
 
 E4 = "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR"
 
@@ -131,7 +131,7 @@ def test_the_ingest_worker_drops_counts_and_logs_a_turned_read(caplog):
         await ingest.close()
         return ingest
 
-    with caplog.at_level(logging.WARNING, logger="board_reader_inference.ingest"):
+    with caplog.at_level(logging.WARNING, logger="board_reader_inference.stream.ingest"):
         ingest = asyncio.run(run())
     assert [r.event.seq for r in published] == [0, 2]
     assert (ingest.frames_estimated, ingest.frames_misoriented) == (2, 1)

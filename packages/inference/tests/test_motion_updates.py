@@ -19,12 +19,16 @@ import pytest
 from board_reader_core.protocol import MotionUpdate
 from board_reader_core.wire import Frame
 
-from board_reader_inference import ingest as ingest_mod
-from board_reader_inference.hub import PositionHub
-from board_reader_inference.ingest import MOTION_INTERVAL_S, FrameIngest, MotionThrottle
-from board_reader_inference.recognizer import StubRecognizer, frame_reader
-from board_reader_inference.schedule import ENTER_BURST
+from board_reader_inference.recognition.recognizer import StubRecognizer, frame_reader
 from board_reader_inference.server import create_app
+from board_reader_inference.stream import ingest as ingest_mod
+from board_reader_inference.stream.hub import PositionHub
+from board_reader_inference.stream.ingest import (
+    MOTION_INTERVAL_S,
+    FrameIngest,
+    MotionThrottle,
+)
+from board_reader_inference.stream.schedule import ENTER_BURST
 
 
 def test_the_first_frame_and_every_change_of_moving_go_out_at_once():

@@ -4,7 +4,7 @@ Runs on the inference node. Its surfaces:
 
 * ``WS /ingest`` — the edge connects and streams frames. Each frame is two WS
   messages: a JSON header then the binary JPEG. The gateway decodes and acks, and
-  the per-board ingest worker (:mod:`board_reader_inference.ingest`) estimates off
+  the per-board ingest worker (:mod:`board_reader_inference.stream.ingest`) estimates off
   the event loop and publishes the position event to the hub.
 * ``WS /viewer`` — viewers connect and receive the position-event JSON stream
   (retained latest per board first, then live updates), interleaved with
@@ -14,7 +14,7 @@ Runs on the inference node. Its surfaces:
 * ``WS /boards/{id}/camera`` + ``WS /boards/{id}/control`` — the camera control
   channel: the control UI's config for each board's camera, pushed to the phone,
   and the phone's state, previews and the node's health pushed to the control UI
-  (:mod:`board_reader_inference.camera_control`).
+  (:mod:`board_reader_inference.control.camera`).
 
 The gateway holds the recognizer and the position hub. It never imports the
 edge package; it only speaks the wire (:mod:`board_reader_core.wire`).
@@ -39,28 +39,28 @@ from fastapi import FastAPI, Query, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
 
-from board_reader_core.protocol import PositionEvent, square_evidence
+from board_reader_core.protocol import PositionEvent
 from board_reader_core.recording import FrameRecorder
 from board_reader_core.wire import Frame, decode_jpeg
 
-from board_reader_inference.camera_control import (
+from board_reader_inference.control.camera import (
     CameraRegistry,
     NodeStatus,
     StreamedFrame,
 )
-from board_reader_inference.camera_control import router as camera_router
-from board_reader_inference.hub import PositionHub
-from board_reader_inference.ingest import FrameIngest
-from board_reader_inference.labels import READ_FRAME
-from board_reader_inference.recognizer import (
+from board_reader_inference.control.camera import router as camera_router
+from board_reader_inference.measurement.labels import READ_FRAME
+from board_reader_inference.recognition.recognizer import (
     FrameReading,
     Recognizer,
     StubRecognizer,
     build_from_env,
     frame_reader,
 )
-from board_reader_inference.schedule import EveryFrame, FramePolicy, parse_policy
-from board_reader_inference.stabilize import SettleConfig
+from board_reader_inference.stream.hub import PositionHub
+from board_reader_inference.stream.ingest import FrameIngest, event_line
+from board_reader_inference.stream.schedule import EveryFrame, FramePolicy, parse_policy
+from board_reader_inference.stream.stabilize import SettleConfig
 
 log = logging.getLogger(__name__)
 
@@ -129,7 +129,7 @@ def _prior_decode(event):
     **``quarter_turns`` is deliberately not passed**: see :mod:`.prior`'s module
     docstring for why an orientation guess fed back into the repair is circular.
     """
-    from board_reader_inference.prior import decode
+    from board_reader_inference.stream.prior import decode
 
     return decode(np.asarray(event.square_dist))
 
@@ -159,42 +159,6 @@ def _frame_policy() -> Callable[[], FramePolicy]:
     policy = parse_policy(spec)  # a typo fails at startup, not on the first frame
     print(f"scheduling reads with {policy.name}")
     return lambda: parse_policy(spec)
-
-
-def event_line(
-    event: PositionEvent, frame: Frame, *, published_ts: float | None
-) -> dict:
-    """One published event as its ``events.ndjson`` line (:data:`EVENTS_NAME`).
-
-    ``square_dist`` is stripped — replaying ``frames.ndjson`` through the same
-    estimator reproduces it, and at burst rate it is ~25 kB per line. What replay
-    cannot cheaply give back is *why* a square read the way it did, so the top-2
-    digest (:func:`square_evidence`, ~1.8 kB) rides along instead: it is what
-    turns "d8 read k" into "d8 read k at 0.51 over q at 0.49", and it is the
-    whole evidence base for the trial report's margin section. The digest is of
-    the estimator's own distribution — the ``prior`` repair never rewrites it —
-    so it stays comparable across the three streams.
-
-    The frame's own ``seq`` and ``capture_ts`` ride along too, so an event can be
-    joined back to the exact recorded frame it was estimated from.
-
-    ``published_ts`` is this node's wall clock at publish, and ``None`` omits it:
-    an offline replay (:mod:`board_reader_inference.replay`) never published
-    anything, and stamping it with either the replay's wall clock or the capture
-    time would put a fabricated capture->publish latency in the trial report. A
-    line without the key scores identically and reports "not stamped".
-
-    Shared with the replay harness on purpose: a replayed events.ndjson is only
-    worth comparing to a recorded one if the same code wrote both lines.
-    """
-    line = event.to_dict()
-    line.pop("square_dist", None)
-    line["evidence"] = square_evidence(event.square_dist)
-    line["frame_seq"] = frame.seq
-    line["capture_ts"] = frame.capture_ts
-    if published_ts is not None:
-        line["published_ts"] = published_ts
-    return line
 
 
 @dataclass(frozen=True, slots=True)
@@ -485,7 +449,11 @@ def create_app(
         """
         from board_reader_core.protocol import parse_placement
 
-        from board_reader_inference.labels import UPLOAD_ID, parse_frame, save_label
+        from board_reader_inference.measurement.labels import (
+            UPLOAD_ID,
+            parse_frame,
+            save_label,
+        )
 
         if not save_dir:
             return JSONResponse(
@@ -567,7 +535,7 @@ def create_app(
         if not save_dir:
             return JSONResponse({"retention": False, "uploads": []})
 
-        from board_reader_inference.labels import LABEL_SUFFIX, UPLOAD_ID
+        from board_reader_inference.measurement.labels import LABEL_SUFFIX, UPLOAD_ID
 
         clamped_limit = max(1, min(500, limit))
         d = Path(save_dir)
@@ -617,7 +585,7 @@ def create_app(
         a path fragment — validated against the same stem grammar as ``/labels``
         before it ever touches the filesystem.
         """
-        from board_reader_inference.labels import UPLOAD_ID
+        from board_reader_inference.measurement.labels import UPLOAD_ID
 
         if not save_dir:
             return JSONResponse(

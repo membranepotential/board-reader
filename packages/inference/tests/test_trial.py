@@ -1,4 +1,4 @@
-"""Tests for the trial scorer (:mod:`board_reader_inference.trial`).
+"""Tests for the trial scorer (:mod:`board_reader_inference.measurement.trial`).
 
 The load-bearing claims, in order: a truth file that cannot be trusted is
 rejected at the boundary rather than quietly mis-scoring; the guard window drops
@@ -19,7 +19,7 @@ from board_reader_core.sim import render_board
 from board_reader_core.wire import Frame
 
 from board_reader_inference.cli import main
-from board_reader_inference.trial import (
+from board_reader_inference.measurement.trial import (
     DEFAULT_GUARD_SEQS,
     REPORT_NAME,
     SQUARE_INDEX,
@@ -553,7 +553,7 @@ def test_reads_in_the_truths_frame_pass_the_frame_check(tmp_path):
 
 
 def test_truth_written_a_half_turn_off_is_flagged(tmp_path):
-    from board_reader_inference.labels import rotate_placement
+    from board_reader_inference.measurement.labels import rotate_placement
 
     turned = _truth(
         segments=(

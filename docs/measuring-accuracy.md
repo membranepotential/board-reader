@@ -94,7 +94,7 @@ this is the number that decision should be made against.
 
 ## Where truth comes from
 
-Two sources, both read by `board_reader_inference.labels`, both keyed to a stated
+Two sources, both read by `board_reader_inference.measurement.labels`, both keyed to a stated
 frame rather than to any model output. Every label carries a `frame`
 (DESIGN D10): `"chess"` — the board as a player names it, a8 being Black's
 queen-side corner, corners optional — or `"corners"`, the frame the photo's corners

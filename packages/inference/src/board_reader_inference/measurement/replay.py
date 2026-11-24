@@ -11,11 +11,11 @@ through today's recognizer and writes fresh events. That is this module.
     board-reader-inference replay recordings/20260813-193308 --score
 
 **It replays the live path, not a copy of it.** The frames go through the same
-:func:`~board_reader_inference.recognizer.frame_reader` read the ``/ingest``
+:func:`~board_reader_inference.recognition.recognizer.frame_reader` read the ``/ingest``
 worker runs, the same
-:func:`~board_reader_inference.ingest._read_with_prior` (estimate -> prior repair
--> :class:`~board_reader_inference.stabilize.BoardStabilizer`), and the same
-:func:`~board_reader_inference.server.event_line` writer. A replayed event is
+:func:`~board_reader_inference.stream.ingest._read_with_prior` (estimate -> prior repair
+-> :class:`~board_reader_inference.stream.stabilize.BoardStabilizer`), and the same
+:func:`~board_reader_inference.stream.ingest.event_line` writer. A replayed event is
 what the gateway *would* have published; a second implementation of any of those
 three would make the comparison meaningless.
 
@@ -23,7 +23,7 @@ three would make the comparison meaningless.
 driven by each frame's ``capture_ts``: the estimator already stamps ``utc`` from
 it, the stabilizer takes its ``ts`` as an argument, and the one remaining wall
 clock — the ``published_ts`` the gateway stamps at publish — is *omitted* rather
-than faked (see :func:`~board_reader_inference.server.event_line`). So a settle
+than faked (see :func:`~board_reader_inference.stream.ingest.event_line`). So a settle
 window is 2.5 recorded seconds whether the replay takes ten minutes or ten
 milliseconds, and the same recording through the same code and the same
 environment produces byte-identical events. That determinism is the point: it is
@@ -32,7 +32,7 @@ what lets two replays be diffed as a claim about the *code*.
 **What replay does NOT reproduce, 1: the live pre-filter is a QUALITY filter.**
 The gateway's latest-wins inbox drops frames whenever the estimator falls behind
 (the 08-13 trial published 85 events from 748 frames), and what survives is not
-merely the freshest frame — :func:`~board_reader_inference.ingest.prefer_frame`
+merely the freshest frame — :func:`~board_reader_inference.stream.ingest.prefer_frame`
 keeps the *sharper* of two contenders within a one-second window, because a
 handheld phone smears half of what it captures. A live run's recorded score is
 therefore measured on a blur-filtered subset of its own frames, while replay
@@ -139,9 +139,19 @@ from board_reader_core.recording import (
 )
 from board_reader_core.wire import decode_jpeg
 
-from board_reader_inference.ingest import Misoriented, OrientationGuard, _read_with_prior
-from board_reader_inference.recognizer import FrameRead, build_from_env, frame_reader
-from board_reader_inference.schedule import (
+from board_reader_inference.measurement.trial import TRUTH_NAME
+from board_reader_inference.recognition.recognizer import (
+    FrameRead,
+    build_from_env,
+    frame_reader,
+)
+from board_reader_inference.stream.ingest import (
+    Misoriented,
+    OrientationGuard,
+    _read_with_prior,
+    event_line,
+)
+from board_reader_inference.stream.schedule import (
     EveryFrame,
     FramePolicy,
     MotionMeter,
@@ -149,9 +159,11 @@ from board_reader_inference.schedule import (
     policy_slug,
     restamped,
 )
-from board_reader_inference.server import event_line
-from board_reader_inference.stabilize import DEFAULT_SETTLE, BoardStabilizer, SettleConfig
-from board_reader_inference.trial import TRUTH_NAME
+from board_reader_inference.stream.stabilize import (
+    DEFAULT_SETTLE,
+    BoardStabilizer,
+    SettleConfig,
+)
 
 #: Where replays of a recording live, inside the recording they came from — a
 #: benchmark that cannot be traced back to its input is not a benchmark.
@@ -457,7 +469,7 @@ def replay(
     ``settle`` configures the debounce (``serve`` reads the same knobs from
     ``BR_SETTLE_*``).
 
-    The estimate/repair/debounce is :func:`~board_reader_inference.ingest._read_with_prior`
+    The estimate/repair/debounce is :func:`~board_reader_inference.stream.ingest._read_with_prior`
     — the ingest worker's own body — and the stabilizer is fed the frame's
     ``capture_ts``, so the settle window is recorded time. One stabilizer for the
     whole replay: it is one board's stream, in order, which is exactly the stream
@@ -867,7 +879,7 @@ def run(
     node benchmarks something nobody runs.
 
     The entry point behind ``board-reader-inference replay``; ``--score`` is the
-    caller's business (:func:`board_reader_inference.trial.run` on the returned
+    caller's business (:func:`board_reader_inference.measurement.trial.run` on the returned
     :attr:`ReplayResult.path`, which is a recording directory like any other).
     """
     recording = Recording.open(source)

@@ -1,8 +1,6 @@
 ---
 paths:
-  - 'packages/inference/src/board_reader_inference/onnxrt.py'
-  - 'packages/inference/src/board_reader_inference/chessq.py'
-  - 'packages/inference/src/board_reader_inference/recognizer.py'
+  - 'packages/inference/src/board_reader_inference/recognition/**'
   - 'packages/inference/tests/test_onnxrt.py'
   - 'packages/inference/tests/test_chessq.py'
   - 'Makefile'

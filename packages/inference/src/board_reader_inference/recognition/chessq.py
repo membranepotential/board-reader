@@ -1,6 +1,6 @@
 """ChessQ Lite: Lichess's end-to-end board recognizer, the core :class:`~.recognizer.Recognizer`.
 
-``BR_CHESSQ=<model.onnx>`` serves it (:func:`board_reader_inference.recognizer.build_from_env`,
+``BR_CHESSQ=<model.onnx>`` serves it (:func:`board_reader_inference.recognition.recognizer.build_from_env`,
 DESIGN D10). The model reads the **whole frame** and finds the board and its
 orientation itself: one 644x644 image in, a 13-class distribution for each of the
 64 squares out, in the chess frame. So there is no square cropping, no
@@ -48,8 +48,8 @@ import numpy as np
 
 from board_reader_core.protocol import CLASSES, GRID, NUM_CLASSES
 
-from board_reader_inference.onnxrt import cuda_providers
-from board_reader_inference.recognizer import Recognition
+from board_reader_inference.recognition.onnxrt import cuda_providers
+from board_reader_inference.recognition.recognizer import Recognition
 
 #: ``(1, 3, 644, 644)`` float32 -> its ``(1, 64, 13)`` logits and ``(1, 2)``
 #: direction, the release's two outputs: the model, or a test fake.

@@ -6,8 +6,8 @@ gateway. Depends ONLY on :mod:`board_reader_core`; it must never import
 enforces it: this package does not depend on the edge package).
 """
 
-from board_reader_inference.hub import PositionHub
-from board_reader_inference.recognizer import Recognizer, StubRecognizer
+from board_reader_inference.recognition.recognizer import Recognizer, StubRecognizer
 from board_reader_inference.server import create_app
+from board_reader_inference.stream.hub import PositionHub
 
 __all__ = ["PositionHub", "Recognizer", "StubRecognizer", "create_app"]

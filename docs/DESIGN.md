@@ -181,7 +181,7 @@ inter-frame motion on the edge, and each event carries it on. It is a **hint**: 
 application layer decides when a move completed. Inside the system two parts use it:
 the edge's adaptive forwarder and the node's read scheduler. The scheduler reads on a
 keepalive floor whatever the meter claims, because a stuck meter once read "moving" all
-day (the `board_reader_inference.schedule` module docstring).
+day (the `board_reader_inference.stream.schedule` module docstring).
 
 ### D4 — Adaptive frame forwarding on the edge
 
@@ -245,10 +245,10 @@ settled perfect, with no crop of ours, no warp, no bank and no calibration
 ([reports/2026-11-24-chessq-v6-replay-gate.md](reports/2026-11-24-chessq-v6-replay-gate.md)).
 
 **Decision.**
-- **One recognizer seam.** `board_reader_inference.recognizer` defines `Recognizer`
+- **One recognizer seam.** `board_reader_inference.recognition.recognizer` defines `Recognizer`
   (`name`, `model_path`, `read(image) -> Recognition`: the (8,8,13) distribution and the board's direction in the chess frame),
   `StubRecognizer`, `event_from_dist` and `build_from_env()`. ChessQ
-  (`board_reader_inference.chessq`) is the implementation `BR_CHESSQ` selects. A
+  (`board_reader_inference.recognition.chessq`) is the implementation `BR_CHESSQ` selects. A
   second model (ChessCam v2, the hedge for licence and Pi/Jetson latency) is one more
   file behind the same seam.
 - **The chess frame is the only convention** (locked decision #15).
@@ -396,7 +396,7 @@ commit whose DESIGN.md carried every section with its dated amendments.
 |---|---|---|
 | `board-reader-core` | the shared contract | `protocol` (L3 events, §5), `wire` (L1→L2 frames, §4.5), `control` (camera config and report), `recording` (session directories), `sim` (synthetic renders, §6) |
 | `board-reader-edge` | the Python edge ("Pi") | `source` (camera, video, images, synthetic game, recording), `motion` (stability), `forwarder` (adaptive rate), `client` (WebSocket), `adapter` (pacing), `cli` (`feed`) |
-| `board-reader-inference` | the inference node ("Jetson") | `server` (FastAPI gateway), `ingest` (inbox + workers), `schedule` (read policy), `recognizer` + `chessq` (the read), `prior` (repair), `stabilize` (debounce), `hub`, `camera_control`, `replay` / `evaluate` / `trial` (measurement), `labels`, `calibration` (temperature scaling for eval only) |
+| `board-reader-inference` | the inference node ("Jetson") | at the root `server` (FastAPI gateway), `cli`, `positions` (headless `/viewer` client); `recognition/`: `recognizer` + `chessq` + `onnxrt` (the read); `stream/`: `ingest` (inbox + workers), `schedule` (read policy), `prior` (repair), `stabilize` (debounce), `hub`; `control/`: `camera` (the camera control channel); `measurement/`: `replay` / `evaluate` / `trial`, `labels`, `calibration` (temperature scaling for eval only) |
 | `board-reader-viewer` | serves the web UI and relays the node's API under `/api` and its sockets under `/ws` | `server`, `proxy`, `tls`; pages `/`, `/camera`, `/control`, `/snapshot` |
 
 **Separation rule.** `edge` and `inference` never import each other; they meet only on

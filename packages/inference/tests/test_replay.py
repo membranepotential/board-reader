@@ -1,4 +1,4 @@
-"""Tests for the replay harness (:mod:`board_reader_inference.replay`).
+"""Tests for the replay harness (:mod:`board_reader_inference.measurement.replay`).
 
 The load-bearing claims, in order: a replay is driven by the *recorded* clock and
 not the wall one (so a 2.5 s settle window is 2.5 recorded seconds however fast
@@ -33,12 +33,9 @@ from board_reader_core.protocol import (
 from board_reader_core.recording import EVENTS_NAME, INDEX_NAME, FrameRecorder, Recording
 from board_reader_core.wire import Frame, encode_jpeg
 
-from board_reader_inference import replay as replay_mod
 from board_reader_inference.cli import main
-from board_reader_inference.hub import PositionHub
-from board_reader_inference.ingest import FrameIngest
-from board_reader_inference.recognizer import FrameReading
-from board_reader_inference.replay import (
+from board_reader_inference.measurement import replay as replay_mod
+from board_reader_inference.measurement.replay import (
     ReplayResult,
     check_name,
     default_name,
@@ -46,7 +43,11 @@ from board_reader_inference.replay import (
     render,
     replay,
 )
-from board_reader_inference.schedule import (
+from board_reader_inference.measurement.trial import REPORT_NAME, TRUTH_NAME
+from board_reader_inference.recognition.recognizer import FrameReading
+from board_reader_inference.stream.hub import PositionHub
+from board_reader_inference.stream.ingest import FrameIngest, event_line
+from board_reader_inference.stream.schedule import (
     ENTER_BURST,
     EXIT_BURST,
     RESTAMPED_KEY,
@@ -54,9 +55,7 @@ from board_reader_inference.schedule import (
     EveryFrame,
     parse_policy,
 )
-from board_reader_inference.server import event_line
-from board_reader_inference.stabilize import SETTLE_SECONDS, SettleConfig
-from board_reader_inference.trial import REPORT_NAME, TRUTH_NAME
+from board_reader_inference.stream.stabilize import SETTLE_SECONDS, SettleConfig
 
 E4 = "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR"
 
@@ -759,7 +758,7 @@ def _write_scripted_session(
     """One streaming session whose frames carry a scripted ``stability``.
 
     ``seq`` restarts at 0 for every call, which is what
-    :func:`~board_reader_inference.replay.find_sessions` splits on.
+    :func:`~board_reader_inference.measurement.replay.find_sessions` splits on.
     """
     rng = np.random.default_rng(11)
     recorder = FrameRecorder(root, session_id=session_id, writer="test")

@@ -3,7 +3,7 @@
 One thing about ``WS /ingest`` shapes every test that asserts on a *published*
 position: the ack means **received**, not **estimated**. The handler submits the
 frame to a per-board worker task and acks immediately
-(:mod:`board_reader_inference.ingest`), so the position reaches the hub some time
+(:mod:`board_reader_inference.stream.ingest`), so the position reaches the hub some time
 *after* the ack the test just read.
 
 That alone would only call for patience. Starlette's ``TestClient`` turns it into

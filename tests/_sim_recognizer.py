@@ -19,7 +19,7 @@ import numpy as np
 from board_reader_core.protocol import CLASSES, GRID, NUM_CLASSES
 from board_reader_core.sim import render_board
 
-from board_reader_inference.recognizer import Recognition
+from board_reader_inference.recognition.recognizer import Recognition
 
 #: Probability on the matched class; the rest is spread evenly over the others.
 CONFIDENCE = 0.95

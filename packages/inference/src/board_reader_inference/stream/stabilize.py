@@ -25,7 +25,7 @@ on ``k`` from one reading of a k/q swap while e8 settled on ``k`` from the
 can ever equal. That is what "settled per-square 96.1 % below its own prior input
 97.2 %, settled-perfect 0/253, never settles a segment" was made of. So a
 displacement is committed only if it does not make the settled board *less
-possible* than it already is (:func:`~board_reader_inference.prior.violation`,
+possible* than it already is (:func:`~board_reader_inference.stream.prior.violation`,
 the same hard-constraint excess the prior decoder descends); when it would, the
 squares the same read disagrees on are dragged along with it — see
 :meth:`BoardStabilizer.observe`. The invariant is *monotone*, not *possible*: the

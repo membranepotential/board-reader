@@ -22,10 +22,10 @@ from board_reader_core.protocol import (
 from board_reader_core.sim import render_board
 from board_reader_core.wire import Frame
 
-from board_reader_inference.hub import PositionHub
-from board_reader_inference.ingest import FrameIngest
-from board_reader_inference.recognizer import StubRecognizer, frame_reader
+from board_reader_inference.recognition.recognizer import StubRecognizer, frame_reader
 from board_reader_inference.server import create_app
+from board_reader_inference.stream.hub import PositionHub
+from board_reader_inference.stream.ingest import FrameIngest
 
 # The start position with e1 holding a second white king: impossible, and
 # impossible in the one way the decoder is best at (``kings``).

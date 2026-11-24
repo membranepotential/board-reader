@@ -30,7 +30,7 @@ from board_reader_core.protocol import START_PLACEMENT
 from board_reader_core.sim import render_board
 from board_reader_core.wire import Frame, encode_jpeg
 
-from board_reader_inference.camera_control import (
+from board_reader_inference.control.camera import (
     CAMERA_CONFIG_ENV,
     DIRECTION_READS,
     CameraRegistry,
@@ -38,9 +38,9 @@ from board_reader_inference.camera_control import (
     frame_rate,
     white_side,
 )
-from board_reader_inference.hub import PositionHub
-from board_reader_inference.recognizer import StubRecognizer
+from board_reader_inference.recognition.recognizer import StubRecognizer
 from board_reader_inference.server import create_app
+from board_reader_inference.stream.hub import PositionHub
 
 REPORT = {
     "devices": [{"id": "d1", "label": "Back Camera"}, {"id": "d2", "label": "Back Ultra Wide Camera"}],
@@ -358,7 +358,7 @@ def test_the_health_tick_and_the_last_streamed_frame_reach_the_control_page():
 
 
 def test_the_health_tick_says_which_way_the_board_lies(monkeypatch):
-    import board_reader_inference.camera_control as camera_control
+    import board_reader_inference.control.camera as camera_control
 
     monkeypatch.setattr(camera_control, "HEALTH_EVERY_S", 0.01)
     with _client() as client, client.websocket_connect("/boards/phone/control") as control:

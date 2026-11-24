@@ -27,7 +27,7 @@ def cmd_serve(args: argparse.Namespace) -> int:
 
     import uvicorn
 
-    from board_reader_inference.schedule import DEFAULT_POLICY_SPEC
+    from board_reader_inference.stream.schedule import DEFAULT_POLICY_SPEC
 
     # Every served run records its ingress by default (WP-H2), so a session can
     # always be replayed afterwards — including one driven by the phone /camera
@@ -114,7 +114,7 @@ def cmd_positions(args: argparse.Namespace) -> int:
 
 
 def cmd_eval(args: argparse.Namespace) -> int:
-    from board_reader_inference.evaluate import run
+    from board_reader_inference.measurement.evaluate import run
 
     try:
         report = run(
@@ -136,7 +136,12 @@ def cmd_eval(args: argparse.Namespace) -> int:
 def cmd_eval_session(args: argparse.Namespace) -> int:
     from board_reader_core.recording import Recording
 
-    from board_reader_inference.trial import TRUTH_NAME, TruthError, run, truth_skeleton
+    from board_reader_inference.measurement.trial import (
+        TRUTH_NAME,
+        TruthError,
+        run,
+        truth_skeleton,
+    )
 
     try:
         recording = Recording.open(args.recording)
@@ -168,10 +173,10 @@ def cmd_eval_session(args: argparse.Namespace) -> int:
 def cmd_replay(args: argparse.Namespace) -> int:
     from board_reader_core.recording import Recording
 
-    from board_reader_inference.replay import render, run
-    from board_reader_inference.schedule import parse_policy
-    from board_reader_inference.stabilize import SettleConfig
-    from board_reader_inference.trial import TRUTH_NAME, TruthError
+    from board_reader_inference.measurement.replay import render, run
+    from board_reader_inference.measurement.trial import TRUTH_NAME, TruthError
+    from board_reader_inference.stream.schedule import parse_policy
+    from board_reader_inference.stream.stabilize import SettleConfig
 
     try:
         # Parsed before anything expensive: a typo in --policy must cost a line of
@@ -221,7 +226,7 @@ def cmd_replay(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
         return 2
-    from board_reader_inference.trial import run as score
+    from board_reader_inference.measurement.trial import run as score
 
     try:
         report = score(Recording(result.path))
@@ -235,7 +240,7 @@ def cmd_replay(args: argparse.Namespace) -> int:
 
 def build_parser() -> argparse.ArgumentParser:
 
-    from board_reader_inference.evaluate import DEFAULT_PATHS
+    from board_reader_inference.measurement.evaluate import DEFAULT_PATHS
 
     p = argparse.ArgumentParser(prog="board-reader-inference", description=__doc__)
     sub = p.add_subparsers(dest="command", required=True)
@@ -320,9 +325,9 @@ def build_parser() -> argparse.ArgumentParser:
     e.add_argument("--json", help="also write the full report as JSON here")
     e.set_defaults(func=cmd_eval)
 
-    from board_reader_inference.replay import REPLAYS_DIR
-    from board_reader_inference.schedule import POLICIES
-    from board_reader_inference.stabilize import SettleConfig
+    from board_reader_inference.measurement.replay import REPLAYS_DIR
+    from board_reader_inference.stream.schedule import POLICIES
+    from board_reader_inference.stream.stabilize import SettleConfig
 
     POLICY_DEFAULT = "every-frame"
     POLICY_HELP = "Known: " + "; ".join(
@@ -408,7 +413,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     r.set_defaults(func=cmd_replay)
 
-    from board_reader_inference.trial import REPORT_NAME, TRUTH_NAME
+    from board_reader_inference.measurement.trial import REPORT_NAME, TRUTH_NAME
 
     t = sub.add_parser(
         "eval-session",

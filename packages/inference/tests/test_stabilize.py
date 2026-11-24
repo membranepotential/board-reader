@@ -12,8 +12,8 @@ from board_reader_core.protocol import (
     parse_placement,
 )
 
-from board_reader_inference.prior import tally, violation
-from board_reader_inference.stabilize import BoardStabilizer, SettleConfig
+from board_reader_inference.stream.prior import tally, violation
+from board_reader_inference.stream.stabilize import BoardStabilizer, SettleConfig
 
 #: START_PLACEMENT after 1.e4 — one real move, two squares changed.
 E4 = "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR"
@@ -325,7 +325,7 @@ def _excess_rises(build) -> bool:
     """Does any seeded stream ever make the settled board less possible?"""
     import random
 
-    from board_reader_inference.stabilize import _excess
+    from board_reader_inference.stream.stabilize import _excess
 
     for window in _PROPERTY_WINDOWS:
         for seed in range(_PROPERTY_SEEDS):
@@ -404,7 +404,7 @@ def test_a_blocked_square_is_not_starved_forever():
     the quorum and can never be dragged. Before the deadline this held `k` for
     200 reads / 260 s. It must now land within one window to ripen plus
     STALE_WINDOWS to time out."""
-    from board_reader_inference.stabilize import STALE_WINDOWS
+    from board_reader_inference.stream.stabilize import STALE_WINDOWS
 
     window = 2.5
     stab = BoardStabilizer(SettleConfig(seconds=window))

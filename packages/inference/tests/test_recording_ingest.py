@@ -18,7 +18,7 @@ from starlette.testclient import TestClient
 from board_reader_core.recording import INDEX_NAME, Recording
 from board_reader_core.wire import Frame
 
-from board_reader_inference.recognizer import StubRecognizer
+from board_reader_inference.recognition.recognizer import StubRecognizer
 from board_reader_inference.server import create_app
 
 

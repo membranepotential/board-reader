@@ -18,7 +18,7 @@ stall, and the ingest socket backs up behind the model.
   keeps published events in submission order per board (monotone ``seq``) without
   any extra bookkeeping.
 * **The read scheduler (D3/D4).** Not every frame the worker picks is worth ~0.2
-  GPU-seconds (ChessQ fp32 on CUDA). A :class:`~board_reader_inference.schedule.FramePolicy` — by default
+  GPU-seconds (ChessQ fp32 on CUDA). A :class:`~board_reader_inference.stream.schedule.FramePolicy` — by default
   "read at the end of a move, plus a keepalive floor at rest" — decides, and the
   declined frames cost nothing beyond the decode that already happened. It is
   *observed* on every arriving frame in :meth:`FrameIngest.submit` and *asked* in
@@ -37,8 +37,8 @@ never interrupts an estimate in flight, and shutdown is the only thing that stop
 them (:meth:`FrameIngest.lifespan`).
 
 What a worker *does* with a frame is not this module's decision: it runs the
-:data:`~board_reader_inference.recognizer.FrameRead` it was built with — the same
-read ``POST /estimate`` runs (:func:`~board_reader_inference.recognizer.frame_reader`).
+:data:`~board_reader_inference.recognition.recognizer.FrameRead` it was built with — the same
+read ``POST /estimate`` runs (:func:`~board_reader_inference.recognition.recognizer.frame_reader`).
 What it does with the *read* is: the :class:`OrientationGuard` drops a read whose
 board points the wrong way, and the rest are repaired, debounced and published.
 
@@ -47,6 +47,11 @@ board points the wrong way, and the rest are repaired, debounced and published.
 (:class:`MotionThrottle` keeps it to about five a second per board), so a viewer
 can show a hand on the board between the sparse reads. Display state only: it is
 not a read, so it is neither recorded nor replayed.
+
+**The recorded line.** :func:`event_line` turns a published event into its
+``events.ndjson`` line. It lives on the read path, not in the gateway, because
+the live recorder and the replay harness (:mod:`~board_reader_inference.measurement`)
+must write that line with the same code.
 """
 
 from __future__ import annotations
@@ -61,22 +66,60 @@ from collections import deque
 from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass
 
-from board_reader_core.protocol import MotionUpdate, PositionEvent
+from board_reader_core.protocol import MotionUpdate, PositionEvent, square_evidence
 from board_reader_core.wire import Frame
 
-from board_reader_inference.hub import PositionHub
-from board_reader_inference.prior import decode
-from board_reader_inference.recognizer import FrameRead, FrameReading
-from board_reader_inference.schedule import (
+from board_reader_inference.recognition.recognizer import FrameRead, FrameReading
+from board_reader_inference.stream.hub import PositionHub
+from board_reader_inference.stream.prior import decode
+from board_reader_inference.stream.schedule import (
     DUE_EPS,
     ENTER_BURST,
     EveryFrame,
     FramePolicy,
     stability_of,
 )
-from board_reader_inference.stabilize import DEFAULT_SETTLE, BoardStabilizer, SettleConfig
+from board_reader_inference.stream.stabilize import (
+    DEFAULT_SETTLE,
+    BoardStabilizer,
+    SettleConfig,
+)
 
 log = logging.getLogger(__name__)
+
+
+def event_line(event: PositionEvent, frame: Frame, *, published_ts: float | None) -> dict:
+    """One published event as its ``events.ndjson`` line.
+
+    ``square_dist`` is stripped — replaying ``frames.ndjson`` through the same
+    estimator reproduces it, and at burst rate it is ~25 kB per line. What replay
+    cannot cheaply give back is *why* a square read the way it did, so the top-2
+    digest (:func:`square_evidence`, ~1.8 kB) rides along instead: it is what
+    turns "d8 read k" into "d8 read k at 0.51 over q at 0.49", and it is the
+    whole evidence base for the trial report's margin section. The digest is of
+    the estimator's own distribution — the ``prior`` repair never rewrites it —
+    so it stays comparable across the three streams.
+
+    The frame's own ``seq`` and ``capture_ts`` ride along too, so an event can be
+    joined back to the exact recorded frame it was estimated from.
+
+    ``published_ts`` is this node's wall clock at publish, and ``None`` omits it:
+    an offline replay (:mod:`board_reader_inference.measurement.replay`) never published
+    anything, and stamping it with either the replay's wall clock or the capture
+    time would put a fabricated capture->publish latency in the trial report. A
+    line without the key scores identically and reports "not stamped".
+
+    Shared with the replay harness on purpose: a replayed events.ndjson is only
+    worth comparing to a recorded one if the same code wrote both lines.
+    """
+    line = event.to_dict()
+    line.pop("square_dist", None)
+    line["evidence"] = square_evidence(event.square_dist)
+    line["frame_seq"] = frame.seq
+    line["capture_ts"] = frame.capture_ts
+    if published_ts is not None:
+        line["published_ts"] = published_ts
+    return line
 
 #: How much older than the incoming frame a sharper queued frame may be and still
 #: win the inbox (seconds of edge capture clock). One read period, roughly: any

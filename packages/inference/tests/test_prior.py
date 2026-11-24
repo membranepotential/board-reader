@@ -1,4 +1,4 @@
-"""Tests for the hard-constraint decoder (:mod:`board_reader_inference.prior`).
+"""Tests for the hard-constraint decoder (:mod:`board_reader_inference.stream.prior`).
 
 Two things must hold at once: an *impossible* board gets repaired at its weakest
 square, and a board the constraints have nothing to say about is returned byte-for-byte
@@ -24,7 +24,7 @@ from board_reader_core.protocol import (
     placement_from_dist,
 )
 
-from board_reader_inference.prior import (
+from board_reader_inference.stream.prior import (
     MAX_FLIPS,
     Constraint,
     Tally,
@@ -287,7 +287,7 @@ def test_one_flip_can_relieve_two_constraints_and_is_credited_by_drop_size():
 
 
 def _rot(placement: str, k: int) -> str:
-    from board_reader_inference.labels import rotate_placement
+    from board_reader_inference.measurement.labels import rotate_placement
 
     return rotate_placement(placement, k)
 

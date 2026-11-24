@@ -35,8 +35,8 @@ from starlette.testclient import TestClient, WebSocketTestSession
 from board_reader_core.recording import EVENTS_NAME, Recording
 from board_reader_core.wire import Frame, decode_jpeg
 
-from board_reader_inference.recognizer import StubRecognizer
-from board_reader_inference.replay import find_sessions
+from board_reader_inference.measurement.replay import find_sessions
+from board_reader_inference.recognition.recognizer import StubRecognizer
 from board_reader_inference.server import create_app
 
 BOARD = "A1"

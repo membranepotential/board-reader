@@ -10,9 +10,9 @@ from board_reader_core.protocol import START_PLACEMENT
 from board_reader_core.sim import render_board
 from board_reader_core.wire import Frame, decode_jpeg
 
-from board_reader_inference.hub import PositionHub
-from board_reader_inference.recognizer import StubRecognizer
+from board_reader_inference.recognition.recognizer import StubRecognizer
 from board_reader_inference.server import create_app
+from board_reader_inference.stream.hub import PositionHub
 
 
 def _client() -> TestClient:

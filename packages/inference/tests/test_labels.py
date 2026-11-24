@@ -1,4 +1,4 @@
-"""Tests for operator-confirmed ground-truth labels (:mod:`board_reader_inference.labels`)."""
+"""Tests for operator-confirmed ground-truth labels (:mod:`board_reader_inference.measurement.labels`)."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ import pytest
 
 from board_reader_core.protocol import START_PLACEMENT, encode_placement, parse_placement
 
-from board_reader_inference.labels import (
+from board_reader_inference.measurement.labels import (
     LABEL_SUFFIX,
     SOURCE_CONFIRMED,
     SOURCE_CURATED,

@@ -13,7 +13,7 @@ import pytest
 
 from board_reader_core.protocol import dist_from_placement, parse_placement
 
-from board_reader_inference.labels import load_labels, rotate_placement
+from board_reader_inference.measurement.labels import load_labels, rotate_placement
 
 _TOOL = Path(__file__).resolve().parents[1] / "tools" / "migrate_labels_to_chess_frame.py"
 

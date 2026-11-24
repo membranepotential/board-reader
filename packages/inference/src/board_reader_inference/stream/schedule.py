@@ -14,7 +14,7 @@ answers "spend an estimate on this one?". :class:`BurstTriggered` is the shape t
 milestone is about — estimate at the **end of a burst**, the move-complete moment,
 skip the burst itself, and read a slow **keepalive** at rest. It is what the live
 gateway schedules with (:data:`DEFAULT_POLICY_SPEC`, ``BR_SCHEDULE`` to override),
-and what :mod:`board_reader_inference.replay` sweeps offline — one implementation,
+and what :mod:`board_reader_inference.measurement.replay` sweeps offline — one implementation,
 because a scheduler measured on recordings and a different one in production is a
 sweep that proved nothing.
 
@@ -50,9 +50,9 @@ rather than on either extreme — a backwards step re-anchors without becoming d
 and an unreadable interval reads as "not yet".
 
 **The interplay with the debounce is the whole design.**
-:class:`~board_reader_inference.stabilize.BoardStabilizer` adopts a changed square
-only after :data:`~board_reader_inference.stabilize.SETTLE_MIN_READS` agreeing
-reads spanning :data:`~board_reader_inference.stabilize.SETTLE_SECONDS` — a
+:class:`~board_reader_inference.stream.stabilize.BoardStabilizer` adopts a changed square
+only after :data:`~board_reader_inference.stream.stabilize.SETTLE_MIN_READS` agreeing
+reads spanning :data:`~board_reader_inference.stream.stabilize.SETTLE_SECONDS` — a
 *time* window, so that it survives the order-of-magnitude swing in read rate. A
 scheduler that reads once per move therefore never settles anything: one read is
 not a quorum however long you wait. Hence ``burst_end_reads``/``spacing_s``: a
@@ -129,14 +129,14 @@ class FramePolicy(Protocol):
         record the read if so. Called at most once per frame, and only for a
         frame the caller is actually able to estimate right now.
 
-    Offline (:mod:`board_reader_inference.replay`) the two collapse into
+    Offline (:mod:`board_reader_inference.measurement.replay`) the two collapse into
     :meth:`should_estimate`: frames are read one at a time, in order, so the frame
     just observed is always the frame being decided. Live
-    (:class:`~board_reader_inference.ingest.FrameIngest`) they come apart —
+    (:class:`~board_reader_inference.stream.ingest.FrameIngest`) they come apart —
     :meth:`observe` runs on the ``/ingest`` handler for every frame that lands,
     while :meth:`due` runs on the board's worker for whichever frame survived the
     latest-wins inbox. Deciding at the *drain* rather than at arrival is the
-    point: :func:`~board_reader_inference.ingest.prefer_frame` keeps the sharper
+    point: :func:`~board_reader_inference.stream.ingest.prefer_frame` keeps the sharper
     of two contenders within its window, so a burst-end read spends itself on the
     crispest view of the moment instead of on whichever frame happened to arrive
     at the instant the burst ended.
@@ -304,7 +304,7 @@ class EveryFrame:
         """Nominal — this policy reads everything, so its floor never binds.
 
         It exists because the live worker's wall-clock backstop
-        (:class:`~board_reader_inference.ingest.FrameIngest`) reads one number off
+        (:class:`~board_reader_inference.stream.ingest.FrameIngest`) reads one number off
         whatever policy it was given, and a seam with a hole in it is a seam that
         gets an ``isinstance`` check bolted onto it later.
         """
@@ -342,7 +342,7 @@ class BurstTriggered:
     ``burst_end_reads`` / ``spacing_s``
         How much evidence a burst end is worth. One read is enough for the raw
         stream but can never move the settled board:
-        :class:`~board_reader_inference.stabilize.BoardStabilizer` wants
+        :class:`~board_reader_inference.stream.stabilize.BoardStabilizer` wants
         ``SETTLE_MIN_READS`` reads spanning ``SETTLE_SECONDS``, so a single read
         per move leaves the debounce holding the previous position until the
         keepalive slowly catches up. The shipped three reads 0.3 s apart span

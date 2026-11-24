@@ -26,9 +26,9 @@ from board_reader_core.protocol import (
 from board_reader_core.sim import render_board
 from board_reader_core.wire import Frame
 
-from board_reader_inference import chessq as chessq_mod
-from board_reader_inference import replay
-from board_reader_inference.chessq import (
+from board_reader_inference.measurement import replay
+from board_reader_inference.recognition import chessq as chessq_mod
+from board_reader_inference.recognition.chessq import (
     CHESSQ_CLASSES,
     INPUT_PX,
     ChessQRecognizer,
@@ -36,14 +36,14 @@ from board_reader_inference.chessq import (
     preprocess_frame,
     square_dist_from_logits,
 )
-from board_reader_inference.hub import PositionHub
-from board_reader_inference.recognizer import (
+from board_reader_inference.recognition.recognizer import (
     FrameRead,
     StubRecognizer,
     build_from_env,
     frame_reader,
 )
 from board_reader_inference.server import create_app
+from board_reader_inference.stream.hub import PositionHub
 
 # Not left-right or top-bottom symmetric, so a transposed or flipped square order
 # cannot read back as itself.
@@ -164,7 +164,7 @@ def test_module_is_self_contained():
     }
     ours = {m for m in imported if m.startswith("board_reader_inference")}
     # The session helper, and the seam it implements: nothing else of ours.
-    assert ours == {"board_reader_inference.onnxrt", "board_reader_inference.recognizer"}
+    assert ours == {"board_reader_inference.recognition.onnxrt", "board_reader_inference.recognition.recognizer"}
 
 
 def test_a_read_takes_the_whole_frame_and_ignores_corners():

@@ -17,10 +17,18 @@ from starlette.testclient import TestClient
 from board_reader_core.protocol import START_PLACEMENT
 from board_reader_core.wire import Frame
 
-from board_reader_inference.hub import PositionHub
-from board_reader_inference.ingest import SHARPNESS_WINDOW_S, FrameIngest, prefer_frame
-from board_reader_inference.recognizer import FrameReading, StubRecognizer, frame_reader
+from board_reader_inference.recognition.recognizer import (
+    FrameReading,
+    StubRecognizer,
+    frame_reader,
+)
 from board_reader_inference.server import create_app
+from board_reader_inference.stream.hub import PositionHub
+from board_reader_inference.stream.ingest import (
+    SHARPNESS_WINDOW_S,
+    FrameIngest,
+    prefer_frame,
+)
 
 
 class SlowRecognizer(StubRecognizer):
@@ -287,8 +295,8 @@ def test_prefer_frame_ties_go_to_the_newcomer():
 def test_each_board_settles_with_the_ingest_settle_config():
     """``FrameIngest(settle=...)`` builds every board's debounce: with a zero
     window and one read, the first changed read settles at once."""
-    from board_reader_inference.recognizer import event_from_dist
-    from board_reader_inference.stabilize import SettleConfig
+    from board_reader_inference.recognition.recognizer import event_from_dist
+    from board_reader_inference.stream.stabilize import SettleConfig
 
     e4 = "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR"
     boards = {0: START_PLACEMENT, 1: e4}

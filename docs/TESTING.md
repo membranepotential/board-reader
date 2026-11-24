@@ -914,7 +914,7 @@ What to check:
 - `--board <id>` picks one board out of a recording that holds several.
 
 > [!note] Which frames get estimated — `--policy`
-> The loop asks a *frame policy* per frame (`board_reader_inference.schedule`).
+> The loop asks a *frame policy* per frame (`board_reader_inference.stream.schedule`).
 > `--policy every-frame` is the default and the control; `burst-end` is the
 > scheduler under test — estimate when a move finishes, skip mid-burst, and read a
 > keepalive floor at rest. Spec strings are `name[:key=value,...]`

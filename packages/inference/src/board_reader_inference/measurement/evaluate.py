@@ -50,9 +50,9 @@ from board_reader_core.protocol import (
     square_name,
 )
 
-from board_reader_inference.labels import LabeledBoard, best_rotation
-from board_reader_inference.prior import PriorDecode, decode
-from board_reader_inference.recognizer import Recognizer
+from board_reader_inference.measurement.labels import LabeledBoard, best_rotation
+from board_reader_inference.recognition.recognizer import Recognizer
+from board_reader_inference.stream.prior import PriorDecode, decode
 
 #: Reliability-diagram resolution. Ten bins over [0, 1] is the conventional
 #: choice and keeps each row readable at the ~640-square scale we evaluate at.
@@ -346,7 +346,7 @@ def score_temperature(
     truth_indices: list[np.ndarray],
 ) -> TemperatureReport:
     """Leave-one-board-out temperature scaling, scored against the same labels."""
-    from board_reader_inference.calibration import leave_one_out_scaled
+    from board_reader_inference.measurement.calibration import leave_one_out_scaled
 
     scaled, temps = leave_one_out_scaled(dists, truth_indices)
     conf_after = [float(d.max(axis=-1).mean()) for d in scaled]
@@ -845,12 +845,12 @@ def run(
     json_out: str | None = None,
 ) -> Report:
     """Load labels, build the deployed recognizer if none was injected, report."""
-    from board_reader_inference.labels import load_labels
+    from board_reader_inference.measurement.labels import load_labels
 
     candidates = [p for p in (paths or DEFAULT_PATHS) if Path(p).exists()]
     boards = load_labels(candidates)
     if recognizer is None:
-        from board_reader_inference.recognizer import build_from_env
+        from board_reader_inference.recognition.recognizer import build_from_env
 
         recognizer = build_from_env()
     report = evaluate(recognizer, boards, prior=prior, temperature=temperature)

@@ -46,7 +46,7 @@ import numpy as np
 
 from board_reader_core.protocol import CLASSES, parse_placement
 
-from board_reader_inference.labels import (
+from board_reader_inference.measurement.labels import (
     LABEL_SUFFIX,
     parse_corners,
     parse_frame,
@@ -265,7 +265,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--apply", action="store_true", help="write; default is a dry run")
     args = ap.parse_args(argv)
 
-    from board_reader_inference.chessq import ChessQRecognizer
+    from board_reader_inference.recognition.chessq import ChessQRecognizer
 
     read = ChessQRecognizer(args.model).read
     if args.mode == "migrate":

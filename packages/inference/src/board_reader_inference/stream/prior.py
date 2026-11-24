@@ -316,7 +316,7 @@ def _kings_flip(
     reading d8 as ``k`` at 0.97-0.99 while true e8 sits at 0.52-0.78.) It is a
     coin flip because the evidence is a coin flip, not because the rule reads
     it wrong; the
-    :class:`~board_reader_inference.stabilize.BoardStabilizer` is what recovers
+    :class:`~board_reader_inference.stream.stabilize.BoardStabilizer` is what recovers
     the take (settled 22/31 perfect from a 15/31 prior, against a 29/31 ceiling
     if every demotion went to d8).
 

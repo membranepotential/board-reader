@@ -9,7 +9,7 @@ different claim and the one that took a design to get right:
   hides most of it;
 * it is **asked at drain** — for whichever frame the worker actually picked, so a
   burst-end read spends itself on the sharper contender
-  :func:`~board_reader_inference.ingest.prefer_frame` kept rather than on whichever
+  :func:`~board_reader_inference.stream.ingest.prefer_frame` kept rather than on whichever
   frame happened to arrive at that instant. That interplay is the sweep's own
   recommendation (report §8, "apply the policy to the ingest inbox");
 * the floor holds through every way the signal can fail — a stuck meter, an absent
@@ -37,17 +37,21 @@ from board_reader_core.protocol import START_PLACEMENT, PositionEvent
 from board_reader_core.recording import Recording
 from board_reader_core.wire import Frame
 
-from board_reader_inference.hub import PositionHub
-from board_reader_inference.ingest import BACKSTOP_SLACK, FrameIngest
-from board_reader_inference.recognizer import FrameReading, StubRecognizer, frame_reader
-from board_reader_inference.schedule import (
+from board_reader_inference.recognition.recognizer import (
+    FrameReading,
+    StubRecognizer,
+    frame_reader,
+)
+from board_reader_inference.server import create_app
+from board_reader_inference.stream.hub import PositionHub
+from board_reader_inference.stream.ingest import BACKSTOP_SLACK, FrameIngest
+from board_reader_inference.stream.schedule import (
     DEFAULT_POLICY_SPEC,
     BurstTriggered,
     EveryFrame,
     parse_policy,
 )
-from board_reader_inference.server import create_app
-from board_reader_inference.stabilize import SETTLE_SECONDS
+from board_reader_inference.stream.stabilize import SETTLE_SECONDS
 
 #: Capture seconds between two frames — 10 fps, a plausible in-burst rate.
 DT = 0.1
@@ -125,7 +129,7 @@ def test_a_completed_move_buys_three_spaced_reads_and_nothing_during_the_hand():
 
     The move runs from frame 5 to 10; the burst ends ``EXIT_HOLD_S`` of calm later
     at frame 18, which owes three reads ``spacing_s=0.3`` apart — 0.6 s of span,
-    which is what :data:`~board_reader_inference.stabilize.SETTLE_SECONDS` needs
+    which is what :data:`~board_reader_inference.stream.stabilize.SETTLE_SECONDS` needs
     before a completed move can settle on its own evidence.
     """
 

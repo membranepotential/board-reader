@@ -19,9 +19,9 @@ from board_reader_core.protocol import START_PLACEMENT
 from board_reader_core.sim import render_board
 from board_reader_core.wire import encode_jpeg
 
-from board_reader_inference.hub import PositionHub
-from board_reader_inference.recognizer import StubRecognizer
+from board_reader_inference.recognition.recognizer import StubRecognizer
 from board_reader_inference.server import create_app
+from board_reader_inference.stream.hub import PositionHub
 
 MIDGAME = "r2qk2r/1b1pbppp/p1n1p3/1ppnP3/5B2/1BNP1N2/PPP2PPP/R2Q1RK1"
 

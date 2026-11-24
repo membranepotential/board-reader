@@ -77,7 +77,7 @@ whole, whatever the Apache-2.0 source allows on its own.
   revision, size, SHA-256, input/output contract, the licence name; for the export
   also its source, the package commit and the export's SHA-256), and `make models`
   needs them on a fresh clone.
-- **Code:** the module that loads the model (`board_reader_inference.chessq`) is our
+- **Code:** the module that loads the model (`board_reader_inference.recognition.chessq`) is our
   own Apache-2.0 code and contains none of its weights.
 
 ## 3. Recorded footage

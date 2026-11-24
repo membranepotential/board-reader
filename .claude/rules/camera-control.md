@@ -7,7 +7,7 @@ paths:
   - 'packages/viewer/ui/src/lib/control/**'
   - 'packages/viewer/ui/src/lib/edge/**'
   - 'packages/core/src/board_reader_core/control.py'
-  - 'packages/inference/src/board_reader_inference/camera_control.py'
+  - 'packages/inference/src/board_reader_inference/control/camera.py'
 ---
 
 # The dumb-camera phone (/camera) and its control page (/control)

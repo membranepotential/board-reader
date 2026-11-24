@@ -12,7 +12,7 @@ from board_reader_core.protocol import (
     iso_utc,
 )
 
-from board_reader_inference.hub import PositionHub
+from board_reader_inference.stream.hub import PositionHub
 
 
 def _event(board_id="A1", seq=0, placement=START_PLACEMENT):

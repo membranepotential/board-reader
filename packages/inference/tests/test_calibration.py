@@ -7,7 +7,7 @@ import pytest
 
 from board_reader_core.protocol import GRID, NUM_CLASSES
 
-from board_reader_inference.calibration import (
+from board_reader_inference.measurement.calibration import (
     apply_temperature,
     fit_temperature,
     fit_temperature_over_boards,

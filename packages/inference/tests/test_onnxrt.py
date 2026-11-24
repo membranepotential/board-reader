@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import pytest
 
-from board_reader_inference.onnxrt import (
+from board_reader_inference.recognition.onnxrt import (
     _DEFAULT_GPU_MEM_LIMIT_MB,
     CPU_ONLY,
     Provider,

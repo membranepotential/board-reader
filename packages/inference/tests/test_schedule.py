@@ -1,4 +1,4 @@
-"""Tests for the estimation scheduler (:mod:`board_reader_inference.schedule`).
+"""Tests for the estimation scheduler (:mod:`board_reader_inference.stream.schedule`).
 
 The claims, in the order they matter:
 
@@ -27,8 +27,8 @@ import pytest
 
 from board_reader_core.recording import FrameEntry
 
-from board_reader_inference import schedule as schedule_mod
-from board_reader_inference.schedule import (
+from board_reader_inference.stream import schedule as schedule_mod
+from board_reader_inference.stream.schedule import (
     DEFAULT_KEEPALIVE_S,
     DEFAULT_POLICY_SPEC,
     ENTER_BURST,

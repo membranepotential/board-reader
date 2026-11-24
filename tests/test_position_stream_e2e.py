@@ -40,9 +40,9 @@ from board_reader_core.sim import SAMPLE_GAME_PLACEMENTS
 from board_reader_edge.adapter import FileEdgeAdapter
 from board_reader_edge.client import stream_to_gateway
 from board_reader_edge.source import GameSource
-from board_reader_inference.hub import PositionHub
 from board_reader_inference.positions import stream_to
 from board_reader_inference.server import create_app
+from board_reader_inference.stream.hub import PositionHub
 
 PLACEMENTS = SAMPLE_GAME_PLACEMENTS[:4]
 # Two frames per position is the smallest feed that still proves the point: the

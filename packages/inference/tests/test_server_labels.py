@@ -18,10 +18,10 @@ from board_reader_core.protocol import START_PLACEMENT
 from board_reader_core.sim import render_board
 from board_reader_core.wire import encode_jpeg
 
-from board_reader_inference.hub import PositionHub
-from board_reader_inference.labels import LABEL_SUFFIX, rotate_placement
-from board_reader_inference.recognizer import StubRecognizer
+from board_reader_inference.measurement.labels import LABEL_SUFFIX, rotate_placement
+from board_reader_inference.recognition.recognizer import StubRecognizer
 from board_reader_inference.server import create_app
+from board_reader_inference.stream.hub import PositionHub
 
 MIDGAME = "r2qk2r/1b1pbppp/p1n1p3/1ppnP3/5B2/1BNP1N2/PPP2PPP/R2Q1RK1"
 
@@ -93,7 +93,7 @@ def test_a_read_is_labeled_in_the_chess_frame_without_corners(retaining, tmp_pat
     meta = json.loads((tmp_path / f"{upload}{LABEL_SUFFIX}").read_text())
     assert (meta["frame"], meta["placement"], meta["corners"]) == ("chess", MIDGAME, None)
 
-    from board_reader_inference.labels import load_labels
+    from board_reader_inference.measurement.labels import load_labels
 
     [board] = load_labels([tmp_path])
     assert (board.frame, board.corners) == ("chess", None)

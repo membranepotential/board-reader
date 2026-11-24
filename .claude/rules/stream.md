@@ -1,9 +1,9 @@
 ---
 paths:
-  - 'packages/inference/src/board_reader_inference/stabilize.py'
-  - 'packages/inference/src/board_reader_inference/schedule.py'
-  - 'packages/inference/src/board_reader_inference/ingest.py'
-  - 'packages/inference/src/board_reader_inference/prior.py'
+  - 'packages/inference/src/board_reader_inference/stream/stabilize.py'
+  - 'packages/inference/src/board_reader_inference/stream/schedule.py'
+  - 'packages/inference/src/board_reader_inference/stream/ingest.py'
+  - 'packages/inference/src/board_reader_inference/stream/prior.py'
   - 'packages/inference/tests/test_stabilize.py'
   - 'packages/inference/tests/test_schedule.py'
   - 'packages/inference/tests/test_ingest_schedule.py'

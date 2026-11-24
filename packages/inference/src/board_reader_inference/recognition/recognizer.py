@@ -167,7 +167,7 @@ def build_from_env() -> Recognizer:
     if not Path(path).is_file():
         return _stub(f"BR_CHESSQ={path!r} does not name a model file; run `make models`")
     # Here, not at the top: chessq builds this module's Recognition.
-    from board_reader_inference.chessq import ChessQRecognizer
+    from board_reader_inference.recognition.chessq import ChessQRecognizer
 
     print(f"serving ChessQ from BR_CHESSQ={path!r}")
     return ChessQRecognizer(path)
