@@ -543,10 +543,10 @@ POLICIES: Mapping[str, type] = {
 }
 
 #: What the live gateway schedules with unless ``BR_SCHEDULE`` says otherwise —
-#: ``BurstTriggered(keepalive_s=3.0, burst_end_reads=3, spacing_s=0.6)``. Only the
-#: two non-default parameters appear, because a spec states what was *asked for*
-#: (see :func:`_spec`); the class defaults stay put so every recorded spec string
-#: still rebuilds the run it names.
+#: ``BurstTriggered(keepalive_s=2.0, burst_end_reads=3, spacing_s=0.6)``. Only the
+#: non-default parameters appear, because a spec states what was *asked for* (see
+#: :func:`_spec`); the class defaults (:data:`DEFAULT_KEEPALIVE_S` among them) stay
+#: put so every recorded spec string still rebuilds the run it names.
 #:
 #: Three reads 0.6 s apart span 1.2 s, just over ``SETTLE_SECONDS=1.0``, so a
 #: completed move settles on the burst end's own evidence without waiting on the
@@ -555,7 +555,16 @@ POLICIES: Mapping[str, type] = {
 #: ``burst_end_reads=3`` at 1.3 s spacing against a 2.5 s window
 #: (docs/reports/2026-08-27-move-trigger-sweep.md §8). ``BR_SCHEDULE=every-frame``
 #: is the way back to reading everything.
-DEFAULT_POLICY_SPEC = "burst-end:burst_end_reads=3,spacing_s=0.6"
+#:
+#: The keepalive is 2 s, not 3 s, since the 2026-11-24 live take: its phone's
+#: meter never opened a burst, so every move waited on the keepalive and took
+#: 3-4 s to settle. Replayed on cached reads, 2 s cut the gate's median
+#: move-to-settle from 3.0 s to 2.0 s with no hand settling (104/119 -> 138/154
+#: settled perfect, +29 % reads) and the live take's from 3.1 s to 2.1 s. 1.5 s
+#: had the same medians at +48 % reads; 1.0 s let a hand settle on two gate takes
+#: (a lifted b8 knight, a c8 bishop under the hand). The keepalive is the floor
+#: when the meter is blind, so it is sized for that case.
+DEFAULT_POLICY_SPEC = "burst-end:keepalive_s=2,burst_end_reads=3,spacing_s=0.6"
 
 
 def parse_policy(spec: str) -> FramePolicy:

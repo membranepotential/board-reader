@@ -93,7 +93,7 @@ settle window, riding on stream events as `settled`.
 
 **Read scheduler** — the node's choice of which arriving frames to read (`schedule.py`,
 `BR_SCHEDULE`): by default three reads 0.6 s apart at the end of a motion burst, plus a
-keepalive read when 3 s of capture time passed without one.
+keepalive read when 2 s of capture time passed without one.
 
 **Replay gate** — the four recorded takes with truth that every recognition, decode or
 settle change is measured on (`make gate`); the reference row is `cq-v6-tuned`.

@@ -36,7 +36,7 @@ def cmd_serve(args: argparse.Namespace) -> int:
         os.environ["BR_RECORD_DIR"] = args.record_dir
 
     # Every served run schedules its reads (D3/D4): the node estimates at the end
-    # of each move plus a 3 s keepalive floor, rather than every frame that
+    # of each move plus a 2 s keepalive floor, rather than every frame that
     # survives the ingest inbox. ~12x fewer estimates on the swept takes for
     # -0.9 pp prior per-square — see docs/reports/2026-08-27-move-trigger-sweep.md.
     # `BR_SCHEDULE=every-frame` is the way back; any policy spec
@@ -246,7 +246,7 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument(
         "--schedule", default=None, metavar="POLICY",
         help="which frames get an estimate, as a `replay --policy` spec "
-             "(env BR_SCHEDULE). Default: read at the end of each move plus a 3 s "
+             "(env BR_SCHEDULE). Default: read at the end of each move plus a 2 s "
              "keepalive floor. `every-frame` reads everything, as the node did "
              "before scheduling — ~12x the GPU",
     )

@@ -82,7 +82,7 @@ through motion, with a measured `stability` on every frame. The **inference** no
 frame with one model call — ChessQ Lite V6 finds the board and its orientation and returns the
 8×8 distribution in the chess frame — repairs impossible boards beside the read, debounces a
 settled board, and publishes a position event. It does not read every frame: a burst-end
-scheduler reads three times at the end of each move plus a keepalive every 3 s
+scheduler reads three times at the end of each move plus a keepalive every 2 s
 (`BR_SCHEDULE`, see [[runbook]]). The **viewer** renders the stream; the headless `board-reader-inference positions`
 tails or captures it. Edge and inference never import each other — they meet only on the wire.
 

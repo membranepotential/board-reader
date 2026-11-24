@@ -131,29 +131,29 @@ def test_a_completed_move_buys_three_spaced_reads_and_nothing_during_the_hand():
 
     async def run():
         seen, ingest = await _drive(SHIPPED, _one_move())
-        # frame 0 (the stream's first), the move-complete frame, then its two
-        # follow-ups a beat apart. 6.0 s of capture time, four estimates.
-        assert seen == [0, 18, 24, 30]
+        # frame 0 (the stream's first), the move-complete frame, its two follow-ups
+        # a beat apart, then the 2 s keepalive. 6.0 s of capture time, five reads.
+        assert seen == [0, 18, 24, 30, 50]
         assert not [s for s in seen if 5 <= s <= 18 - 1], "nothing read inside the hand"
         gaps = np.diff([s * DT for s in seen[1:]])
         assert gaps.min() >= 0.6 - DT
         assert seen[-1] * DT - seen[1] * DT >= SETTLE_SECONDS, "the run spans a settle window"
-        # 60 frames arrived; 56 of them cost nothing beyond the decode.
+        # 60 frames arrived; 55 of them cost nothing beyond the decode.
         assert ingest.frames_received == 60
-        assert ingest.frames_estimated == 4
-        assert ingest.frames_unscheduled == 56
+        assert ingest.frames_estimated == 5
+        assert ingest.frames_unscheduled == 55
         assert ingest.frames_backstopped == 0
 
     asyncio.run(run())
 
 
 def test_a_resting_board_is_read_once_per_keepalive():
-    """Nobody has touched the board for ten seconds. The node reads it four times."""
+    """Nobody has touched the board for ten seconds. The node reads it five times."""
 
     async def run():
         seen, ingest = await _drive(SHIPPED, [1.0] * 100)
-        assert seen == [0, 30, 60, 90]  # 3.0 s apart, the floor exactly
-        assert ingest.frames_unscheduled == 96
+        assert seen == [0, 20, 40, 60, 80]  # 2.0 s apart, the floor exactly
+        assert ingest.frames_unscheduled == 95
 
     asyncio.run(run())
 
@@ -172,8 +172,8 @@ def test_a_dead_or_absent_meter_still_reads_at_the_floor(stability):
     async def run():
         raw = 1.0 if stability is None else stability
         seen, ingest = await _drive(SHIPPED, [raw] * 100)
-        assert seen == [0, 30, 60, 90]
-        assert ingest.frames_estimated == 4
+        assert seen == [0, 20, 40, 60, 80]
+        assert ingest.frames_estimated == 5
         assert ingest.frames_backstopped == 0  # the capture clock is fine
 
     asyncio.run(run())
@@ -201,8 +201,8 @@ def test_boards_schedule_independently():
         return est
 
     est = asyncio.run(run())
-    assert est.seqs("BUSY") == [0, 18, 24, 30]  # its own move, its own quorum
-    assert est.seqs("QUIET") == [0, 30]  # 6.0 s of rest: the floor, twice
+    assert est.seqs("BUSY") == [0, 18, 24, 30, 50]  # its own move, its own quorum
+    assert est.seqs("QUIET") == [0, 20, 40]  # 6.0 s of rest: the floor, three times
 
 
 
@@ -300,7 +300,7 @@ def test_the_policy_sees_every_arriving_frame_not_just_the_ones_it_reads():
         return est.seen
 
     # Frame 18 is the move-complete frame; the burst end made it due IMMEDIATELY,
-    # 1.8 s in, rather than at the 3.0 s keepalive.
+    # 1.8 s in, rather than at the 2.0 s keepalive.
     assert asyncio.run(run()) == [0, 18]
 
 
@@ -417,7 +417,7 @@ def _stream(client, frames: list[Frame]) -> None:
 @pytest.mark.parametrize(
     ("spec", "reads"),
     [
-        # 0.9 s of capture time under a 3 s floor: one read, and it does not matter
+        # 0.9 s of capture time under a 2 s floor: one read, and it does not matter
         # which frames the inbox dropped on the way — that is the point of a
         # capture-time floor.
         (DEFAULT_POLICY_SPEC, (1, 1)),

@@ -107,15 +107,16 @@ def test_the_pipe_still_publishes_under_the_shipped_read_schedule(monkeypatch):
     The synthetic feed is the adversarial case for it, not the friendly one. Its
     frames are stamped ``stability=1.0`` (``SyntheticSource`` has no motion meter),
     so there is never a burst and never a burst *end* — every read on this stream
-    has to come from the D3 keepalive floor. Five frames arrive inside a few
-    milliseconds of capture time, so exactly one of them is worth an estimate.
+    has to come from the D3 keepalive floor. Four frames at the source's 2 fps
+    span 1.5 s of capture time, inside one 2 s keepalive, so exactly one of them is
+    worth an estimate.
     """
     monkeypatch.setenv("BR_SCHEDULE", DEFAULT_POLICY_SPEC)
     port = _free_port()
     with _ServerThread(port, app=create_app()):
         _wait_healthy(port)
 
-        source = SyntheticSource(render_frames(5 * [START_PLACEMENT]), board_id="A1")
+        source = SyntheticSource(render_frames(4 * [START_PLACEMENT]), board_id="A1")
         adapter = FileEdgeAdapter(source)
 
         async def run():
@@ -127,10 +128,10 @@ def test_the_pipe_still_publishes_under_the_shipped_read_schedule(monkeypatch):
         sent, msg = asyncio.run(run())
         stats = httpx.get(f"http://127.0.0.1:{port}/healthz", timeout=5.0).json()
 
-    assert sent == 5, "every frame is still forwarded and acked; only reads are sparse"
+    assert sent == 4, "every frame is still forwarded and acked; only reads are sparse"
     assert json.loads(msg)["placement"] == START_PLACEMENT
     ingest = stats["ingest"]
-    assert ingest["received"] == 5
+    assert ingest["received"] == 4
     assert ingest["estimated"] == 1
-    assert ingest["estimated"] + ingest["dropped"] + ingest["unscheduled"] == 5
+    assert ingest["estimated"] + ingest["dropped"] + ingest["unscheduled"] == 4
     assert ingest["backstopped"] == 0, "the edge's capture clock is sound"

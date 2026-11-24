@@ -66,7 +66,7 @@ def test_a_missing_replay_is_named(recordings):
 
 def test_the_gate_is_the_four_documented_takes_and_only_08_13_restamps(capsys):
     assert gate.main(["--replay-args"]) == 0
-    served = "--policy burst-end:burst_end_reads=3,spacing_s=0.6"  # serve's default
+    served = "--policy burst-end:keepalive_s=2,burst_end_reads=3,spacing_s=0.6"  # serve's default
     assert capsys.readouterr().out.splitlines() == [
         f"20260813-193308 {served} --restamp-stability",
         f"20260827-175539 {served}",

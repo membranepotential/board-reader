@@ -167,6 +167,8 @@ and client (`lib/control/`) — all plain TypeScript, run in `node`, no DOM.
 `camera.spec.ts` plays the node's half of the control channel: it answers the phone's
 report poll with a config of its choosing and decodes the JPEGs that reach
 `/ws/ingest`, so "the crop the config asked for is the crop sent" is measured in pixels.
+It also sends a drawn hand across the board and checks that a burst reaches the wire,
+and that changing the crop alone does not open one.
 `control.spec.ts` drives `/control` against a simulated phone.
 
 `pnpm test:e2e` drives the pages in a real Chromium (`tests/*.spec.ts`), against
@@ -227,7 +229,7 @@ You should see:
   the snapshot page uses,
 - the position **changing as the game moves** — each changed square ringed
   **green**, fading pale and gone within a second,
-- the rhythm of a **scheduled** stream (DESIGN §4.3): about one event every 3 s at
+- the rhythm of a **scheduled** stream (DESIGN §4.3): about one event every 2 s at
   rest (the node's keepalive read), none while the synthetic hand is over the board,
   then three events ~0.6 s apart once it leaves (the burst-end reads). The edge still
   forwards ~12 fps through the hand; `curl -s localhost:8000/healthz | jq .ingest`
@@ -664,7 +666,7 @@ What to check:
 
 - against the Docker demo (Option A), the tail's transitions match the squares the
   viewer rings green, at the same moments;
-- `--changes-only` collapses the keepalive reads (one every ~3 s) to nothing while the
+- `--changes-only` collapses the keepalive reads (one every ~2 s) to nothing while the
   board is at rest, and prints a burst of lines through a move;
 - `jq -r .placement run.ndjson | uniq` reads the game's positions back out in order, and
   `wc -l run.ndjson` matches the "wrote N position events" line on stderr. Under
@@ -940,7 +942,8 @@ committed descriptors name, checks the SHA-256, and exports the fp32 ONNX.
    The live page shows the start position whatever the camera sees.
 3. Open `/camera` on the phone (Option J) and point it at a board. Expected: each read
    takes ~0.2 s (ChessQ fp32 on the GPU; int8 ~0.6–1.1 s on CPU), and a moved piece
-   settles on the live page about three seconds after the hand leaves.
+   settles on the live page about two seconds after the hand leaves (the burst-end
+   reads; with no burst, the 2 s keepalive gives 2–3 s).
 4. Replay a take with ChessQ (Option N), with **only** `BR_CHESSQ` set:
    `BR_CHESSQ=models/chessq/cq-vit-s-644-v6-seed1-onnx-int8-r1.onnx uv run
    board-reader-inference replay recordings/20260828-111421 --policy burst-end

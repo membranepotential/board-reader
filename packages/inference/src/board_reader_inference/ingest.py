@@ -17,8 +17,8 @@ stall, and the ingest socket backs up behind the model.
   event loop free to ack, serve viewers and answer HTTP. One worker per board also
   keeps published events in submission order per board (monotone ``seq``) without
   any extra bookkeeping.
-* **The read scheduler (D3/D4).** Not every frame the worker picks is worth ~1.3
-  GPU-seconds. A :class:`~board_reader_inference.schedule.FramePolicy` — by default
+* **The read scheduler (D3/D4).** Not every frame the worker picks is worth ~0.2
+  GPU-seconds (ChessQ fp32 on CUDA). A :class:`~board_reader_inference.schedule.FramePolicy` — by default
   "read at the end of a move, plus a keepalive floor at rest" — decides, and the
   declined frames cost nothing beyond the decode that already happened. It is
   *observed* on every arriving frame in :meth:`FrameIngest.submit` and *asked* in
@@ -67,7 +67,7 @@ log = logging.getLogger(__name__)
 SHARPNESS_WINDOW_S = 1.0
 
 #: The wall-clock backstop under the scheduler's own keepalive, as a multiple of
-#: it (:data:`~.schedule.DEFAULT_KEEPALIVE_S` -> 6 s at the shipped policy).
+#: it (4 s under the shipped policy's 2 s keepalive, :data:`~.schedule.DEFAULT_POLICY_SPEC`).
 #:
 #: A policy's floor is measured in the EDGE's ``capture_ts``, on purpose: that is
 #: what makes an offline replay deterministic (a scheduler that consulted

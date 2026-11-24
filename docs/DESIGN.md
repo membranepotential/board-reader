@@ -315,7 +315,7 @@ commit whose DESIGN.md carried every section with its dated amendments.
 | **Autorotate by chess plausibility** (`?autorotate=1`: fewest pawns on ranks 1/8) | The recognizer resolves orientation (locked decision #15). | [V6 gate](reports/2026-11-24-chessq-v6-replay-gate.md) | `git show 7f56f58:docs/DESIGN.md` (§4.6) |
 | **D8's "occluded squares get low confidence"; the optional burst voter** (§4.2, §4.4; the voter was never built) | D8 as rewritten: burst-end reads plus the `settled` debounce. | [settle tuning](reports/2026-11-24-settle-tuning.md) | `git show 7f56f58:docs/DESIGN.md` (D8, §4.4) |
 | **Corner-carrying frames** (`corners` on every wire frame; `POST /estimate?corners=`) | `corners` is a legacy wire field: still parsed so old recordings replay, never sent, ignored. `/estimate` takes the photo alone. | plan, Phase B–C | `git show 7f56f58:docs/DESIGN.md` (§4.5) |
-| **The ~2.5 s / 2-read settle window and the one-read `burst-end` schedule** | 1.0 s / 2 reads / 2 stale windows, with `burst-end:burst_end_reads=3,spacing_s=0.6`. | [settle tuning](reports/2026-11-24-settle-tuning.md) | `git show 53c1468:docs/DESIGN.md` (§5) |
+| **The ~2.5 s / 2-read settle window and the one-read `burst-end` schedule** | 1.0 s / 2 reads / 2 stale windows, with `burst-end:keepalive_s=2,burst_end_reads=3,spacing_s=0.6`. | [settle tuning](reports/2026-11-24-settle-tuning.md); [live latency](reports/2026-11-24-live-latency.md) | `git show 53c1468:docs/DESIGN.md` (§5) |
 | **Old §7 milestones M1/M5 and §8 work packages WP-A, WP-B, WP-E as written for the DINOv2 pipeline** | §7 and §8 below, with a status per item. | — | `git show 7f56f58:docs/DESIGN.md` (§7, §8) |
 
 ---
@@ -371,9 +371,10 @@ the wire. `core` imports neither. `tests/test_layer_separation.py` enforces it.
    lets the read scheduler observe its header, and puts it in the board's
    **latest-wins inbox**. Of two waiting frames the inbox keeps the sharper one.
 4. The board's worker takes the frame and asks the scheduler whether it is due. The
-   default policy is `burst-end:burst_end_reads=3,spacing_s=0.6`: three reads 0.6 s
-   apart at the end of a motion burst, and a read whenever 3 s of capture time passed
-   without one (the keepalive floor). A wall-clock backstop covers a frozen
+   default policy is `burst-end:keepalive_s=2,burst_end_reads=3,spacing_s=0.6`: three
+   reads 0.6 s apart at the end of a motion burst, and a read whenever 2 s of capture
+   time passed without one (the keepalive floor; 3 s until the
+   [live latency report](reports/2026-11-24-live-latency.md), 1 s let hands settle). A wall-clock backstop covers a frozen
    `capture_ts`. `BR_SCHEDULE` overrides the policy.
 5. A due frame goes to `Recognizer.read` in a worker thread, giving a chess-frame
    `square_dist`, then a `PositionEvent`.
@@ -474,7 +475,8 @@ Contract: `board_reader_core.protocol`. One event per read:
   count, because the read rate varies with load. Knobs: `BR_SETTLE_SECONDS`,
   `BR_SETTLE_MIN_READS`, `BR_SETTLE_STALE_WINDOWS`; `/healthz` reports them. Evidence:
   [reports/2026-11-24-settle-tuning.md](reports/2026-11-24-settle-tuning.md) (gate:
-  104/119 settled perfect, 110/119 raw, median move-to-settle 3.0 s). This is not the
+  104/119 settled perfect, 110/119 raw, median move-to-settle 3.0 s; with the 2 s
+  keepalive 138/154 and 2.0 s, [live latency](reports/2026-11-24-live-latency.md)). This is not the
   downstream smoother (D3): it uses no move model and no legality. The live viewer
   draws `settled.placement`, and `prior.placement` where there is no `settled`.
 

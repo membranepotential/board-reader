@@ -82,7 +82,10 @@ inference node, and pushed to the phone, which applies it:
 - **The phone still crops, so the wire is unchanged.** It measures motion and sharpness
   on the configured crop, throttles with a JS mirror of the edge's `MotionMeter` +
   `AdaptiveForwarder` (~1 fps at rest, ~12 fps through motion), and streams the crop
-  (long side ≤ 960 px) on `/ws/ingest`. The crop matters — ChessQ needs the board to
+  (long side ≤ 960 px) on `/ws/ingest`. The meter's 32×32 thumbnail is an area average
+  (the crop drawn at 256×256, then 8×8 block means), like the edge's `cv2.INTER_AREA`:
+  drawn straight at 32×32 it kept the sensor noise and missed every hand
+  ([live latency](reports/2026-11-24-live-latency.md)). The crop matters — ChessQ needs the board to
   fill at least half of the image width
   ([[recognition-pipeline#Framing: the board must fill the frame]]) — which is why the
   control UI warns about a missing, too-wide or upright rectangle, and an upright phone.
@@ -266,7 +269,7 @@ board-reader-inference positions --out run.ndjson --quiet
 ```
 
 `--changes-only` suppresses an event whose placement matches that board's previous one:
-an at-rest board republishes the same position at the node's keepalive read (every 3 s,
+an at-rest board republishes the same position at the node's keepalive read (every 2 s,
 DESIGN §4.3), and a log of that is noise. A board's first event is always reported — "never seen before" and
 "held still" are different facts and the tail keeps them apart. Walkthrough in
 [[TESTING#Option L — Watch or capture the position stream]]; operator recipes in
