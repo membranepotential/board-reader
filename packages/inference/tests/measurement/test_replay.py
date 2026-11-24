@@ -503,6 +503,87 @@ def test_replay_publishes_exactly_what_the_live_worker_would(source):
     ]
 
 
+class _ReadAt:
+    """A policy that reads exactly the frames captured at ``times``: the frames in
+    between reach the node (and its ring) but are never read."""
+
+    name = "read-at"
+    keepalive_s = 1e9
+
+    def __init__(self, times: set[float]) -> None:
+        self.times = times
+
+    def observe(self, capture_ts: float, stability: float) -> None:
+        pass
+
+    def due(self, capture_ts: float, stability: float) -> bool:
+        return capture_ts in self.times
+
+    def should_estimate(self, entry) -> bool:
+        return self.due(entry.capture_ts, 1.0)
+
+
+def _board_image(kind: str) -> np.ndarray:
+    """A checkerboard with a dark piece on the left (old) or right (new) square, or a
+    bright hand over both (the same scene as tests/stream/test_backdate.py)."""
+    yy, xx = np.mgrid[0:96, 0:160]
+    image = np.where(((yy // 16) + (xx // 16)) % 2 == 0, 90, 150).astype(np.uint8)
+    if kind == "hand":
+        image[20:80, 10:140] = 225
+    else:
+        x = 20 if kind == "old" else 100
+        image[36:60, x : x + 24] = 30
+    return np.repeat(image[:, :, None], 3, axis=2)
+
+
+def test_replay_back_dates_changed_utc_over_the_unread_frames_as_the_live_worker_does(tmp_path):
+    """Frames 0-2 show the old board, 3-4 a hand, 5-9 the new one; only 0, 2, 7, 8
+    and 9 are read, and the reads see E4 from 7 on. E4 settles at 8 from the run that
+    began at 7, and ``changed_utc`` goes back to frame 5, the first unread frame from
+    which the changed pixels look like the new read. Live and replay agree line for
+    line."""
+    t0 = 1_700_000_000.0
+    kinds = ["old"] * 3 + ["hand"] * 2 + ["new"] * 5
+    recorder = FrameRecorder(tmp_path / "recordings", session_id="src", writer="test")
+    for seq, kind in enumerate(kinds):
+        frame = Frame(board_id="phone", seq=seq, capture_ts=t0 + seq * FRAME_DT, image=_board_image(kind))
+        recorder.record(frame.header(), encode_jpeg(frame.image))
+    recorder.stop()
+    source = Recording(tmp_path / "recordings" / "src")
+    read_at = {t0 + seq * FRAME_DT for seq in (0, 2, 7, 8, 9)}
+    script = dict.fromkeys(range(7, 10), E4)
+
+    replayed = _events(_run(source, "backdate", ScriptedRead(script), policy=_ReadAt(read_at)))
+    assert [(e["frame_seq"], e["changed_utc"]) for e in replayed] == [
+        (0, iso_utc(t0)),
+        (2, iso_utc(t0)),
+        (7, iso_utc(t0)),
+        (8, iso_utc(t0 + 5 * FRAME_DT)),
+        (9, iso_utc(t0 + 5 * FRAME_DT)),
+    ]
+
+    async def _live() -> list[dict]:
+        lines: list[dict] = []
+        ingest = FrameIngest(
+            ScriptedRead(script),
+            PositionHub(),
+            on_event=lambda reading, frame, rules: lines.append(
+                event_line(reading.event, frame, published_ts=None, rules=rules)
+            ),
+            policy=lambda: _ReadAt(read_at),
+        )
+        for recorded in source.frames():
+            ingest.submit(recorded.frame())
+            await ingest.drain()
+        await ingest.close()
+        return lines
+
+    live = asyncio.run(_live())
+    assert [json.dumps(e, sort_keys=True) for e in replayed] == [
+        json.dumps(e, sort_keys=True) for e in live
+    ]
+
+
 def test_cli_replay_and_score(tmp_path, monkeypatch, capsys):
     """``replay --score`` on the walking-skeleton estimator: no model, no GPU.
 

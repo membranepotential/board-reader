@@ -86,8 +86,9 @@ one. The loop asks it per frame, in order; :class:`~.schedule.EveryFrame` is the
 default and the control. A policy sees the recorded header
 (:class:`~board_reader_core.recording.FrameEntry`: ``seq``, ``capture_ts``,
 ``stability``, ``sharpness``, ``burst_id``) and not the pixels, which is both what
-such a scheduler needs and what lets a declined frame cost nothing at all — its
-JPEG is never even read off disk.
+such a scheduler needs and what lets a declined frame cost no recognizer read. Its
+JPEG is still decoded, because every frame's grey copy goes to the board's
+:class:`~board_reader_inference.stream.backdate.FrameRing`, as it does live.
 
 A policy decides from the header alone, so "estimate this one" is a *request*,
 not a guarantee: the frame it picked may still turn out to have no JPEG behind it
@@ -146,6 +147,7 @@ from board_reader_inference.recognition.recognizer import (
     build_from_env,
     frame_reader,
 )
+from board_reader_inference.stream.backdate import ChangeClock, FrameRing
 from board_reader_inference.stream.ingest import (
     Misoriented,
     OrientationGuard,
@@ -410,7 +412,7 @@ class ReplayStats:
     #: Read, then dropped by the orientation guard (``ingest.OrientationGuard``),
     #: exactly as the live worker drops it.
     frames_misoriented: int = 0
-    frames_missing: int = 0  # index line points at a JPEG that is gone
+    frames_missing: int = 0  # index line points at a JPEG that is gone or undecodable
     #: Frames the motion meter re-scored under ``--restamp-stability``. Counted
     #: over the whole session, not over the reads: the meter has to see every
     #: frame or the floor it learns is a floor of a subsample.
@@ -483,7 +485,10 @@ def replay(
     — the ingest worker's own body — and the stabilizer is fed the frame's
     ``capture_ts``, so the settle window is recorded time. One stabilizer for the
     whole replay: it is one board's stream, in order, which is exactly the stream
-    a debounce needs.
+    a debounce needs. Every frame, read or not, is decoded and pushed to the
+    board's :class:`~.backdate.FrameRing` first, as ``/ingest`` does live, so
+    ``changed_utc`` is back-dated over the same frames (a live node behind on its
+    reads holds a few newer frames too, which the back-dating never looks at).
 
     With ``restamp``, each replayed session's headers get their ``stability``
     rewritten by a fresh :class:`~.schedule.MotionMeter` before the policy is
@@ -533,6 +538,10 @@ def replay(
     # One for the replay, like the stabilizer: it starts afresh by itself on the
     # seq restart that separates two sessions.
     guard = OrientationGuard()
+    # The board's held frames and its change clock, one each like the guard: both
+    # start afresh by themselves on a seq restart.
+    ring = FrameRing()
+    clock = ChangeClock()
     stats = ReplayStats()
     recorded = recorded_rules(recording)
     if recorded - {rules}:
@@ -582,19 +591,28 @@ def replay(
                 # frame the policy declined was still input the camera delivered,
                 # and hiding it would make a sparse policy look like a slow camera.
                 frames.write(_index_line(entry) + "\n")
+                # Every frame's pixels reach the ring before the policy is asked, as
+                # every arriving frame does live (FrameIngest.submit), so a read
+                # back-dates its change over the same frames the node would hold.
+                try:
+                    jpeg = (recording.path / entry.jpeg_rel).read_bytes()
+                    frame = RecordedFrame(
+                        header=entry.header, jpeg=jpeg, received_ts=entry.received_ts
+                    ).frame()
+                except (OSError, ValueError):  # gone, or not a JPEG: frames_missing
+                    frame = None
+                else:
+                    ring.push(frame.seq, frame.capture_ts, frame.image)
                 if not session_policy.should_estimate(entry):
                     stats.frames_skipped_policy += 1
                     continue
-                try:
-                    jpeg = (recording.path / entry.jpeg_rel).read_bytes()
-                except OSError:
+                if frame is None:
                     stats.frames_missing += 1
                     continue
-                frame = RecordedFrame(
-                    header=entry.header, jpeg=jpeg, received_ts=entry.received_ts
-                ).frame()
                 try:
-                    outcome = _read_and_settle(read, frame, stabilizer, guard, rules)
+                    outcome = _read_and_settle(
+                        read, frame, stabilizer, guard, rules, clock, ring.snapshot()
+                    )
                 except Exception as e:  # one bad frame is not the end of the stream
                     stats.frames_failed += 1
                     _say(log, f"  seq {entry.seq}: estimation failed ({e})")

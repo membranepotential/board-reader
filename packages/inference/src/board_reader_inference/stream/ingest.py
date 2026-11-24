@@ -63,7 +63,7 @@ import math
 import statistics
 import time
 from collections import deque
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Callable, Sequence
 from dataclasses import dataclass, replace
 
 from board_reader_core.control import DEFAULT_RULES, Rules
@@ -71,6 +71,7 @@ from board_reader_core.protocol import MotionUpdate, PositionEvent, iso_utc, squ
 from board_reader_core.wire import Frame
 
 from board_reader_inference.recognition.recognizer import FrameRead, FrameReading
+from board_reader_inference.stream.backdate import ChangeClock, FrameRing, HeldFrame
 from board_reader_inference.stream.hub import PositionHub
 from board_reader_inference.stream.schedule import (
     DUE_EPS,
@@ -293,6 +294,8 @@ def _read_and_settle(
     stabilizer: BoardStabilizer,
     guard: OrientationGuard,
     rules: Rules,
+    clock: ChangeClock,
+    held: Sequence[HeldFrame],
 ) -> FrameReading | Misoriented:
     """One estimate and its debounce, both off the event loop.
 
@@ -302,12 +305,14 @@ def _read_and_settle(
     The raw read then feeds the board's :class:`.stabilize.BoardStabilizer`, and
     the event is published with the debounced board as its ``placement``
     (:meth:`PositionEvent.with_placement`; ``square_dist`` untouched, so the raw
-    board stays its argmax) and the time it last changed as ``changed_utc``
-    (:attr:`.stabilize.BoardStabilizer.changed_ts`) — safe here despite the worker
-    thread because
-    each board's worker estimates strictly one frame at a time, in order, which
-    is exactly the stream a debounce needs. The guard relies on the same
-    one-at-a-time order. ``rules`` is the board's setting for this read.
+    board stays its argmax) and the time it last changed as ``changed_utc``: the
+    stabilizer's :attr:`~.stabilize.BoardStabilizer.changed_ts`, back-dated by the
+    board's :class:`~.backdate.ChangeClock` over ``held``, the board's held frames
+    (:meth:`~.backdate.FrameRing.snapshot`, taken on the event loop) — safe here
+    despite the worker thread because each board's worker estimates strictly one
+    frame at a time, in order, which is exactly the stream a debounce needs. The
+    guard and the clock rely on the same one-at-a-time order. ``rules`` is the
+    board's setting for this read.
     """
     reading = read(frame)
     dropped = guard.check(frame.seq, reading.direction)
@@ -315,8 +320,11 @@ def _read_and_settle(
         return dropped
     event = reading.event
     settled = stabilizer.observe(event.placement, frame.capture_ts, rules)
-    changed = stabilizer.changed_ts
-    assert changed is not None  # observe() has just seen a read
+    changed_ts = stabilizer.changed_ts
+    assert changed_ts is not None  # observe() has just seen a read
+    changed = clock.observe(
+        frame.seq, frame.capture_ts, event.placement, settled, changed_ts, held
+    )
     published = event.with_placement(settled, changed_utc=iso_utc(changed))
     return replace(reading, event=published)
 
@@ -342,6 +350,11 @@ class _BoardWorker:
     policy: FramePolicy
     #: The board's orientation guard, per worker like the stabilizer.
     guard: OrientationGuard
+    #: The board's recent frames as small grey copies, pushed by :meth:`FrameIngest.submit`
+    #: for every arriving frame (the inbox drops most of them before a read).
+    ring: FrameRing
+    #: Back-dates the board's ``changed_utc`` over the ring, per worker like the stabilizer.
+    clock: ChangeClock
     #: The board's motion-update rate limit (display only).
     motion: MotionThrottle
 
@@ -430,6 +443,7 @@ class FrameIngest:
             self._boards[frame.board_id] = worker
         capture_ts, stability = _schedule_signal(frame)
         worker.policy.observe(capture_ts, stability)
+        worker.ring.push(frame.seq, capture_ts, frame.image)
         # The scheduler's own burst threshold, which the UI mirrors as MOVING_BELOW.
         moving = stability < ENTER_BURST
         if worker.motion.due(moving, time.monotonic()):
@@ -487,8 +501,10 @@ class FrameIngest:
         stabilizer = BoardStabilizer(self._settle)
         policy = self._policy()
         guard = OrientationGuard()
+        ring = FrameRing()
+        clock = ChangeClock()
         task = asyncio.create_task(
-            self._run(board_id, inbox, idle, stabilizer, policy, guard),
+            self._run(board_id, inbox, idle, stabilizer, policy, guard, ring, clock),
             name=f"ingest:{board_id}",
         )
         return _BoardWorker(
@@ -498,6 +514,8 @@ class FrameIngest:
             stabilizer=stabilizer,
             policy=policy,
             guard=guard,
+            ring=ring,
+            clock=clock,
             motion=MotionThrottle(),
         )
 
@@ -509,6 +527,8 @@ class FrameIngest:
         stabilizer: BoardStabilizer,
         policy: FramePolicy,
         guard: OrientationGuard,
+        ring: FrameRing,
+        clock: ChangeClock,
     ) -> None:
         """Estimate whatever is in the inbox, forever, one frame at a time."""
         backstop_s = BACKSTOP_SLACK * policy.keepalive_s
@@ -535,8 +555,10 @@ class FrameIngest:
                             )
                     last_read = now
                     rules = self._rules(board_id)
+                    held = ring.snapshot()
                     outcome = await asyncio.to_thread(
-                        _read_and_settle, self._read, frame, stabilizer, guard, rules
+                        _read_and_settle,
+                        self._read, frame, stabilizer, guard, rules, clock, held,
                     )
                 except asyncio.CancelledError:
                     raise
