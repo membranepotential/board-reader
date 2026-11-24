@@ -16,8 +16,8 @@ confidences**. No moves, no legality, no PGN — those belong to the downstream 
   `changed_utc` (median 1.45 s after the true change vs 3.12 s); gate base `guard-only` 314/361, 0 leaks.
 - **PGN builder** — temporal decoder (research ChessCam vs Viterbi/beam over legal moves) → live PGN panel
   with copy + Lichess analysis link; offline accuracy on the gate takes — running (agent; viewer lib/game/).
-- **changed_utc backtrack** — after a settle, binary-search the held frames for the first one showing the
-  new board (off the latency path); truth + score for live take 2 — running (agent; stream/ + replay).
+- **changed_utc refine** — after a settle, pixel-compare the changed squares in the held frames (no extra
+  ChessQ reads) to find the first frame of the new board; truth + score for take 2 — running (agent).
 
 ## Done (2026-11-24 — the ChessQ rebuild; plan: [docs/plans/2026-11-24-simplify-around-chessq.md](docs/plans/2026-11-24-simplify-around-chessq.md))
 
