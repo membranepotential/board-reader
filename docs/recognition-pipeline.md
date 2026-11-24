@@ -100,9 +100,11 @@ many pixels each square gets. Measured on 467 images by padding them to wider fr
 | 35 % | perfect boards fall from 82 % to 5 % (reflect pad) or 69 % (gray pad) |
 | portrait 9:16 | perfect boards fall to 57 % |
 
-So the edge keeps sending a crop in which the board fills most of the width (plan
-decision D1). Phase C of the simplification plan replaces /camera's corner tracker with a
-plain rectangle.
+So the edge sends a crop in which the board fills at least half of the width (plan
+decision D1): a plain rectangle the operator draws on `/control` over the phone's
+full-frame preview, which the phone then applies (DESIGN D11). `/control` warns when the
+whole frame is sent, when the rectangle is taller than wide or more than twice as wide as
+tall, and when the phone is upright.
 
 ## Measured
 

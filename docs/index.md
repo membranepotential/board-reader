@@ -59,12 +59,12 @@ reconstruction and PGN belong to whatever consumes the stream.
 - [[viterbi-auto-labeling]] — the algorithm behind ideas §A: how sequence decoding
   over the legal-move graph turns the ~92 % reader into a near-perfect labeler
 - [[youtube-streams]] — curated static-camera OTB footage for bring-up
-- `aspects.yaml` — which parts must stay in sync with which, and the contract between them
 
 ## The one-paragraph version
 
-The **edge** node (a Pi; a phone browser in the sim — `/camera`) forwards frames in which the
-board fills most of the frame, adaptively since M2: a ~1 fps keepalive at rest, a burst
+The **edge** node (a Pi; a phone browser in the sim — `/camera`, a dumb camera configured
+from `/control` on the laptop) forwards a rectangle crop in which the board fills most of
+the frame, adaptively since M2: a ~1 fps keepalive at rest, a burst
 through motion, with a measured `stability` on every frame. The **inference** node reads each
 frame with one model call — ChessQ Lite V6 finds the board and its orientation and returns the
 8×8 distribution in the chess frame — repairs impossible boards beside the read, debounces a

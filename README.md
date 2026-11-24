@@ -17,16 +17,17 @@ the downstream application layer's job (and out of scope here).
 recognizer, DESIGN D10): it reads the whole frame, finds the board and its
 orientation itself, and on the four-take replay gate reads 92/101 raw and 84/101
 settled boards perfectly (the old cascade + bank: 5 and 35). Point a phone at a
-board via `/snapshot` or `/camera` and you get a position back with no taps and no
-calibration.
+board via `/snapshot`, or stream one from `/camera` (the phone only films; you draw the
+board's rectangle, pick the lens and start the stream from `/control` on the laptop),
+and you get a position back with no taps on the phone and no calibration.
 
 The pipeline was then simplified around ChessQ: the calibration round, the exemplar
 bank, the in-house crop classifier and its training harness are gone, and every frame
 takes one read path ([the plan](docs/plans/2026-11-24-simplify-around-chessq.md),
 [recognition](docs/recognition-pipeline.md)).
 
-**Next up:** the edge's framing (a plain rectangle instead of the corner tracker), then
-retuning the settle window. See
+**Next up:** a live take with the dumb-camera phone (Phase C), then more varied
+recordings to check the settle defaults. See
 [STATUS.md](STATUS.md) for the current state and [DESIGN §7](docs/DESIGN.md) for the
 milestone ladder.
 
