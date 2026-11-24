@@ -37,7 +37,6 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from pathlib import Path
-from typing import Literal
 
 import cv2
 import numpy as np
@@ -108,7 +107,6 @@ class ChessQRecognizer:
     """
 
     name = "chessq"
-    frame: Literal["chess"] = "chess"
 
     def __init__(self, model: str | Path | LogitsFn) -> None:
         if callable(model):

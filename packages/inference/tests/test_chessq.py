@@ -117,7 +117,7 @@ def test_logits_of_the_wrong_shape_are_refused():
 
 def test_recognizer_reads_in_the_chess_frame():
     recognizer = ChessQRecognizer(_fake_model(RUY_LOPEZ))
-    assert (recognizer.name, recognizer.frame, recognizer.model_path) == ("chessq", "chess", None)
+    assert (recognizer.name, recognizer.model_path) == ("chessq", None)
     dist = recognizer.read(render_board(RUY_LOPEZ))
     np.testing.assert_array_equal(
         np.array(CLASSES)[dist.argmax(-1)], np.array(parse_placement(RUY_LOPEZ))

@@ -13,7 +13,6 @@ pipe that is on trial here, never recognition.
 from __future__ import annotations
 
 from functools import cache
-from typing import Literal
 
 import numpy as np
 
@@ -45,7 +44,6 @@ class SimRecognizer:
     """Reads a whole-frame sim render into its chess-frame ``(8, 8, 13)`` distribution."""
 
     name = "sim"
-    frame: Literal["chess"] = "chess"
     model_path: str | None = None
 
     def read(self, image: np.ndarray) -> np.ndarray:

@@ -25,7 +25,7 @@ import os
 import sys
 from collections.abc import Callable
 from pathlib import Path
-from typing import Literal, Protocol
+from typing import Protocol
 
 import numpy as np
 
@@ -55,9 +55,6 @@ class Recognizer(Protocol):
     def name(self) -> str: ...
 
     @property
-    def frame(self) -> Literal["chess"]: ...
-
-    @property
     def model_path(self) -> str | None: ...
 
     def read(self, image: np.ndarray) -> np.ndarray: ...
@@ -72,7 +69,6 @@ class StubRecognizer:
     """
 
     name = "stub"
-    frame: Literal["chess"] = "chess"
     model_path: str | None = None
 
     def __init__(

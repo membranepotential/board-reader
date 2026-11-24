@@ -33,7 +33,7 @@ def _frame(**kw: object) -> Frame:
 
 def test_stub_reads_its_authored_placement_whatever_the_pixels():
     stub = StubRecognizer(MIDGAME, confidence=0.8)
-    assert (stub.name, stub.frame) == ("stub", "chess")
+    assert stub.name == "stub"
     for image in (render_board(), np.zeros((50, 90, 3), dtype=np.uint8)):
         dist = stub.read(image)
         assert dist.shape == (8, 8, len(CLASSES))
