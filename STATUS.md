@@ -18,8 +18,9 @@ confidences**. No moves, no legality, no PGN — those are the downstream applic
   18 commits in 4 phases) — D7 delete both, D11 accepted (user). **Phase A DONE** (`4d166bc`..`acfe00f`, replay
   invariant exact; 26/27 upload labels migrated, 1 quarantined). **Phase B DONE** (`0d9590d`..`d5d3e3e`, ≈ −24.6k lines; gate identical after
   s7/s8/s10; 858 tests, 342 vitest). fp32 switch DONE (`719daf8`), Phase D settle tuning DONE (`62a6854`, `7f97de5`:
-  settled 84/101 → 104/119, median lag 4.3 → 3.0 s, 0 hand leaks). **Phase C = dumb camera** (user 2026-11-24:
-  phone only films, laptop control UI pushes crop/lens/start-stop): implementer-high running; then live take.
+  settled 84/101 → 104/119, median lag 4.3 → 3.0 s, 0 hand leaks). **Phase C = dumb camera DONE** (`11269eb`..`904d6cf`; gate identical, 857 py / 262 vitest / e2e green;
+  smoke: /control crop → phone → node frames at crop size). **Next: user live take** (TESTING Option J).
+  Running: DESIGN/docs rewrite agent + learnings→rules agent.
   Step 13 framing DONE (`332a32f`): board must fill ≥ ~50 % of width → D1 = plain rectangle crop (Phase C).
 - **chessq-fp16 — DONE, cut short** (`f6361e1`): serve V6 **fp32 ONNX on CUDA** (~205 ms vs ~600+ int8, same
   reads; fp16 slower on the 1650). Next, after Phase B: export step in `make models` + switch + replay gate.
@@ -168,6 +169,17 @@ confidences**. No moves, no legality, no PGN — those are the downstream applic
   block, sharpness-preferring inbox, latency batch fix. Earlier: `git log`.
 
 ## Next
+
+- **QUEUED (user, 2026-11-24): learnings → path-scoped rules**, as scribetech did (its 2026-10-09 rules promotion): promote
+  standing conventions from `.learnings.ndjson` (184 active, 41 on deleted paths) into `.claude/rules/<area>.md`
+  with `paths:` frontmatter; forget stale ones; freeze the store; rewrite CLAUDE.md's learnings section.
+  Starts after Phase C (agents still write learnings and CLAUDE.md).
+
+- **IDEA (user, 2026-11-24, parked): fully on-phone, portable app.** Run recognition in the phone's
+  browser instead of on the laptop. Feasible: ChessQ Lite int8 targets browser WASM (Lichess runs it
+  client-side), and ChessCam runs in-browser at ~100 ms/frame on a Pixel 7a CPU. Open: the **sink**
+  (where positions go — Lichess broadcast/PGN, a WS endpoint, a local file) and latency on a mid
+  phone. → move into docs/ideas.md once Phase C's doc work lands.
 
 1. **Bank provenance, then the session-fair rematch**: persist the source crop
    (or masked+unmasked embedding pair) for every exemplar written — calibrate
