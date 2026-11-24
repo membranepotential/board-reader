@@ -1,18 +1,15 @@
 /**
- * How sharp is this frame? — the scorer behind the camera page's stabilized
- * calibration grab.
+ * How sharp is this frame? — the focus score the camera page stamps on every
+ * streamed frame (`IngestFrameHeader.sharpness`).
  *
- * Calibration reads one exemplar per square out of a SINGLE frame, so that frame
- * decides the quality of the bank for the rest of the session. A phone is handheld:
- * an instantaneous grab lands on whichever 1/30 s the operator's thumb happened to
- * fall on, and micro-shake smears roughly half of them. So the page samples a
- * burst and keeps the sharpest one, and "sharpest" is this number.
+ * A phone is handheld: micro-shake smears roughly half of its frames, so the node
+ * prefers the crisp frame of a shaky second, and "crisp" is this number.
  *
  * **Tenengrad**, the classic autofocus measure: mean squared Sobel gradient
  * magnitude. Blur is a low-pass filter and gradients are the high-pass half, so
  * blurring a scene strictly lowers this while leaving everything else about the
  * scene alone — which is exactly the comparison being made, the same board seen
- * ten times in a second and a half.
+ * frame after frame.
  *
  * It is normalised by the mean intensity, squared, because the alternative is a
  * meter that prefers whichever candidate the autoexposure happened to brighten:

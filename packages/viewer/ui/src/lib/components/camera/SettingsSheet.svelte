@@ -153,14 +153,6 @@
     <div class="legend"><i></i>low confidence</div>
   </div>
 
-  <h2>calibrate</h2>
-  <p class="hint">
-    Calibrating <b>adds to</b> the piece bank rather than replacing it, so a second and a third
-    angle are both worth capturing — a bank built from several viewpoints keeps reading the board
-    when the camera moves or the light changes, which one frame's does not. The board must show
-    the starting position, at rest, each time.
-  </p>
-
   <details>
     <summary>How framing works</summary>
     <p>

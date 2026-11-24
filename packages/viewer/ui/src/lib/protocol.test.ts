@@ -225,23 +225,11 @@ describe('parseIngestReply', () => {
 });
 
 describe('parseEstimateResponse', () => {
-  it('reads the occupancy branch as its own variant', () => {
-    const parsed = parseEstimateResponse({
-      board_id: 'snapshot',
-      mode: 'occupancy',
-      occupied: Array.from({ length: 8 }, () => Array.from({ length: 8 }, () => false)),
-      hint: 'photograph the starting position once'
-    });
-    expect(parsed.ok).toBe(true);
-    if (!parsed.ok) return;
-    expect(parsed.value.kind).toBe('occupancy');
+  it('refuses a reply that is not a position event', () => {
+    expect(parseEstimateResponse({ board_id: 'snapshot' }).ok).toBe(false);
   });
 
-  it('refuses an occupancy reply with no grid — occupancy IS the answer there', () => {
-    expect(parseEstimateResponse({ mode: 'occupancy' }).ok).toBe(false);
-  });
-
-  it('reads the position branch, with its prior and its extras', () => {
+  it('reads the position event, with its prior and its extras', () => {
     const parsed = parseEstimateResponse({
       ...validEvent,
       autorotated: 90,
@@ -254,7 +242,7 @@ describe('parseEstimateResponse', () => {
       }
     });
     expect(parsed.ok).toBe(true);
-    if (!parsed.ok || parsed.value.kind !== 'position') return;
+    if (!parsed.ok) return;
     expect(parsed.value.autorotated).toBe(90);
     expect(parsed.value.prior?.flips[0]?.square).toBe('d8');
     expect(parsed.value.prior?.residual['kings']).toBe(1);

@@ -232,17 +232,6 @@ export function parseIngestReply(raw: string): IngestReply | null {
 
 // ---- HTTP replies ------------------------------------------------------------
 
-/** `POST /calibrate` — the accepted case. A refusal comes back as `{error}` + 422. */
-export interface CalibrateResponse {
-  readonly classes_calibrated: number;
-  readonly backbone: string;
-  /** Where the bank was persisted, or null when persistence is off (`BR_SESSION_BANK`). */
-  readonly saved: string | null;
-  readonly exemplars: number;
-  /** Quarter-turns the node had to apply to the labels to read the board. */
-  readonly label_rotation: number;
-}
-
 /** `POST /detect` — geometric TL,TR,BR,BL. Which corner is a8 is NOT knowable (decision #15). */
 export interface DetectResponse {
   readonly corners: CornerQuad;
@@ -284,21 +273,6 @@ export interface SettledBoard {
   readonly pending: readonly string[];
 }
 
-export interface AutoCalibration {
-  readonly matches: number;
-  readonly rotation: number;
-  readonly exemplars: number;
-  readonly saved: string | null;
-}
-
-export interface BankRefresh {
-  readonly added: number;
-  readonly total: number;
-  readonly agree: number;
-  readonly rotation: number;
-  readonly saved: string | null;
-}
-
 /**
  * Warnings ride as node-authored strings and are shown verbatim. Enumerating them
  * in a union here would add a second place to edit for every warning the node
@@ -329,36 +303,17 @@ export const LOW_ANGLE_ASPECT = 0.62;
 export const MOVING_BELOW = 0.7;
 export const LOW_CONFIDENCE = 0.5;
 
-/**
- * `POST /estimate`. Two genuinely different answers, so they are two variants:
- * with no piece-type calibration for this set the node answers occupancy only
- * (DESIGN §4.6), and that reply has no placement, no distribution and nothing a
- * human could confirm. The wire discriminates by the PRESENCE of `mode`
- * (`"occupancy"`); `kind` is this module's explicit stand-in so a consumer cannot
- * read a field the other branch never sends.
- */
-export type EstimateResponse =
-  | {
-      readonly kind: 'occupancy';
-      readonly board_id: string;
-      readonly occupied: Board8<boolean>;
-      readonly hint: string;
-      readonly warnings: readonly string[];
-      readonly debug: DebugImages | null;
-    }
-  | {
-      readonly kind: 'position';
-      readonly event: PositionEvent;
-      readonly prior: PriorDecode | null;
-      readonly autocalibrated: AutoCalibration | null;
-      readonly bank_refreshed: BankRefresh | null;
-      /** Degrees (0/90/180/270) the node turned the reading by under `?autorotate=1`. */
-      readonly autorotated: number;
-      /** Names the retained photo, so this read's position can be confirmed via `/labels`. */
-      readonly upload: string | null;
-      readonly warnings: readonly string[];
-      readonly debug: DebugImages | null;
-    };
+/** `POST /estimate`: the position event, plus what only a one-shot read carries. */
+export interface EstimateResponse {
+  readonly event: PositionEvent;
+  readonly prior: PriorDecode | null;
+  /** Degrees (0/90/180/270) the node turned the reading by under `?autorotate=1`. */
+  readonly autorotated: number;
+  /** Names the retained photo, so this read's position can be confirmed via `/labels`. */
+  readonly upload: string | null;
+  readonly warnings: readonly string[];
+  readonly debug: DebugImages | null;
+}
 
 /** One retained photo as `GET /uploads` lists it. */
 export interface UploadRecord {
@@ -440,16 +395,6 @@ export function parseSquareDist(value: unknown): SquareDist | null {
   return toGrid8(rows);
 }
 
-function parseBooleanBoard(value: unknown): Board8<boolean> | null {
-  if (!Array.isArray(value) || value.length !== GRID) return null;
-  const rows: Grid8<boolean>[] = [];
-  for (const rawRow of value) {
-    if (!Array.isArray(rawRow) || rawRow.length !== GRID) return null;
-    rows.push(toGrid8(rawRow.map((cell) => Boolean(cell))));
-  }
-  return toGrid8(rows);
-}
-
 function parseWarnings(value: unknown): readonly string[] {
   if (!Array.isArray(value)) return [];
   return value.filter((w): w is string => typeof w === 'string');
@@ -503,19 +448,6 @@ export function parsePositionEvent(raw: unknown): ParseResult<PositionEvent> {
 }
 
 // ---- HTTP replies ------------------------------------------------------------
-
-export function parseCalibrateResponse(raw: unknown): ParseResult<CalibrateResponse> {
-  if (!isRecord(raw)) return err('not a JSON object');
-  const classes = asFiniteNumber(raw['classes_calibrated']);
-  if (classes === null) return err('missing classes_calibrated');
-  return ok({
-    classes_calibrated: classes,
-    backbone: asString(raw['backbone']) ?? 'unknown',
-    saved: asString(raw['saved']),
-    exemplars: asFiniteNumber(raw['exemplars']) ?? 0,
-    label_rotation: asFiniteNumber(raw['label_rotation']) ?? 0
-  });
-}
 
 export function parseDetectResponse(raw: unknown): ParseResult<DetectResponse> {
   if (!isRecord(raw)) return err('not a JSON object');
@@ -572,59 +504,17 @@ function parseSettled(value: unknown): SettledBoard | null {
   return { placement, pending };
 }
 
-function parseAutoCalibration(value: unknown): AutoCalibration | null {
-  if (!isRecord(value)) return null;
-  return {
-    matches: asFiniteNumber(value['matches']) ?? 0,
-    rotation: asFiniteNumber(value['rotation']) ?? 0,
-    exemplars: asFiniteNumber(value['exemplars']) ?? 0,
-    saved: asString(value['saved'])
-  };
-}
-
-function parseBankRefresh(value: unknown): BankRefresh | null {
-  if (!isRecord(value)) return null;
-  return {
-    added: asFiniteNumber(value['added']) ?? 0,
-    total: asFiniteNumber(value['total']) ?? 0,
-    agree: asFiniteNumber(value['agree']) ?? 0,
-    rotation: asFiniteNumber(value['rotation']) ?? 0,
-    saved: asString(value['saved'])
-  };
-}
-
 export function parseEstimateResponse(raw: unknown): ParseResult<EstimateResponse> {
   if (!isRecord(raw)) return err('not a JSON object');
-  const warnings = parseWarnings(raw['warnings']);
-  const debug = parseDebug(raw['debug']);
-
-  if (raw['mode'] === 'occupancy') {
-    const occupied = parseBooleanBoard(raw['occupied']);
-    // Occupancy IS the answer in this branch; without the grid there is nothing
-    // to show, so this is a refusal rather than an empty board.
-    if (occupied === null) return err('occupancy reply carries no 8x8 occupied grid');
-    return ok({
-      kind: 'occupancy',
-      board_id: asString(raw['board_id']) ?? 'snapshot',
-      occupied,
-      hint: asString(raw['hint']) ?? 'uncalibrated for this piece set — showing occupancy only',
-      warnings,
-      debug
-    });
-  }
-
   const event = parsePositionEvent(raw);
   if (!event.ok) return event;
   return ok({
-    kind: 'position',
     event: event.value,
     prior: parsePrior(raw['prior']),
-    autocalibrated: parseAutoCalibration(raw['autocalibrated']),
-    bank_refreshed: parseBankRefresh(raw['bank_refreshed']),
     autorotated: asFiniteNumber(raw['autorotated']) ?? 0,
     upload: asString(raw['upload']),
-    warnings,
-    debug
+    warnings: parseWarnings(raw['warnings']),
+    debug: parseDebug(raw['debug'])
   });
 }
 

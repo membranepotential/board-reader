@@ -17,7 +17,7 @@
    * translucent targets on black; what changed is only that the black is the rail's
    * own track rather than the far edge of the picture.
    *
-   * **Five controls, and a sixth that only appears when it matters.** `detect board`
+   * **Four controls, and a fifth that only appears when it matters.** `detect board`
    * is out here because a phone at a board needs it often enough that a sheet is too
    * far — it came back after the first phone test. `rotate labels` did NOT: a
    * labelling is set once per board, so the sheet is the right home for it. It still
@@ -28,7 +28,7 @@
    */
   interface Props {
     positionShown: boolean;
-    /** Something else already owns the camera and the quad — a detection, a calibration. */
+    /** Something else already owns the camera and the quad — a drag, a detection. */
     detectDisabled: boolean;
     rotateDisabled: boolean;
     /**
@@ -38,11 +38,6 @@
      * is also the only thing that puts `rotate labels` on screen at all.
      */
     rotateAttention: boolean;
-    calibrateDisabled: boolean;
-    /** The bank is additive, so the count says it is growing. */
-    calibrateCount: number;
-    /** Kept for a mouse; the hint line is what a phone can actually read. */
-    calibrateTitle: string;
     streaming: boolean;
     /** Starting is blocked (a portrait frame); STOPPING is never blocked. */
     streamDisabled: boolean;
@@ -50,7 +45,6 @@
     onPosition: () => void;
     onDetect: () => void;
     onRotate: () => void;
-    onCalibrate: () => void;
     onStream: () => void;
   }
 
@@ -59,16 +53,12 @@
     detectDisabled,
     rotateDisabled,
     rotateAttention,
-    calibrateDisabled,
-    calibrateCount,
-    calibrateTitle,
     streaming,
     streamDisabled,
     onMore,
     onPosition,
     onDetect,
     onRotate,
-    onCalibrate,
     onStream
   }: Props = $props();
 </script>
@@ -91,15 +81,6 @@
       rotate labels
     </button>
   {/if}
-  <button
-    class="pill"
-    type="button"
-    disabled={calibrateDisabled}
-    title={calibrateTitle}
-    onclick={onCalibrate}
-  >
-    {calibrateCount ? `calibrate · ${calibrateCount}` : 'calibrate'}
-  </button>
   <span class="spacer"></span>
   <button
     class="pill primary"
@@ -119,7 +100,7 @@
      anywhere — the stage already took the insets.
 
      `overflow-y: auto` is the last-resort net rather than a feature: the `clamp()`
-     rules below already fit six pills on the shortest landscape stage a phone
+     rules below already fit five pills on the shortest landscape stage a phone
      presents, but if a future label wraps, or a phone's text-size setting inflates
      the pills, the column scrolls instead of putting `start` under the fold where
      `overflow: hidden` on the stage would simply swallow it. `pan-y` because the
@@ -160,8 +141,8 @@
     /* 48 where there is room, never below the 44 px touch floor, and continuous in
        between — this is what the three per-device `max-height` breakpoints used to
        approximate. Worked through at the two stages that bite: 390 px of landscape
-       gives 47 px pills and 6 px gaps (six pills = 340 px, fits), 320 px gives the
-       44 px floor and 5 px gaps (six pills = 305 px, fits). */
+       gives 47 px pills and 6 px gaps (five pills = 283 px, fits), 320 px gives the
+       44 px floor and 5 px gaps (five pills = 255 px, fits). */
     min-height: clamp(44px, 12vh, 48px);
     box-shadow: 0 2px 12px rgba(0, 0, 0, 0.45);
   }
@@ -203,12 +184,10 @@
   @media (orientation: portrait) {
     .cluster {
       flex-direction: row;
-      /* THREE TO A ROW, always. Six across 390px gives 56px pills, and `position`
-         and `calibrate · N` are both wider than that — and the two arrive together,
-         since the contextual pill only appears once a calibration has already made
-         the calibrate label longer. Rows of three give 119px, which every label fits
-         on one line with room to spare. The row's HEIGHT is whatever the pills come
-         to; nothing has to be told what that is. */
+      /* THREE TO A ROW, always. Five across 390px gives 68px pills, and `detect board`
+         and `rotate labels` are both wider than that. Rows of three give 119px, which
+         every label fits on one line with room to spare. The row's HEIGHT is whatever
+         the pills come to; nothing has to be told what that is. */
       flex-wrap: wrap;
       gap: 8px;
       overflow: visible;

@@ -11,12 +11,8 @@ import {
   AUTO_SETTLE_MS,
   autoGaveUp,
   backoffFor,
-  AUTO_CALIBRATE_START,
   QUAD_VERIFY_SHIFT,
   quadShift,
-  calibrateBlockReason,
-  looksLikeStartOccupancy,
-  shouldAutoCalibrate,
   denormaliseQuad,
   hintFor,
   isFramed,
@@ -199,8 +195,7 @@ describe('automatic detection', () => {
     } as const;
     for (const activity of [
       { kind: 'dragging', corner: 0 },
-      { kind: 'detecting', auto: true },
-      { kind: 'calibrating' }
+      { kind: 'detecting', auto: true }
     ] as const satisfies readonly Activity[]) {
       expect(shouldAutoDetect({ ...base, activity })).toBe(false);
     }
@@ -259,65 +254,12 @@ describe('automatic detection', () => {
   });
 });
 
-describe('calibrate guard', () => {
-  // No reason mentions stability. A stability gate shipped here once and made
-  // calibrate permanently unreachable on the one device the page is for: the meter is
-  // mirrored value-for-value with the MOUNTED Python edge, so handheld micro-shake
-  // sits under MOVING_BELOW essentially always. DESIGN D3 — a hint, never a gate.
-  it('names its reason, in the words the operator is shown', () => {
-    expect(calibrateBlockReason({ camera: live(), activity: { kind: 'calibrating' } })).toBe(
-      'calibrating…'
-    );
-    expect(calibrateBlockReason({ camera: { kind: 'requesting' }, activity: IDLE })).toBe(
-      'the camera is not running'
-    );
-    // Live and idle is enough. Nothing about how still the phone is being held
-    // reaches this function at all — that is what the missing input means.
-    expect(calibrateBlockReason({ camera: live(), activity: IDLE })).toBeNull();
-    expect(calibrateBlockReason({ camera: live(), activity: IDLE, portrait: false })).toBeNull();
-    expect(calibrateBlockReason({ camera: live(), activity: IDLE, portrait: true })).toBe(
-      'the frame is portrait — turn the phone sideways'
-    );
-  });
-
-  it('blocks under a detection, which owns the quad and ends by clearing `activity`', () => {
-    // `/detect` takes 2-4 s on a miss and its `finally` sets activity back to idle
-    // unconditionally. A calibration allowed to start underneath one would have that
-    // fire mid-burst, resuming the forwarder into a half-rebuilt bank.
-    for (const auto of [true, false]) {
-      expect(calibrateBlockReason({ camera: live(), activity: { kind: 'detecting', auto } })).toBe(
-        'looking for the board…'
-      );
-    }
-  });
-
-  it('feeds the hint line, so a disabled control says why on a screen with no hover', () => {
-    const block = calibrateBlockReason({
-      camera: live(),
-      activity: { kind: 'detecting', auto: true }
-    });
-    expect(
-      hintFor({
-        camera: live(),
-        activity: { kind: 'detecting', auto: true },
-        auto: AUTO_DETECT_START,
-        tracking: 'locked',
-        streaming: false,
-        calibrateBlock: block
-      })?.key
-      // The detecting hint outranks it — same fact, better sentence.
-    ).toBe('detecting');
-  });
-});
-
 describe('the hint line', () => {
   const base = {
     camera: live(),
     activity: IDLE,
     auto: AUTO_DETECT_START,
-    tracking: 'locked',
-    streaming: false,
-    calibrateBlock: null
+    tracking: 'locked'
   } as const;
 
   it('says nothing when there is nothing to say', () => {
@@ -341,12 +283,6 @@ describe('the hint line', () => {
     expect(hintFor({ ...base, camera: { kind: 'requesting' } })?.key).toBe('nocam');
     expect(hintFor({ ...base, camera: live('placeholder'), tracking: 'lost' })?.key).toBe('finding');
     expect(hintFor({ ...base, tracking: 'lost' })?.key).toBe('lost');
-  });
-
-  it('stays quiet about calibrate while streaming', () => {
-    const blocked = { ...base, calibrateBlock: 'the board is moving' } as const;
-    expect(hintFor(blocked)?.key).toBe('calib:the board is moving');
-    expect(hintFor({ ...blocked, streaming: true })).toBeNull();
   });
 
   it('says nothing at all when the camera is blocked — the explainer owns the screen', () => {
@@ -498,52 +434,6 @@ describe('camera stall watchdog', () => {
   });
 });
 
-describe('automatic calibration', () => {
-  const occupied = (rows: number[]): boolean[][] =>
-    Array.from({ length: 8 }, (_, r) => Array.from({ length: 8 }, () => rows.includes(r)));
-  const startish = occupied([0, 1, 6, 7]);
-
-  it('recognises start occupancy in rows, columns, and nothing else', () => {
-    expect(looksLikeStartOccupancy(startish)).toBe(true);
-    // the same bands as columns — a start position under a quarter-turned labelling
-    const cols = startish[0]!.map((_, c) => startish.map((row) => row[c]!));
-    expect(looksLikeStartOccupancy(cols)).toBe(true);
-    expect(looksLikeStartOccupancy(occupied([0, 1, 6]))).toBe(false); // a rank gone
-    expect(looksLikeStartOccupancy(occupied([]))).toBe(false); // empty board
-    const midgame = occupied([0, 1, 6, 7]).map((row) => [...row]);
-    midgame[3]![4] = true; // a pawn out in the middle
-    expect(looksLikeStartOccupancy(midgame)).toBe(false);
-    expect(looksLikeStartOccupancy([])).toBe(false);
-  });
-
-  it('fires exactly when streaming, framed, at rest, uncalibrated, reading start', () => {
-    const gate = {
-      auto: AUTO_CALIBRATE_START,
-      now: 1000,
-      camera: live(),
-      activity: IDLE,
-      portrait: false,
-      streaming: true,
-      stability: 0.97,
-      bursting: false,
-      calibrations: 0,
-      occupancy: startish
-    };
-    expect(shouldAutoCalibrate(gate)).toBe(true);
-    expect(shouldAutoCalibrate({ ...gate, calibrations: 1 })).toBe(false);
-    expect(shouldAutoCalibrate({ ...gate, streaming: false })).toBe(false);
-    expect(shouldAutoCalibrate({ ...gate, portrait: true })).toBe(false);
-    expect(shouldAutoCalibrate({ ...gate, bursting: true })).toBe(false);
-    expect(shouldAutoCalibrate({ ...gate, stability: 0.5 })).toBe(false);
-    expect(shouldAutoCalibrate({ ...gate, activity: { kind: 'calibrating' } })).toBe(false);
-    expect(shouldAutoCalibrate({ ...gate, occupancy: null })).toBe(false);
-    expect(shouldAutoCalibrate({ ...gate, occupancy: occupied([0, 1]) })).toBe(false);
-    // cooldown after an attempt
-    expect(shouldAutoCalibrate({ ...gate, auto: { nextAt: 2000, attempts: 1 } })).toBe(false);
-    expect(shouldAutoCalibrate({ ...gate, now: 2001, auto: { nextAt: 2000, attempts: 1 } })).toBe(true);
-  });
-});
-
 describe('restored-framing verification', () => {
   it('a restored framing triggers one auto-detection once the scene is still', () => {
     const gate = {
@@ -627,7 +517,6 @@ describe('periodic re-detection', () => {
         ['dragging', { activity: { kind: 'dragging', corner: 0 } }],
         ['detecting', { activity: { kind: 'detecting', auto: true } }],
         ['already checking', { activity: { kind: 'verifying' } }],
-        ['calibrating', { activity: { kind: 'calibrating' } }],
         ['inside the interval', { redetect: { ...REDETECT_START, nextAt: gate.now + 1 } }]
       ];
       for (const [why, override] of cases) {

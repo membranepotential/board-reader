@@ -367,36 +367,23 @@ export function heatColor(p: number): string {
  * floats are what the confidence map is for.
  */
 export function rawEventJson(response: EstimateResponse): string {
-  const body =
-    response.kind === 'occupancy'
-      ? {
-          mode: 'occupancy',
-          board_id: response.board_id,
-          occupied: response.occupied,
-          hint: response.hint,
-          warnings: response.warnings
-        }
-      : {
-          board_id: response.event.board_id,
-          seq: response.event.seq,
-          utc: response.event.utc,
-          placement: response.event.placement,
-          confidence: response.event.confidence,
-          stability: response.event.stability,
-          status: response.event.status,
-          orientation: response.event.orientation,
-          clock: { running: response.event.clock },
-          square_dist:
-            response.event.square_dist === null
-              ? null
-              : '[8 x 8 x 13 floats — see the confidence map]',
-          prior: response.prior,
-          autocalibrated: response.autocalibrated,
-          bank_refreshed: response.bank_refreshed,
-          autorotated: response.autorotated,
-          upload: response.upload,
-          warnings: response.warnings
-        };
+  const body = {
+    board_id: response.event.board_id,
+    seq: response.event.seq,
+    utc: response.event.utc,
+    placement: response.event.placement,
+    confidence: response.event.confidence,
+    stability: response.event.stability,
+    status: response.event.status,
+    orientation: response.event.orientation,
+    clock: { running: response.event.clock },
+    square_dist:
+      response.event.square_dist === null ? null : '[8 x 8 x 13 floats — see the confidence map]',
+    prior: response.prior,
+    autorotated: response.autorotated,
+    upload: response.upload,
+    warnings: response.warnings
+  };
   return JSON.stringify(body, null, 2);
 }
 
@@ -407,10 +394,10 @@ export function rawEventJson(response: EstimateResponse): string {
  * `prior` carries the nearest board that is actually possible — when the node decoded
  * one, THAT is the answer, and corrections layer on top of it.
  */
-export function baselinePlacement(response: Extract<EstimateResponse, { kind: 'position' }>): string {
+export function baselinePlacement(response: EstimateResponse): string {
   return response.prior?.placement ?? response.event.placement;
 }
 
-export function baselineGrid(response: Extract<EstimateResponse, { kind: 'position' }>): BoardGrid {
+export function baselineGrid(response: EstimateResponse): BoardGrid {
   return fenToGrid(baselinePlacement(response));
 }

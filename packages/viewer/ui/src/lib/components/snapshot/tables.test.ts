@@ -2,7 +2,6 @@ import { describe, expect, it } from 'vitest';
 import {
   classTable,
   cornerTable,
-  estimatorNotes,
   geometryTable,
   materialTable,
   orientTable,
@@ -48,12 +47,6 @@ const POSITION = {
   utc: '2026-08-07T10:00:00Z',
   placement: START_PLACEMENT,
   confidence: 0.9
-};
-
-const OCCUPANCY = {
-  mode: 'occupancy',
-  occupied: Array.from({ length: 8 }, (_, r) => Array.from({ length: 8 }, () => r < 2)),
-  hint: 'uncalibrated'
 };
 
 describe('the corner table', () => {
@@ -122,12 +115,10 @@ describe('the geometry table', () => {
 });
 
 describe('the classification table', () => {
-  it('says which of the two /estimate answers this was', () => {
-    expect(row(classTable(parsed(POSITION), 180), 'mode')?.value).toContain('13-class per square');
-    const occupancy = classTable(parsed(OCCUPANCY), 180);
-    expect(row(occupancy, 'mode')?.tone).toBe('warn');
-    expect(row(occupancy, 'occupied squares')?.value).toBe('16 / 64');
-    expect(row(occupancy, 'how to unlock')?.value).toContain('starting position');
+  it('reports the read and its confidence', () => {
+    const rows = classTable(parsed(POSITION), 180);
+    expect(row(rows, 'position confidence')?.value).toBe('0.900');
+    expect(row(rows, 'estimate latency')?.value).toBe('180 ms');
   });
 
   it('is empty before anything has been read, and reports a missing latency as a dash', () => {
@@ -147,10 +138,6 @@ describe('the orientation table', () => {
     const owned = orientTable(parsed(POSITION), withMovedPoint(detectedFraming(QUAD), 0, [1, 1]));
     expect(row(owned, 'autorotate requested')?.value).toBe('no');
     expect(row(owned, 'adopted by this page')?.value).toBe('nothing to adopt');
-  });
-
-  it('has nothing to resolve for an occupancy-only read', () => {
-    expect(orientTable(parsed(OCCUPANCY), EMPTY_FRAMING)[0]?.value).toContain('no colour cue');
   });
 });
 
@@ -186,24 +173,5 @@ describe('the material census table', () => {
     const rows = materialTable(fenToGrid('8/8/8/8/8/8/8/8'));
     expect(row(rows, 'implausible')?.tone).toBe('warn');
     expect(row(rows, 'occupied squares')?.value).toBe('0');
-  });
-});
-
-describe('the estimator notes', () => {
-  it('reports only what the node actually volunteered', () => {
-    expect(estimatorNotes(parsed(POSITION))).toEqual([]);
-    expect(estimatorNotes(parsed(OCCUPANCY))).toEqual([]);
-    const notes = estimatorNotes(
-      parsed({
-        ...POSITION,
-        autocalibrated: { matches: 62, rotation: 1, exemplars: 64, saved: null },
-        bank_refreshed: { added: 4, total: 68, agree: 60, rotation: 0, saved: '/tmp/bank.npz' }
-      })
-    );
-    expect(notes[0]).toContain('62/64 squares agreed');
-    expect(notes[0]).toContain('rotation 90 degrees');
-    expect(notes[0]).toContain('in memory only');
-    expect(notes[1]).toContain('+4 exemplars (total 68)');
-    expect(notes[1]).toContain('saved to /tmp/bank.npz');
   });
 });

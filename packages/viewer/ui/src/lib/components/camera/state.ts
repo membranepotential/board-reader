@@ -21,7 +21,7 @@
  *    where the quad is a placeholder, and the difference between "the operator
  *    framed this" and "we guessed" is the thing that gates it.
  *  - `Activity` — exactly one thing may own the camera and the quad at a time: a
- *    drag, a detection, a calibration, or nothing. The old three-boolean guard
+ *    drag, a detection, or nothing. The old three-boolean guard
  *    `detectBusy || calibBusy || dragIdx !== null` becomes `kind !== 'idle'`.
  *
  * Everything here is pure and DOM-free so it is tested directly (`state.test.ts`);
@@ -40,24 +40,6 @@ export const SEND_LONG_SIDE = 960;
 export const JPEG_QUALITY = 0.75;
 /** What `/detect` is shown — the snapshot page's `MAX_SRC`. */
 export const DETECT_LONG_SIDE = 1600;
-/** Calibration reads one exemplar per square, so it gets the good pixels. */
-export const CALIBRATE_QUALITY = 0.95;
-
-/**
- * Calibration grabs a BURST and keeps the sharpest frame of it (`$lib/edge/sharpness`).
- *
- * A phone is handheld, and one instantaneous grab lands on whichever 1/30 s the
- * operator's thumb fell on — often a smeared one, and that one frame is the bank for
- * the rest of the session. Ten candidates over about a second and a half is long
- * enough for a hand to pass through at least one still moment, and short enough that
- * nobody wonders whether the button worked. The corners are not held still across the
- * burst and do not need to be: the tracker keeps following the board, so each
- * candidate is paired with the quad measured at its own tick.
- */
-export const CALIBRATE_SAMPLES = 10;
-export const CALIBRATE_SAMPLE_MS = 150;
-/** Long side of the scoring image — sharpness is a ranking, and 256 px ranks fine. */
-export const CALIBRATE_SCORE_LONG_SIDE = 256;
 
 /**
  * Tracking working resolution. Measured rather than guessed: ~2 ms a frame here,
@@ -164,8 +146,7 @@ export type Activity =
    * announce "looking for the board" every ten seconds at a board that is
    * already found and streaming.
    */
-  | { readonly kind: 'verifying' }
-  | { readonly kind: 'calibrating' };
+  | { readonly kind: 'verifying' };
 
 /** Tracking as the chip states it: the tracker's own states, plus switched off. */
 export type TrackingState = TrackerState | 'off';
@@ -390,8 +371,8 @@ export function shouldAutoDetect({
   hidden,
   stability
 }: AutoDetectGate): boolean {
-  // Nothing else may own the camera or the quad: not a drag, not a calibration,
-  // not another detection.
+  // Nothing else may own the camera or the quad: not a drag, not another
+  // detection.
   if (activity.kind !== 'idle' || hidden) return false;
   if (camera.kind !== 'live' || autoGaveUp(auto)) return false;
   if (now - camera.liveAt < AUTO_SETTLE_MS || now < auto.nextAt) return false;
@@ -399,8 +380,8 @@ export function shouldAutoDetect({
   const sustainedLoss = auto.lostSince !== null && now - auto.lostSince >= AUTO_LOST_MS;
   // A RESTORED framing is last session's quad over this session's world: the
   // board, the tripod or the perspective may all have changed while the page was
-  // closed (2026-08-27: a stale restored quad read the board a full rank off and
-  // correctly starved the zero-tap calibrate). Verify it with one detection as
+  // closed (2026-08-27: a stale restored quad read the board a full rank off).
+  // Verify it with one detection as
   // soon as the scene is still; success re-origins the framing to 'detected'.
   return !isFramed(camera.framing) || sustainedLoss || camera.framing.origin === 'restored';
 }
@@ -605,8 +586,8 @@ export function shouldRedetect({
   // With tracking off the quad is frozen on purpose — the operator is holding a
   // crop still — so there is no drift to correct and nothing may re-seed it.
   if (!tracking) return false;
-  // One thing owns the camera and the quad at a time: not a drag, not a
-  // calibration, not another detection, and not a second check.
+  // One thing owns the camera and the quad at a time: not a drag, not another
+  // detection, and not a second check.
   if (activity.kind !== 'idle') return false;
   if (camera.kind !== 'live') return false;
   // Only a framing THIS session established. A `restored` one may be a rank out
@@ -910,137 +891,6 @@ export function noteRedetection(input: {
   };
 }
 
-// ---- calibration guard -------------------------------------------------------
-
-/**
- * Why calibrate cannot run right now, in the words the operator is shown, or
- * `null` when it can.
- *
- * Deliberately no branch for stability. A stability gate shipped
- * here once and made calibration UNREACHABLE on the device the page is for: the meter
- * is tuned for a camera on a stand (DESIGN D3 mirrors it value-for-value with the
- * Python edge), and a handheld phone's micro-shake parks it under `MOVING_BELOW`
- * essentially always. D3 also says in so many words that stability is a hint and
- * never a gate — and the frame is answered on its merits anyway, twice over: the page
- * keeps the sharpest of a burst (`CALIBRATE_SAMPLES`), and the node refuses a frame
- * that does not show the position it claims.
- *
- * A detection DOES block, and that one is not politeness: `/detect` takes 2-4 s on a
- * miss, and its `finally` hands `activity` back to idle unconditionally. A
- * calibration started underneath it would have that `finally` fire in the middle of
- * its burst — un-pausing the forwarder into a half-rebuilt bank and re-enabling this
- * very control. `Activity` says only one thing may own the camera at a time; this is
- * the reading of it the operator sees.
- *
- * The hand-written page had a further branch — "set the four board corners first" —
- * which is now unrepresentable: a live camera carries a framing by construction, so
- * there is no state in which the corners are missing.
- */
-export function calibrateBlockReason(input: {
-  readonly camera: CameraState;
-  readonly activity: Activity;
-  /** The 2026-08-27 hard block: a portrait frame crops pieces along the wrong axis. */
-  readonly portrait?: boolean;
-}): string | null {
-  if (input.activity.kind === 'calibrating') return 'calibrating…';
-  if (input.activity.kind === 'detecting') return 'looking for the board…';
-  // Same reasoning: a drift check ends with an unconditional hand-back to idle,
-  // which would land in the middle of a calibration begun underneath it.
-  if (input.activity.kind === 'verifying') return 'checking the framing…';
-  // Calibration reads the live camera directly, not the stream — it needs the
-  // camera running, which is a weaker and more honest requirement than needing
-  // the socket up.
-  if (input.camera.kind !== 'live') return 'the camera is not running';
-  // Piece crops extend toward the top of the image, so a sideways board cannot
-  // be read — blocked rather than warned, because the failed reads look like a
-  // position problem and cost an afternoon (2026-08-27).
-  if (input.portrait) return 'the frame is portrait — turn the phone sideways';
-  return null;
-}
-
-// ---- automatic calibration ----------------------------------------------------
-
-/**
- * "detect board -> calibrate should be fully automatic" (operator, 2026-08-27).
- * Detection already is; this is calibration's half: once positions are flowing
- * and the reading LOOKS like a start position sitting still, the page fires the
- * calibrate itself — full-res burst, sharpest frame, exactly the manual path
- * minus the tap and the confirm. The node's agreement gate stays the authority:
- * a false trigger is refused server-side and costs one quiet attempt.
- */
-export interface AutoCalibrate {
-  /** `performance.now()` before which no attempt is made (cooldown after one). */
-  readonly nextAt: number;
-  readonly attempts: number;
-}
-
-export const AUTO_CALIBRATE_START: AutoCalibrate = { nextAt: 0, attempts: 0 };
-/** A refusal is not retried before this — the board state that caused it rarely
- * changes within seconds, and every attempt costs a full-res burst. */
-export const AUTO_CALIBRATE_COOLDOWN_MS = 30_000;
-/** Stricter than `MOVING_BELOW`: calibration wants a board at REST, not merely
- * "not obviously moving" — the burst picks the sharpest frame either way, but a
- * hand hovering near the board must not seed the bank. */
-export const AUTO_CALIBRATE_MIN_STABILITY = 0.9;
-
-/** Which squares hold a piece — row 0 is rank 8, column 0 is file a. */
-export type Occupancy = readonly (readonly boolean[])[];
-
-/**
- * Occupancy says "two opposite full bands, middle empty" — the start position in
- * any of the four label rotations, robust to the piece-TYPE misreads an
- * uncalibrated reader makes (occupancy transfers across styles; types do not).
- *
- * Booleans, never class names. An empty square is `'empty'` on the wire
- * (`protocol.CLASSES`) and `''` in the board the page actually renders
- * (`$lib/board/fen`'s `Cell`), both of which are `string` — so a predicate that
- * named one of the two vocabularies type-checked against the other and read every
- * square of it as OCCUPIED. That shipped: the page hands over `fen` cells, so this
- * returned false on every board there has ever been and the zero-tap calibration
- * was unreachable in the browser while its unit tests passed (found by
- * `tests/camera-auto.spec.ts`, 2026-08-27). The caller now does the one conversion
- * that only the caller knows how to do.
- */
-export function looksLikeStartOccupancy(occupancy: Occupancy): boolean {
-  if (occupancy.length !== 8 || occupancy.some((row) => row.length !== 8)) return false;
-  const rows = occupancy.map((row) => row.filter(Boolean).length);
-  const cols = [0, 1, 2, 3, 4, 5, 6, 7].map(
-    (c) => occupancy.filter((row) => row[c] === true).length
-  );
-  const banded = (counts: number[]): boolean =>
-    counts[0] === 8 && counts[1] === 8 && counts[6] === 8 && counts[7] === 8 &&
-    counts[2] === 0 && counts[3] === 0 && counts[4] === 0 && counts[5] === 0;
-  return banded(rows) || banded(cols);
-}
-
-export interface AutoCalibrateGate {
-  readonly auto: AutoCalibrate;
-  readonly now: number;
-  readonly camera: CameraState;
-  readonly activity: Activity;
-  readonly portrait: boolean;
-  /** Positions only flow while streaming — and the reading is the trigger. */
-  readonly streaming: boolean;
-  readonly stability: number;
-  readonly bursting: boolean;
-  /** Automation covers the FIRST calibration only; extra angles stay deliberate. */
-  readonly calibrations: number;
-  /** Which squares the node's current reading has a piece on, or null before any
-   *  arrived. Occupancy rather than the reading itself — see
-   *  `looksLikeStartOccupancy`. */
-  readonly occupancy: Occupancy | null;
-}
-
-export function shouldAutoCalibrate(gate: AutoCalibrateGate): boolean {
-  if (gate.calibrations > 0) return false;
-  if (!gate.streaming || gate.portrait || gate.bursting) return false;
-  if (gate.now < gate.auto.nextAt) return false;
-  if (gate.camera.kind !== 'live' || !isFramed(gate.camera.framing)) return false;
-  if (gate.activity.kind !== 'idle') return false;
-  if (gate.stability < AUTO_CALIBRATE_MIN_STABILITY) return false;
-  return gate.occupancy !== null && looksLikeStartOccupancy(gate.occupancy);
-}
-
 // ---- the hint line -----------------------------------------------------------
 
 /** The one action a hint may offer. A tag, not a callback, so this stays pure. */
@@ -1058,8 +908,6 @@ export interface HintInput {
   readonly activity: Activity;
   readonly auto: AutoDetect;
   readonly tracking: TrackingState;
-  readonly streaming: boolean;
-  readonly calibrateBlock: string | null;
 }
 
 /**
@@ -1072,9 +920,7 @@ export function hintFor({
   camera,
   activity,
   auto,
-  tracking,
-  streaming,
-  calibrateBlock
+  tracking
 }: HintInput): Hint | null {
   // With no camera the whole stage is gone and the explainer says everything.
   if (camera.kind === 'blocked') return null;
@@ -1102,15 +948,6 @@ export function hintFor({
     return {
       key: 'lost',
       text: 'The board is lost — the quad is frozen where it last fitted.',
-      action: null
-    };
-  }
-  // Not while streaming: during a game the board is moving half the time, and the
-  // sentence would flicker on every move for no gain.
-  if (!streaming && calibrateBlock !== null) {
-    return {
-      key: `calib:${calibrateBlock}`,
-      text: `Calibrate is unavailable — ${calibrateBlock}`,
       action: null
     };
   }

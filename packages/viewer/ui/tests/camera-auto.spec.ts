@@ -3,17 +3,15 @@
  *
  * Everything in `camera.spec.ts` is a property of the page as a phone RENDERS it.
  * Everything here is a property of the page as a phone LEAVES it: propped on a
- * tripod beside a board, streaming, for two hours, while the operator plays. Four
+ * tripod beside a board, streaming, for two hours, while the operator plays. Three
  * mechanisms run in that stretch with no tap behind any of them —
  *
  *  - **automatic detection**, which frames the board on first sight and verifies a
  *    restored crop at page open (a crop saved last session may be a rank out);
- *  - **automatic calibration**, which fires once the reading looks like a start
- *    position sitting still;
  *  - **periodic re-detection**, which asks the detector every 10 s whether the
  *    tracked quad has walked, and re-locks it when it has
  *    (`docs/reports/2026-08-27-framing-drift.md`);
- *  - **the portrait hard block**, which is what gates the other three.
+ *  - **the portrait hard block**, which is what gates the other two.
  *
  * `state.ts` is pure and its verdicts are unit-tested to the decimal. What cannot be
  * unit-tested is the WIRING: whether the timer runs, whether the request carries the
@@ -29,14 +27,7 @@
  */
 
 import { expect, test, type Page } from '@playwright/test';
-import {
-  EMPTY_PLACEMENT,
-  FakeIngestSocket,
-  FakeViewerSocket,
-  START_PLACEMENT,
-  positionEvent,
-  stubJson
-} from './helpers/node';
+import { FakeIngestSocket, FakeViewerSocket, stubJson } from './helpers/node';
 import {
   BOARD,
   CORNERS_KEY,
@@ -111,20 +102,6 @@ async function stubDetect(page: Page, answer: DetectStub['answer']): Promise<Det
     else await route.fulfill({ json: { corners } });
   });
   return stub;
-}
-
-interface Counted {
-  calls: number;
-}
-
-/** Answer an endpoint with a fixed body, and count what asked for it. */
-async function countingStub(page: Page, pattern: string, body: unknown): Promise<Counted> {
-  const seen: Counted = { calls: 0 };
-  await page.route(pattern, async (route) => {
-    seen.calls++;
-    await route.fulfill({ json: body });
-  });
-  return seen;
 }
 
 /**
@@ -234,8 +211,8 @@ test.describe('finding the board without being asked', () => {
 
   test('the board is framed on first sight, and the labelling is left alone', async ({ page }) => {
     // The common case should need no framing step at all: point the phone at the
-    // board and the page finds it. Everything downstream — the drift check, the
-    // automatic calibration, a streamable crop — waits on this one detection.
+    // board and the page finds it. Everything downstream — the drift check, a
+    // streamable crop — waits on this one detection.
     await FakeViewerSocket.install(page);
     await stubQuietNode(page);
     const detect = await stubDetect(page, boardQuad());
@@ -262,9 +239,9 @@ test.describe('finding the board without being asked', () => {
   test('a restored crop is verified at page open, and a confirmation does not nag', async ({
     page
   }) => {
-    // 2026-08-27: a stale restored quad read the board a full rank off and starved
-    // the zero-tap calibration, silently, because a restored framing IS a framing
-    // and automatic detection used to stand down for it. Now it stands down only
+    // 2026-08-27: a stale restored quad read the board a full rank off, silently,
+    // because a restored framing IS a framing and automatic detection used to stand
+    // down for it. Now it stands down only
     // after one detection has agreed with it.
     await FakeViewerSocket.install(page);
     await stubQuietNode(page);
@@ -317,78 +294,6 @@ test.describe('finding the board without being asked', () => {
 
     // The quad itself did move onto the board.
     expect(Math.abs((await liveQuadX(page)) - BOARD.x)).toBeLessThanOrEqual(8);
-  });
-});
-
-test.describe('calibrating without being asked', () => {
-  test.use({ viewport: LANDSCAPE });
-
-  test('a start position at rest calibrates itself, with no tap and no confirm', async ({
-    page
-  }) => {
-    // "detect board -> calibrate should be fully automatic" (operator, 2026-08-27).
-    // The trigger is the READING, not the picture: positions have to be flowing and
-    // the node's own answer has to look like a start position sitting still.
-    const socket = await FakeViewerSocket.install(page);
-    await FakeIngestSocket.install(page);
-    await stubQuietNode(page);
-    await stubDetect(page, boardQuad());
-    const calibrate = await countingStub(page, '**/api/calibrate**', {
-      classes_calibrated: 13,
-      backbone: 'resnet18',
-      saved: null,
-      exemplars: 64,
-      label_rotation: 0
-    });
-    await drawnBoardCamera(page);
-
-    // Nothing accepts a dialog here. Playwright DISMISSES an unhandled one, so a
-    // calibration that got as far as asking would be refused and never reach the
-    // node — which makes a successful reply proof that nothing asked.
-    let dialogs = 0;
-    page.on('dialog', (dialog) => {
-      dialogs++;
-      void dialog.dismiss();
-    });
-
-    await page.goto('/camera');
-    await liveViewfinder(page);
-    await expect(page.locator('.banner.ok')).toContainText('Board found', { timeout: 20_000 });
-
-    // Framed and streaming, and still nothing: no reading has arrived.
-    await page.locator('nav.cluster button', { hasText: 'start' }).click();
-    await expect(page.locator('nav.cluster button', { hasText: 'stop' })).toBeVisible();
-    await page.waitForTimeout(1500);
-    expect(calibrate.calls, 'calibrated with no reading to justify it').toBe(0);
-
-    // A reading that is not a start position is not a trigger either. Occupancy is
-    // the test — two opposite full bands, middle empty — and an empty board has none.
-    socket.send(positionEvent({ seq: 2, placement: EMPTY_PLACEMENT }));
-    await expect(page.locator('.pos-panel .st')).toContainText('seq 2');
-    await page.waitForTimeout(1500);
-    expect(calibrate.calls, 'calibrated from a board with nothing on it').toBe(0);
-
-    // And now the one that is.
-    const posted = page.waitForRequest(
-      (request) => request.url().includes('/api/calibrate') && request.method() === 'POST'
-    );
-    socket.send(positionEvent({ seq: 3, placement: START_PLACEMENT }));
-    await posted;
-
-    await expect(page.locator('.banner.ok')).toContainText(
-      'Calibrated automatically from the start position, 13/13 classes',
-      { timeout: 20_000 }
-    );
-    // The count on the pill is the operator's record that it happened.
-    await expect(page.locator('nav.cluster button', { hasText: 'calibrate' })).toHaveText(
-      'calibrate · 1'
-    );
-    expect(dialogs, 'the automatic path stopped to ask').toBe(0);
-
-    // Automation covers the FIRST calibration only; extra angles stay deliberate.
-    socket.send(positionEvent({ seq: 4, placement: START_PLACEMENT }));
-    await page.waitForTimeout(1500);
-    expect(calibrate.calls, 'a second calibration fired by itself').toBe(1);
   });
 });
 
@@ -493,10 +398,9 @@ test.describe('the framing re-detect', () => {
     // Silent: the framing this could not confirm is still the best one anybody has.
     await expect(page.locator('.banner')).toHaveCount(0);
     // And the slot is handed back. A miss that kept `activity` would leave detect
-    // and calibrate dead for the rest of the session with nothing saying why —
-    // which is the whole reason `verifyFraming` clears it in a `finally`.
+    // dead for the rest of the session with nothing saying why — which is the
+    // whole reason `verifyFraming` clears it in a `finally`.
     await expect(page.locator('nav.cluster button', { hasText: 'detect board' })).toBeEnabled();
-    await expect(page.locator('nav.cluster button', { hasText: 'calibrate' })).toBeEnabled();
 
     // One miss buys 20 s, not the usual 10.
     await advanceTo(page, firstMiss + REDETECT_BACKOFF_MS[0] - 2_000);
@@ -527,7 +431,7 @@ test.describe('the framing re-detect', () => {
     // `fetch` has no default timeout, and all three callers of `/detect` claim the
     // page's single `activity` slot for the duration. A node that accepts and then
     // says nothing would therefore park the page in `verifying` FOREVER — detect
-    // and calibrate both dead, no banner, nothing to press. The bound lives at the
+    // dead, no banner, nothing to press. The bound lives at the
     // endpoint (`$lib/api`) precisely because all three need it.
     test.setTimeout(120_000);
     await page.clock.install();
@@ -549,20 +453,11 @@ test.describe('the framing re-detect', () => {
     expect(detect.calls).toBe(answered + 1);
     const asked = await pageNow(page);
 
-    // While it is out there the slot is claimed — and the page says so, which is
-    // the difference between a disabled control and a broken one.
-    const calibrate = page.locator('nav.cluster button', { hasText: 'calibrate' });
-    await expect(calibrate).toBeDisabled();
-    await expect(calibrate).toHaveAttribute('title', 'checking the framing…');
+    // While it is out there the slot is claimed.
     await expect(page.locator('nav.cluster button', { hasText: 'detect board' })).toBeDisabled();
 
     // 15 s, and the slot comes back on its own.
     await advanceTo(page, asked + DETECT_TIMEOUT_MS + 3_000);
-    await expect(calibrate).toBeEnabled();
-    await expect(calibrate).toHaveAttribute(
-      'title',
-      'rebuild the piece bank from the live camera (the board must show the starting position)'
-    );
     await expect(page.locator('nav.cluster button', { hasText: 'detect board' })).toBeEnabled();
     // A timeout is a miss like any other: it spends the budget and says nothing.
     await expect(page.locator('.banner')).toHaveCount(0);
@@ -622,16 +517,10 @@ test.describe('the portrait hard block', () => {
     await expect(block.locator('.head')).toHaveText('turn the phone sideways');
     // Not streaming, so it says what turning the phone would unlock rather than
     // what it has paused.
-    await expect(block).toContainText('detect, calibrate and start unlock in landscape');
+    await expect(block).toContainText('detect and start unlock in landscape');
 
     await expect(page.locator('nav.cluster button', { hasText: 'start' })).toBeDisabled();
     await expect(page.locator('nav.cluster button', { hasText: 'detect board' })).toBeDisabled();
-    const calibrate = page.locator('nav.cluster button', { hasText: 'calibrate' });
-    await expect(calibrate).toBeDisabled();
-    await expect(calibrate).toHaveAttribute(
-      'title',
-      'the frame is portrait — turn the phone sideways'
-    );
 
     // Framing is NOT gated, and deliberately: finding the board costs nothing that
     // a sideways crop could spoil, and the page is then ready the moment the phone

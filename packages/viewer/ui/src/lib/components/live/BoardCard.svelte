@@ -1,11 +1,11 @@
 <script lang="ts">
   /**
    * One board's card on the live page — ported from index.html's `ensureCard` /
-   * `render` / `calibrate`, minus the DOM bookkeeping: `PositionStream` already
+   * `render`, minus the DOM bookkeeping: `PositionStream` already
    * derives the sanitized grid, low-confidence squares, change rings, staleness
    * and events/sec (see `$lib/stores/positions.svelte`), so this component only
    * lays them out and owns the UI-only state index.html kept per card (whether
-   * the preview is open, an in-flight calibration, the banner and its one timer).
+   * whether the preview is open and the display rotation).
    *
    * Stale = the reading is old, so it stops asserting itself — except the `.live`
    * row, which is exempt: how stale it is, is exactly what you want to read on a
@@ -14,11 +14,9 @@
    */
   import Board from '$lib/board/Board.svelte';
   import { gridToFen } from '$lib/board/fen';
-  import { calibrate as postCalibrate, cornersOf, fetchBoardFrame } from '$lib/api';
   import { MOVING_BELOW } from '$lib/protocol';
   import { RATE_WINDOW_MS, STALE_MS, formatAge } from '$lib/stores/liveness';
   import type { BoardLiveness, BoardState } from '$lib/stores/positions.svelte';
-  import { calibBlockReason, calibSuccessMessage, calibTitle } from './calibration';
   import FramePreview from './FramePreview.svelte';
   import { nextRotation, parseStoredRotation, rotationKey, type BoardRotation } from './rotation';
   import { boardShapes } from './shapes';
@@ -31,14 +29,7 @@
 
   const { board, liveness }: Props = $props();
 
-  /** Calibration success/failure fades from the card after this, via one timer. */
-  const BANNER_MS = 9000;
-
   let previewOpen = $state(false);
-  let calibBusy = $state(false);
-  let banner = $state<{ readonly kind: 'ok' | 'err'; readonly text: string } | null>(null);
-  // Not `$state`: a timer handle is never rendered, only ever replaced or cleared.
-  let bannerTimer: ReturnType<typeof setTimeout> | null = null;
 
   // `board.id` is this instance's key in the `{#each}` on the live page (never
   // reassigned to a different board), so reading it once at construction is
@@ -78,62 +69,6 @@
     event.stability === null ? 'motion unknown' : moving ? 'moving' : 'at rest'
   );
   const motionClass = $derived(event.stability === null ? 'unknown' : moving ? 'moving' : 'rest');
-
-  const calibReason = $derived(
-    calibBlockReason({ stale: liveness.stale, status: event.status, stability: event.stability })
-  );
-  const calibDisabled = $derived(calibBusy || calibReason !== null);
-  const calibTitleText = $derived(calibTitle(calibReason, calibBusy));
-
-  function showBanner(kind: 'ok' | 'err', text: string): void {
-    banner = { kind, text };
-    // One timer per card, replaced not stacked.
-    if (bannerTimer !== null) clearTimeout(bannerTimer);
-    bannerTimer = setTimeout(() => {
-      banner = null;
-    }, BANNER_MS);
-  }
-
-  // Calibration rebuilds the piece bank from one frame, so it is only meaningful
-  // on a live, settled, ok reading — the confirm dialog restates that, and
-  // `calibDisabled`/`calibTitleText` already keep the button honest about why.
-  async function calibrateBoard(): Promise<void> {
-    const confirmed = confirm(
-      'Calibrate from the live frame?\n\n' +
-        'The board must CURRENTLY show the STARTING position, with the pieces at rest. ' +
-        'The node rebuilds its piece bank from that one frame.'
-    );
-    if (!confirmed) return;
-
-    calibBusy = true;
-    try {
-      const frame = await fetchBoardFrame(board.id, event.seq);
-      if (!frame.ok) {
-        // A thrown fetch names the hop that failed; a refusal names the node's own
-        // reason. Either way it is this page's viewer relay, not the node itself.
-        showBanner('err', `${frame.error.message}\nIs the inference node reachable from the viewer?`);
-        return;
-      }
-
-      // Where the board sits inside the retained frame: `X-Corners` states it for
-      // an un-rectified crop, and its absence means the frame already IS the
-      // board, so the fallback is the image's own four corners.
-      const bitmap = await createImageBitmap(frame.value.jpeg);
-      const corners = frame.value.corners ?? cornersOf(null, bitmap);
-      bitmap.close();
-
-      const result = await postCalibrate(frame.value.jpeg, { corners });
-      if (!result.ok) {
-        // The node refuses calibrations that would poison the bank; surface its
-        // reason verbatim.
-        showBanner('err', result.error.message);
-        return;
-      }
-      showBanner('ok', calibSuccessMessage(result.value));
-    } finally {
-      calibBusy = false;
-    }
-  }
 </script>
 
 <div class="board-card" class:stale={liveness.stale}>
@@ -157,18 +92,11 @@
     />
 
     <div class="board-col">
-      {#if banner}
-        <div class="banner {banner.kind}">{banner.text}</div>
-      {/if}
-
       <div class="board-wrap" style="transform: rotate({rotation}deg)">
         <Board {placement} {shapes} />
       </div>
 
       <div class="board-actions">
-        <button class="calib" disabled={calibDisabled} title={calibTitleText} onclick={calibrateBoard}>
-          calibrate
-        </button>
         <button
           class="rotate"
           title="rotate this board's on-screen picture — display only, saved for this board"
@@ -315,28 +243,10 @@
     flex-wrap: wrap;
     /* Unconstrained, this row grows to fit its widest content instead of wrapping —
        and `.board-wrap` above it is `width: auto`, so it grows to match and carries
-       the extra width into its own rotate transform. Same cap `.banner`/`.meta`
+       the extra width into its own rotate transform. Same cap `.meta`
        already use, so a third legend chip wraps onto its own line instead of
        widening the whole card. */
     max-width: var(--board-size, 360px);
-  }
-  .calib {
-    font: inherit;
-    font-size: 13px;
-    padding: 6px 12px;
-    border-radius: 8px;
-    border: 1px solid #35507a;
-    background: #1e2a3d;
-    color: #8fb6e8;
-    cursor: pointer;
-  }
-  .calib:hover:not(:disabled) {
-    background: #24344b;
-    color: #cfe0f7;
-  }
-  .calib:disabled {
-    opacity: 0.4;
-    cursor: not-allowed;
   }
   .rotate {
     font: inherit;
@@ -377,23 +287,6 @@
     box-sizing: border-box;
     background: none;
     border: 1.5px dashed #e2a03f;
-  }
-
-  .banner {
-    font-size: 13px;
-    padding: 8px 11px;
-    border-radius: 8px;
-    margin-bottom: 10px;
-    max-width: var(--board-size, 360px);
-  }
-  .banner.ok {
-    background: #1f3a24;
-    color: #97e0a6;
-  }
-  .banner.err {
-    background: #3a2020;
-    color: #ff9a9a;
-    white-space: pre-wrap;
   }
 
   .meta {

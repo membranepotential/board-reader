@@ -3,8 +3,8 @@
  *
  * What is pinned here is what only a laid-out, running page can answer: that the socket
  * is opened and its events become cards, that a card visibly *decays* once the stream
- * goes quiet while the one row that reports the decay stays legible, that the calibrate
- * button explains its own refusal, and that a collapsed preview costs the node nothing.
+ * goes quiet while the one row that reports the decay stays legible, and that a
+ * collapsed preview costs the node nothing.
  * The arithmetic behind all of it (`$lib/stores/liveness`, `$lib/board/fen`) is Vitest's.
  */
 
@@ -102,34 +102,6 @@ test('a card that stops receiving events goes stale, and its .live row stays leg
   expect(
     await card.locator('.motion-chip').evaluate((el) => getComputedStyle(el).animationName)
   ).toBe('none');
-});
-
-test('the calibrate button states why it is blocked, in its title', async ({ page }) => {
-  const socket = await FakeViewerSocket.install(page);
-  await page.goto('/');
-
-  const calibrate = page.locator('button.calib');
-
-  socket.send(positionEvent({ seq: 1 }));
-  await expect(calibrate).toBeEnabled();
-  await expect(calibrate).toHaveAttribute('title', /rebuild the piece bank/);
-
-  // Calibrating off a mid-motion frame poisons the bank; so does a non-ok reading.
-  socket.send(positionEvent({ seq: 2, stability: 0.3 }));
-  await expect(calibrate).toBeDisabled();
-  await expect(calibrate).toHaveAttribute('title', /the board is moving/);
-
-  socket.send(positionEvent({ seq: 3, status: 'needs_setup' }));
-  await expect(calibrate).toBeDisabled();
-  await expect(calibrate).toHaveAttribute('title', /"needs_setup"/);
-
-  // Recovery is immediate — an arriving event un-blocks it without waiting a tick.
-  socket.send(positionEvent({ seq: 4 }));
-  await expect(calibrate).toBeEnabled();
-
-  // ...and a stream that dies takes the button with it, saying so.
-  await expect(calibrate).toBeDisabled({ timeout: PAST_STALE_MS });
-  await expect(calibrate).toHaveAttribute('title', /the stream is stale/);
 });
 
 test('the rotate button turns the board and remembers the choice per board', async ({ page }) => {

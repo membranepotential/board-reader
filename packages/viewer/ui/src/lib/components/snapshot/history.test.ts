@@ -3,9 +3,7 @@ import {
   historyNote,
   historyRows,
   readFlags,
-  readHeadline,
   uploadFlags,
-  uploadIdOf,
   type SessionRead
 } from './history';
 import { EMPTY_FRAMING } from './framing';
@@ -116,31 +114,19 @@ describe('the merged history', () => {
 });
 
 describe('how a row describes itself', () => {
-  it('headlines a position with its placement and occupancy with its count', () => {
-    expect(readHeadline(read(1, 1, position))).toBe(START_PLACEMENT);
-    const occupied = Array.from({ length: 8 }, (_, r) =>
-      Array.from({ length: 8 }, () => r < 2)
-    );
-    expect(readHeadline(read(2, 1, { mode: 'occupancy', occupied, hint: 'x' }))).toBe(
-      'occupancy only — 16/64 occupied'
-    );
-  });
-
-  it('flags corrections, auto-calibration, rotation, labelling and node warnings', () => {
+  it('flags corrections, rotation, labelling and node warnings', () => {
     const entry = read(
       1,
       1,
       {
         ...position,
         autorotated: 90,
-        autocalibrated: { matches: 60 },
         warnings: ['low_light']
       },
       new Map([['e4', 'q']]) as Corrections
     );
     expect(readFlags(entry, upload('u1', 1, { labeled: true }))).toEqual([
       '1 corrected',
-      'auto-calibrated',
       'rotated 90deg',
       'labelled',
       'low_light'
@@ -150,19 +136,6 @@ describe('how a row describes itself', () => {
   it('names a node row’s own kind only when it is not a plain estimate', () => {
     expect(uploadFlags(upload('u1', 1))).toEqual([]);
     expect(uploadFlags(upload('u1', 1, { kind: 'calibrate' }))).toEqual(['calibrate']);
-  });
-
-  it('knows which retained photo a read belongs to — and that occupancy belongs to none', () => {
-    expect(uploadIdOf(response({ ...position, upload: 'u9' }))).toBe('u9');
-    expect(
-      uploadIdOf(
-        response({
-          mode: 'occupancy',
-          occupied: Array.from({ length: 8 }, () => Array(8).fill(false)),
-          hint: 'x'
-        })
-      )
-    ).toBeNull();
   });
 });
 

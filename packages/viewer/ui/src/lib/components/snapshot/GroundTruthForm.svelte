@@ -44,8 +44,7 @@
   <p class="note">
     Fix any wrong squares first, then save — the board as shown is kept as the true
     position for this photo{corrections ? ` (${corrections} correction(s) so far)` : ''}.
-    Labellings are only ever used to <em>score</em> the reader, never to train or
-    calibrate it.
+    Labellings are only ever used to <em>score</em> the reader, never to train it.
   </p>
 {/if}
 

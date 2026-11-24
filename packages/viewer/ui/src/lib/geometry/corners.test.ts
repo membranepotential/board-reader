@@ -3,7 +3,6 @@ import {
   CORNER_ORDER,
   CROP_HEADROOM,
   CROP_MARGIN,
-  absorbCalibrateRotation,
   absorbRotation,
   asRotation,
   checkQuadInFrame,
@@ -17,7 +16,7 @@ import {
   quarterTurnsOf,
   type LabelRotation
 } from './corners';
-import type { CornerQuad, Point } from '../protocol';
+import type { CornerQuad } from '../protocol';
 
 const SQUARE: CornerQuad = [
   [100, 100],
@@ -193,38 +192,5 @@ describe('lowAngleWarning', () => {
     expect(warning).not.toBeNull();
     expect(warning).toContain('0.25');
     expect(checkQuadShape(flat)).toBeNull();
-  });
-});
-
-describe('absorbCalibrateRotation', () => {
-  // The physical board: a8,h8,h1,a1. `/calibrate` reports `label_rotation = c`
-  // exactly when the page's "a8" slot holds physical corner `c` (pinned by the
-  // node's test_calibrate_label_rotation_equals_the_corner_label_shift), and the
-  // fold must make the page's ordered corners physical again — for EVERY page
-  // rotation the operator may already have.
-  const Q: CornerQuad = [
-    [0, 0],
-    [8, 0],
-    [8, 8],
-    [0, 8]
-  ];
-
-  it('restores the physical order for every (page rot, reported shift)', () => {
-    for (const rot of [0, 1, 2, 3] as const) {
-      for (const c of [0, 1, 2, 3] as const) {
-        // storage points arranged so the page currently sends Q shifted by c
-        const points = [0, 1, 2, 3].map((j) => Q[(j + rot + c) % 4] as Point) as unknown as CornerQuad;
-        expect(orderedCorners(points, rot).map((p) => [...p])).toEqual(
-          [0, 1, 2, 3].map((i) => [...(Q[(i + c) % 4] as Point)])
-        );
-        const fixed = absorbCalibrateRotation(rot, c);
-        expect(orderedCorners(points, fixed).map((p) => [...p])).toEqual(Q.map((p) => [...p]));
-      }
-    }
-  });
-
-  it('is the opposite fold from absorbRotation', () => {
-    expect(absorbCalibrateRotation(1, 1)).toBe(2);
-    expect(absorbRotation(1, 1)).toBe(0);
   });
 });

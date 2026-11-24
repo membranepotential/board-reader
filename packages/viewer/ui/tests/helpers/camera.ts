@@ -5,10 +5,10 @@
  * way to say what is in it — good enough for a viewfinder that only has to exist,
  * useless for anything the tracker or the detector has to agree with. So the specs
  * that need a BOARD swap `getUserMedia` for a canvas `captureStream` they draw
- * themselves: a known quad, at a known place, that moves and blurs on cue.
+ * themselves: a known quad, at a known place.
  *
- * It lives here rather than in one spec file because two files now need the same
- * board: `camera.spec.ts` measures what a burst does with it, and
+ * It lives here rather than in one spec file because two files need the same
+ * board: `camera.spec.ts` measures the rotate warning a moved framing raises, and
  * `camera-auto.spec.ts` measures what the page does with it when nobody is touching
  * the phone.
  */
@@ -24,8 +24,6 @@ export const PORTRAIT = { width: 390, height: 844 };
 export const FRAME = { width: 1280, height: 720 };
 /** Where the board is drawn, and what `/detect` is stubbed to return. */
 export const BOARD = { x: 240, y: 150, w: 800, h: 448 };
-/** How far it slides, in frame pixels — enough to be unmistakable, small enough to track. */
-export const SHIFT = 40;
 
 /** The drawn board's four corners in frame pixels, optionally displaced. */
 export function boardQuad(dx = 0, dy = 0): [number, number][] {
@@ -63,10 +61,6 @@ export async function seedFraming(
   );
 }
 
-export interface SceneWindow {
-  __scene: (change: { degrade?: boolean; shiftTo?: number }) => void;
-}
-
 export async function drawnBoardCamera(page: Page): Promise<void> {
   await page.addInitScript(
     ({ FRAME, BOARD }) => {
@@ -76,10 +70,6 @@ export async function drawnBoardCamera(page: Page): Promise<void> {
       const ctx = canvas.getContext('2d');
       if (ctx === null) return;
 
-      let shift = 0;
-      let target = 0;
-      let degrade = 0;
-
       // A bare checkerboard is periodic, and a translation of half a square is then
       // indistinguishable from one of one and a half. These give the homography fit
       // something unambiguous. Deterministic, so a failure is reproducible.
@@ -88,17 +78,10 @@ export async function drawnBoardCamera(page: Page): Promise<void> {
       const marks = Array.from({ length: 24 }, () => ({ x: rnd(), y: rnd(), r: 4 + rnd() * 10 }));
 
       const draw = () => {
-        ctx.save();
-        ctx.globalAlpha = 1;
-        // Mid grey is exactly the mean of the two square colours, so fading the board
-        // toward it changes CONTRAST while leaving the mean intensity alone — and the
-        // mean is what the sharpness score divides by. Fading toward black would
-        // cancel most of the drop and leave the candidates nearly tied.
         ctx.fillStyle = 'rgb(128,128,128)';
         ctx.fillRect(0, 0, canvas.width, canvas.height);
-        ctx.globalAlpha = 1 - 0.7 * degrade;
 
-        const bx = BOARD.x + shift;
+        const bx = BOARD.x;
         const cw = BOARD.w / 8;
         const ch = BOARD.h / 8;
         for (let r = 0; r < 8; r++) {
@@ -113,24 +96,16 @@ export async function drawnBoardCamera(page: Page): Promise<void> {
           ctx.arc(bx + mark.x * BOARD.w, BOARD.y + mark.y * BOARD.h, mark.r, 0, Math.PI * 2);
           ctx.fill();
         }
-        ctx.restore();
       };
 
-      // The slide is gradual — 4 px a frame — because a 40 px jump in one frame is
-      // outside what Lucas-Kanade will follow, and the point is a tracker that KEEPS
-      // its lock while the board moves.
-      const towards = () => {
-        if (shift < target) shift = Math.min(target, shift + 4);
+      // Redrawn every animation frame, not once: a canvas that never changes
+      // produces no new frames, and a video whose `currentTime` stands still is
+      // exactly what the camera-stall watchdog reopens the camera for.
+      const loop = () => {
         draw();
-        requestAnimationFrame(towards);
+        requestAnimationFrame(loop);
       };
-      draw();
-      requestAnimationFrame(towards);
-
-      (window as unknown as SceneWindow).__scene = (change) => {
-        if (change.degrade !== undefined) degrade = change.degrade ? 1 : 0;
-        if (change.shiftTo !== undefined) target = change.shiftTo;
-      };
+      loop();
 
       const stream = canvas.captureStream(30);
       Object.defineProperty(navigator.mediaDevices, 'getUserMedia', {
@@ -143,16 +118,6 @@ export async function drawnBoardCamera(page: Page): Promise<void> {
       });
     },
     { FRAME, BOARD }
-  );
-}
-
-export function scene(
-  page: Page,
-  change: { degrade?: boolean; shiftTo?: number }
-): Promise<void> {
-  return page.evaluate(
-    (next) => (window as unknown as SceneWindow).__scene(next),
-    change
   );
 }
 

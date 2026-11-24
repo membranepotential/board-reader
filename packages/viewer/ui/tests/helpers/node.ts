@@ -11,7 +11,6 @@
 import type { Page, WebSocketRoute } from '@playwright/test';
 
 export const START_PLACEMENT = 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR';
-export const EMPTY_PLACEMENT = '8/8/8/8/8/8/8/8';
 
 /** `board_reader_core.protocol.CLASSES`, in its canonical order. */
 export const CLASSES = [

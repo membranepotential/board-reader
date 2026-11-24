@@ -21,13 +21,10 @@
 
 import {
   cornersParam,
-  parseCalibrateResponse,
-  parseCornersParam,
   parseDetectResponse,
   parseEstimateResponse,
   parseLabelResponse,
   parseUploadsResponse,
-  type CalibrateResponse,
   type CornerQuad,
   type DetectResponse,
   type EstimateResponse,
@@ -47,12 +44,6 @@ export interface ApiFailure {
   readonly status: number;
   /** The node's own wording where it gave one — operator-facing, shown verbatim. */
   readonly message: string;
-  /**
-   * `/calibrate`'s named cause, when it found one: the same photo passes once
-   * turned this many degrees — i.e. the board is rotated in the frame. Lets the
-   * page say the one actionable sentence instead of the node's full paragraph.
-   */
-  readonly rotatedDeg?: number;
 }
 
 export type ApiResult<T> = Result<T, ApiFailure>;
@@ -111,11 +102,11 @@ const JPEG_HEADERS = { 'Content-Type': 'image/jpeg' } as const;
  *
  * A request that never answers is worse than a refusal: the camera page hands the
  * camera and the quad to exactly one activity at a time, so a `fetch` that hangs
- * for ever leaves every idle-gated control — drag, detect, calibrate, both
- * automatic flows — disabled with nothing on screen to say why. Detection costs
- * ~0.1 s on a hit and 2-4 s on a miss (worst recorded 1.7 s), so 15 s is far
- * outside the working distribution and only ever fires on something genuinely
- * stuck.
+ * for ever leaves every idle-gated control — drag, detect, the automatic framing
+ * and the drift check — disabled with nothing on screen to say why. Detection
+ * costs ~0.1 s on a hit and 2-4 s on a miss (worst recorded 1.7 s), so 15 s is
+ * far outside the working distribution and only ever fires on something
+ * genuinely stuck.
  */
 export const DETECT_TIMEOUT_MS = 15_000;
 
@@ -143,10 +134,7 @@ async function failureOf(response: Response): Promise<ApiFailure> {
     if (typeof parsed === 'object' && parsed !== null && 'error' in parsed) {
       const reason = (parsed as { error: unknown }).error;
       if (typeof reason === 'string' && reason !== '') {
-        const deg = (parsed as { rotated_deg?: unknown }).rotated_deg;
-        return typeof deg === 'number' && Number.isFinite(deg)
-          ? { status: response.status, message: reason, rotatedDeg: deg }
-          : { status: response.status, message: reason };
+        return { status: response.status, message: reason };
       }
     }
   } catch {
@@ -209,25 +197,6 @@ export function estimate(photo: Blob, options: EstimateOptions = {}): Promise<Ap
 }
 
 /**
- * Few-shot per-set calibration from one labelled photo (DESIGN §4.6).
- *
- * The body is the ORIGINAL photo, full resolution — never a downscaled stream
- * frame: calibration reads one exemplar per square and every pixel of a piece is
- * evidence. `placement` defaults to the start position on the node, which is the
- * one position containing all 13 classes.
- */
-export function calibrate(
-  photo: Blob,
-  options: { readonly corners: CornerQuad; readonly placement?: string }
-): Promise<ApiResult<CalibrateResponse>> {
-  const url = apiPath('/calibrate', {
-    corners: cornersParam(options.corners),
-    placement: options.placement
-  });
-  return requestJson(url, { method: 'POST', body: photo, headers: JPEG_HEADERS }, parseCalibrateResponse);
-}
-
-/**
  * Locate the board → a proposed quad in GEOMETRIC TL,TR,BR,BL order.
  *
  * Which physical corner is a8 is not knowable from geometry (DESIGN decision #15),
@@ -260,7 +229,7 @@ export function uploadPhotoUrl(uploadId: string, maxSide?: number): string {
 
 /**
  * Record the operator's confirmed position for a retained photo — eval data only;
- * nothing reads a label back into the calibration bank.
+ * nothing reads a label back into the recognizer.
  */
 export function saveLabel(
   uploadId: string,
@@ -285,67 +254,4 @@ export function saveLabel(
  */
 export function boardFrameUrl(boardId: string, bust: string | number): string {
   return apiPath(`/boards/${encodeURIComponent(boardId)}/frame`, { seq: bust });
-}
-
-export interface BoardFrame {
-  readonly jpeg: Blob;
-  /**
-   * The playing surface within THIS image, when the node stated one on `X-Corners`
-   * — see `cornersOf` for why that matters.
-   */
-  readonly corners: CornerQuad | null;
-  readonly seq: number | null;
-  readonly captureTs: number | null;
-}
-
-/**
- * Where the board sits inside a retained frame.
- *
- * A rectified edge stream retains the board itself, so the image's own four
- * corners are the board's; a phone stream retains an UN-rectified crop and the
- * node states the quad within it on `X-Corners` (which `proxy.py` forwards for
- * exactly this reason). Preferring the header keeps ONE calibrate path for both
- * kinds of stream, and a node that does not send it behaves as before.
- */
-export function cornersOf(
-  stated: string | null,
-  image: { readonly width: number; readonly height: number }
-): CornerQuad {
-  return (
-    parseCornersParam(stated) ?? [
-      [0, 0],
-      [image.width, 0],
-      [image.width, image.height],
-      [0, image.height]
-    ]
-  );
-}
-
-/** An absent header is absent, not zero — `Number(null)` is 0 and would read as seq 0. */
-function numericHeader(response: Response, name: string): number | null {
-  const raw = response.headers.get(name);
-  if (raw === null) return null;
-  const value = Number(raw);
-  return Number.isFinite(value) ? value : null;
-}
-
-export async function fetchBoardFrame(
-  boardId: string,
-  bust: string | number
-): Promise<ApiResult<BoardFrame>> {
-  let response: Response;
-  try {
-    response = await fetch(boardFrameUrl(boardId, bust), { cache: 'no-store' });
-  } catch (cause) {
-    return err({ status: 0, message: `${String(cause)} (is the viewer still reachable?)` });
-  }
-  // 404 until the node has ingested a frame, and an older node may not serve this
-  // at all — either way the caller keeps working without a preview.
-  if (!response.ok) return err(await failureOf(response));
-  return ok({
-    jpeg: await response.blob(),
-    corners: parseCornersParam(response.headers.get('X-Corners')),
-    seq: numericHeader(response, 'X-Seq'),
-    captureTs: numericHeader(response, 'X-Capture-Ts')
-  });
 }

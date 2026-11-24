@@ -4,7 +4,7 @@
  * Each stage body's key/value table is a *view* of something the page already holds —
  * the corners, the quad's geometry, the distribution, the node's repair — so each one is
  * a pure function here rather than a block of markup or a `kv(...)` call buried in a
- * render path. That is what makes "what does stage 5 say about an occupancy-only reply?"
+ * render path. That is what makes "what does the classify stage say about this reply?"
  * a question with a test instead of a screenshot.
  */
 
@@ -77,17 +77,8 @@ export function classTable(
   estimateMs: number | null
 ): readonly KvRow[] {
   if (response === null) return [];
-  if (response.kind === 'occupancy') {
-    return [
-      kv('mode', 'occupancy (uncalibrated for this piece set)', 'warn'),
-      kv('occupied squares', `${response.occupied.flat().filter(Boolean).length} / 64`),
-      kv('estimate latency', ms(estimateMs)),
-      kv('how to unlock', 'photograph the starting position once — the server self-calibrates')
-    ];
-  }
   const summary = confidenceSummary(response.event.square_dist);
   return [
-    kv('mode', 'position (13-class per square)', 'ok'),
     kv('position confidence', fmt(response.event.confidence ?? 0, 3)),
     kv('mean square confidence', fmt(summary.mean, 3)),
     kvIf('weakest square', fmt(summary.min, 3), summary.min < LOW_CONFIDENCE),
@@ -105,9 +96,6 @@ export function orientTable(
   framing: Framing
 ): readonly KvRow[] {
   if (response === null) return [];
-  if (response.kind === 'occupancy') {
-    return [kv('orientation', 'unknown — occupancy carries no colour cue')];
-  }
   const rotated = response.autorotated;
   return [
     kv('corner labels', framing.edited ? 'set by you' : 'auto-detected guess'),
@@ -156,30 +144,4 @@ export function materialTable(grid: BoardGrid): readonly KvRow[] {
       census.implausible.length > 0
     )
   ];
-}
-
-/**
- * Whatever the node volunteered about the estimator's own state this read: a bank
- * bootstrapped, refreshed, or auto-calibrated from this very photo.
- */
-export function estimatorNotes(response: EstimateResponse | null): readonly string[] {
-  if (response === null || response.kind !== 'position') return [];
-  const notes: string[] = [];
-  const auto = response.autocalibrated;
-  if (auto !== null) {
-    notes.push(
-      `Auto-calibrated from this photo: ${auto.matches}/64 squares agreed with the start ` +
-        `position at rotation ${auto.rotation * 90} degrees; bank now holds ${auto.exemplars} ` +
-        `exemplars${auto.saved === null ? ' (in memory only)' : ` (saved to ${auto.saved})`}.`
-    );
-  }
-  const refresh = response.bank_refreshed;
-  if (refresh !== null) {
-    notes.push(
-      `Bank self-refreshed: +${refresh.added} exemplars (total ${refresh.total}) from ` +
-        `${refresh.agree} agreeing squares at rotation ${refresh.rotation * 90} degrees` +
-        `${refresh.saved === null ? '' : `, saved to ${refresh.saved}`}.`
-    );
-  }
-  return notes;
 }

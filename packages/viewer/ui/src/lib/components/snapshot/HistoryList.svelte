@@ -11,7 +11,6 @@
   import type { UploadRecord } from '$lib/protocol';
   import {
     readFlags,
-    readHeadline,
     readMeta,
     uploadFlags,
     uploadTime,
@@ -60,7 +59,7 @@
           >
             <img src={row.read.image.dataUrl} alt="" />
             <span class="body">
-              <span class="fen">{readHeadline(row.read)}</span>
+              <span class="fen">{row.read.response.event.placement}</span>
               <span class="meta">
                 {readMeta(row.read)} · <span class="tag">this session</span>
                 {#if flags.length}

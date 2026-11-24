@@ -4,9 +4,8 @@ import {
   apiPath,
   DETECT_TIMEOUT_MS,
   boardFrameUrl,
-  calibrate,
-  cornersOf,
   detect,
+  estimate,
   listUploads,
   uploadPhotoUrl,
   wsUrl
@@ -38,7 +37,7 @@ describe('URLs stay same-origin', () => {
   });
 
   it('leaves commas literal so ?corners= reads as the node spells it', () => {
-    expect(apiPath('/calibrate', { corners: '1,2,3,4,5,6,7,8' })).toContain('corners=1,2,3,4,5,6,7,8');
+    expect(apiPath('/estimate', { corners: '1,2,3,4,5,6,7,8' })).toContain('corners=1,2,3,4,5,6,7,8');
   });
 
   it('omits absent parameters entirely', () => {
@@ -54,7 +53,6 @@ describe('URLs stay same-origin', () => {
   it('is relative for every endpoint the pages use', () => {
     for (const url of [
       apiPath('/estimate'),
-      apiPath('/calibrate'),
       apiPath('/detect'),
       apiPath('/uploads', { limit: 100 }),
       uploadPhotoUrl('x'),
@@ -91,50 +89,21 @@ describe('wsUrl', () => {
   });
 });
 
-describe('cornersOf', () => {
-  it('prefers the quad the node stated on X-Corners', () => {
-    expect(cornersOf('10,20,30,40,50,60,70,80', { width: 640, height: 480 })).toEqual([
-      [10, 20],
-      [30, 40],
-      [50, 60],
-      [70, 80]
-    ]);
-  });
-
-  it('falls back to the image own corners — a rectified stream IS the board', () => {
-    expect(cornersOf(null, { width: 640, height: 480 })).toEqual([
-      [0, 0],
-      [640, 0],
-      [640, 480],
-      [0, 480]
-    ]);
-  });
-
-  it('ignores a malformed header rather than posting a broken quad', () => {
-    expect(cornersOf('1,2,3', { width: 8, height: 8 })).toEqual([
-      [0, 0],
-      [8, 0],
-      [8, 8],
-      [0, 8]
-    ]);
-  });
-});
-
 describe('failures carry the node own wording', () => {
   it('surfaces the {error} body a refusal states', async () => {
     vi.stubGlobal(
       'fetch',
       vi.fn(async () =>
-        new Response(JSON.stringify({ error: 'calibration rejected: only 3/32 agree' }), {
-          status: 422
+        new Response(JSON.stringify({ error: 'could not decode the image' }), {
+          status: 400
         })
       )
     );
-    const result = await calibrate(new Blob(['x']), { corners: QUAD });
+    const result = await estimate(new Blob(['x']));
     expect(result.ok).toBe(false);
     if (result.ok) return;
-    expect(result.error.status).toBe(422);
-    expect(result.error.message).toBe('calibration rejected: only 3/32 agree');
+    expect(result.error.status).toBe(400);
+    expect(result.error.message).toBe('could not decode the image');
   });
 
   it('keeps a non-JSON body rather than inventing a reason', async () => {
@@ -158,15 +127,18 @@ describe('failures carry the node own wording', () => {
     expect(result.error.status).toBe(0);
   });
 
-  it('sends the photo as image/jpeg with the corners in the query', async () => {
+  it('sends the photo as image/jpeg with the board in the query', async () => {
     const fetchSpy = vi.fn(
-      async () => new Response(JSON.stringify({ classes_calibrated: 13, exemplars: 64 }))
+      async () =>
+        new Response(
+          JSON.stringify({ board_id: 'snapshot', seq: 0, utc: 'now', placement: '8/8/8/8/8/8/8/8' })
+        )
     );
     vi.stubGlobal('fetch', fetchSpy);
-    const result = await calibrate(new Blob(['jpeg']), { corners: QUAD });
+    const result = await estimate(new Blob(['jpeg']), { boardId: 'snapshot' });
     expect(result.ok).toBe(true);
     const [url, init] = fetchSpy.mock.calls[0] as unknown as [string, RequestInit];
-    expect(url).toBe('/api/calibrate?corners=0,0,100,0,100,100,0,100');
+    expect(url).toBe('/api/estimate?board_id=snapshot');
     expect(init.method).toBe('POST');
     expect(init.headers).toEqual({ 'Content-Type': 'image/jpeg' });
   });

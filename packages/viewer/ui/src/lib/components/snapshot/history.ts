@@ -41,11 +41,6 @@ export interface SessionRead {
   readonly estimateMs: number | null;
 }
 
-/** Which retained photo a read belongs to, when the node kept one. */
-export function uploadIdOf(response: EstimateResponse): string | null {
-  return response.kind === 'position' ? response.upload : null;
-}
-
 export type HistoryRow =
   | {
       readonly kind: 'session';
@@ -71,9 +66,9 @@ export function historyRows(
   reads: readonly SessionRead[],
   uploads: readonly UploadRecord[]
 ): readonly HistoryRow[] {
-  const owned = new Set(reads.map((read) => uploadIdOf(read.response)).filter((id) => id !== null));
+  const owned = new Set(reads.map((read) => read.response.upload).filter((id) => id !== null));
   const rows: HistoryRow[] = reads.map((read) => {
-    const id = uploadIdOf(read.response);
+    const id = read.response.upload;
     return {
       kind: 'session',
       key: `s${read.id}`,
@@ -104,22 +99,11 @@ export function historyNote(retention: boolean | null): string {
   );
 }
 
-export function readHeadline(read: SessionRead): string {
-  if (read.response.kind === 'occupancy') {
-    const occupied = read.response.occupied.flat().filter(Boolean).length;
-    return `occupancy only — ${occupied}/64 occupied`;
-  }
-  return read.response.event.placement;
-}
-
 /** The short, comma-joined "what was unusual about this read" line. */
 export function readFlags(read: SessionRead, upload: UploadRecord | null): readonly string[] {
   const flags: string[] = [];
   if (read.corrections.size) flags.push(`${read.corrections.size} corrected`);
-  if (read.response.kind === 'position') {
-    if (read.response.autocalibrated) flags.push('auto-calibrated');
-    if (read.response.autorotated) flags.push(`rotated ${read.response.autorotated}deg`);
-  }
+  if (read.response.autorotated) flags.push(`rotated ${read.response.autorotated}deg`);
   if (upload?.labeled) flags.push('labelled');
   flags.push(...read.response.warnings);
   return flags;
@@ -128,7 +112,7 @@ export function readFlags(read: SessionRead, upload: UploadRecord | null): reado
 /** The metadata line under a session read's placement. */
 export function readMeta(read: SessionRead): string {
   const bits = [read.at.toLocaleTimeString()];
-  const confidence = read.response.kind === 'position' ? read.response.event.confidence : null;
+  const confidence = read.response.event.confidence;
   if (confidence !== null) bits.push(`conf ${fmt(confidence, 3)}`);
   if (read.estimateMs !== null) bits.push(`${read.estimateMs.toFixed(0)} ms`);
   return bits.join(' · ');

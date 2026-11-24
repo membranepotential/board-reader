@@ -23,7 +23,7 @@
    * the canvases, observers and document listeners all live in `$effect`.
    */
   import { onMount } from 'svelte';
-  import { calibrate, detect, estimate, listUploads, saveLabel, uploadPhotoUrl } from '$lib/api';
+  import { detect, estimate, listUploads, saveLabel, uploadPhotoUrl } from '$lib/api';
   import Board from '$lib/board/Board.svelte';
   import { squareKey } from '$lib/board/fen';
   import ConfidenceMap from '$lib/components/snapshot/ConfidenceMap.svelte';
@@ -38,7 +38,6 @@
     READS_CAP,
     historyNote,
     historyRows,
-    uploadIdOf,
     type SessionRead
   } from '$lib/components/snapshot/history';
   import {
@@ -102,7 +101,6 @@
   import {
     classTable,
     cornerTable,
-    estimatorNotes,
     geometryTable,
     materialTable,
     orientTable,
@@ -181,10 +179,8 @@
 
   // ---- derived -------------------------------------------------------------
 
-  const position = $derived(reading?.kind === 'position' ? reading : null);
-  const occupancy = $derived(reading?.kind === 'occupancy' ? reading : null);
-  const dist = $derived(position?.event.square_dist ?? null);
-  const baseGrid = $derived(position === null ? null : baselineGrid(position));
+  const dist = $derived(reading?.event.square_dist ?? null);
+  const baseGrid = $derived(reading === null ? null : baselineGrid(reading));
   const shownGrid = $derived(baseGrid === null ? null : correctedGrid(baseGrid, corrections));
   const shownPlacement = $derived(shownGrid === null ? null : placementOfGrid(shownGrid));
   const quad = $derived(quadOf(framing));
@@ -216,19 +212,10 @@
 
   const rows = $derived(historyRows(reads, uploads));
 
-  /** Rotating labels only helps when the last read could actually validate them. */
-  const showRotate = $derived(quad !== null && reading?.kind !== 'occupancy');
+  const showRotate = $derived(quad !== null);
 
   const boardShapes = $derived.by((): DrawShape[] => {
     const shapes: DrawShape[] = [];
-    if (occupancy !== null) {
-      for (let r = 0; r < GRID; r++) {
-        for (let c = 0; c < GRID; c++) {
-          if (occupancy.occupied[r]?.[c]) shapes.push({ orig: squareKey(r, c), brush: 'blue' });
-        }
-      }
-      return shapes;
-    }
     if (baseGrid === null) return shapes;
     for (let r = 0; r < GRID; r++) {
       for (let c = 0; c < GRID; c++) {
@@ -270,9 +257,8 @@
   );
   const classRows = $derived(classTable(reading, estimateMs));
   const orientRows = $derived(orientTable(reading, framing));
-  const repairRows = $derived(repairTable(position?.prior ?? null));
+  const repairRows = $derived(repairTable(reading?.prior ?? null));
   const materialRows = $derived(shownGrid === null ? [] : materialTable(shownGrid));
-  const notes = $derived(estimatorNotes(reading));
 
   const lowChips = $derived.by(() => {
     const grid = baseGrid;
@@ -511,31 +497,6 @@
             '64 full-piece crops cut from the photo and fed to the classifier'
           );
 
-    if (response.kind === 'occupancy') {
-      corrections = NO_CORRECTIONS;
-      const occupied = response.occupied.flat().filter(Boolean).length;
-      pipeline = withStage(
-        pipeline,
-        'classify',
-        'warn',
-        `occupancy only — ${occupied}/64 squares occupied, no piece types`
-      );
-      pipeline = withStage(pipeline, 'orient', 'idle', 'not resolvable without a placement');
-      // Nothing for the repair to read: its constraints are all about piece identity and
-      // colour, and an occupancy-only read has neither.
-      pipeline = withStage(
-        pipeline,
-        'repair',
-        'idle',
-        'not applicable — occupancy only, no piece types to constrain'
-      );
-      pipeline = withStage(pipeline, 'output', 'warn', 'no placement in occupancy mode');
-      hideBanner();
-      if (restored === null) pushRead(response);
-      else markRestored(restored);
-      return;
-    }
-
     // A read posted with autorotate=1 can come back turned. Absorbing it into this page's
     // own labelling is what keeps the handles, the crops and the board describing ONE
     // orientation. Only ever on a fresh read: a restored entry stored the rotation it was
@@ -585,12 +546,7 @@
     );
     restateOutput();
 
-    if (response.autocalibrated !== null) {
-      showBanner(
-        'info',
-        `Auto-calibrated from the starting position (${response.autocalibrated.matches}/64 squares)`
-      );
-    } else if (rotated) {
+    if (rotated) {
       showBanner(
         'info',
         `Orientation auto-corrected: the server rotated the reading by ${rotated} degrees and ` +
@@ -647,7 +603,7 @@
 
   /** Opening a square never changes it; clicking it again toggles through its top-3. */
   function selectSquare(r: number, c: number): void {
-    if (dist === null || position === null) return;
+    if (dist === null) return;
     selected = { r: Math.min(7, Math.max(0, r)), c: Math.min(7, Math.max(0, c)) };
   }
 
@@ -678,7 +634,7 @@
    * `select` event — `viewOnly` binds no interaction handlers at all.
    */
   function boardClick(event: MouseEvent): void {
-    if (dist === null || position === null) return;
+    if (dist === null) return;
     const rect = (event.currentTarget as HTMLElement).getBoundingClientRect();
     const x = event.clientX - rect.left;
     const y = event.clientY - rect.top;
@@ -720,48 +676,9 @@
     rectify();
   }
 
-  // ---- one-tap per-set calibration -----------------------------------------
-  // Photograph the STARTING position in your current lighting, set the corners as usual,
-  // then press this: the node rebuilds its per-set bank from that one photo (the start
-  // position contains all 13 classes). Reads after it are tuned to this set + lighting.
-  // Secondary and opt-in — normal use no longer needs calibration.
-
-  async function runCalibrate(): Promise<void> {
-    if (orderedQuad === null) return;
-    const confirmed = window.confirm(
-      'Calibrate from this photo?\n\nThe board must show the STARTING position, ' +
-        'with the a8/h8/h1/a1 labels on the matching corners.'
-    );
-    if (!confirmed) return;
-    busy = 'calibrating…';
-    failure = '';
-    try {
-      const corners = orderedQuad;
-      const result = await calibrate(await canvasJpeg(sourceCanvas(), POST_QUALITY), { corners });
-      if (!result.ok) {
-        // The node refuses calibrations that would poison the bank (a photo not showing
-        // the claimed position); its reason is shown verbatim.
-        failure = result.error.message;
-        return;
-      }
-      const note =
-        result.value.label_rotation === 0
-          ? ''
-          : ` (corner labels were auto-corrected by ${result.value.label_rotation * 90} degrees)`;
-      showBanner(
-        'info',
-        `Calibrated ${result.value.classes_calibrated}/13 piece classes from this photo${note} — ` +
-          `bank now holds ${result.value.exemplars} exemplars. Now photograph your game ` +
-          'position and read as usual.'
-      );
-    } finally {
-      busy = null;
-    }
-  }
-
   // ---- ground truth ---------------------------------------------------------
 
-  const uploadId = $derived(reading === null ? null : uploadIdOf(reading));
+  const uploadId = $derived(reading?.upload ?? null);
   const groundTruth = $derived(labelState(uploadId, shownPlacement ?? '', savedLabel));
 
   async function saveGroundTruth(): Promise<void> {
@@ -1083,9 +1000,6 @@
     {#if banner !== null}
       <div class="banner {banner.kind}">{banner.text}</div>
     {/if}
-    {#if occupancy !== null}
-      <div class="banner warn">{occupancy.hint}</div>
-    {/if}
     {#if warningMessages.length}
       <div class="banner warn">{warningMessages.join(' ')}</div>
     {/if}
@@ -1125,7 +1039,7 @@
             <span><i style="background:#6aa8ff"></i> corrected by hand</span>
             <span><i style="background:#7ac77a"></i> inspecting</span>
           </div>
-          {#if position !== null}
+          {#if reading !== null}
             <p class="hint">
               Click a square to inspect it; click it again to toggle through its most likely
               readings.
@@ -1161,14 +1075,6 @@
     <div class="action-bar" bind:this={actionBar}>
       <button type="button" disabled={quad === null || busy !== null} onclick={runRead}>
         Read position
-      </button>
-      <button
-        type="button"
-        class="secondary calib"
-        disabled={quad === null || busy !== null}
-        onclick={runCalibrate}
-      >
-        Calibrate
       </button>
       {#if busy !== null}<span class="busy">{busy}</span>{/if}
     </div>
@@ -1256,13 +1162,8 @@
                 {/each}
               </div>
             {/if}
-            {#each notes as note (note)}
-              <div class="note">{note}</div>
-            {/each}
             {#if (reading?.warnings.length ?? 0) > 0}
               <div class="note warn">Server warnings: {reading?.warnings.join(', ')}</div>
-            {:else if position !== null && notes.length === 0}
-              <div class="note">no estimator-state changes on this read</div>
             {/if}
           {:else if stage.id === 'orient'}
             <p class="note">
@@ -1321,7 +1222,7 @@
                 </button>
               {/if}
             </div>
-            {#if position !== null}
+            {#if reading !== null}
               <div class="stm">
                 to move:
                 <label><input type="radio" bind:group={stm} value="w" /> White</label>
@@ -1583,12 +1484,6 @@
 
   .action-bar button {
     flex: 1 1 auto;
-  }
-
-  .action-bar .calib {
-    flex: 0 0 auto;
-    font-size: 13px;
-    padding: 10px 12px;
   }
 
   .busy {

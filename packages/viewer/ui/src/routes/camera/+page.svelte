@@ -31,11 +31,10 @@
   import { onMount } from 'svelte';
   import type { DrawShape } from '@lichess-org/chessground/draw';
 
-  import { calibrate as postCalibrate, detect as postDetect } from '$lib/api';
+  import { detect as postDetect } from '$lib/api';
   import { gridToFen } from '$lib/board/fen';
   import {
     checkQuadShape,
-    absorbCalibrateRotation,
     cornersInCrop,
     cropBox,
     nextRotation,
@@ -70,10 +69,6 @@
     AUTO_DETECT_START,
     BANNER_MS,
     BOARD_KEY,
-    CALIBRATE_QUALITY,
-    CALIBRATE_SAMPLES,
-    CALIBRATE_SAMPLE_MS,
-    CALIBRATE_SCORE_LONG_SIDE,
     DETECT_LONG_SIDE,
     JPEG_QUALITY,
     LENS_KEY,
@@ -87,9 +82,6 @@
     TRACK_SAVE_MS,
     TRACK_SUBDIVISIONS,
     backoffFor,
-    AUTO_CALIBRATE_COOLDOWN_MS,
-    AUTO_CALIBRATE_START,
-    calibrateBlockReason,
     cornerKey,
     denormaliseQuad,
     freshFrameClock,
@@ -110,13 +102,11 @@
     noteRedetectMiss,
     noteRedetection,
     shouldRedetect,
-    shouldAutoCalibrate,
     shouldAutoDetect,
     toQuad,
     trackingChip,
     withinRateWindow,
     type Activity,
-    type AutoCalibrate,
     type AutoDetect,
     type BannerKind,
     type BannerMessage,
@@ -137,7 +127,6 @@
   let camera = $state.raw<CameraState>({ kind: 'idle' });
   let activity = $state.raw<Activity>({ kind: 'idle' });
   let auto = $state.raw<AutoDetect>(AUTO_DETECT_START);
-  let autoCalib = $state.raw<AutoCalibrate>(AUTO_CALIBRATE_START);
   let redetect = $state.raw<Redetect>(REDETECT_START);
 
   let tracking = $state(true);
@@ -154,7 +143,6 @@
   let fps = $state(0);
 
   let boardId = $state('phone');
-  let calibrations = $state(0);
   let labelsNeedCheck = $state(false);
   let banner = $state.raw<BannerMessage | null>(null);
   let sheetOpen = $state(false);
@@ -243,10 +231,7 @@
   const portrait = $derived(
     screenPortrait || (camera.kind === 'live' && camera.frame.height > camera.frame.width)
   );
-  const calibrateBlock = $derived(calibrateBlockReason({ camera, activity, portrait }));
-  const hint = $derived(
-    hintFor({ camera, activity, auto, tracking: trackingState, streaming, calibrateBlock })
-  );
+  const hint = $derived(hintFor({ camera, activity, auto, tracking: trackingState }));
   const trackChip = $derived(trackingChip(trackingState));
   $effect(() => {
     trial.note('portrait', { blocked: portrait });
@@ -339,7 +324,7 @@
 
   // ---- board tracking (DESIGN §4.4.1(a), "bump / drift") ------------------------
   // The quad is not a fixed crop. A phone gets nudged, and it is carried around the
-  // table to calibrate from a second angle — so the corners follow the board plane
+  // table to read it from a second angle — so the corners follow the board plane
   // frame to frame instead of waiting for the operator to drag them back.
   //
   // Tracking rather than re-detecting, specifically: geometry cannot say which
@@ -470,14 +455,9 @@
     bursting = forwarder.bursting;
 
     autoDetectTick();
-    autoCalibTick();
     redetectTick();
 
     if (decision === null) return;
-    // Calibration is reading the live camera and rebuilding the node's bank from
-    // one frame; forwarding into a half-rebuilt bank produces readings nobody can
-    // interpret, so the stream pauses (metered, not blind) until it is done.
-    if (activity.kind === 'calibrating') return;
     if (!ingest.connected) return;
     // A frame still in the encoder means another frame would only make the reading
     // staler. Dropping is the correct answer at both rates (DESIGN D3/D4).
@@ -558,10 +538,6 @@
 
   function watchFrameClock(): void {
     if (video === undefined) return;
-    // A calibration burst owns the camera; yanking the stream out from under it
-    // would pair its frames with a dead device. The stall outlives the burst, so
-    // the watchdog simply fires afterwards.
-    if (activity.kind === 'calibrating') return;
     const { clock, action } = noteFrameClock(
       frameClock,
       video.currentTime,
@@ -655,29 +631,6 @@
       return;
     }
     void detectCorners(true);
-  }
-
-  /** The zero-tap flow's second half: see `shouldAutoCalibrate` in state.ts. */
-  function autoCalibTick(): void {
-    const gate = {
-      auto: autoCalib,
-      now: performance.now(),
-      camera,
-      activity,
-      portrait,
-      streaming,
-      stability,
-      bursting,
-      calibrations,
-      // Occupancy, not the reading: `board.grid` is spelled in `fen.ts`'s
-      // vocabulary (an empty square is `''`), and the gate must not have to know
-      // which of the two vocabularies it was handed.
-      occupancy: board === undefined ? null : board.grid.map((row) => row.map((cell) => cell !== ''))
-    };
-    if (!shouldAutoCalibrate(gate)) return;
-    autoCalib = { nextAt: gate.now + AUTO_CALIBRATE_COOLDOWN_MS, attempts: autoCalib.attempts + 1 };
-    trial.note('auto-calibrate', { attempt: autoCalib.attempts });
-    void runCalibrate(true);
   }
 
   /** What one `/detect` round trip came back with. */
@@ -917,10 +870,10 @@
   /**
    * Re-anchor the tracker on the corrected quad.
    *
-   * Calibration is deliberately untouched: this is the same physical board and the
-   * same labels — `rot` is carried over, and the corrected quad is expressed in the
-   * operator's own corner convention (`detected - R0`), so nothing the bank was
-   * keyed to has changed except that the crop is now centred on the board again.
+   * The labels are deliberately untouched: this is the same physical board — `rot`
+   * is carried over, and the corrected quad is expressed in the operator's own
+   * corner convention (`detected - R0`), so nothing has changed except that the
+   * crop is now centred on the board again.
    * The banner is a short "here is what just happened", not a nag: there is nothing
    * for the operator to do.
    */
@@ -933,182 +886,6 @@
     saveFraming();
     anchorTracker();
     setBanner('ok', 'The frame had drifted — re-locked onto the board.');
-  }
-
-  // ---- calibrate ----------------------------------------------------------------
-
-  function wait(ms: number): Promise<void> {
-    return new Promise((resolve) => setTimeout(resolve, ms));
-  }
-
-  interface CalibrationShot {
-    /** Full-resolution pixels, ready to encode. */
-    readonly canvas: HTMLCanvasElement;
-    /** The quad as it stood at the same tick those pixels were drawn. */
-    readonly corners: CornerQuad;
-    readonly score: number;
-  }
-
-  /**
-   * The sharpest frame of a short burst, with the corners that were true when it was
-   * taken.
-   *
-   * One frame decides the piece bank for the rest of the session, and this page is
-   * held in a hand — an instantaneous grab lands on whichever 1/30 s the thumb fell
-   * on, and a good half of those are smeared. So it watches for about a second and a
-   * half and keeps the best of ten (`$lib/edge/sharpness`).
-   *
-   * **Two full-resolution canvases, never ten.** One holds the best so far, the other
-   * takes the next candidate, and they swap when the candidate wins; ten 1920x1080
-   * canvases would be 80 MB of backing store on a phone.
-   *
-   * **Each candidate carries its OWN corners**, read beside the `drawImage` that
-   * fixed its pixels. `frameTick` keeps tracking right through a calibration — only
-   * forwarding pauses — so the quad follows the board while this runs, and pairing
-   * the winning pixels with the quad as it stood at the end would describe a board
-   * that has since moved. This is what makes hand shake geometrically harmless
-   * rather than merely blurry.
-   */
-  async function bestCalibrationShot(): Promise<CalibrationShot | null> {
-    let best = document.createElement('canvas');
-    let spare = document.createElement('canvas');
-    const scorer = document.createElement('canvas');
-    const scoreCtx = scorer.getContext('2d', { willReadFrequently: true });
-    let gray: Float32Array | null = null;
-    let winner: { corners: CornerQuad; score: number } | null = null;
-
-    for (let i = 0; i < CALIBRATE_SAMPLES; i++) {
-      if (i > 0) await wait(CALIBRATE_SAMPLE_MS);
-      if (camera.kind !== 'live' || video === undefined || scoreCtx === null) break;
-      const { frame, framing } = camera;
-      const corners = orderedCorners(framing.quad, framing.rot);
-
-      // Full resolution, deliberately NOT the downscaled stream frame: calibration
-      // reads one exemplar per square and every pixel of a piece is evidence.
-      spare.width = frame.width;
-      spare.height = frame.height;
-      spare.getContext('2d')?.drawImage(video, 0, 0);
-
-      // Scored on the BOARD's crop rather than the whole frame: a sharp bookshelf
-      // behind a smeared board would otherwise decide which candidate wins.
-      //
-      // And scored FROM `spare`, not from the video a second time: the two reads
-      // would be of different instants, so the ranking would be of frames that are
-      // not the ones on offer. This way the number describes the very pixels that
-      // would be posted.
-      const box = cropBox(corners, frame);
-      const k = Math.min(1, CALIBRATE_SCORE_LONG_SIDE / Math.max(box.w, box.h));
-      const w = Math.max(3, Math.round(box.w * k));
-      const h = Math.max(3, Math.round(box.h * k));
-      scorer.width = w;
-      scorer.height = h;
-      scoreCtx.drawImage(spare, box.x, box.y, box.w, box.h, 0, 0, w, h);
-      const { data } = scoreCtx.getImageData(0, 0, w, h);
-      // Reused across candidates, and safely — unlike the tracker's pyramid and the
-      // motion meter's thumbnail, `tenengrad` reads this buffer and retains nothing.
-      if (gray === null || gray.length !== w * h) gray = new Float32Array(w * h);
-      const score = tenengrad({ data: toGray(data, gray), width: w, height: h });
-
-      if (winner === null || score > winner.score) {
-        winner = { corners, score };
-        [best, spare] = [spare, best];
-      }
-    }
-    return winner === null ? null : { canvas: best, ...winner };
-  }
-
-  async function runCalibrate(isAuto = false): Promise<void> {
-    if (camera.kind !== 'live' || video === undefined) return;
-    // Exactly one thing owns the camera and the quad (`Activity`), and the pill being
-    // enabled is not proof: an automatic detection can start between the paint and
-    // the tap. `detectCorners` ends with an unconditional `activity = idle`, so a
-    // calibration begun underneath one would have that fire mid-burst — resuming the
-    // forwarder into a half-rebuilt bank. The disabled state says why; this enforces it.
-    if (activity.kind !== 'idle') return;
-    if (portrait) return;
-    // The automatic path earned its trigger (the reading looks like a start
-    // position at rest) — a confirm() there would put the tap back in.
-    if (
-      !isAuto &&
-      !confirm(
-        'Calibrate from the live camera?\n\n' +
-          'The board must CURRENTLY show the STARTING position, with the pieces at rest. ' +
-          'The node adds that one frame’s exemplars to its piece bank.'
-      )
-    ) {
-      return;
-    }
-    activity = { kind: 'calibrating' };
-    try {
-      setBanner('warn', 'Hold steady — capturing…');
-      const shot = await bestCalibrationShot();
-      if (shot === null) {
-        setBanner('err', 'the camera stopped before a frame could be captured');
-        return;
-      }
-      const jpeg = await toBlob(shot.canvas, CALIBRATE_QUALITY);
-      if (jpeg === null) {
-        setBanner('err', 'the browser produced no image to calibrate from');
-        return;
-      }
-
-      const result = await postCalibrate(jpeg, { corners: shot.corners });
-      if (!result.ok) {
-        trial.note('calibrate-refused', { status: result.error.status, message: result.error.message });
-        // A named cause gets the one actionable sentence (the node's full
-        // paragraph is in the trial log); anything else is surfaced verbatim.
-        if (result.error.rotatedDeg !== undefined) {
-          setBanner(
-            'err',
-            'the board is rotated in the frame — turn the phone so the board sits ' +
-              'upright, then calibrate again.',
-            true
-          );
-          return;
-        }
-        // Nobody asked for an automatic attempt, so its refusal does not shout —
-        // the trial log has it, and the cooldown schedules the retry.
-        if (isAuto) return;
-        setBanner(
-          'err',
-          result.error.status === 0
-            ? `${result.error.message}\nIs the inference node reachable from the viewer?`
-            : result.error.message
-        );
-        return;
-      }
-
-      const reply = result.value;
-      calibrations++;
-      trial.note('calibrated', {
-        classes: reply.classes_calibrated,
-        exemplars: reply.exemplars,
-        label_rotation: reply.label_rotation
-      });
-      let text =
-        `${isAuto ? 'Calibrated automatically from the start position, ' : 'Calibrated '}` +
-        `${reply.classes_calibrated}/13 classes — bank now holds ${reply.exemplars} exemplars`;
-      // The node resolved the true labelling from the pieces; fold it into the
-      // page's own (a relabelling — no point moves) so the streamed corners agree
-      // and nobody has to press anything. Sign pinned by the node's
-      // test_calibrate_label_rotation_equals_the_corner_label_shift.
-      if (reply.label_rotation && camera.kind === 'live') {
-        setFraming({
-          ...camera.framing,
-          rot: absorbCalibrateRotation(camera.framing.rot, reply.label_rotation)
-        });
-        saveFraming();
-        labelsNeedCheck = false;
-        text +=
-          `\nlabels aligned from the pieces (turned ${reply.label_rotation * 90}°) — ` +
-          'a8 is set; use rotate labels in settings if the board reads wrong.';
-      }
-      setBanner('ok', text);
-    } catch (cause) {
-      setBanner('err', `${String(cause)}\nIs the inference node reachable from the viewer?`);
-    } finally {
-      activity = { kind: 'idle' };
-    }
   }
 
   // ---- the controls -------------------------------------------------------------
@@ -1539,7 +1316,7 @@
         {streaming ? 'stream paused — ' : ''}pieces are read standing up, and a sideways
         board cannot be. {streaming
           ? 'sending resumes in landscape.'
-          : 'detect, calibrate and start unlock in landscape.'}
+          : 'detect and start unlock in landscape.'}
       </div>
     </div>
   {/if}
@@ -1551,17 +1328,12 @@
     detectDisabled={camera.kind !== 'live' || activity.kind !== 'idle' || portrait}
     rotateDisabled={camera.kind !== 'live'}
     rotateAttention={labelsNeedCheck}
-    calibrateDisabled={calibrateBlock !== null}
-    calibrateCount={calibrations}
-    calibrateTitle={calibrateBlock ??
-      'rebuild the piece bank from the live camera (the board must show the starting position)'}
     {streaming}
     streamDisabled={portrait}
     onMore={() => (sheetOpen = !sheetOpen)}
     onPosition={togglePanel}
     onDetect={() => void detectCorners()}
     onRotate={rotateLabels}
-    onCalibrate={() => void runCalibrate()}
     onStream={toggleStreaming}
   />
 {/snippet}

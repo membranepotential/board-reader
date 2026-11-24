@@ -200,7 +200,6 @@ describe('the raw event block', () => {
 
   it('prefers the repaired board as the baseline, leaving the raw argmax in the event', () => {
     const response = parsed(positionRaw);
-    if (response.kind !== 'position') throw new Error('expected a position');
     expect(baselinePlacement(response)).toBe('rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBN1');
     expect(response.event.placement).toBe(START_PLACEMENT);
   });
@@ -210,13 +209,6 @@ describe('the raw event block', () => {
     expect(json).not.toContain('AAA');
     expect(json).toContain('see the confidence map');
     expect(JSON.parse(json)).toMatchObject({ upload: 'u1', autorotated: 90 });
-  });
-
-  it('keeps the occupancy reply recognisable as one', () => {
-    const json = rawEventJson(
-      parsed({ mode: 'occupancy', occupied: Array.from({ length: 8 }, () => Array(8).fill(false)), hint: 'x' })
-    );
-    expect(JSON.parse(json)).toMatchObject({ mode: 'occupancy', hint: 'x' });
   });
 });
 
