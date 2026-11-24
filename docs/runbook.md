@@ -131,7 +131,7 @@ no number from a run exists without the artifact behind it.
 pixels the original did. Prefer `--throttle`: the gateway's latest-wins pre-filter
 drops frames as a function of *arrival rate*, so a flat-out replay makes it drop
 more than the recorded run did. Anything that would reprocess the stream
-(`--adaptive`, `--rectify`, `--corners`, `--forward-original`, `--loop`) is refused
+(`--adaptive`, `--roi`, `--loop`, `--jpeg-quality`) is refused
 with `--recording` rather than silently changing what goes on the wire.
 
 ### Capturing a run's positions

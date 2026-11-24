@@ -612,8 +612,9 @@ A clean gap is recoverable; a confident lie corrupts the consumer's state.
   the estimator crops **perspective-aware full-piece boxes** (see §4.6). Used by
   the phone **snapshot page** (a WP-H3-style consumer served by the viewer;
   Lichess analysis/editor links are assembled client-side from the placement).
-  `POST /detect` proposes the surface corners automatically (geometry only —
-  orientation stays an operator decision, per decision #15).
+  `POST /detect` proposed the surface corners automatically (geometry only).
+  *Superseded:* `?corners` went in Phase B and `/detect` in Phase C (D10, D11); the
+  photo is the whole body and the recognizer finds the board.
 - **Detection code placement.** *Historical (removed in Phase C, D11):* the
   algorithm lived in `board_reader_core.boarddetect` so the browser edge could
   delegate it to `/detect`.

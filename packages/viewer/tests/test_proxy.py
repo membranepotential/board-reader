@@ -37,13 +37,12 @@ class _EchoHandler(BaseHTTPRequestHandler):
             }
         ).encode()
         # A path the viewer must relay a *refusal* for, unaltered.
-        status = 422 if self.path.startswith("/detect") else 200
+        status = 422 if self.path.endswith("/camera/report") else 200
         self.send_response(status)
         self.send_header("content-type", "application/json")
         self.send_header("content-length", str(len(payload)))
-        # The node states the board quad within a retained frame here; the live page
-        # calibrates from it, so the relay has to carry it through.
-        self.send_header("X-Corners", "1,2,3,4,5,6,7,8")
+        # The node states which frame it served here (``/boards/{id}/frame``).
+        self.send_header("X-Seq", "42")
         self.end_headers()
         self.wfile.write(payload)
 
@@ -77,32 +76,32 @@ def inference_http(monkeypatch):
 def test_http_proxy_forwards_body_query_and_content_type(inference_http):
     client = TestClient(create_app())
     response = client.post(
-        "/api/calibrate?corners=10,20,30,40,50,60,70,80&placement=rnbq",
+        "/api/estimate?board_id=snapshot&note=10,20,30",
         content=b"\xff\xd8jpeg-ish",
         headers={"Content-Type": "image/jpeg"},
     )
     assert response.status_code == 200
     echoed = response.json()
-    # The query string must survive character-for-character: the node parses `corners`
-    # positionally and a re-encoded comma would land as a different quad.
-    assert echoed["path"] == "/calibrate?corners=10,20,30,40,50,60,70,80&placement=rnbq"
+    # The query string must survive character-for-character: a re-encoded comma would
+    # reach the node as a different value.
+    assert echoed["path"] == "/estimate?board_id=snapshot&note=10,20,30"
     assert echoed["content_type"] == "image/jpeg"
     assert echoed["body"] == "\xff\xd8jpeg-ish"
 
 
 def test_http_proxy_returns_the_nodes_refusal_verbatim(inference_http):
-    """The node refuses calibrations and detections in its own words; a relay that
-    rewrote them into a generic error would strip the only diagnosis the operator has."""
-    response = TestClient(create_app()).post("/api/detect", content=b"photo")
+    """The node refuses a malformed camera report in its own words; a relay that
+    rewrote that into a generic error would strip the only diagnosis the operator has."""
+    response = TestClient(create_app()).post("/api/boards/phone/camera/report", content=b"{}")
     assert response.status_code == 422
-    assert response.json()["path"] == "/detect"
+    assert response.json()["path"] == "/boards/phone/camera/report"
     assert response.headers["content-type"].startswith("application/json")
 
 
 @pytest.mark.parametrize(
     "path",
     [
-        "/api/estimate?corners=1,2&debug=1",
+        "/api/estimate?board_id=snapshot",
         "/api/labels/upload-7",
         "/api/boards/board-1/frame?seq=42",
         "/api/uploads/abc/photo?max=160",
@@ -111,8 +110,8 @@ def test_http_proxy_returns_the_nodes_refusal_verbatim(inference_http):
 def test_http_proxy_relays_any_node_path_under_the_prefix(inference_http, path):
     """The relay is a catch-all, not a list of blessed endpoints.
 
-    The three pages between them reach /estimate, /labels/{id}, /boards/{id}/frame and
-    /uploads/{id}/photo; enumerating those here and in proxy.install() would mean a
+    The pages between them reach /estimate, /labels/{id}, /boards/{id}/frame,
+    /boards/{id}/camera/* and /uploads/{id}/photo; enumerating those here and in proxy.install() would mean a
     page could call something the relay 404s on."""
     response = TestClient(create_app()).get(path)
     assert response.status_code == 200
@@ -140,12 +139,11 @@ def test_http_proxy_relays_put_with_its_body(inference_http):
 
 
 def test_http_proxy_forwards_response_headers_the_pages_act_on(inference_http):
-    """X-Corners states the board quad inside a retained frame, and the live page
-    prefers it over guessing the image's own corners (index.html cornersOf). A relay
-    that forwarded only the body would silently degrade calibration on phone streams
-    to the wrong quad — a wrong answer, not an error."""
+    """The node states things in headers (X-Seq: which frame ``/boards/{id}/frame``
+    served; X-Preview-Seq on the camera preview). A relay that forwarded only the body
+    would drop them silently."""
     response = TestClient(create_app()).get("/api/boards/b/frame")
-    assert response.headers["x-corners"] == "1,2,3,4,5,6,7,8"
+    assert response.headers["x-seq"] == "42"
 
 
 def test_http_proxy_does_not_copy_the_upstream_framing_headers(inference_http):
@@ -158,7 +156,7 @@ def test_http_proxy_does_not_copy_the_upstream_framing_headers(inference_http):
 def test_http_proxy_reports_an_unreachable_node_as_a_bad_gateway(monkeypatch):
     # Port 1 on loopback: nothing listens, and the connect fails fast.
     monkeypatch.setenv("BR_INFERENCE_HTTP", "http://127.0.0.1:1")
-    response = TestClient(create_app()).post("/api/detect", content=b"photo")
+    response = TestClient(create_app()).post("/api/estimate", content=b"photo")
     assert response.status_code == 502
     assert "127.0.0.1:1" in response.json()["error"]
 

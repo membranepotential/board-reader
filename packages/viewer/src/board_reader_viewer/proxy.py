@@ -155,15 +155,13 @@ _HOP_BY_HOP = frozenset(
 async def relay_request(request: Request, path: str) -> Response:
     """Forward one request to ``path`` on the inference node, verbatim both ways.
 
-    Method, query string, body and content type go up untouched (``corners=x0,y0,...``
-    must reach the node character-for-character); status, body and headers come back
-    untouched, so the node's own refusal wording is what the operator reads.
+    Method, query string, body and content type go up untouched; status, body and
+    headers come back untouched, so the node's own refusal wording is what the operator
+    reads.
 
     Response headers are forwarded rather than just the content type, because the node
-    states things there that the pages act on: ``/boards/{id}/frame`` returns the board
-    quad within the retained frame on ``X-Corners``, and the live page prefers it over
-    guessing the image's own corners (index.html ``cornersOf``). Relaying only the body
-    would silently degrade calibration on phone streams.
+    states things there (``X-Seq`` on ``/boards/{id}/frame``, ``X-Preview-Seq`` on the
+    camera preview), and relaying only the body would drop them silently.
     """
     query = request.url.query
     target = http_origin() + path + (f"?{query}" if query else "")
@@ -211,10 +209,10 @@ def install(app: FastAPI) -> None:
     async def api(request: Request, path: str) -> Response:
         """Everything the pages ask of the inference node, under one prefix.
 
-        Deliberately a catch-all rather than a route per endpoint. The three pages
-        between them reach ``/estimate``, ``/calibrate``, ``/detect``, ``/uploads``,
-        ``/uploads/{id}/photo``, ``/labels/{id}`` and ``/boards/{id}/frame``, and that
-        set grows with the node's API. Enumerating it here would add a second place to
+        Deliberately a catch-all rather than a route per endpoint. The pages between
+        them reach ``/estimate``, ``/uploads``, ``/uploads/{id}/photo``,
+        ``/labels/{id}``, ``/boards/{id}/frame``, ``/boards/{id}/camera/*`` and
+        ``/healthz``, and that set grows with the node's API. Enumerating it here would add a second place to
         edit for every new endpoint and a class of bug — a page calling something the
         relay does not know about — where this has none. The viewer still parses
         nothing; it is a pipe with a prefix.

@@ -187,3 +187,13 @@ configured rectangle, so the wire contract and the edge/inference split stay as 
 are. The phone has no controls; it shows the viewfinder and connection state. The live
 test happens after this lands. This replaces steps 14–15's /camera design (tracker,
 corners and labels go; no operator rectangle on the phone itself).
+
+**Landed 2026-11-24 (plan steps 14–15, DESIGN D11).** `/camera` is a viewfinder with a
+status line; `/control` sets the crop rectangle on the phone's full-frame preview, the
+lens, the resolution and start/stop; the node holds the config per board in memory
+(`/boards/{id}/camera`) and the phone pulls it every 500 ms. Removed: the quad tracker,
+homography, labelled corners, rotate labels, auto/periodic re-detection, the portrait
+block, `/detect`, `core.boarddetect` (now `tools/video/boarddetect.py`), `core.corners`,
+the edge rectifier and quad checks, and `--rectify/--corners/--forward-original` (the
+Python edge takes `--roi x,y,w,h`). Still open: the live take that validates it, and
+wiring the Python edge to the control channel.

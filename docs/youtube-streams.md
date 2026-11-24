@@ -15,7 +15,8 @@ registry of what was tried, what survived, and why.
 ## Broadcasts and the angle audit
 
 Every extracted frame of each broadcast was run through
-`board_reader_core.boarddetect.detect_board_quad` + `quad_aspect`, and the median
+`detect_board_quad` + `quad_aspect` (then `board_reader_core.boarddetect`, now
+`tools/video/boarddetect.py`), and the median
 projected board aspect compared against the [[operating-envelope#Camera angle and light|camera
 angle]] thresholds: usable at `>= 0.73`, `very_low_angle` fires below `0.62`.
 
@@ -193,9 +194,10 @@ Three findings that shaped the crop-first workflow:
   understate the footage and overstate the detector.
 
 > [!caution] Consequence for M2
-> A ~30% miss rate means the edge `Rectifier`'s cadenced re-detection will fail roughly
-> one attempt in three on real footage. Run recorded-game demos with `feed --corners`
-> (operator-supplied corners) rather than relying on auto-detection.
+> *Historical (the edge no longer detects, DESIGN D11):* a ~30% miss rate meant the
+> edge `Rectifier`'s cadenced re-detection would fail roughly one attempt in three on
+> real footage. Today a recorded-game demo needs no detection at all: crop with
+> `feed --roi x,y,w,h` if the board fills too little of the frame.
 >
 > Suspected cause, **unverified**: this board shows visible barrel distortion, which
 > breaks the straight-edge quad model the detector assumes.
