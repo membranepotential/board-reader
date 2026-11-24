@@ -20,12 +20,10 @@
  */
 
 import {
-  cornersParam,
   parseDetectResponse,
   parseEstimateResponse,
   parseLabelResponse,
   parseUploadsResponse,
-  type CornerQuad,
   type DetectResponse,
   type EstimateResponse,
   type LabelResponse,
@@ -50,18 +48,12 @@ export type ApiResult<T> = Result<T, ApiFailure>;
 
 type QueryValue = string | number | boolean | undefined | null;
 
-/**
- * `?a=1&b=2`, or `''` when nothing is set.
- *
- * Commas are left literal: they are a legal query sub-delimiter, and `?corners=`
- * is specified in the node's own `x0,y0,…` spelling (`server._parse_corners`), so
- * the string on the wire reads as the operator would type it.
- */
+/** `?a=1&b=2`, or `''` when nothing is set. */
 function query(params: Readonly<Record<string, QueryValue>>): string {
   const parts: string[] = [];
   for (const [key, value] of Object.entries(params)) {
     if (value === undefined || value === null) continue;
-    parts.push(`${key}=${encodeURIComponent(String(value)).replace(/%2C/g, ',')}`);
+    parts.push(`${key}=${encodeURIComponent(String(value))}`);
   }
   return parts.length ? `?${parts.join('&')}` : '';
 }
@@ -173,26 +165,12 @@ async function requestJson<T>(
 
 // ---- endpoints ---------------------------------------------------------------
 
-export interface EstimateOptions {
-  /** a8,h8,h1,a1 in the POSTED image's pixels. Omitted, the body is a rectified crop. */
-  readonly corners?: CornerQuad;
-  readonly boardId?: string;
-  /** `?debug=1` — the boxes/mosaic pair. The snapshot page asks unconditionally. */
-  readonly debug?: boolean;
-  /**
-   * Let the node turn the reading to the orientation its own reading implies.
-   * Off once the operator has asserted a labelling by hand: theirs wins.
-   */
-  readonly autorotate?: boolean;
-}
-
-export function estimate(photo: Blob, options: EstimateOptions = {}): Promise<ApiResult<EstimateResponse>> {
-  const url = apiPath('/estimate', {
-    board_id: options.boardId,
-    corners: options.corners ? cornersParam(options.corners) : undefined,
-    debug: options.debug ? 1 : undefined,
-    autorotate: options.autorotate ? 1 : undefined
-  });
+/**
+ * Read one photo. The body is the whole photo: the recognizer finds the board and
+ * its orientation itself, and answers in the chess frame (rank 8 on top).
+ */
+export function estimate(photo: Blob, boardId: string): Promise<ApiResult<EstimateResponse>> {
+  const url = apiPath('/estimate', { board_id: boardId });
   return requestJson(url, { method: 'POST', body: photo, headers: JPEG_HEADERS }, parseEstimateResponse);
 }
 

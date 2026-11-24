@@ -58,6 +58,22 @@ export function positionEvent(overrides: EventOverrides = {}): Record<string, un
 }
 
 /**
+ * One `POST /estimate` reply: the position event plus what only a one-shot read
+ * carries — `upload` (only when the node retains photos) and `warnings` (only ever
+ * `low_light`). Nothing else: no corners, no debug images, no rotation.
+ */
+export function estimateReply(
+  overrides: EventOverrides & { readonly upload?: string; readonly warnings?: readonly string[] } = {}
+): Record<string, unknown> {
+  const { upload, warnings, ...event } = overrides;
+  return {
+    ...positionEvent({ board_id: 'snapshot', ...event }),
+    warnings: warnings ?? [],
+    ...(upload === undefined ? {} : { upload })
+  };
+}
+
+/**
  * An 8×8×13 distribution in which every square carries the same ranking.
  *
  * Uniform-per-square on purpose: a spec about the inspector is asserting that the

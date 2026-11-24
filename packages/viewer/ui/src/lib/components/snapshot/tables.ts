@@ -2,77 +2,20 @@
  * The evidence tables, as functions of the read.
  *
  * Each stage body's key/value table is a *view* of something the page already holds —
- * the corners, the quad's geometry, the distribution, the node's repair — so each one is
+ * the distribution, the node's repair, the board as shown — so each one is
  * a pure function here rather than a block of markup or a `kv(...)` call buried in a
- * render path. That is what makes "what does the classify stage say about this reply?"
+ * render path. That is what makes "what does the read stage say about this reply?"
  * a question with a test instead of a screenshot.
  */
 
 import type { BoardGrid } from '$lib/board/fen';
-import type { QuadGeometry } from '$lib/geometry/homography';
-import {
-  LOW_ANGLE_ASPECT,
-  LOW_CONFIDENCE,
-  LOW_LIGHT_MEAN,
-  type CornerQuad,
-  type EstimateResponse,
-  type PriorDecode
-} from '$lib/protocol';
-import { CORNER_ORDER, autoRotateNote, cornerProvenance, rotationNote, type Framing } from './framing';
+import { LOW_CONFIDENCE, type EstimateResponse, type PriorDecode } from '$lib/protocol';
 import { kv, kvIf, type KvRow } from './kv';
 import { confidenceSummary, fmt, materialCensus } from './reading';
 
 const ms = (value: number | null): string => (value === null ? '—' : `${value.toFixed(0)} ms`);
 
-/**
- * Where the four corners are, who put them there, and who owns the labelling. The
- * corners are listed in canonical a8,h8,h1,a1 order — the order that goes on the wire,
- * not storage order, so this table can be compared against `?corners=` directly.
- */
-export function cornerTable(
-  framing: Framing,
-  ordered: CornerQuad | null,
-  detectMs: number | null
-): readonly KvRow[] {
-  if (ordered === null) {
-    const placed = framing.placement.points.length;
-    return [kv('corners', `${placed}/4 placed`, placed ? 'warn' : 'plain')];
-  }
-  return [
-    kv('source', cornerProvenance(framing), framing.edited || framing.detectFailed ? 'warn' : 'ok'),
-    kv('detect latency', ms(detectMs)),
-    kv('label rotation', rotationNote(framing)),
-    ...CORNER_ORDER.map((label, i) => kv(label, `${ordered[i]?.[0]}, ${ordered[i]?.[1]}`)),
-    kv(
-      'server auto-rotate',
-      autoRotateNote(framing),
-      framing.edited || framing.adopted !== 0 ? 'ok' : 'warn'
-    )
-  ];
-}
-
-/** What the quad says about the camera, next to the two thresholds the node warns at. */
-export function geometryTable(geometry: QuadGeometry, meanLuma: number): readonly KvRow[] {
-  return [
-    kvIf(
-      'projected aspect',
-      `${fmt(geometry.aspect, 3)} (warn below ${LOW_ANGLE_ASPECT})`,
-      geometry.aspect < LOW_ANGLE_ASPECT
-    ),
-    kv(
-      'mean edge width',
-      `${fmt(geometry.w, 1)} px (a8-h8 ${fmt(geometry.top, 1)}, a1-h1 ${fmt(geometry.bottom, 1)})`
-    ),
-    kv(
-      'mean edge height',
-      `${fmt(geometry.h, 1)} px (a8-a1 ${fmt(geometry.left, 1)}, h8-h1 ${fmt(geometry.right, 1)})`
-    ),
-    kv('square pitch', `~${fmt(Math.min(geometry.w, geometry.h) / 8, 1)} px on the short axis`),
-    kvIf('mean luma', `${fmt(meanLuma, 1)} (warn below ${LOW_LIGHT_MEAN})`, meanLuma < LOW_LIGHT_MEAN)
-  ];
-}
-
-export function classTable(
+export function readTable(
   response: EstimateResponse | null,
   estimateMs: number | null
 ): readonly KvRow[] {
@@ -87,29 +30,6 @@ export function classTable(
     kv('status', response.event.status),
     kv('board / seq', `${response.event.board_id} / ${response.event.seq}`),
     kv('captured', response.event.utc)
-  ];
-}
-
-/** Who decided which corner is a8 for this read, and what the node did about it. */
-export function orientTable(
-  response: EstimateResponse | null,
-  framing: Framing
-): readonly KvRow[] {
-  if (response === null) return [];
-  const rotated = response.autorotated;
-  return [
-    kv('corner labels', framing.edited ? 'set by you' : 'auto-detected guess'),
-    kv('autorotate requested', framing.edited ? 'no' : 'yes (&autorotate=1)'),
-    kvIf('rotation applied', `${rotated} degrees`, rotated !== 0),
-    kv(
-      'adopted by this page',
-      rotated
-        ? `yes — the corner labels were shifted by ${rotated} degrees, so a8 on the photo is a8 on the board`
-        : 'nothing to adopt',
-      rotated ? 'ok' : 'plain'
-    ),
-    kv('page label rotation', rotationNote(framing)),
-    kv('reported orientation', response.event.orientation)
   ];
 }
 

@@ -2,8 +2,8 @@
   /**
    * Every read this session merged with every photo the node still retains, newest first.
    *
-   * Selecting a session read restores the whole pipeline view — photo, corners, geometry,
-   * crops, distributions — so two reads can be compared without re-shooting either.
+   * Selecting a session read restores the whole pipeline view — photo, distribution,
+   * corrections — so two reads can be compared without re-shooting either.
    * Selecting a node-held photo loads it and reads it again for real, so the stages
    * always describe the photo actually on screen.
    */
@@ -54,7 +54,7 @@
             class="row"
             class:active={row.read.id === activeId}
             type="button"
-            title="Restore this read — photo, corners, crops and distributions"
+            title="Restore this read — photo, distribution and corrections"
             onclick={() => onRestore(row.read.id)}
           >
             <img src={row.read.image.dataUrl} alt="" />

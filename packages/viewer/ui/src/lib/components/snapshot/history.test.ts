@@ -6,7 +6,6 @@ import {
   uploadFlags,
   type SessionRead
 } from './history';
-import { EMPTY_FRAMING } from './framing';
 import { labelState, NO_CORRECTIONS, type Corrections } from './reading';
 import type { CaptureFacts, SourceImage } from './photo';
 import {
@@ -51,9 +50,6 @@ function read(
     corrections,
     image: IMAGE,
     facts: FACTS,
-    framing: EMPTY_FRAMING,
-    detect: { state: 'ok', summary: 'auto-detected' },
-    detectMs: 40,
     estimateMs: 180
   };
 }
@@ -71,9 +67,7 @@ function upload(id: string, ts: number | null, extra: Partial<UploadRecord> = {}
     id,
     ts,
     kind: 'estimate',
-    corners: null,
     placement: null,
-    autorotated: null,
     labeled: false,
     label_placement: null,
     label_corrections: null,
@@ -114,20 +108,18 @@ describe('the merged history', () => {
 });
 
 describe('how a row describes itself', () => {
-  it('flags corrections, rotation, labelling and node warnings', () => {
+  it('flags corrections, labelling and node warnings', () => {
     const entry = read(
       1,
       1,
       {
         ...position,
-        autorotated: 90,
         warnings: ['low_light']
       },
       new Map([['e4', 'q']]) as Corrections
     );
     expect(readFlags(entry, upload('u1', 1, { labeled: true }))).toEqual([
       '1 corrected',
-      'rotated 90deg',
       'labelled',
       'low_light'
     ]);

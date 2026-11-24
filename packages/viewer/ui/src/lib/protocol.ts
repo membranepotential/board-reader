@@ -161,33 +161,6 @@ export function flattenQuad(quad: CornerQuad): CornerCoords {
   ];
 }
 
-/**
- * `x0,y0,…,x3,y3` — the spelling `?corners=` takes and `X-Corners` answers in.
- * One function so a page can never post a quad in an order the node reads
- * differently (`server._parse_corners`).
- */
-export function cornersParam(quad: CornerQuad, digits = 0): string {
-  const round = (v: number) => {
-    const factor = 10 ** digits;
-    return String(Math.round(v * factor) / factor);
-  };
-  return flattenQuad(quad).map(round).join(',');
-}
-
-/**
- * Inverse of `cornersParam`, tolerant by design: an unparseable string is *no*
- * quad, not a broken one. `scale` rebases the corners when the image they were
- * measured on has since been downscaled (snapshot.html `parseCorners`).
- */
-export function parseCornersParam(spec: string | null | undefined, scale = 1): CornerQuad | null {
-  const nums = String(spec ?? '').split(',').map(Number);
-  if (nums.length !== 8 || !nums.every(Number.isFinite)) return null;
-  const at = (i: number) => (nums[i] as number) * scale;
-  return [
-    [at(0), at(1)], [at(2), at(3)], [at(4), at(5)], [at(6), at(7)]
-  ];
-}
-
 // ---- L1 → L2 ingest framing --------------------------------------------------
 
 export const FRAME_TYPE = 'frame';
@@ -237,12 +210,6 @@ export interface DetectResponse {
   readonly corners: CornerQuad;
 }
 
-/** Base64 JPEGs from `?debug=1`: the sampled boxes, and the 8×8 crop mosaic. */
-export interface DebugImages {
-  readonly boxes: string;
-  readonly mosaic: string;
-}
-
 /** One relabelling the prior decoder applied (`prior.Flip`). */
 export interface PriorFlip {
   readonly square: string;
@@ -277,19 +244,16 @@ export interface SettledBoard {
  * Warnings ride as node-authored strings and are shown verbatim. Enumerating them
  * in a union here would add a second place to edit for every warning the node
  * learns to raise — the same argument `proxy.py` makes for its catch-all `/api`
- * route. The two the UI actually *branches* on are named below.
+ * route. The one the UI actually *branches* on is named below.
  */
 export const WARN_LOW_LIGHT = 'low_light';
-export const WARN_VERY_LOW_ANGLE = 'very_low_angle';
 
 /**
- * The thresholds the node raises those two warnings at (`server.LOW_LIGHT_MEAN`,
- * `boarddetect.LOW_ANGLE_ASPECT`), mirrored so a page can show the same verdict on
- * the photo in hand *before* posting it — which is the only moment the operator
- * can still do something about it.
+ * The threshold the node raises that warning at (`server.LOW_LIGHT_MEAN`), mirrored
+ * so a page can show the same verdict on the photo in hand *before* posting it —
+ * which is the only moment the operator can still do something about it.
  */
 export const LOW_LIGHT_MEAN = 55.0;
-export const LOW_ANGLE_ASPECT = 0.62;
 
 /**
  * How the UI reads the two per-event scalars. Both are interpretations of the
@@ -307,12 +271,9 @@ export const LOW_CONFIDENCE = 0.5;
 export interface EstimateResponse {
   readonly event: PositionEvent;
   readonly prior: PriorDecode | null;
-  /** Degrees (0/90/180/270) the node turned the reading by under `?autorotate=1`. */
-  readonly autorotated: number;
   /** Names the retained photo, so this read's position can be confirmed via `/labels`. */
   readonly upload: string | null;
   readonly warnings: readonly string[];
-  readonly debug: DebugImages | null;
 }
 
 /** One retained photo as `GET /uploads` lists it. */
@@ -321,10 +282,7 @@ export interface UploadRecord {
   /** Epoch seconds, as the node records them. */
   readonly ts: number | null;
   readonly kind: string;
-  /** `x0,y0,…` as posted, in the stored photo's own pixels — feed to `parseCornersParam`. */
-  readonly corners: string | null;
   readonly placement: string | null;
-  readonly autorotated: number | null;
   readonly labeled: boolean;
   readonly label_placement: string | null;
   readonly label_corrections: number | null;
@@ -398,15 +356,6 @@ export function parseSquareDist(value: unknown): SquareDist | null {
 function parseWarnings(value: unknown): readonly string[] {
   if (!Array.isArray(value)) return [];
   return value.filter((w): w is string => typeof w === 'string');
-}
-
-function parseDebug(value: unknown): DebugImages | null {
-  if (!isRecord(value)) return null;
-  const boxes = asString(value['boxes']);
-  const mosaic = asString(value['mosaic']);
-  // Both or neither: the page shows them as a pair and a half-pair would render a
-  // broken image rather than the honest "no debug images for this read".
-  return boxes !== null && mosaic !== null ? { boxes, mosaic } : null;
 }
 
 // ---- the position event ------------------------------------------------------
@@ -511,10 +460,8 @@ export function parseEstimateResponse(raw: unknown): ParseResult<EstimateRespons
   return ok({
     event: event.value,
     prior: parsePrior(raw['prior']),
-    autorotated: asFiniteNumber(raw['autorotated']) ?? 0,
     upload: asString(raw['upload']),
-    warnings: parseWarnings(raw['warnings']),
-    debug: parseDebug(raw['debug'])
+    warnings: parseWarnings(raw['warnings'])
   });
 }
 
@@ -544,9 +491,7 @@ export function parseUploadsResponse(raw: unknown): ParseResult<UploadsResponse>
       id,
       ts: parseUploadTimestamp(row['ts']),
       kind: asString(row['kind']) ?? 'estimate',
-      corners: asString(row['corners']),
       placement: asString(row['placement']),
-      autorotated: asFiniteNumber(row['autorotated']),
       labeled: row['labeled'] === true,
       label_placement: asString(row['label_placement']),
       label_corrections: asFiniteNumber(row['label_corrections'])

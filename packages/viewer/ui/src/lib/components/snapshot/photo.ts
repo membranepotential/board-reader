@@ -1,12 +1,9 @@
 /**
  * The photo in hand, and what the capture stage says about it.
  *
- * **One coordinate system.** The photo is downscaled to a 1600 px long side in the
- * browser, and that downscaled image is exactly what is POSTed to `/detect` and
- * `/estimate` — so every pixel coordinate on this page (corner handles, the loupe, the
- * `?corners=` query) shares one space with the node's. Nothing here ever measures in
- * screen pixels; the on-screen size of the photo is a presentation detail applied at
- * the very last moment (`CornerPicker`).
+ * The photo is downscaled to a 1600 px long side in the browser, and that downscaled
+ * image is exactly what is POSTed to `/estimate` — so the capture stage describes the
+ * very pixels the node reads.
  */
 
 import { LOW_LIGHT_MEAN } from '$lib/protocol';
@@ -15,8 +12,6 @@ import { fmt } from './reading';
 
 /** Long side the photo is downscaled to before anything looks at it. */
 export const MAX_SOURCE_PX = 1600;
-/** Side of the client-side rectified preview. */
-export const RECTIFIED_PX = 512;
 /** What the posted JPEG is encoded at. */
 export const POST_QUALITY = 0.9;
 /** …and the much smaller copy a history entry keeps so a read can be restored. */
@@ -70,4 +65,27 @@ export function captureRows(image: SourceImage, facts: CaptureFacts): readonly K
 
 export function kb(bytes: number): string {
   return `${(bytes / 1024).toFixed(0)} kB`;
+}
+
+/**
+ * Mean luma of an RGBA image, subsampled — the page's own mirror of the node's
+ * low-light check (`server.LOW_LIGHT_MEAN`). Stepping rather than reading every
+ * pixel keeps a 12 MP phone photo instant, and a mean does not need every sample.
+ */
+export function meanLuma(image: {
+  readonly data: Uint8ClampedArray;
+  readonly width: number;
+  readonly height: number;
+}): number {
+  const step = Math.max(1, Math.round(Math.max(image.width, image.height) / 240));
+  let sum = 0;
+  let n = 0;
+  for (let y = 0; y < image.height; y += step) {
+    for (let x = 0; x < image.width; x += step) {
+      const i = (y * image.width + x) * 4;
+      sum += (image.data[i]! + image.data[i + 1]! + image.data[i + 2]!) / 3;
+      n++;
+    }
+  }
+  return n ? sum / n : 0;
 }

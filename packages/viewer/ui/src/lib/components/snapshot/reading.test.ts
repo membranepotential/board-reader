@@ -185,10 +185,8 @@ describe('the raw event block', () => {
     square_dist: Array.from({ length: 8 }, () =>
       Array.from({ length: 8 }, () => Array.from({ length: NUM_CLASSES }, () => 1 / NUM_CLASSES))
     ),
-    autorotated: 90,
     upload: 'u1',
     prior: { placement: 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBN1', flips: [], residual: {} },
-    debug: { boxes: 'AAA', mosaic: 'BBB' },
     warnings: ['low_light']
   };
 
@@ -204,11 +202,10 @@ describe('the raw event block', () => {
     expect(response.event.placement).toBe(START_PLACEMENT);
   });
 
-  it('strips the debug JPEGs and the 8×8×13 floats', () => {
+  it('replaces the 8×8×13 floats with a note', () => {
     const json = rawEventJson(parsed(positionRaw));
-    expect(json).not.toContain('AAA');
     expect(json).toContain('see the confidence map');
-    expect(JSON.parse(json)).toMatchObject({ upload: 'u1', autorotated: 90 });
+    expect(JSON.parse(json)).toMatchObject({ upload: 'u1', warnings: ['low_light'] });
   });
 });
 

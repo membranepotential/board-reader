@@ -362,9 +362,8 @@ export function heatColor(p: number): string {
  *
  * This is the *parsed* event re-serialised, not the bytes off the wire: everything the
  * page renders comes through `parseEstimateResponse`, so showing anything else would be
- * showing a different value than the one the stages describe. The two debug JPEGs are
- * omitted (they are shown as images) and `square_dist` is replaced by a note — 8×8×13
- * floats are what the confidence map is for.
+ * showing a different value than the one the stages describe. `square_dist` is
+ * replaced by a note — 8×8×13 floats are what the confidence map is for.
  */
 export function rawEventJson(response: EstimateResponse): string {
   const body = {
@@ -380,7 +379,6 @@ export function rawEventJson(response: EstimateResponse): string {
     square_dist:
       response.event.square_dist === null ? null : '[8 x 8 x 13 floats — see the confidence map]',
     prior: response.prior,
-    autorotated: response.autorotated,
     upload: response.upload,
     warnings: response.warnings
   };

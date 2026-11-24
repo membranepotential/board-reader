@@ -1,6 +1,6 @@
 <script lang="ts">
   /**
-   * One square: what the model saw, what it believed, and what it should have said.
+   * One square: what the model believed, and what it should have said.
    *
    * Wide enough, it is a panel beside the board so a square and its candidates are in
    * one glance; on a phone it docks as a bottom sheet above the fixed action bar. Plain
@@ -27,12 +27,6 @@
     /** What the board shows here right now — the correction if there is one. */
     shown: ClassName;
     corrected: boolean;
-    /**
-     * The crop the classifier actually saw, as a cell of the debug mosaic. The mosaic is
-     * a uniform 8×8 tiling of equal cells, so percentage background positioning lands
-     * exactly on one cell.
-     */
-    mosaic: { readonly url: string; readonly row: number; readonly col: number } | null;
     onAssign: (cls: ClassName) => void;
     onRevert: () => void;
     onClose: () => void;
@@ -40,7 +34,7 @@
     onNextLow: () => void;
   }
 
-  const { square, scores, shown, corrected, mosaic, onAssign, onRevert, onClose, onStep, onNextLow }: Props =
+  const { square, scores, shown, corrected, onAssign, onRevert, onClose, onStep, onNextLow }: Props =
     $props();
 
   const read = $derived(argmaxClass(scores));
@@ -58,13 +52,6 @@
   </div>
 
   <div class="read">
-    <div
-      class="crop"
-      style:background-image={mosaic ? `url("${mosaic.url}")` : 'none'}
-      style:background-position={mosaic
-        ? `${(mosaic.col / 7) * 100}% ${(mosaic.row / 7) * 100}%`
-        : '0 0'}
-    ></div>
     <div class="facts">
       <div>
         <span class="k">model read</span>
@@ -205,17 +192,6 @@
     align-items: center;
     gap: 10px;
     margin-bottom: 10px;
-  }
-
-  .crop {
-    width: 64px;
-    height: 88px;
-    flex: 0 0 auto;
-    border-radius: 6px;
-    border: 1px solid var(--line);
-    background-color: #0f1216;
-    background-repeat: no-repeat;
-    background-size: 800% 800%;
   }
 
   .facts {

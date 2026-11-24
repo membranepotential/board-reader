@@ -7,23 +7,18 @@
  * body. Nothing is gated behind an opt-in checkbox — diagnostics are the point.
  *
  * The hand-written page drove those stages by writing `data-state` attributes and
- * `textContent` into eight fixed `<section>`s (`setStep`/`resetSteps`/`openStep`).
+ * `textContent` into fixed `<section>`s (`setStep`/`resetSteps`/`openStep`).
  * Here the same model is a value: one immutable record from stage id to
  * `{state, summary}`, updated by returning a new record. That is what lets a history
  * entry restore a whole pipeline by assignment, and what makes "which stages did a
  * failed read fail?" a thing the type system can answer.
  */
 
-export const STAGE_ORDER = [
-  'capture',
-  'detect',
-  'rectify',
-  'sample',
-  'classify',
-  'orient',
-  'repair',
-  'output'
-] as const;
+/**
+ * Four stages: the recognizer reads the whole photo, so there is no detection,
+ * rectification or orientation step left for this page to show.
+ */
+export const STAGE_ORDER = ['capture', 'read', 'repair', 'output'] as const;
 
 export type StageId = (typeof STAGE_ORDER)[number];
 
@@ -60,13 +55,9 @@ export interface StageMeta {
 
 export const STAGES: readonly StageMeta[] = [
   { id: 'capture', index: 1, title: 'Capture', initialSummary: 'no photo yet' },
-  { id: 'detect', index: 2, title: 'Board detection', initialSummary: 'waiting for a photo' },
-  { id: 'rectify', index: 3, title: 'Rectify & geometry', initialSummary: 'waiting for corners' },
-  { id: 'sample', index: 4, title: 'Square sampling', initialSummary: 'waiting for a read' },
-  { id: 'classify', index: 5, title: 'Classification', initialSummary: 'waiting for a read' },
-  { id: 'orient', index: 6, title: 'Orientation', initialSummary: 'waiting for a read' },
-  { id: 'repair', index: 7, title: 'Impossible-board repair', initialSummary: 'waiting for a read' },
-  { id: 'output', index: 8, title: 'Position output', initialSummary: 'waiting for a read' }
+  { id: 'read', index: 2, title: 'Read', initialSummary: 'waiting for a photo' },
+  { id: 'repair', index: 3, title: 'Impossible-board repair', initialSummary: 'waiting for a read' },
+  { id: 'output', index: 4, title: 'Position output', initialSummary: 'waiting for a read' }
 ];
 
 export type Pipeline = Readonly<Record<StageId, StageStatus>>;
@@ -116,5 +107,5 @@ export function resetFrom(pipeline: Pipeline, id: StageId): Pipeline {
   return next;
 }
 
-/** The four stages a `/estimate` call owns, in order. */
-export const READ_STAGES: readonly StageId[] = ['sample', 'classify', 'orient', 'output'];
+/** The three stages a `/estimate` call owns, in order. */
+export const READ_STAGES: readonly StageId[] = ['read', 'repair', 'output'];

@@ -3,9 +3,7 @@ import {
   CLASSES,
   NUM_CLASSES,
   START_PLACEMENT,
-  cornersParam,
   flattenQuad,
-  parseCornersParam,
   parseEstimateResponse,
   parseIngestReply,
   parsePositionEvent,
@@ -157,46 +155,13 @@ describe('parsePositionEvent', () => {
   });
 });
 
-describe('corner spelling', () => {
+describe('the ingest header quad', () => {
   const quad: CornerQuad = [
     [536.4, 918.2],
     [631, 336],
     [1458, 320],
     [1638, 896]
   ];
-
-  it('writes the x0,y0,... spelling the node parses', () => {
-    expect(cornersParam(quad)).toBe('536,918,631,336,1458,320,1638,896');
-  });
-
-  it('keeps a tenth of a pixel when asked, for a rebased crop', () => {
-    expect(cornersParam([[1.24, 2.26], [0, 0], [0, 0], [0, 0]], 1)).toBe('1.2,2.3,0,0,0,0,0,0');
-  });
-
-  it('round-trips through parseCornersParam', () => {
-    expect(parseCornersParam(cornersParam(quad))).toEqual([
-      [536, 918],
-      [631, 336],
-      [1458, 320],
-      [1638, 896]
-    ]);
-  });
-
-  it('rescales when the photo was downscaled after the corners were measured', () => {
-    expect(parseCornersParam('0,0,100,0,100,100,0,100', 0.5)).toEqual([
-      [0, 0],
-      [50, 0],
-      [50, 50],
-      [0, 50]
-    ]);
-  });
-
-  it.each([null, undefined, '', '1,2,3', '1,2,3,4,5,6,7,x', 'nonsense'])(
-    'reads %s as no quad at all',
-    (spec) => {
-      expect(parseCornersParam(spec)).toBeNull();
-    }
-  );
 
   it('flattens in a8,h8,h1,a1 order', () => {
     expect(flattenQuad(quad)).toEqual([536.4, 918.2, 631, 336, 1458, 320, 1638, 896]);
@@ -232,7 +197,6 @@ describe('parseEstimateResponse', () => {
   it('reads the position event, with its prior and its extras', () => {
     const parsed = parseEstimateResponse({
       ...validEvent,
-      autorotated: 90,
       upload: '20260807-100000-0001-estimate',
       warnings: ['low_light'],
       prior: {
@@ -243,7 +207,6 @@ describe('parseEstimateResponse', () => {
     });
     expect(parsed.ok).toBe(true);
     if (!parsed.ok) return;
-    expect(parsed.value.autorotated).toBe(90);
     expect(parsed.value.prior?.flips[0]?.square).toBe('d8');
     expect(parsed.value.prior?.residual['kings']).toBe(1);
     expect(parsed.value.warnings).toEqual(['low_light']);

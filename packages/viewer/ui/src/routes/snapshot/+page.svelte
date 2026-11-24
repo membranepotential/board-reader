@@ -4,16 +4,15 @@
    *
    * This is the **pipeline inspector**: the diagnostic surface for the reading algorithm.
    * One photo goes in and the page shows every stage that turned it into a position —
-   * capture, detection, rectification, sampling, classification, orientation, repair,
-   * output — each with its own state, headline and full evidence. `?debug=1` is
-   * unconditional here rather than a checkbox: diagnostics are the point.
+   * capture, read, repair, output — each with its own state, headline and full
+   * evidence. The recognizer finds the board and its orientation in the whole photo,
+   * so there are no corners to set and the read is always in the chess frame (rank 8
+   * on top).
    *
    * Two invariants the whole page is built around:
    *
-   *  - **One coordinate system.** The photo is downscaled once and *that* image is what
-   *    is posted to `/detect` and `/estimate`, so a corner handle, the `?corners=` query
-   *    and the node's own boxes all mean the same pixels. Nothing here measures in
-   *    screen coordinates.
+   *  - **One image.** The photo is downscaled once and *that* image is what is posted
+   *    to `/estimate` and what the capture stage describes.
    *  - **The node's read is never mutated.** `prior.placement ?? placement` plus
    *    `square_dist` is the baseline; hand corrections are a separate layer over it. So
    *    "reset corrections" restores exactly what the node served, and the ground-truth
@@ -23,12 +22,11 @@
    * the canvases, observers and document listeners all live in `$effect`.
    */
   import { onMount } from 'svelte';
-  import { detect, estimate, listUploads, saveLabel, uploadPhotoUrl } from '$lib/api';
+  import { estimate, listUploads, saveLabel, uploadPhotoUrl } from '$lib/api';
   import Board from '$lib/board/Board.svelte';
   import { squareKey } from '$lib/board/fen';
   import ConfidenceMap from '$lib/components/snapshot/ConfidenceMap.svelte';
   import CorrectionsPanel from '$lib/components/snapshot/CorrectionsPanel.svelte';
-  import CornerPicker from '$lib/components/snapshot/CornerPicker.svelte';
   import GroundTruthForm from '$lib/components/snapshot/GroundTruthForm.svelte';
   import HistoryList from '$lib/components/snapshot/HistoryList.svelte';
   import KvTable from '$lib/components/snapshot/KvTable.svelte';
@@ -41,26 +39,13 @@
     type SessionRead
   } from '$lib/components/snapshot/history';
   import {
-    EMPTY_FRAMING,
-    absorbedFraming,
-    clearedFraming,
-    detectedFraming,
-    failedDetection,
-    quadOf,
-    rotatedFraming,
-    withMovedPoint,
-    withPoint,
-    withoutLastPoint,
-    type Framing
-  } from '$lib/components/snapshot/framing';
-  import {
     MAX_SOURCE_PX,
     POST_QUALITY,
-    RECTIFIED_PX,
     THUMB_QUALITY,
     captureRows,
     captureSummary,
     kb,
+    meanLuma,
     type CaptureFacts,
     type SourceImage
   } from '$lib/components/snapshot/photo';
@@ -98,25 +83,12 @@
     type Corrections,
     type SideToMove
   } from '$lib/components/snapshot/reading';
-  import {
-    classTable,
-    cornerTable,
-    geometryTable,
-    materialTable,
-    orientTable,
-    repairTable
-  } from '$lib/components/snapshot/tables';
-  import { orderedCorners } from '$lib/geometry/corners';
-  import { meanLuma, quadGeometry, rectifyQuad } from '$lib/geometry/homography';
+  import { materialTable, readTable, repairTable } from '$lib/components/snapshot/tables';
   import {
     EMPTY_PLACEMENT,
     GRID,
-    LOW_ANGLE_ASPECT,
     LOW_CONFIDENCE,
-    LOW_LIGHT_MEAN,
     WARN_LOW_LIGHT,
-    WARN_VERY_LOW_ANGLE,
-    parseCornersParam,
     type ClassName,
     type EstimateResponse,
     type UploadRecord
@@ -124,27 +96,20 @@
   import type { DrawShape } from '@lichess-org/chessground/draw';
 
   // ---- state ---------------------------------------------------------------
-  // The photo lives in an offscreen canvas — corner coordinates, the loupe, the
-  // rectifier and the posted JPEG all read it, and all of them mean its pixels.
+  // The photo lives in an offscreen canvas — the posted JPEG and the capture stage
+  // both read it, and both mean its pixels.
   // (`$state<T>(null)`, never `let x: T | null = $state(null)`: with the annotation on the
   // variable, TypeScript's flow analysis narrows every top-level `$derived` that reads it
   // to the initial `null`.)
-  let source = $state<HTMLCanvasElement | null>(null);
-  /** The source pixels, kept so a rectify does not re-read them from the GPU each time. */
-  let sourcePixels: ImageData | null = null;
+  let source: HTMLCanvasElement | null = null;
 
   let image = $state<SourceImage | null>(null);
   let facts = $state<CaptureFacts | null>(null);
-  let framing: Framing = $state(EMPTY_FRAMING);
   let pipeline: Pipeline = $state(initialPipeline());
   /** Which stage bodies are expanded. Everything starts collapsed. */
   let stageOpen: Record<StageId, boolean> = $state({
     capture: false,
-    detect: false,
-    rectify: false,
-    sample: false,
-    classify: false,
-    orient: false,
+    read: false,
     repair: false,
     output: false
   });
@@ -162,7 +127,6 @@
   let banner = $state<{ readonly kind: 'info' | 'warn'; readonly text: string } | null>(null);
   let bannerTimer: ReturnType<typeof setTimeout> | null = null;
 
-  let detectMs = $state<number | null>(null);
   let estimateMs = $state<number | null>(null);
 
   let reads = $state<readonly SessionRead[]>([]);
@@ -171,7 +135,6 @@
   let activeReadId = $state<number | null>(null);
   let readSeq = 0;
 
-  let warpCanvas: HTMLCanvasElement | undefined = $state();
   let boardColumn: HTMLDivElement | undefined = $state();
   let actionBar: HTMLDivElement | undefined = $state();
   let boardSize = $state(360);
@@ -183,13 +146,6 @@
   const baseGrid = $derived(reading === null ? null : baselineGrid(reading));
   const shownGrid = $derived(baseGrid === null ? null : correctedGrid(baseGrid, corrections));
   const shownPlacement = $derived(shownGrid === null ? null : placementOfGrid(shownGrid));
-  const quad = $derived(quadOf(framing));
-  /** Canonical a8,h8,h1,a1 — the only order that ever goes on the wire. */
-  const orderedQuad = $derived(quad === null ? null : orderedCorners(quad, framing.rot));
-  const geometry = $derived(orderedQuad === null ? null : quadGeometry(orderedQuad));
-  const debug = $derived(reading?.debug ?? null);
-  const mosaicUrl = $derived(debug === null ? null : `data:image/jpeg;base64,${debug.mosaic}`);
-  const boxesUrl = $derived(debug === null ? null : `data:image/jpeg;base64,${debug.boxes}`);
   /**
    * Everything the inspector needs, or nothing at all. Bundling it into one value is
    * what makes "an inspected square with no distribution behind it" unrepresentable —
@@ -204,15 +160,12 @@
     return {
       square: squareKey(at.r, at.c),
       scores,
-      shown: shownClassAt(grid, corrections, at.r, at.c),
-      mosaic: mosaicUrl === null ? null : { url: mosaicUrl, row: at.r, col: at.c }
+      shown: shownClassAt(grid, corrections, at.r, at.c)
     };
   });
   const links = $derived(shownPlacement === null ? null : lichessUrls(shownPlacement, stm));
 
   const rows = $derived(historyRows(reads, uploads));
-
-  const showRotate = $derived(quad !== null);
 
   const boardShapes = $derived.by((): DrawShape[] => {
     const shapes: DrawShape[] = [];
@@ -232,31 +185,13 @@
     return shapes;
   });
 
-  const warningMessages = $derived.by(() => {
-    const warnings = reading?.warnings ?? [];
-    const messages: string[] = [];
-    if (warnings.includes(WARN_LOW_LIGHT)) {
-      messages.push('Photo is very dark — reads degrade; add light if you can.');
-    }
-    if (warnings.includes(WARN_VERY_LOW_ANGLE)) {
-      messages.push(
-        'Camera is almost level with the board — pieces hide each other and reads collapse. ' +
-          'Hold the phone higher, looking down at the board.'
-      );
-    }
-    return messages;
-  });
+  const lowLight = $derived(reading?.warnings.includes(WARN_LOW_LIGHT) ?? false);
 
   // ---- stage tables ---------------------------------------------------------
   // Each one is a pure function of the read (`./tables`); this is only the wiring.
 
   const captureTable = $derived(image === null || facts === null ? [] : captureRows(image, facts));
-  const cornersRows = $derived(cornerTable(framing, orderedQuad, detectMs));
-  const geometryRows = $derived(
-    geometry === null || image === null ? [] : geometryTable(geometry, image.meanLuma)
-  );
-  const classRows = $derived(classTable(reading, estimateMs));
-  const orientRows = $derived(orientTable(reading, framing));
+  const readRows = $derived(readTable(reading, estimateMs));
   const repairRows = $derived(repairTable(reading?.prior ?? null));
   const materialRows = $derived(shownGrid === null ? [] : materialTable(shownGrid));
 
@@ -305,20 +240,19 @@
 
   /**
    * Draw a decoded photo into the source canvas at the posted resolution, and measure
-   * everything the capture stage reports. The scale factor is returned because corners
-   * recorded against the ORIGINAL photo (a node-held upload) have to be rebased by it.
+   * everything the capture stage reports.
    */
   async function adoptPhoto(
     element: HTMLImageElement,
     describe: (scale: number) => CaptureFacts
-  ): Promise<number> {
+  ): Promise<void> {
     const canvas = sourceCanvas();
     const scale = Math.min(1, MAX_SOURCE_PX / Math.max(element.naturalWidth, element.naturalHeight));
     canvas.width = Math.round(element.naturalWidth * scale);
     canvas.height = Math.round(element.naturalHeight * scale);
     const ctx = context(canvas);
     ctx.drawImage(element, 0, 0, canvas.width, canvas.height);
-    sourcePixels = ctx.getImageData(0, 0, canvas.width, canvas.height);
+    const pixels = ctx.getImageData(0, 0, canvas.width, canvas.height);
 
     const bytes = (await canvasJpeg(canvas, POST_QUALITY)).size;
     image = {
@@ -326,139 +260,33 @@
       height: canvas.height,
       dataUrl: canvas.toDataURL('image/jpeg', THUMB_QUALITY),
       bytes,
-      meanLuma: meanLuma({
-        data: sourcePixels.data,
-        width: canvas.width,
-        height: canvas.height
-      })
+      meanLuma: meanLuma({ data: pixels.data, width: canvas.width, height: canvas.height })
     };
     facts = describe(scale);
 
     // A new photo invalidates every stage and everything read off the old one.
-    framing = EMPTY_FRAMING;
     reading = null;
     corrections = NO_CORRECTIONS;
     selected = null;
     savedLabel = null;
     activeReadId = null;
-    detectMs = null;
     estimateMs = null;
     hideBanner();
     pipeline = withStage(resetFrom(pipeline, 'capture'), 'capture', 'ok', captureSummary(image));
-    return scale;
   }
 
-  // ---- 2. board detection ---------------------------------------------------
-
-  async function autoDetect(): Promise<void> {
-    if (image === null) return;
-    pipeline = withStage(pipeline, 'detect', 'run', 'calling /detect…');
-    runState = 'detecting';
-    const started = performance.now();
-    const result = await detect(await canvasJpeg(sourceCanvas(), POST_QUALITY));
-    detectMs = performance.now() - started;
-    if (!result.ok) {
-      // A failed detection is reported, never fatal: the manual path opens instead.
-      framing = failedDetection();
-      pipeline = withStage(
-        pipeline,
-        'detect',
-        'fail',
-        `no board found (${result.error.message}) — set the four corners by hand`
-      );
-      // The fallback path: surface manual corner-tapping immediately.
-      stageOpen = { ...stageOpen, detect: true };
-      runState = 'needs corners';
-      rectify();
-      return;
-    }
-    // Geometric TL,TR,BR,BL from the node; the initial labelling is a guess (a8=TL),
-    // which is why the read that follows asks for auto-rotation.
-    framing = detectedFraming(result.value.corners);
-    pipeline = withStage(
-      pipeline,
-      'detect',
-      'ok',
-      `auto-detected in ${detectMs.toFixed(0)} ms · labels unconfirmed`
-    );
-    rectify();
-    // Corners look good — go straight to a result, no tap needed.
-    await runRead();
-  }
-
-  // ---- 3. rectify + geometry ------------------------------------------------
-
-  /**
-   * The client-side rectified preview. Deliberately event-driven rather than derived: a
-   * 512×512 warp per pointermove would be pointless work, and the node re-derives its
-   * own geometry anyway — this only checks that the labelling is right.
-   */
-  function rectify(): void {
-    const pixels = sourcePixels;
-    if (orderedQuad === null || pixels === null || image === null) {
-      pipeline = withStage(pipeline, 'rectify', 'idle', 'waiting for corners');
-      return;
-    }
-    const warped = rectifyQuad(
-      { data: pixels.data, width: image.width, height: image.height },
-      orderedQuad,
-      RECTIFIED_PX
-    );
-    if (warped === null) {
-      pipeline = withStage(
-        pipeline,
-        'rectify',
-        'fail',
-        'those four points define no homography — three of them are in a line'
-      );
-      return;
-    }
-    if (warpCanvas !== undefined) {
-      const ctx = context(warpCanvas);
-      const preview = ctx.createImageData(warped.size, warped.size);
-      preview.data.set(warped.data);
-      ctx.putImageData(preview, 0, 0);
-    }
-
-    const geo = quadGeometry(orderedQuad);
-    const flat = geo.aspect < LOW_ANGLE_ASPECT;
-    const dim = image.meanLuma < LOW_LIGHT_MEAN;
-    const flags: string[] = [];
-    if (flat) flags.push('camera close to board level — pieces occlude each other');
-    if (dim) flags.push('dim photo — recognition degrades');
-    pipeline = withStage(
-      pipeline,
-      'rectify',
-      flags.length ? 'warn' : 'ok',
-      `aspect ${fmt(geo.aspect, 3)} · luma ${fmt(image.meanLuma, 1)}` +
-        (flags.length ? ` · ${flags.join(' · ')}` : '')
-    );
-  }
-
-  // ---- 4-8. estimate + render ----------------------------------------------
+  // ---- 2-4. estimate + render ----------------------------------------------
 
   async function runRead(): Promise<void> {
-    if (orderedQuad === null || image === null) return;
+    if (image === null) return;
     busy = 'estimating…';
     failure = '';
     runState = 'reading';
     pipeline = withStages(pipeline, READ_STAGES, 'run', 'estimating…');
     const started = performance.now();
     try {
-      // The photo itself plus the labelled corners: the node crops each square with
-      // headroom from the ORIGINAL view, so pieces are seen whole. Corners are captured
-      // beside the encode — never after an await — so a handle dragged during encoding
-      // cannot pair new corners with old pixels.
-      const corners = orderedQuad;
       const blob = await canvasJpeg(sourceCanvas(), POST_QUALITY);
-      const result = await estimate(blob, {
-        corners,
-        debug: true,
-        // Untouched auto-detected corners carry no orientation, so the node is asked to
-        // pick the most plausible one. The moment the operator asserts a labelling,
-        // theirs wins and auto-rotation is off.
-        ...(framing.edited ? {} : { autorotate: true })
-      });
+      const result = await estimate(blob, 'snapshot');
       estimateMs = performance.now() - started;
       if (!result.ok) {
         failure = `estimate failed: ${result.error.message}`;
@@ -487,25 +315,6 @@
     selected = null;
     savedLabel = null;
 
-    pipeline =
-      response.debug === null
-        ? withStage(pipeline, 'sample', 'warn', 'the server returned no debug images for this read')
-        : withStage(
-            pipeline,
-            'sample',
-            'ok',
-            '64 full-piece crops cut from the photo and fed to the classifier'
-          );
-
-    // A read posted with autorotate=1 can come back turned. Absorbing it into this page's
-    // own labelling is what keeps the handles, the crops and the board describing ONE
-    // orientation. Only ever on a fresh read: a restored entry stored the rotation it was
-    // rendered with, and absorbing again would turn it twice.
-    if (restored === null && response.autorotated !== 0) {
-      framing = absorbedFraming(framing, response.autorotated);
-      rectify();
-    }
-
     // A new read is a fresh baseline; a restored one brings back the corrections that
     // were made against it, so switching between reads never loses hand work.
     corrections = restored?.corrections ?? NO_CORRECTIONS;
@@ -513,23 +322,10 @@
     const summary = confidenceSummary(response.event.square_dist);
     pipeline = withStage(
       pipeline,
-      'classify',
+      'read',
       summary.low ? 'warn' : 'ok',
       `mean per-square confidence ${fmt(summary.mean, 3)} · ${summary.low} square(s) below ` +
         `${LOW_CONFIDENCE} · position confidence ${fmt(response.event.confidence ?? 0, 3)}`
-    );
-
-    const rotated = response.autorotated;
-    pipeline = withStage(
-      pipeline,
-      'orient',
-      rotated ? 'warn' : 'ok',
-      framing.edited
-        ? 'your corner labelling used as-is (auto-rotation off)'
-        : rotated
-          ? `server rotated the reading by ${rotated} degrees and this page adopted it — ` +
-            'corner labels, crops and board now share one orientation'
-          : 'auto-rotation on, no rotation needed'
     );
 
     const prior = response.prior;
@@ -545,16 +341,7 @@
           : 'the read was already a possible board — nothing changed'
     );
     restateOutput();
-
-    if (rotated) {
-      showBanner(
-        'info',
-        `Orientation auto-corrected: the server rotated the reading by ${rotated} degrees and ` +
-          'the corner labels moved with it — use "rotate labels" if this still looks wrong'
-      );
-    } else {
-      hideBanner();
-    }
+    hideBanner();
 
     if (restored === null) pushRead(response);
     else markRestored(restored);
@@ -645,37 +432,6 @@
     );
   }
 
-  // ---- corner editing -------------------------------------------------------
-
-  function onAdd(point: readonly [number, number]): void {
-    framing = withPoint(framing, point);
-  }
-
-  function onMove(index: number, point: readonly [number, number]): void {
-    framing = withMovedPoint(framing, index, point);
-  }
-
-  function onUndo(): void {
-    framing = withoutLastPoint(framing);
-    rectify();
-  }
-
-  function onReset(): void {
-    framing = clearedFraming(framing);
-    rectify();
-  }
-
-  /**
-   * Rotating labels changes which physical corner is a8, so per-square corrections made
-   * against the OLD mapping no longer refer to the right squares — they are cleared here
-   * rather than silently misapplied to a re-read under the new orientation.
-   */
-  function onRotate(): void {
-    framing = rotatedFraming(framing);
-    resetCorrections();
-    rectify();
-  }
-
   // ---- ground truth ---------------------------------------------------------
 
   const uploadId = $derived(reading?.upload ?? null);
@@ -720,9 +476,6 @@
         corrections,
         image,
         facts,
-        framing,
-        detect: pipeline['detect'],
-        detectMs,
         estimateMs
       },
       ...reads
@@ -747,9 +500,9 @@
   }
 
   /**
-   * Put the whole page back into the state that read produced: stages 1-3 from the
-   * stored photo and corners, 4-8 from the stored event — so the evidence on screen
-   * always belongs to one and the same read, never a mix of two.
+   * Put the whole page back into the state that read produced: capture from the stored
+   * photo, the rest from the stored event — so the evidence on screen always belongs to
+   * one and the same read, never a mix of two.
    */
   async function restoreRead(id: number): Promise<void> {
     const read = reads.find((entry) => entry.id === id);
@@ -759,31 +512,20 @@
     const canvas = sourceCanvas();
     canvas.width = read.image.width;
     canvas.height = read.image.height;
-    const ctx = context(canvas);
-    ctx.drawImage(element, 0, 0);
-    sourcePixels = ctx.getImageData(0, 0, canvas.width, canvas.height);
+    context(canvas).drawImage(element, 0, 0);
     image = read.image;
     facts = read.facts;
-    // `framing.rot` already includes any rotation the page adopted — never absorb twice.
-    framing = read.framing;
-    detectMs = read.detectMs;
     estimateMs = read.estimateMs;
-    pipeline = withStage(
-      withStage(pipeline, 'capture', 'ok', captureSummary(read.image)),
-      'detect',
-      read.detect.state,
-      read.detect.summary
-    );
-    rectify();
+    pipeline = withStage(pipeline, 'capture', 'ok', captureSummary(read.image));
     applyReading(read.response, read);
     runState = 'restored';
   }
 
   /**
-   * A photo the node holds but this session never read: there is no event, no
-   * distribution and no debug image to restore, so the pipeline is rebuilt honestly —
-   * stages 1-3 from THIS image and the corners the node recorded for it, then a real
-   * read, which lands in the session list like any other. Nothing is faked.
+   * A photo the node holds but this session never read: there is no event and no
+   * distribution to restore, so the pipeline is rebuilt honestly — capture from THIS
+   * image, then a real read, which lands in the session list like any other. Nothing
+   * is faked.
    */
   async function loadUpload(upload: UploadRecord): Promise<void> {
     failure = '';
@@ -799,32 +541,14 @@
       objectUrl = URL.createObjectURL(await response.blob());
       const element = await decodeImage(objectUrl);
       const at = upload.ts === null ? null : new Date(upload.ts * 1000).toLocaleString();
-      const scale = await adoptPhoto(element, (k) => ({
+      await adoptPhoto(element, (k) => ({
         origin: `retained upload ${upload.id} on the inference node`,
         retainedAt: at,
         originalWidth: element.naturalWidth,
         originalHeight: element.naturalHeight,
         scale: k
       }));
-      // The node stores the corners as posted, in the photo's own pixels; the scale
-      // rebases them if this photo was larger than MAX_SOURCE_PX and we just shrank it.
-      const stored = parseCornersParam(upload.corners, scale);
-      if (stored !== null) {
-        // The node's corners are not a human assertion of a8, so `edited` stays false.
-        framing = detectedFraming(stored);
-        pipeline = withStage(
-          pipeline,
-          'detect',
-          'ok',
-          "corners restored from the inference node's record for this photo"
-        );
-        rectify();
-        await runRead();
-      } else {
-        // No usable corners on record — detecting them again is the honest fallback, and
-        // `autoDetect` runs the read itself on success.
-        await autoDetect();
-      }
+      await runRead();
     } catch (cause) {
       failure = `${String(cause)}\nIs the inference node reachable from the viewer?`;
       runState = 'failed';
@@ -856,7 +580,7 @@
     } finally {
       URL.revokeObjectURL(objectUrl);
     }
-    await autoDetect();
+    await runRead();
   }
 
   // ---- banners --------------------------------------------------------------
@@ -993,32 +717,24 @@
       onchange={onFile}
     />
     <p class="hint">
-      Point at the board (angled is fine) — detection, rectification and recognition run
-      automatically. Every stage below records what it saw.
+      Photograph the board — the reader finds it in the whole photo, so there is nothing to
+      frame. Every stage below records what it saw.
     </p>
 
     {#if banner !== null}
       <div class="banner {banner.kind}">{banner.text}</div>
     {/if}
-    {#if warningMessages.length}
-      <div class="banner warn">{warningMessages.join(' ')}</div>
+    {#if lowLight}
+      <div class="banner warn">Photo is very dark — reads degrade; add light if you can.</div>
     {/if}
 
     <div class="out-main">
       {#if image !== null}
         <div class="photo-col">
-          <CornerPicker
-            {source}
-            {image}
-            {framing}
-            {showRotate}
-            {onAdd}
-            {onMove}
-            onCommit={rectify}
-            {onRotate}
-            {onUndo}
-            {onReset}
-          />
+          <div class="col-label">Photo as posted</div>
+          <div class="photo-frame">
+            <img src={image.dataUrl} alt="the board as posted to the reader" />
+          </div>
         </div>
       {/if}
 
@@ -1061,7 +777,6 @@
             scores={inspection.scores}
             shown={inspection.shown}
             corrected={corrections.has(inspection.square)}
-            mosaic={inspection.mosaic}
             onAssign={assign}
             onRevert={() => setCorrections(withCorrection(corrections, inspection.square, null))}
             onClose={() => (selected = null)}
@@ -1073,7 +788,7 @@
     </div>
 
     <div class="action-bar" bind:this={actionBar}>
-      <button type="button" disabled={quad === null || busy !== null} onclick={runRead}>
+      <button type="button" disabled={image === null || busy !== null} onclick={runRead}>
         Read position
       </button>
       {#if busy !== null}<span class="busy">{busy}</span>{/if}
@@ -1085,66 +800,18 @@
           {#if stage.id === 'capture'}
             <p class="note">
               The photo is downscaled to a {MAX_SOURCE_PX} px long side in the browser; that
-              downscaled image is exactly what is POSTed to <code>/detect</code> and
-              <code>/estimate</code>, so every pixel coordinate on this page shares one
-              coordinate system with the server.
+              downscaled image is exactly what is POSTed to <code>/estimate</code>, so this
+              stage describes the very pixels the server reads.
             </p>
             <KvTable rows={captureTable} />
-          {:else if stage.id === 'detect'}
+          {:else if stage.id === 'read'}
             <p class="note">
-              <code>POST /detect</code> returns a geometric quad (TL, TR, BR, BL). Geometry
-              cannot know which physical corner is a8, so the labels start as a guess and the
-              server auto-rotates the reading by chess plausibility — until you touch a handle,
-              at which point your labelling wins and auto-rotation is switched off. When the
-              server does rotate, this page adopts that rotation into its own corner labels, so
-              the handles, the table below and the rectified preview keep describing the same
-              board as the position on the right. The photo above carries the quad; drag a
-              handle there to correct it.
-            </p>
-            <KvTable rows={cornersRows} />
-          {:else if stage.id === 'rectify'}
-            <p class="note">
-              A client-side homography, for checking the labelling only — the server re-derives
-              its own geometry from the corners and reads whole pieces off the original photo.
-              Projected aspect below <code>{LOW_ANGLE_ASPECT}</code> means the camera is close
-              to board level and pieces occlude each other; mean luma below
-              <code>{LOW_LIGHT_MEAN}</code> is dim enough to degrade recognition.
-            </p>
-            <KvTable rows={geometryRows} />
-            <figure>
-              <canvas bind:this={warpCanvas} width={RECTIFIED_PX} height={RECTIFIED_PX}></canvas>
-              <figcaption>rectified preview — a8 must be top-left</figcaption>
-            </figure>
-          {:else if stage.id === 'sample'}
-            <p class="note">
-              64 tall full-piece boxes are cut from the original photo (they overlap on purpose
-              — a piece is taller than its square) and resized to the model's input. These are
-              the exact tensors the classifier saw.
-            </p>
-            {#if boxesUrl !== null && mosaicUrl !== null}
-              <figure>
-                <img class="evidence" src={boxesUrl} alt="sampling boxes over the board" />
-                <figcaption>
-                  sampling boxes on the photo, coloured by per-square confidence
-                </figcaption>
-              </figure>
-              <figure>
-                <img class="evidence" src={mosaicUrl} alt="per-square model input crops" />
-                <figcaption>
-                  the 64 crops as the model received them, rank 8 first, labelled with the
-                  predicted class and its confidence
-                </figcaption>
-              </figure>
-            {:else}
-              <p class="note">no debug images for this read.</p>
-            {/if}
-          {:else if stage.id === 'classify'}
-            <p class="note">
-              A 13-class distribution per square, stateless and rule-free — an illegal-looking
+              A 13-class distribution per square, read from the whole photo and always in the
+              chess frame (rank 8 on top), stateless and rule-free — an illegal-looking
               board is still reported as <code>ok</code>. Click any cell to open it in the
               inspector.
             </p>
-            <KvTable rows={classRows} />
+            <KvTable rows={readRows} />
             {#if dist !== null && baseGrid !== null}
               <ConfidenceMap {dist} base={baseGrid} {corrections} {selected} onPick={pickSquare} />
               <div class="note">Least confident squares</div>
@@ -1164,30 +831,6 @@
             {/if}
             {#if (reading?.warnings.length ?? 0) > 0}
               <div class="note warn">Server warnings: {reading?.warnings.join(', ')}</div>
-            {/if}
-          {:else if stage.id === 'orient'}
-            <p class="note">
-              Which corner is a8 is not knowable from geometry. With untouched auto-detected
-              corners the read is posted with <code>autorotate=1</code> and the server picks the
-              rotation whose reading is most plausible; once you edit a corner or rotate the
-              labels, that is authoritative and no rotation is applied. A rotation the server
-              applies is adopted here as well — the corner labels shift by the same amount, so
-              the whole page ends up describing one single orientation.
-            </p>
-            <KvTable rows={orientRows} />
-            {#if showRotate}
-              <div class="row">
-                <button
-                  type="button"
-                  class="secondary"
-                  onclick={() => {
-                    onRotate();
-                    void runRead();
-                  }}
-                >
-                  Rotate labels and re-read
-                </button>
-              </div>
             {/if}
           {:else if stage.id === 'repair'}
             <p class="note">
@@ -1250,7 +893,7 @@
               />
               <KvTable rows={materialRows} />
             {/if}
-            <div class="note">Raw event (debug images stripped)</div>
+            <div class="note">Raw event</div>
             <pre class="raw">{reading === null ? '' : rawEventJson(reading)}</pre>
           {/if}
         </PipelineStep>
@@ -1386,11 +1029,9 @@
     border-radius: 9px;
   }
 
-  /* Input and output, side by side and the same size: the photo (with its quad and drag
-     handles) left of the board it produced, with the piece switcher after them when the
-     window has room. The photo never leaves the screen — it is what every stage is
-     talking about, and its corners are the one thing an operator may need to fix at any
-     point. */
+  /* Input and output, side by side and the same size: the photo left of the board it
+     produced, with the piece switcher after them when the window has room. The photo
+     never leaves the screen — it is what every stage is talking about. */
   .out-main {
     display: flex;
     flex-wrap: wrap;
@@ -1417,6 +1058,25 @@
     letter-spacing: 0.06em;
     color: var(--dim);
     margin-bottom: 6px;
+  }
+
+  /* A square frame, so the photo block matches the board block exactly whatever the
+     photo's aspect ratio. The frame's size is definite (width + aspect-ratio), so the
+     photo can fit itself with object-fit and needs no measuring. */
+  .photo-frame {
+    width: 100%;
+    aspect-ratio: 1;
+    background: #0f1216;
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    overflow: hidden;
+  }
+
+  .photo-frame img {
+    display: block;
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
   }
 
   /* viewOnly means no piece dragging, so touch may pan — a thumb landing on the board
@@ -1522,10 +1182,6 @@
     cursor: pointer;
   }
 
-  button.secondary {
-    background: #333842;
-  }
-
   button:disabled {
     opacity: 0.4;
     cursor: default;
@@ -1565,24 +1221,6 @@
     flex-wrap: wrap;
     align-items: center;
     margin: 10px 0;
-  }
-
-  figure {
-    margin: 0 0 14px;
-  }
-
-  figcaption {
-    font-size: 12px;
-    color: var(--muted);
-    margin-top: 6px;
-  }
-
-  canvas,
-  .evidence {
-    max-width: 100%;
-    border: 1px solid var(--line);
-    border-radius: 6px;
-    display: block;
   }
 
   .fen {

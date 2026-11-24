@@ -31,13 +31,7 @@ afterEach(() => {
 describe('URLs stay same-origin', () => {
   it('prefixes the node path with the viewer relay', () => {
     expect(apiPath('/estimate')).toBe('/api/estimate');
-    expect(apiPath('/estimate', { corners: '1,2', debug: 1 })).toBe(
-      '/api/estimate?corners=1,2&debug=1'
-    );
-  });
-
-  it('leaves commas literal so ?corners= reads as the node spells it', () => {
-    expect(apiPath('/estimate', { corners: '1,2,3,4,5,6,7,8' })).toContain('corners=1,2,3,4,5,6,7,8');
+    expect(apiPath('/estimate', { board_id: 'snapshot' })).toBe('/api/estimate?board_id=snapshot');
   });
 
   it('omits absent parameters entirely', () => {
@@ -99,7 +93,7 @@ describe('failures carry the node own wording', () => {
         })
       )
     );
-    const result = await estimate(new Blob(['x']));
+    const result = await estimate(new Blob(['x']), 'snapshot');
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.error.status).toBe(400);
@@ -135,7 +129,7 @@ describe('failures carry the node own wording', () => {
         )
     );
     vi.stubGlobal('fetch', fetchSpy);
-    const result = await estimate(new Blob(['jpeg']), { boardId: 'snapshot' });
+    const result = await estimate(new Blob(['jpeg']), 'snapshot');
     expect(result.ok).toBe(true);
     const [url, init] = fetchSpy.mock.calls[0] as unknown as [string, RequestInit];
     expect(url).toBe('/api/estimate?board_id=snapshot');

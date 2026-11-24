@@ -3,17 +3,14 @@ import {
   CORNER_ORDER,
   CROP_HEADROOM,
   CROP_MARGIN,
-  absorbRotation,
   asRotation,
   checkQuadInFrame,
   checkQuadShape,
   cornersInCrop,
   cropBox,
   labelOf,
-  lowAngleWarning,
   nextRotation,
   orderedCorners,
-  quarterTurnsOf,
   type LabelRotation
 } from './corners';
 import type { CornerQuad } from '../protocol';
@@ -61,24 +58,6 @@ describe('label rotation', () => {
     expect(asRotation(-1)).toBe(3);
     expect(asRotation(7)).toBe(3);
     expect(asRotation(4)).toBe(0);
-  });
-
-  it('absorbs a node rotation as rot -= k, which is what undoes rot90', () => {
-    // A read that came back turned 90 degrees must leave the ordered corners shifted
-    // by exactly one, so the handles, the crop and the board share one orientation.
-    const k = quarterTurnsOf(90);
-    expect(k).toBe(1);
-    const before = orderedCorners(SQUARE, 0);
-    const after = orderedCorners(SQUARE, absorbRotation(0, k));
-    expect(after[0]).toEqual(before[1]);
-    expect(after[1]).toEqual(before[2]);
-  });
-
-  it('reads degrees the way the node reports them', () => {
-    expect(quarterTurnsOf(0)).toBe(0);
-    expect(quarterTurnsOf(180)).toBe(2);
-    expect(quarterTurnsOf(270)).toBe(3);
-    expect(quarterTurnsOf(-90)).toBe(3);
   });
 });
 
@@ -172,25 +151,5 @@ describe('quad validation (mirror of board_reader_edge.quadcheck)', () => {
     const defect = checkQuadInFrame(SQUARE, { width: 128, height: 128 });
     expect(defect?.kind).toBe('out_of_frame');
     expect(defect?.message).toContain('128x128');
-  });
-});
-
-describe('lowAngleWarning', () => {
-  it('says nothing about a top-down quad', () => {
-    expect(lowAngleWarning(SQUARE)).toBeNull();
-  });
-
-  it('warns — but does not refuse — a near board-level camera', () => {
-    // A quad 400 wide and 100 tall projects to aspect 0.25, well under 0.62.
-    const flat: CornerQuad = [
-      [100, 100],
-      [500, 100],
-      [500, 200],
-      [100, 200]
-    ];
-    const warning = lowAngleWarning(flat);
-    expect(warning).not.toBeNull();
-    expect(warning).toContain('0.25');
-    expect(checkQuadShape(flat)).toBeNull();
   });
 });

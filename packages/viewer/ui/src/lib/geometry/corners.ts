@@ -10,14 +10,13 @@
  * that pair. A rotation is a relabelling; it never moves a point.
  *
  * The validity checks mirror `board_reader_edge.quadcheck` (which guards the
- * edge's `--corners`) and `board_reader_core.boarddetect.quad_aspect`. They are
+ * edge's `--corners`). They are
  * mirrored rather than approximated because the failure they catch is silent: a
  * transposed digit or a swapped pair of points produces confidently-wrong geometry
  * for as long as the run lasts, with no error anywhere.
  */
 
-import { LOW_ANGLE_ASPECT, type CornerQuad, type Point } from '../protocol';
-import { quadGeometry } from './homography';
+import type { CornerQuad, Point } from '../protocol';
 
 /** = TL,TR,BR,BL of the canonical crop, and the order every endpoint takes. */
 export const CORNER_ORDER = ['a8', 'h8', 'h1', 'a1'] as const;
@@ -59,25 +58,6 @@ export function orderedCorners(points: CornerQuad, rot: LabelRotation): CornerQu
 /** Pressing "rotate labels": the next quarter-turn, points untouched. */
 export function nextRotation(rot: LabelRotation): LabelRotation {
   return asRotation(rot + 1);
-}
-
-/**
- * Absorb a rotation the node applied to a reading into this page's own labelling.
- *
- * A read posted with `?autorotate=1` can come back turned by `k` quarter-turns.
- * Left alone the page then holds TWO orientations at once — the board showing the
- * rotated position while the handles, the corner table and the rectified preview
- * still describe the pre-rotation frame. Reindexing the 8×8 lattice by `rot90(·,k)`
- * is exactly a `+k` cyclic shift of the ordered corners, and since
- * `orderedCorners()[i] = points[(i - rot + 4) % 4]`, that is `rot -= k`.
- */
-export function absorbRotation(rot: LabelRotation, quarterTurns: number): LabelRotation {
-  return asRotation(rot - quarterTurns);
-}
-
-/** `?autorotate` reports degrees; the page thinks in quarter-turns. */
-export function quarterTurnsOf(degrees: number): LabelRotation {
-  return asRotation(degrees / 90);
 }
 
 // ---- the crop that goes on the wire ------------------------------------------
@@ -311,24 +291,4 @@ export function checkQuadInFrame(quad: CornerQuad, frame: FrameSize): QuadDefect
       `lies outside the ${frame.width}x${frame.height} source frame: ${where} — ` +
       'corners measured on a different resolution are the usual cause'
   };
-}
-
-/**
- * Camera-too-flat warning, or `null` when the angle is usable.
- *
- * **Warn, never block.** The aspect is a proxy for camera elevation, the operator
- * may know exactly why theirs is unusual, and blocking on a proxy is worse than an
- * honest heads-up — the node makes the same call, tagging an estimate
- * `very_low_angle` rather than refusing it. The point of saying it here is
- * *timing*: before the shot, not after a bad read.
- */
-export function lowAngleWarning(quad: CornerQuad): string | null {
-  const { aspect } = quadGeometry(quad);
-  if (aspect >= LOW_ANGLE_ASPECT) return null;
-  return (
-    `the corners project to a board aspect of ${aspect.toFixed(2)}, below ` +
-    `${LOW_ANGLE_ASPECT.toFixed(2)}: the camera is near board level, where pieces occlude ` +
-    'the rank behind them and recognition collapses. Raise the camera if you can ' +
-    '(docs/operating-envelope.md).'
-  );
 }
