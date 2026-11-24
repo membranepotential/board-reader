@@ -7,7 +7,7 @@ _reconciled: 2026-11-24 @ `480a5ea`_ · decisions: [docs/DESIGN.md](docs/DESIGN.
 A camera reads a live OTB board and streams timestamped **piece placements + per-square
 confidences**. No moves, no legality, no PGN — those belong to the downstream application layer.
 
-## Now (1 agent)
+## Now (2 agents, files partitioned)
 
 - **hand-signal probe DONE** (`8645523`): ChessQ frame energy (−logsumexp, mean of top-4 squares) flags hand
   frames at AUC 0.97; as a no-commit gate: resting-hand take 9 wrong boards → 0, gate 314 → 311/361.
@@ -17,8 +17,10 @@ confidences**. No moves, no legality, no PGN — those belong to the downstream 
 - **PGN builder DONE** (`81408ac`, `2bd0f32`): beam Viterbi over legal positions (chessops) → live game panel
   with copy + Lichess link; gate takes 7/7 games exact (80/80 plies), commit lag median 3.0 s.
 - **changed_utc refine** — after a settle, pixel-compare the changed squares in the held frames (no extra
-  ChessQ reads) to find the first frame of the new board; truth + score for take 2; then the energy
-  no-commit gate (`obscured` on the event) — running (agent).
+  ChessQ reads) to find the first frame of the new board; take 2 truth — running (agent; refine module,
+  ingest.py, replay).
+- **energy gate** — obscured reads never commit (chessq.py score, stabilize.py, `obscured` on the event,
+  "hand?" chip); wires ingest.py after the refine commit — running (agent).
 
 ## Done (2026-11-24 — the ChessQ rebuild; plan: [docs/plans/2026-11-24-simplify-around-chessq.md](docs/plans/2026-11-24-simplify-around-chessq.md))
 
