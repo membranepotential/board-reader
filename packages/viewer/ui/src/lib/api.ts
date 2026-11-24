@@ -2,7 +2,7 @@
  * The inference node's API, as this page may address it: **same-origin, always**.
  *
  * The viewer serves this UI and relays the node's whole HTTP API under `/api/…`
- * and its sockets under `/ws/…` (`board_reader_viewer.proxy`). That single
+ * and its sockets under `/ws/…` (the `/api/[...path]` route and `server/ws.ts`). That single
  * origin is load-bearing, not a tidiness preference:
  *
  *  - `getUserMedia` needs a secure context, and a page served over https cannot

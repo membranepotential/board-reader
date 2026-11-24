@@ -51,7 +51,7 @@
     <ol>
       <li>
         <b>Serve the viewer over https.</b> Restart it with
-        <code>board-reader-viewer --host 0.0.0.0 --ssl</code>, then open the
+        <code>make dev</code> (it serves https on port 8443), then open the
         <code>https://…/camera</code> address it prints. Your phone warns once about the
         self-signed certificate; accept it and the camera works from then on.
       </li>

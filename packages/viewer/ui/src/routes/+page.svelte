@@ -1,7 +1,6 @@
 <script lang="ts">
   /**
-   * board-reader · live positions — the Svelte port of
-   * `board_reader_viewer/static/index.html`.
+   * board-reader · live positions — the live page.
    *
    * Every board's bookkeeping — the sanitized grid, pending squares, motion,
    * change rings, staleness, events/sec, reconnect-with-backoff — already lives

@@ -237,7 +237,7 @@ test.describe('when the camera cannot be offered', () => {
 
     const blocked = page.locator('.blocked');
     await expect(blocked.locator('h2')).toHaveText('Camera blocked: insecure context');
-    await expect(blocked).toContainText('board-reader-viewer --host 0.0.0.0 --ssl');
+    await expect(blocked).toContainText('make dev');
     // The adb recipe names the port this page was actually served on.
     await expect(blocked).toContainText('adb reverse tcp:4173 tcp:4173');
     await expect(page.locator('video')).toHaveCount(0);
