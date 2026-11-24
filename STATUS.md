@@ -13,7 +13,8 @@ confidences**. No moves, no legality, no PGN — those belong to the downstream 
   long-term median) on the gate takes + live take 2 — running (read-only on src) — report in docs/reports.
 - **priors → guard + switch** — delete the decoder + `prior` field (report `f5cc37e`: costs 1/361 settled);
   count guard moves into stabilize.py; per-board `rules: standard|free` on /control; measure extra
-  impossibility checks (both kings in check, 3+ checkers, back-rank pawns) — running (agent).
+  impossibility checks via python-chess `status()`; then phase 2: python-chess throughout core/edge/
+  inference/tools where sensible (FEN, squares, truth/trial diffs) — running (agent).
 
 ## Done (2026-11-24 — the ChessQ rebuild; plan: [docs/plans/2026-11-24-simplify-around-chessq.md](docs/plans/2026-11-24-simplify-around-chessq.md))
 
