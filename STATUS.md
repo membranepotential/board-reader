@@ -7,15 +7,13 @@ _reconciled: 2026-11-24 @ `480a5ea`_ · decisions: [docs/DESIGN.md](docs/DESIGN.
 A camera reads a live OTB board and streams timestamped **piece placements + per-square
 confidences**. No moves, no legality, no PGN — those belong to the downstream application layer.
 
-## Now (3 agents, files partitioned)
+## Now (2 agents, files partitioned)
 
 - **hand-signal probe** — is a square occluded? ChessQ intermediate outputs vs simple CV (edges,
   long-term median) on the gate takes + live take 2 — running (read-only on src) — report in docs/reports.
-- **priors → guard + switch** — delete the decoder + `prior` field (report `f5cc37e`: costs 1/361 settled);
-  count guard moves into stabilize.py; per-board `rules: standard|free` on /control; measure extra
-  impossibility checks via python-chess `status()`; then one placement per event (settled board +
-  `pending` + `changed_utc`, raw = argmax of square_dist; `SettledBoard` gone); then: python-chess throughout core/edge/
-  inference/tools where sensible (FEN, squares, truth/trial diffs) — running (agent).
+- **priors DONE** (`5d0cdb2`..`61e1822`): decoder + `prior` field gone; count guard in `stream/rules.py`
+  (python-chess, inference only); per-board `rules: standard|free`; one placement per event + `pending` +
+  `changed_utc` (median 1.45 s after the true change vs 3.12 s); gate base `guard-only` 314/361, 0 leaks.
 - **PGN builder** — temporal decoder (research ChessCam vs Viterbi/beam over legal moves) → live PGN panel
   with copy + Lichess analysis link; offline accuracy on the gate takes — running (agent; viewer lib/game/).
 
