@@ -45,6 +45,9 @@ read, applied to the board the debounce composes out of several of them.
 
 from __future__ import annotations
 
+import math
+import os
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 
 import numpy as np
@@ -81,8 +84,81 @@ SETTLE_MIN_READS = 2
 #: staleness at ~3x SETTLE_SECONDS (one window to ripen, two to time out).
 STALE_WINDOWS = 2
 
+#: The environment ``serve`` reads the three knobs from (:meth:`SettleConfig.from_env`).
+SETTLE_ENV = ("BR_SETTLE_SECONDS", "BR_SETTLE_MIN_READS", "BR_SETTLE_STALE_WINDOWS")
+
 #: Class symbol -> index, for handing a placement to the prior's tally.
 _CLASS_INDEX = {symbol: index for index, symbol in enumerate(CLASSES)}
+
+
+@dataclass(frozen=True)
+class SettleConfig:
+    """The debounce's three knobs, as one value a node or a replay is built with.
+
+    ``seconds`` and ``min_reads`` are the window a challenger must span
+    (:data:`SETTLE_SECONDS`, :data:`SETTLE_MIN_READS`); ``stale_windows`` is how
+    many windows a ripe-but-blocked square waits before the coherence rule gives
+    way (:data:`STALE_WINDOWS`). ``serve`` reads them from ``BR_SETTLE_*``,
+    ``replay`` from ``--settle-*`` (defaulting to the same environment), and a
+    replay records them in its manifest, name and config digest.
+    """
+
+    seconds: float = SETTLE_SECONDS
+    min_reads: int = SETTLE_MIN_READS
+    stale_windows: int = STALE_WINDOWS
+
+    def __post_init__(self) -> None:
+        if not (math.isfinite(self.seconds) and self.seconds >= 0):
+            raise ValueError(f"settle seconds must be finite and >= 0, got {self.seconds}")
+        if self.min_reads < 1:
+            raise ValueError(f"settle min_reads must be >= 1, got {self.min_reads}")
+        if self.stale_windows < 1:
+            raise ValueError(f"settle stale_windows must be >= 1, got {self.stale_windows}")
+
+    @property
+    def is_default(self) -> bool:
+        return self == DEFAULT_SETTLE
+
+    @property
+    def slug(self) -> str:
+        """A path-safe name for a non-default config: ``settle1.5s-2r-2w``."""
+        return f"settle{self.seconds:g}s-{self.min_reads}r-{self.stale_windows}w"
+
+    def to_dict(self) -> dict[str, float | int]:
+        """The manifest's form (its first two keys predate this class)."""
+        return {
+            "settle_seconds": self.seconds,
+            "settle_min_reads": self.min_reads,
+            "stale_windows": self.stale_windows,
+        }
+
+    @classmethod
+    def from_env(cls, environ: Mapping[str, str] = os.environ) -> SettleConfig:
+        """``BR_SETTLE_SECONDS`` / ``_MIN_READS`` / ``_STALE_WINDOWS``; unset keeps
+        the default. A malformed value raises, so a typo fails at startup."""
+        default = cls()
+        seconds, min_reads, stale = SETTLE_ENV
+        return cls(
+            seconds=_from_env(environ, seconds, float, default.seconds),
+            min_reads=_from_env(environ, min_reads, int, default.min_reads),
+            stale_windows=_from_env(environ, stale, int, default.stale_windows),
+        )
+
+
+#: The shipped knobs, as the default argument everything that builds a debounce takes.
+DEFAULT_SETTLE = SettleConfig()
+
+
+def _from_env[T: (float, int)](
+    environ: Mapping[str, str], name: str, parse: Callable[[str], T], default: T
+) -> T:
+    raw = environ.get(name)
+    if raw is None or raw == "":
+        return default
+    try:
+        return parse(raw)
+    except ValueError as e:
+        raise ValueError(f"{name}={raw!r} is not a valid {parse.__name__}") from e
 
 
 def _excess(grid: list[list[str]]) -> int:
@@ -155,18 +231,11 @@ class BoardStabilizer:
     board must not become the one thing a debounced display holds on to.
     """
 
-    def __init__(
-        self,
-        settle_seconds: float = SETTLE_SECONDS,
-        settle_min_reads: int = SETTLE_MIN_READS,
-    ) -> None:
-        if settle_seconds < 0:
-            raise ValueError(f"settle_seconds must be >= 0, got {settle_seconds}")
-        if settle_min_reads < 1:
-            raise ValueError(f"settle_min_reads must be >= 1, got {settle_min_reads}")
-        self._window = settle_seconds
-        self._min_reads = settle_min_reads
-        self._deadline = settle_seconds * STALE_WINDOWS
+    def __init__(self, config: SettleConfig = DEFAULT_SETTLE) -> None:
+        self.config = config
+        self._window = config.seconds
+        self._min_reads = config.min_reads
+        self._deadline = config.seconds * config.stale_windows
         self._settled: list[list[str]] | None = None
         self._candidates: dict[tuple[int, int], _Candidate] = {}
         #: When each ripe-but-uncommitted square first went ripe, so a blocked

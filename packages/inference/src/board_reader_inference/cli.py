@@ -161,6 +161,7 @@ def cmd_replay(args: argparse.Namespace) -> int:
 
     from board_reader_inference.replay import render, run
     from board_reader_inference.schedule import parse_policy
+    from board_reader_inference.stabilize import SettleConfig
     from board_reader_inference.trial import TRUTH_NAME, TruthError
 
     try:
@@ -168,6 +169,14 @@ def cmd_replay(args: argparse.Namespace) -> int:
         # stderr, not the twenty GPU minutes it takes to notice the sweep measured
         # the defaults under another policy's name.
         policy = parse_policy(args.policy)
+        default = SettleConfig.from_env()
+        settle = SettleConfig(
+            seconds=default.seconds if args.settle_seconds is None else args.settle_seconds,
+            min_reads=default.min_reads if args.settle_min_reads is None else args.settle_min_reads,
+            stale_windows=(
+                default.stale_windows if args.stale_windows is None else args.stale_windows
+            ),
+        )
     except ValueError as e:
         print(f"cannot replay: {e}", file=sys.stderr)
         return 2
@@ -178,6 +187,7 @@ def cmd_replay(args: argparse.Namespace) -> int:
             board_id=args.board,
             policy=policy,
             restamp=args.restamp_stability,
+            settle=settle,
             all_sessions=args.all_sessions,
             limit=args.limit,
         )
@@ -303,6 +313,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     from board_reader_inference.replay import REPLAYS_DIR
     from board_reader_inference.schedule import POLICIES
+    from board_reader_inference.stabilize import SettleConfig
 
     POLICY_DEFAULT = "every-frame"
     POLICY_HELP = "Known: " + "; ".join(
@@ -345,6 +356,24 @@ def build_parser() -> argparse.ArgumentParser:
         "for any take recorded before 2026-08-27 evening: those carry the old "
         "absolute-scale meter's output, which read <0.35 on every frame of every "
         "session. Restamp uniformly across a sweep or not at all",
+    )
+    r.add_argument(
+        "--settle-seconds", dest="settle_seconds", type=float, default=None, metavar="S",
+        help="the debounce window: a square changes after reading the same new class "
+        "for this many recorded seconds (env BR_SETTLE_SECONDS; default "
+        f"{SettleConfig().seconds:g})",
+    )
+    r.add_argument(
+        "--settle-min-reads", dest="settle_min_reads", type=int, default=None, metavar="N",
+        help="...and on at least this many agreeing reads (env BR_SETTLE_MIN_READS; "
+        f"default {SettleConfig().min_reads})",
+    )
+    r.add_argument(
+        "--stale-windows", dest="stale_windows", type=int, default=None, metavar="W",
+        help="windows a ripe square blocked by the board-coherence rule waits before "
+        "falling through to the current read (env BR_SETTLE_STALE_WINDOWS; default "
+        f"{SettleConfig().stale_windows}). Non-default settle values join the replay "
+        "name, the manifest and the config digest",
     )
     r.add_argument(
         "--score",

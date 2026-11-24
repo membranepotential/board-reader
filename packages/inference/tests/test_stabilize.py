@@ -13,7 +13,7 @@ from board_reader_core.protocol import (
 )
 
 from board_reader_inference.prior import tally, violation
-from board_reader_inference.stabilize import BoardStabilizer
+from board_reader_inference.stabilize import BoardStabilizer, SettleConfig
 
 #: START_PLACEMENT after 1.e4 — one real move, two squares changed.
 E4 = "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR"
@@ -45,7 +45,7 @@ def test_first_read_is_adopted_wholesale():
 
 
 def test_a_real_move_is_adopted_once_it_spans_the_window():
-    stab = BoardStabilizer(settle_seconds=2.5)
+    stab = BoardStabilizer(SettleConfig(seconds=2.5))
     stab.observe(START_PLACEMENT, 0.0)
     assert stab.observe(E4, 1.0).placement == START_PLACEMENT
     held = stab.observe(E4, 2.0)  # consistent, but only 1.0s into the window
@@ -59,7 +59,7 @@ def test_a_real_move_is_adopted_once_it_spans_the_window():
 def test_wall_clock_alone_is_not_evidence():
     """One read followed by silence must not be adopted on its second sighting
     hours later — at least SETTLE_MIN_READS *consistent* reads are required."""
-    stab = BoardStabilizer(settle_seconds=2.5, settle_min_reads=3)
+    stab = BoardStabilizer(SettleConfig(seconds=2.5, min_reads=3))
     stab.observe(START_PLACEMENT, 0.0)
     stab.observe(E4, 10.0)
     assert stab.observe(E4, 20.0).placement == START_PLACEMENT  # 2 reads < 3
@@ -67,7 +67,7 @@ def test_wall_clock_alone_is_not_evidence():
 
 
 def test_a_flicker_never_reaches_the_settled_board():
-    stab = BoardStabilizer(settle_seconds=2.5)
+    stab = BoardStabilizer(SettleConfig(seconds=2.5))
     stab.observe(START_PLACEMENT, 0.0)
     flickered = stab.observe(GONE_B8, 1.0)
     assert flickered.placement == START_PLACEMENT
@@ -91,7 +91,7 @@ def test_alternating_reads_never_accumulate():
     is the one thing a debounce exists to stop. A coin-flipping square is not
     evidence that anything moved.
     """
-    stab = BoardStabilizer(settle_seconds=2.5)
+    stab = BoardStabilizer(SettleConfig(seconds=2.5))
     stab.observe(START_PLACEMENT, 0.0)
     for i in range(20):  # 10s of alternation, far beyond the window
         assert stab.observe(SWAP if i % 2 else START_PLACEMENT, float(i)).placement == (
@@ -100,7 +100,7 @@ def test_alternating_reads_never_accumulate():
 
 
 def test_a_backwards_timestamp_restarts_the_run():
-    stab = BoardStabilizer(settle_seconds=2.5)
+    stab = BoardStabilizer(SettleConfig(seconds=2.5))
     stab.observe(START_PLACEMENT, 100.0)
     stab.observe(E4, 101.0)
     stab.observe(E4, 90.0)  # edge clock stepped back: evidence discarded
@@ -109,7 +109,7 @@ def test_a_backwards_timestamp_restarts_the_run():
 
 
 def test_zero_window_still_needs_min_reads():
-    stab = BoardStabilizer(settle_seconds=0.0)
+    stab = BoardStabilizer(SettleConfig(seconds=0.0))
     stab.observe(START_PLACEMENT, 0.0)
     assert stab.observe(GONE_B8, 1.0).placement == START_PLACEMENT
     assert stab.observe(GONE_B8, 2.0).placement == GONE_B8
@@ -117,9 +117,61 @@ def test_zero_window_still_needs_min_reads():
 
 def test_rejects_nonsensical_parameters():
     with pytest.raises(ValueError):
-        BoardStabilizer(settle_seconds=-1.0)
+        SettleConfig(seconds=-1.0)
     with pytest.raises(ValueError):
-        BoardStabilizer(settle_min_reads=0)
+        SettleConfig(seconds=float("nan"))
+    with pytest.raises(ValueError):
+        SettleConfig(min_reads=0)
+    with pytest.raises(ValueError):
+        SettleConfig(stale_windows=0)
+
+
+def test_settle_config_from_env_keeps_unset_knobs_at_their_defaults():
+    assert SettleConfig.from_env({}) == SettleConfig()
+    assert SettleConfig.from_env({"BR_SETTLE_SECONDS": "1.5", "BR_SETTLE_MIN_READS": ""}) == (
+        SettleConfig(seconds=1.5)
+    )
+    assert SettleConfig.from_env(
+        {"BR_SETTLE_SECONDS": "0.5", "BR_SETTLE_MIN_READS": "1", "BR_SETTLE_STALE_WINDOWS": "3"}
+    ) == SettleConfig(seconds=0.5, min_reads=1, stale_windows=3)
+
+
+@pytest.mark.parametrize(
+    "env",
+    [{"BR_SETTLE_SECONDS": "fast"}, {"BR_SETTLE_MIN_READS": "1.5"}, {"BR_SETTLE_STALE_WINDOWS": "0"}],
+)
+def test_a_malformed_settle_env_fails_loudly(env):
+    with pytest.raises(ValueError):
+        SettleConfig.from_env(env)
+
+
+def test_settle_config_names_itself_for_a_replay_directory():
+    assert SettleConfig().is_default
+    config = SettleConfig(seconds=1.5, min_reads=1, stale_windows=3)
+    assert not config.is_default
+    assert config.slug == "settle1.5s-1r-3w"
+    assert config.to_dict() == {"settle_seconds": 1.5, "settle_min_reads": 1, "stale_windows": 3}
+
+
+def test_stale_windows_sets_how_long_a_blocked_square_waits():
+    """A square blocked by the coherence rule falls through after
+    ``seconds * stale_windows`` ripe seconds — one window sooner with one fewer."""
+
+    def settle_time(stale_windows: int) -> float:
+        stab = BoardStabilizer(SettleConfig(seconds=1.0, stale_windows=stale_windows))
+        stab.observe(START_PLACEMENT, 0.0)
+        # d8 alone reads k: committing it alone makes two black kings, and its
+        # partner (e8) never reaches quorum, so only the deadline can land it.
+        two_kings = "rnbkkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR"
+        partner = ["rnbkqbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR", two_kings]
+        for i in range(1, 60):
+            ts = i * 0.25
+            board = partner[0] if i % 2 else two_kings
+            if stab.observe(board, ts).placement != START_PLACEMENT:
+                return ts
+        return float("inf")
+
+    assert settle_time(1) < settle_time(2) < float("inf")
 
 
 def test_rejects_a_malformed_placement():
@@ -156,7 +208,7 @@ def test_a_swap_is_displaced_as_a_swap():
     settled — because 69 % of its settled events carried two black kings, a board
     no read ever claimed and no truth segment can equal.
     """
-    stab = BoardStabilizer(settle_seconds=2.5)
+    stab = BoardStabilizer(SettleConfig(seconds=2.5))
     settled = [s.placement for s in _swap_stream(stab, START_PLACEMENT)]
     assert settled[:3] == [SWAP, SWAP, SWAP]
     assert settled[3] == START_PLACEMENT  # both halves of the swap, together
@@ -167,7 +219,7 @@ def test_a_sub_quorum_square_is_not_dragged_and_the_commit_is_held():
     """Dragging is not a free pass: the dragged square owes ``settle_min_reads``
     consistent reads. Without them the ripe displacement waits instead of
     landing on a board nobody read."""
-    stab = BoardStabilizer(settle_seconds=2.5)
+    stab = BoardStabilizer(SettleConfig(seconds=2.5))
     boards = _swap_stream(stab, D8_EMPTY)  # d8's run restarts on the last read
     assert [b.placement for b in boards] == [SWAP] * 4  # ripe, held, still possible
     assert boards[-1].pending == ("d8", "e8")  # both in flux, evidence kept
@@ -179,7 +231,7 @@ def test_the_settled_board_never_becomes_less_possible():
     """The invariant, over a stream that mixes both readings of the swap with
     noise. Measured the same way over all four 08-27 takes x six read policies:
     0 impossible settled boards, against 233/337 on the control take before."""
-    stab = BoardStabilizer(settle_seconds=2.5)
+    stab = BoardStabilizer(SettleConfig(seconds=2.5))
     stream = [SWAP, D8_EMPTY, START_PLACEMENT, SWAP, START_PLACEMENT, START_PLACEMENT,
               D8_EMPTY, START_PLACEMENT, START_PLACEMENT, SWAP, SWAP, START_PLACEMENT]
     for i, board in enumerate(stream):
@@ -192,7 +244,7 @@ def test_an_impossible_read_is_never_adopted():
     """A hallucinated 17th piece survives the whole window and still does not
     land: the settled board may not be made less possible than it is. In the
     live path the prior repair has already removed it — this is the backstop."""
-    stab = BoardStabilizer(settle_seconds=0.0)
+    stab = BoardStabilizer(SettleConfig(seconds=0.0))
     stab.observe(START_PLACEMENT, 0.0)
     stab.observe(PHANTOM_B6, 1.0)
     settled = stab.observe(PHANTOM_B6, 5.0)
@@ -204,7 +256,7 @@ def test_an_impossible_first_board_is_still_escapable():
     """The first read is adopted wholesale even if it is impossible (a caller
     feeding the raw argmax rather than the repair). The rule is *never less
     possible*, not *never commit*, so the stream still recovers."""
-    stab = BoardStabilizer(settle_seconds=2.5)
+    stab = BoardStabilizer(SettleConfig(seconds=2.5))
     assert stab.observe(TWO_KINGS, 0.0).placement == TWO_KINGS
     stab.observe(START_PLACEMENT, 1.0)
     assert stab.observe(START_PLACEMENT, 3.6).placement == START_PLACEMENT
@@ -213,14 +265,14 @@ def test_an_impossible_first_board_is_still_escapable():
 def test_a_wrong_first_board_is_displaced_like_any_other():
     """Wholesale adoption is not adoption forever: the square the first read got
     wrong needs the same window as every other square, and gets it."""
-    stab = BoardStabilizer(settle_seconds=2.5)
+    stab = BoardStabilizer(SettleConfig(seconds=2.5))
     stab.observe(SWAP, 0.0)
     stab.observe(START_PLACEMENT, 1.0)
     assert stab.observe(START_PLACEMENT, 3.6).placement == START_PLACEMENT
 
 
 def test_pending_lists_every_square_reading_differently():
-    stab = BoardStabilizer(settle_seconds=2.5)
+    stab = BoardStabilizer(SettleConfig(seconds=2.5))
     stab.observe(START_PLACEMENT, 0.0)
     settled = stab.observe(SWAP, 1.0)
     assert settled.placement == START_PLACEMENT
@@ -257,7 +309,7 @@ class _UnguardedStabilizer(BoardStabilizer):
 
 
 def _stabilizer(window: float) -> BoardStabilizer:
-    return BoardStabilizer(settle_seconds=window)
+    return BoardStabilizer(SettleConfig(seconds=window))
 
 
 #: Two windows, because they exercise different commit paths: 1.0 s reaches the
@@ -298,7 +350,7 @@ def test_the_excess_never_rises_over_a_noisy_stream():
 def test_that_property_test_can_actually_fail():
     """The mutation: strip the coherence guard and the invariant must break, or
     the test above is measuring nothing."""
-    assert _excess_rises(lambda w: _UnguardedStabilizer(settle_seconds=w))
+    assert _excess_rises(lambda w: _UnguardedStabilizer(SettleConfig(seconds=w)))
 
 
 def test_the_property_stream_exercises_every_commit_path():
@@ -329,7 +381,7 @@ def test_the_property_stream_exercises_every_commit_path():
     try:
         for window in _PROPERTY_WINDOWS:
             for seed in range(_PROPERTY_SEEDS):
-                stab = BoardStabilizer(settle_seconds=window)
+                stab = BoardStabilizer(SettleConfig(seconds=window))
                 for p, t in _noisy_stream(random.Random(seed), 60,
                                           classes="pqkPQK1", churn=3):
                     stab.observe(p, t)
@@ -355,7 +407,7 @@ def test_a_blocked_square_is_not_starved_forever():
     from board_reader_inference.stabilize import STALE_WINDOWS
 
     window = 2.5
-    stab = BoardStabilizer(settle_seconds=window)
+    stab = BoardStabilizer(SettleConfig(seconds=window))
     stab.observe(SWAP, 0.0)
     first_disagreement = 1.0
     landed = None
@@ -373,7 +425,7 @@ def test_a_blocked_square_is_not_starved_forever():
 def test_the_deadline_still_refuses_a_less_possible_read():
     """The escape is a fall-through to the read, not a surrender: a read that is
     itself less possible than the settled board never lands, deadline or not."""
-    stab = BoardStabilizer(settle_seconds=0.5)
+    stab = BoardStabilizer(SettleConfig(seconds=0.5))
     stab.observe(START_PLACEMENT, 0.0)
     for i in range(30):
         settled = stab.observe(PHANTOM_B6, 1.0 + i)
@@ -394,7 +446,7 @@ def test_the_drag_takes_the_best_evidenced_partner():
         grid[1][6] = g7  # g7
         return encode_placement(grid)
 
-    stab = BoardStabilizer(settle_seconds=2.5)
+    stab = BoardStabilizer(SettleConfig(seconds=2.5))
     stab.observe(START_PLACEMENT, 0.0)
     stab.observe(board("r", "p", "p"), 1.0)  # a6 rook: run starts
     stab.observe(board("r", "p", "empty"), 2.0)  # g7 goes: 1 read
@@ -416,7 +468,7 @@ def test_the_deadline_takes_only_what_it_needs():
         grid[0][3], grid[0][4], grid[6][7] = "q", e8, h2
         return encode_placement(grid)
 
-    stab = BoardStabilizer(settle_seconds=2.5)
+    stab = BoardStabilizer(SettleConfig(seconds=2.5))
     stab.observe(SWAP, 0.0)  # settled: d8 k, e8 q
     settled = None
     for i in range(9):

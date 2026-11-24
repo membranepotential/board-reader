@@ -53,7 +53,7 @@ from board_reader_inference.schedule import (
     parse_policy,
 )
 from board_reader_inference.server import event_line
-from board_reader_inference.stabilize import SETTLE_SECONDS
+from board_reader_inference.stabilize import SETTLE_SECONDS, SettleConfig
 from board_reader_inference.trial import REPORT_NAME, TRUTH_NAME
 
 E4 = "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR"
@@ -640,7 +640,7 @@ def test_the_replay_name_separates_policies_and_restamps(monkeypatch):
     only survivor, which is the exact failure ``default_name`` exists to prevent.
     """
     monkeypatch.setattr(replay_mod, "git_describe", lambda: "v1")
-    monkeypatch.setattr(replay_mod, "config_digest", lambda env: "dead")
+    monkeypatch.setattr(replay_mod, "config_digest", lambda env, settle: "dead")
 
     assert default_name({}) == "v1-dead"
     assert default_name({}, policy=EveryFrame()) == "v1-dead"
@@ -649,6 +649,33 @@ def test_the_replay_name_separates_policies_and_restamps(monkeypatch):
         default_name({}, policy=BurstTriggered(keepalive_s=5.0), restamp=True)
         == "v1-dead-burst-end-keepalive_s5-restamped"
     )
+    assert default_name({}, settle=SettleConfig()) == "v1-dead"
+    assert default_name({}, settle=SettleConfig(seconds=1.0, min_reads=1)) == (
+        "v1-dead-settle1s-1r-2w"
+    )
+
+
+def test_the_config_digest_moves_only_for_a_non_default_settle():
+    """Default-settle digests are the ones every earlier replay carries (cq-v6)."""
+    env = {"BR_CHESSQ": {"value": "models/chessq/cq.onnx"}}
+    assert replay_mod.config_digest(env) == replay_mod.config_digest(env, SettleConfig())
+    assert replay_mod.config_digest(env) != replay_mod.config_digest(
+        env, SettleConfig(seconds=1.0)
+    )
+
+
+def test_a_replay_settles_with_the_config_it_is_given(source):
+    """``settle`` reaches the stabilizer and the manifest: one read is enough at
+    ``min_reads=1`` and a zero window, where the default needs 2.5 s."""
+    read = ScriptedRead(dict.fromkeys(range(1, 8), E4))
+    fast = SettleConfig(seconds=0.0, min_reads=1)
+    result = _run(source, "fast", read, settle=fast)
+    settled = [e["settled"]["placement"] for e in _events(result)]
+    assert settled[:2] == [START_PLACEMENT, E4]
+    block = json.loads((result.path / "manifest.json").read_text())["replay"]
+    assert block["settle_seconds"] == 0.0
+    assert block["settle_min_reads"] == 1
+    assert block["stale_windows"] == SettleConfig().stale_windows
 
 
 def test_the_manifest_records_the_policy_as_the_argument_that_rebuilds_it(metered):
@@ -685,6 +712,24 @@ def test_cli_policy_and_restamp_flags(tmp_path, monkeypatch, capsys):
     assert main(["replay", str(recording), "--name", "x", "--policy", "burst"]) == 2
     assert "unknown policy 'burst'" in capsys.readouterr().err
     assert not (recording / "replays" / "x").exists()
+
+
+def test_cli_settle_flags_override_the_environment(tmp_path, monkeypatch, capsys):
+    monkeypatch.delenv("BR_CHESSQ", raising=False)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("BR_SETTLE_SECONDS", "1.5")
+    monkeypatch.setenv("BR_SETTLE_MIN_READS", "3")
+    _write_metered_recording(tmp_path / "recordings", moving=range(40, 50))
+    recording = tmp_path / "recordings" / "metered"
+
+    assert main(["replay", str(recording), "--name", "s", "--settle-min-reads", "1"]) == 0
+    block = json.loads((recording / "replays" / "s" / "manifest.json").read_text())["replay"]
+    assert (block["settle_seconds"], block["settle_min_reads"]) == (1.5, 1)
+    assert "settle:    1.5 s, >= 1 reads" in capsys.readouterr().out
+
+    assert main(["replay", str(recording), "--name", "y", "--stale-windows", "0"]) == 2
+    assert "stale_windows" in capsys.readouterr().err
+    assert not (recording / "replays" / "y").exists()
 
 # --------------------------------------------------------------------------- #
 # The session seam: state must not cross it

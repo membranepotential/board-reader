@@ -57,7 +57,7 @@ from board_reader_inference.hub import PositionHub
 from board_reader_inference.prior import decode
 from board_reader_inference.recognizer import FrameRead
 from board_reader_inference.schedule import DUE_EPS, EveryFrame, FramePolicy, stability_of
-from board_reader_inference.stabilize import BoardStabilizer
+from board_reader_inference.stabilize import DEFAULT_SETTLE, BoardStabilizer, SettleConfig
 
 log = logging.getLogger(__name__)
 
@@ -179,6 +179,7 @@ class FrameIngest:
         *,
         on_event: Callable[[PositionEvent, Frame], None] | None = None,
         policy: Callable[[], FramePolicy] = EveryFrame,
+        settle: SettleConfig = DEFAULT_SETTLE,
     ) -> None:
         self._read = read
         self._hub = hub
@@ -189,6 +190,8 @@ class FrameIngest:
         #: burst-end policy through ``BR_SCHEDULE`` (see
         #: :data:`~.schedule.DEFAULT_POLICY_SPEC`).
         self._policy = policy
+        #: Each board's debounce is built with these knobs (``BR_SETTLE_*``).
+        self._settle = settle
         #: Called (on the event loop) for every published event, with the frame it
         #: was estimated from — the gateway hangs its trial log off this.
         self._on_event = on_event
@@ -283,7 +286,7 @@ class FrameIngest:
         inbox: asyncio.Queue[tuple[Frame, float]] = asyncio.Queue(maxsize=1)
         idle = asyncio.Event()
         idle.set()
-        stabilizer = BoardStabilizer()
+        stabilizer = BoardStabilizer(self._settle)
         policy = self._policy()
         task = asyncio.create_task(
             self._run(board_id, inbox, idle, stabilizer, policy),

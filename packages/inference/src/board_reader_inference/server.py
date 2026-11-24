@@ -46,6 +46,7 @@ from board_reader_inference.recognizer import (
     frame_reader,
 )
 from board_reader_inference.schedule import EveryFrame, FramePolicy, parse_policy
+from board_reader_inference.stabilize import SettleConfig
 
 log = logging.getLogger(__name__)
 
@@ -200,11 +201,17 @@ def create_app(
 
     # Streaming ingress (WP-G1/G2): frames are read off the event loop by
     # per-board workers, through the same read ``POST /estimate`` runs.
+    # The debounce's knobs (BR_SETTLE_*; unset keeps stabilize.py's defaults). A
+    # malformed value fails here, at startup, like a malformed BR_SCHEDULE.
+    settle = SettleConfig.from_env()
+    if not settle.is_default:
+        print(f"settling with {settle.to_dict()}")
     ingest_ = FrameIngest(
         read,
         hub_,
         on_event=_record_published,
         policy=_frame_policy(),
+        settle=settle,
     )
     # Latest-wins raw-frame retention, one entry per board, in-memory only (no
     # disk write, unbounded board count — mirrors the hub's own retention). This
@@ -285,6 +292,7 @@ def create_app(
                 "unscheduled": ingest_.frames_unscheduled,
                 "backstopped": ingest_.frames_backstopped,
             },
+            "settle": settle.to_dict(),
         }
         if recorder is not None:
             health["recording"] = recorder.stats()

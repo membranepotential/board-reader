@@ -282,3 +282,37 @@ def test_prefer_frame_ties_go_to_the_newcomer():
     a = _entry(1, 10.0, 500.0)
     b = _entry(2, 10.1, 500.0)
     assert prefer_frame(a, b) is b
+
+
+def test_each_board_settles_with_the_ingest_settle_config():
+    """``FrameIngest(settle=...)`` builds every board's debounce: with a zero
+    window and one read, the first changed read settles at once."""
+    from board_reader_inference.recognizer import event_from_dist
+    from board_reader_inference.stabilize import SettleConfig
+
+    e4 = "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR"
+    boards = {0: START_PLACEMENT, 1: e4}
+
+    def read(frame: Frame) -> PositionEvent:
+        dist = StubRecognizer(boards[frame.seq]).read(frame.image)
+        return event_from_dist(frame, dist)
+
+    async def run(settle: SettleConfig) -> str:
+        hub = PositionHub()
+        ingest = FrameIngest(read, hub, settle=settle)
+        for seq in (0, 1):
+            ingest.submit(_frame(seq=seq))
+            await asyncio.wait_for(ingest.drain(), timeout=5.0)
+        await ingest.close()
+        return hub.latest("A1").settled.placement
+
+    assert asyncio.run(run(SettleConfig(seconds=0.0, min_reads=1))) == e4
+    assert asyncio.run(run(SettleConfig())) == START_PLACEMENT
+
+
+def test_healthz_reports_the_settle_config_from_the_environment(monkeypatch):
+    monkeypatch.setenv("BR_SETTLE_SECONDS", "1.5")
+    monkeypatch.setenv("BR_SETTLE_MIN_READS", "1")
+    health = TestClient(create_app(StubRecognizer(), PositionHub())).get("/healthz").json()
+    assert health["settle"]["settle_seconds"] == 1.5
+    assert health["settle"]["settle_min_reads"] == 1

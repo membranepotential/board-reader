@@ -150,11 +150,7 @@ from board_reader_inference.schedule import (
     restamped,
 )
 from board_reader_inference.server import event_line
-from board_reader_inference.stabilize import (
-    SETTLE_MIN_READS,
-    SETTLE_SECONDS,
-    BoardStabilizer,
-)
+from board_reader_inference.stabilize import DEFAULT_SETTLE, BoardStabilizer, SettleConfig
 from board_reader_inference.trial import TRUTH_NAME
 
 #: Where replays of a recording live, inside the recording they came from — a
@@ -298,13 +294,18 @@ def config_env() -> dict[str, dict]:
     return out
 
 
-def config_digest(env: dict[str, dict]) -> str:
+def config_digest(env: dict[str, dict], settle: SettleConfig = DEFAULT_SETTLE) -> str:
     """A short stable digest of the estimator environment (8 hex chars).
 
     Over the values *and* the stat of each file they name — see
-    :func:`config_env` for why the bytes on disk are part of the identity.
+    :func:`config_env` for why the bytes on disk are part of the identity — and
+    over the debounce's knobs when they are not the defaults, so a digest of a
+    default-settle replay is the same as before the knobs existed.
     """
-    payload = json.dumps(dict(sorted(env.items())), separators=(",", ":"), sort_keys=True)
+    identity: dict[str, object] = dict(sorted(env.items()))
+    if not settle.is_default:
+        identity["settle"] = settle.to_dict()
+    payload = json.dumps(identity, separators=(",", ":"), sort_keys=True)
     return hashlib.sha256(payload.encode()).hexdigest()[:8]
 
 
@@ -313,6 +314,7 @@ def default_name(
     *,
     policy: FramePolicy | None = None,
     restamp: bool = False,
+    settle: SettleConfig = DEFAULT_SETTLE,
 ) -> str:
     """The replay directory name for the current code and model environment.
 
@@ -328,9 +330,10 @@ def default_name(
     caller then says what they are measuring, which is better provenance than a
     hash could have been anyway.
 
-    ``policy`` and ``restamp`` join the name when they are not the defaults, for
-    the same reason the model stat does: they change what the run measures, and a
-    sweep whose rows all land in one directory has measured its last row only.
+    ``policy``, ``restamp`` and ``settle`` join the name when they are not the
+    defaults, for the same reason the model stat does: they change what the run
+    measures, and a sweep whose rows all land in one directory has measured its
+    last row only.
     """
     described = git_describe()
     if described == "unversioned" or described.endswith("-dirty"):
@@ -341,7 +344,7 @@ def default_name(
             "overwrite each other's score. Pass --name <what you are measuring> "
             "(or commit first)"
         )
-    name = f"{described}-{config_digest(env if env is not None else config_env())}"
+    name = f"{described}-{config_digest(env if env is not None else config_env(), settle)}"
     # How the frames were CHOSEN is part of what a replay measures, so it is part
     # of the identity: without this a policy sweep on a clean tree would replay
     # every row into one directory and keep only the last.
@@ -349,6 +352,8 @@ def default_name(
         name += f"-{policy_slug(policy)}"
     if restamp:
         name += "-restamped"
+    if not settle.is_default:
+        name += f"-{settle.slug}"
     return name
 
 
@@ -424,6 +429,8 @@ class ReplayResult:
     #: directory is named ``-restamped``, and a manifest that infers "no" there
     #: contradicts its own path.
     restamp: bool = False
+    #: The debounce the settled stream ran with.
+    settle: SettleConfig = DEFAULT_SETTLE
 
 
 def replay(
@@ -435,13 +442,16 @@ def replay(
     board_id: str | None = None,
     policy: FramePolicy | None = None,
     restamp: bool = False,
+    settle: SettleConfig = DEFAULT_SETTLE,
     all_sessions: bool = False,
     limit: int | None = None,
     log: TextIO | None = sys.stderr,
 ) -> ReplayResult:
     """Push ``recording``'s frames through ``read`` and write a replay directory.
 
-    ``reader`` names what reads (the recognizer's class), for the manifest.
+    ``reader`` names what reads (the recognizer's class), for the manifest;
+    ``settle`` configures the debounce (``serve`` reads the same knobs from
+    ``BR_SETTLE_*``).
 
     The estimate/repair/debounce is :func:`~board_reader_inference.ingest._read_with_prior`
     — the ingest worker's own body — and the stabilizer is fed the frame's
@@ -493,7 +503,7 @@ def replay(
     policies = _per_session_policies(policy, len(chosen))
     out = _checked_out_dir(out_dir, recording)
     out.mkdir(parents=True, exist_ok=True)
-    stabilizer = BoardStabilizer()
+    stabilizer = BoardStabilizer(settle)
     stats = ReplayStats()
     decode = _decoder(recording)
     total = sum(sessions[i].frames for i in chosen)
@@ -577,6 +587,7 @@ def replay(
         replayed=chosen,
         policy=policy.name,
         restamp=restamp,
+        settle=settle,
     )
     _link_source(out, recording)
     _write_manifest(result, recording, policy, reader)
@@ -747,7 +758,7 @@ def _write_manifest(
                     "created_ts": time.time(),
                     "git": git_describe(),
                     "env": env,
-                    "config_digest": config_digest(env),
+                    "config_digest": config_digest(env, result.settle),
                     "estimator": estimator,
                     # The spec string, so this field is literally the --policy
                     # argument that reproduces the run.
@@ -757,8 +768,7 @@ def _write_manifest(
                     # count of frames it managed to re-meter is a stat, in
                     # ``frames.frames_restamped`` with the other counters.
                     "restamp_stability": result.restamp,
-                    "settle_seconds": SETTLE_SECONDS,
-                    "settle_min_reads": SETTLE_MIN_READS,
+                    **result.settle.to_dict(),
                     "sessions": [s.to_dict() for s in sessions],
                     "sessions_replayed": result.replayed,
                     "frames": result.stats.to_dict(),
@@ -794,6 +804,11 @@ def render(result: ReplayResult) -> str:
     detail = ", ".join(f"{n} {what}" for n, what in skipped if n)
     if detail:
         lines.append(f"skipped:   {detail}")
+    if not result.settle.is_default:
+        lines.append(
+            f"settle:    {result.settle.seconds:g} s, >= {result.settle.min_reads} reads, "
+            f"stale after {result.settle.stale_windows} windows"
+        )
     if result.policy != EveryFrame().name or result.restamp:
         note = result.policy
         if result.restamp:
@@ -825,6 +840,7 @@ def run(
     limit: int | None = None,
     policy: FramePolicy | None = None,
     restamp: bool = False,
+    settle: SettleConfig = DEFAULT_SETTLE,
     log: TextIO | None = sys.stderr,
 ) -> ReplayResult:
     """Open ``source``, build the environment's recognizer, and replay through it.
@@ -841,7 +857,7 @@ def run(
     chosen_name = (
         check_name(name)
         if name
-        else default_name(policy=policy or EveryFrame(), restamp=restamp)
+        else default_name(policy=policy or EveryFrame(), restamp=restamp, settle=settle)
     )
     recognizer = build_from_env()
     return replay(
@@ -852,6 +868,7 @@ def run(
         board_id=board_id,
         policy=policy,
         restamp=restamp,
+        settle=settle,
         all_sessions=all_sessions,
         limit=limit,
         log=log,

@@ -853,6 +853,25 @@ uv run board-reader-inference replay recordings/20260813-193308 --score
 `make gate GATE_NAME=<name>` runs this over the four gate takes and prints the table
 (Option P, step 4).
 
+**The debounce's knobs.** `--settle-seconds`, `--settle-min-reads` and
+`--stale-windows` replay the same frames under another settle (`serve` reads the
+same knobs from `BR_SETTLE_SECONDS`, `BR_SETTLE_MIN_READS`,
+`BR_SETTLE_STALE_WINDOWS`; replay falls back to those variables too).
+
+1. Run `uv run board-reader-inference replay recordings/20260828-111421 --policy
+   burst-end --settle-seconds 1 --settle-min-reads 1 --name settle-check --score`.
+   Expected: a `settle:    1 s, >= 1 reads, stale after 2 windows` line, and
+   `replays/settle-check/manifest.json` carries `settle_seconds: 1.0`,
+   `settle_min_reads: 1`, `stale_windows: 2`. Without `--name` on a clean tree the
+   directory name ends in `-settle1s-1r-2w`.
+2. Start `BR_SETTLE_SECONDS=1 make dev` and run `curl -s localhost:8000/healthz`.
+   Expected: `"settle": {"settle_seconds": 1.0, ...}`; the node log prints
+   `settling with {...}`. `BR_SETTLE_MIN_READS=x` makes the node refuse to start.
+
+Automated: `test_stabilize.py` (`SettleConfig`, its env, the deadline),
+`test_replay.py` (name, digest, manifest, the CLI flags), `test_ingest_stream.py`
+(each board's debounce, `/healthz`).
+
 It lands beside the take it came from, so a benchmark can always be traced to its
 input — and the source recording itself is never written to:
 
