@@ -7,7 +7,7 @@ legality — those are the downstream application layer's job).
 **Read first:** [STATUS.md](STATUS.md) (where the project is) ·
 **[docs/DESIGN.md](docs/DESIGN.md)** (decisions — authoritative) ·
 [docs/index.md](docs/index.md) (how it currently behaves — architecture, recognition
-pipeline, calibration, operating envelope, runbook). `aspects.yaml` maps which parts
+pipeline, measuring accuracy, operating envelope, runbook). `aspects.yaml` maps which parts
 must stay in sync with which.
 
 ## Load-bearing principles (do not violate without updating DESIGN.md)
@@ -39,7 +39,7 @@ uv **workspace**; each `packages/*` member is independently deployable.
 |---|---|---|
 | `board-reader-core` (`board_reader_core`) | shared contract: L3 protocol §5, L1→L2 wire §4.5, sim helpers | numpy, opencv |
 | `board-reader-edge` (`board_reader_edge`) | the **edge** node ("Pi", L1): capture/forward; later detect+rectify | core only |
-| `board-reader-inference` (`board_reader_inference`) | the **inference** node (L2): stateless estimator + WS gateway | core only |
+| `board-reader-inference` (`board_reader_inference`) | the **inference** node (L2): stateless recognizer (ChessQ) + WS gateway | core only |
 | `board-reader-viewer` (`board_reader_viewer`) | serves the live-position web UI | none (static) |
 
 **Naming:** DESIGN.md calls L2 the "central / Jetson" node; in code it is
@@ -68,12 +68,14 @@ you are adding a test.
 
 ```bash
 uv sync                       # install the whole workspace + dev tools
-make test                     # the whole suite in parallel (-n auto), minus GPU, ~12s
-make test-gpu                 # the 2 real-ONNX-session tests; needs an idle GPU
+make models                   # the ChessQ weights (pinned, SHA-256 checked); without them the stub serves
+make test                     # the whole suite in parallel (-n auto), minus GPU, ~16s
+make test-gpu                 # the real-ONNX-session test (ChessQ V6 on a still); needs an idle GPU
 make test-all                 # everything, GPU included
 uv run pytest <path>[::<test>] -q   # one file/test while iterating — no `-n`, it costs more
 uv run pytest packages/core   # one package's tests
 uv run pytest                 # the whole suite SERIALLY (~23s) — prefer `make test`
+make gate GATE_NAME=<new>     # replay the four gate takes; table against cq-v6 (needs the GPU)
 
 # Run locally (one terminal): inference + viewer on http :8080 (live, /snapshot)
 # and a second viewer bind on https :8443, whose secure origin /camera needs.
@@ -83,7 +85,8 @@ make ui                       # build the SvelteKit frontend -> board_reader_vie
 make dev
 
 # Or by hand, without Docker (two terminals):
-uv run board-reader-inference serve            # gateway on :8000
+BR_CHESSQ=models/chessq/cq-vit-s-644-v6-seed1-onnx-int8-r1.onnx \
+  uv run board-reader-inference serve          # gateway on :8000
 uv run board-reader-edge feed                  # synthetic feed -> :8000
 uv run board-reader-viewer --port 8080         # UI on :8080  -> open it
 

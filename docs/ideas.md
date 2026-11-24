@@ -19,7 +19,7 @@ specific things, and an idea that attacks none of them is noise:
 1. **Per-square crops break under occlusion/lean** — 44 % of residual is crop
    bleed ([[2026-08-28-retrain-program]]); decapitation at phone height; the c6
    knight hallucinating a b6 rook (STATUS Next 8). The gray prism mask helps
-   ([[recognition-pipeline#Occlusion masking — the deployed default since 2026-08-28]])
+   (occlusion masking, [[calibration-and-the-bank|deleted with the crop stack]])
    but is a patch on the crop assumption, not a fix.
 2. **Piece-type transfer has a ~80 % frozen-DINOv2 ceiling**
    ([[training-and-data]], backbone bakeoff) — no frozen encoder beat it; scale

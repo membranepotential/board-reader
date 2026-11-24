@@ -5,8 +5,7 @@ tags: [board-reader/ops]
 
 # Runbook
 
-How to run the system, what to check after touching it, and how to recover when the
-calibration bank goes bad. For the *test* path — automated suite and demo walkthrough —
+How to run the system and what to check after touching it. For the *test* path — automated suite and demo walkthrough —
 see [[TESTING]].
 
 ## Running it
@@ -67,10 +66,9 @@ recognition.
 
 > [!important] Both entry points must agree on the recognition composition
 > Two things start a real node — `docker compose up` (compose.yaml) and `make dev`
-> (the Makefile) — and each picks its models out of the variables below. They must
-> choose the *same* ones: when the cascade landed in compose alone, `make dev` went
-> on serving `BR_MODEL` by itself and every live phone test silently rehearsed a
-> weaker reader than the demo. A new deploy-time variable therefore belongs in
+> (the Makefile) — and each picks its model out of the variables below. They must
+> choose the *same* one: once a model change landed in compose alone, and every live
+> phone test silently rehearsed a weaker reader than the demo. A new deploy-time variable therefore belongs in
 > **both** files, or in `tests/test_deploy_parity.py`'s recorded list of
 > deliberately environment-specific ones. `aspects.yaml` carries the pair as the
 > `deploy` aspect so `/drift` sees them together.
@@ -84,21 +82,12 @@ recognition.
 
 | Variable | Effect |
 |---|---|
-| `BR_CHESSQ` | **The default recognizer, set by both entry points** (DESIGN D10). ChessQ Lite ONNX → `ChessQRecognizer` (the `recognizer.py` seam), which reads the whole frame and finds the board and its orientation by itself. Outranks `BR_MODEL*`, `BR_CENTROIDS` and the session bank. A missing file degrades to the stub recognizer, loudly (startup banner, `recognizer.fallback` on `/healthz`); `make models` fetches it. **`/calibrate` answers 409 while a recognizer serves.** `GET /healthz` reports `recognizer: {name, model}`. Weights are PolyForm Noncommercial and live in `models/chessq/` (THIRD-PARTY.md). Gate result: [[2026-11-24-chessq-v6-replay-gate]]. |
-| `BR_MODEL` | *Pre-D10 stack, reachable only with `BR_CHESSQ` unset; removed in Phase B.* ONNX crop classifier → `TrainedEstimator`. Reads its crop geometry from `<model>.onnx.meta.json`. |
-| `BR_MODEL_B` | *Pre-D10 stack.* A second crop classifier on a different crop geometry → `CascadeEstimator`. Squares `BR_MODEL` is unsure about are re-read by this one and the two averaged. **Both members must ship a geometry sidecar** — a missing one is a startup failure, not a warning. `GET /healthz` reports how often it fires. |
-| `BR_CASCADE_TAU` | *Pre-D10 stack.* The cascade's confidence gate (default `0.95`): squares whose max probability falls below it go to `BR_MODEL_B`. Lower = cheaper and closer to `BR_MODEL` alone. |
-| `BR_CROP_MASK` | *Pre-D10 stack.* Occlusion-aware crop masking: `gray` (the deployed default until D10) fills each crop's pixels that fall inside a *closer* neighbor's prism before classify/embed; `blur` blurs them; unset = unmasked. Shipped 2026-08-28 — perfect boards ≈20→35 on the 4-take gate, mostly by unlatching bank nearest-exemplar locks ([[recognition-pipeline#Occlusion masking — the deployed default since 2026-08-28]]). |
-| `BR_MODEL_TUNED` | *Pre-D10 stack.* A calibration fine-tune of `BR_MODEL`, from `tools/train/calibrate_finetune.py` → `AveragedEstimator`: both models read every square off **one** crop pass (they share a geometry) and the distributions are averaged 50/50. Measured 0.969 on the board it was calibrated for, against `BR_MODEL` alone at 0.938. Two hard startup errors, both deliberate: **without `BR_MODEL`** (the tuned model alone hallucinates pieces onto empty squares — it is the base's vote that suppresses them), and **together with `BR_MODEL_B`** (an unmeasured stack; pick one). `GET /healthz` names both members. |
+| `BR_CHESSQ` | **The recognizer, set by both entry points** (DESIGN D10). ChessQ Lite ONNX → `ChessQRecognizer` (the `recognizer.py` seam), which reads the whole frame and finds the board and its orientation by itself. Unset or a missing file degrades to the stub recognizer, loudly (startup banner, `recognizer.fallback` on `/healthz`); `make models` fetches it. `GET /healthz` reports `recognizer: {name, model}`. Weights are PolyForm Noncommercial and live in `models/chessq/` (THIRD-PARTY.md). Gate result: [[2026-11-24-chessq-v6-replay-gate]]. |
 | `BR_SCHEDULE` | Which arriving frames get an estimate, as a `replay --policy` spec — the same string a sweep measured. Default (set by `serve`, also `--schedule`): `burst-end:burst_end_reads=3`, i.e. read at the end of each move plus a 3 s keepalive floor; ~12× fewer estimates than reading everything, for −0.9 pp prior per-square ([the sweep](reports/2026-08-27-move-trigger-sweep.md)). **The live event stream is sparse by design** — `GET /healthz` shows `ingest.unscheduled` climbing while `estimated` crawls, and that is the system working. `every-frame` is the way back. `ingest.backstopped > 0` means an edge's `capture_ts` stopped advancing and the node is reading on its own clock to stay alive. |
-| `BR_SESSION_BANK` | *Pre-D10 stack.* Path for the per-set exemplar bank. **Opt-in: unset means nothing is ever written.** With `BR_MODEL` set, the two are ensembled. |
-| `BR_CENTROIDS` | *Pre-D10 stack.* An explicit curated calibration file. Outranks `BR_MODEL`. |
-| `BR_OCCUPANCY_BANK` | *Pre-D10 stack.* A style-agnostic occupancy bank; enables the occupancy-only answer and start-position auto-calibration before any piece-type calibration exists. |
-| `BR_SAVE_UPLOADS` | Directory for retained phone photos + sidecars (placement, `autorotated`). This is what turns field shots into eval data. |
+| `BR_SAVE_UPLOADS` | Directory for retained phone photos + sidecars (placement, the frame it was read in, prior flips). This is what turns field shots into eval data. |
 | `BR_RECORD_DIR` | Directory for recorded ingress sessions. `serve` sets it to `recordings/` by default, so **every served run is replayable**; `serve --no-record` turns it off. |
 | `BR_RECORD_MAX_MB` | Disk-fill stop for the recorder (default: no cap). The session truncates rather than rotating. |
-| `BR_DINOV2_ONNX` | Backbone path (default `models/dinov2_small.onnx`). |
-| `BR_GPU_MEM_LIMIT_MB` | Ceiling on each ONNX session's CUDA arena (default `1024`). **Per session, and serving builds three** — the cascade's two models plus the embedder. `0` removes the cap. See [the GPU section](#stopping-it-and-the-gpu-it-leaves-behind) for why a display GPU needs one. |
+| `BR_GPU_MEM_LIMIT_MB` | Ceiling on each ONNX session's CUDA arena (default `1024`). Serving builds one session, ChessQ's. `0` removes the cap. See [the GPU section](#stopping-it-and-the-gpu-it-leaves-behind) for why a display GPU needs one. |
 | `BR_ALLOW_ORIGINS` | CORS origins, comma-separated (default `*`). |
 
 ### Reproducing a run
@@ -162,9 +151,10 @@ smooths nothing, so a flickering square shows a transition on every frame. See
 > forward the viewer's port rather than reconfiguring these (`.claude/skills/tunnel`).
 
 > [!warning] `models/` and `data/` are git-ignored
-> Not an oversight — the trained model derives from ChessReD (CC BY-NC-SA) and murky-license
-> geometry, so it is **personal use only, not redistributable**. A fresh clone has no model;
-> the server degrades to the stub and still composes up. See [[training-and-data#Licensing ledger]].
+> Not an oversight — the ChessQ Lite V6 weights are PolyForm Noncommercial, so they are
+> **not redistributable**; only their release descriptors under `models/chessq/` are
+> committed (THIRD-PARTY.md). A fresh clone has no weights until `make models`; the
+> server degrades to the stub and still composes up.
 
 ## Stopping it, and the GPU it leaves behind
 
@@ -177,7 +167,7 @@ verify (`tools/stop.sh`). That matters more than it sounds:
 > call: it stops listening — so the port frees and nothing looks wrong — while
 > staying resident with its **CUDA context and hundreds of MB of VRAM**. One sat
 > that way for two hours on 2026-08-13; the next `make dev` inherited a card too
-> full for the cascade's second session and **aborted mid-stream** (status 134),
+> full for its second ONNX session and **aborted mid-stream** (status 134),
 > taking a live phone test with it. If a start fails with `BFCArena` or
 > `CL_MEM_OBJECT_ALLOCATION_FAILURE`, look before restarting:
 >
@@ -192,7 +182,7 @@ GPU into a *crash* rather than a degradation: a failed `warpAffine` allocation
 throws a `cv::Exception` through C++ `terminate`, which no Python handler can
 catch. The warps are small enough that the CPU path costs nothing worth that
 risk. This is **not** mirrored in `compose.yaml`, which declares no GPU device and
-runs the same cascade on CPU — the two entry points share an environment, not a
+runs the same recognizer on CPU — the two entry points share an environment, not a
 hardware envelope.
 
 ### When the card is also driving your screens
@@ -204,7 +194,7 @@ hardware envelope.
 > rendered by the iGPU and copied into a **reverse-PRIME surface in NVIDIA VRAM**
 > for scanout. That surface is reallocated on DPMS wake, resolution changes and
 > monitor re-probes — and if the card is full at that moment, X has nowhere to
-> degrade to. On 2026-08-13 a `/calibrate` batch took the VRAM and a 4K monitor
+> degrade to. On 2026-08-13 a burst of model work took the VRAM and a 4K monitor
 > went dark twice, once losing its mode pool entirely:
 >
 > ```
@@ -226,33 +216,34 @@ Two defences, and they are different in kind:
   for the same reason: `arena_extend_strategy=kSameAsRequested` (the default
   rounds every extension up to the next power of two and never gives it back)
   and `cudnn_conv_algo_search=HEURISTIC` (the default benchmarks every conv
-  algorithm with large transient workspaces). Measured peak for the real
-  three-session shape at this default: **~1.6 GiB of the 4 GiB card**.
-* **`make dev-cpu` (opt in).** The same stack — same models, same cascade, same
-  ports — with `CUDA_VISIBLE_DEVICES=` empty, which is CUDA's "no devices". The
+  algorithm with large transient workspaces).
+* **`make dev-cpu` (opt in).** The same stack — same recognizer, same ports — with `CUDA_VISIBLE_DEVICES=` empty, which is CUDA's "no devices". The
   node then never touches the card at all, so the display's VRAM is not a shared
-  resource. Costs ~5x on embedding, and is exactly what `compose.yaml` runs. Use
+  resource. ChessQ on CPU (int8) takes ~600 ms per read against ~205 ms for fp32 on
+  CUDA ([[2026-11-24-chessq-gpu-formats]]), and it is exactly what `compose.yaml` runs. Use
   it when the machine running the node is also the machine displaying it.
 
 `make dev` prints which one you are on (`gpu visible — onnxruntime capped at …` /
-`gpu hidden — the same cascade on CPU`).
+`gpu hidden — the same recognizer on CPU …`).
 
 ## Verifying a restart
 
 > [!danger] `healthz` proves nothing about recognition
-> A server with a clobbered calibration bank is perfectly healthy and serves garbage. Two
-> separate incidents were missed exactly this way.
+> A server that silently serves the stub, or a wrong model file, is perfectly healthy and
+> serves garbage. Check `recognizer` in `/healthz` (no `fallback`, the expected `model`),
+> then read a known photo. Two incidents with the earlier calibration bank were missed
+> exactly this way.
 
 **Verify with a known photo.** Post a retained upload whose expected score you know and
 check it still reads at that accuracy:
 
 ```bash
 curl -s -X POST --data-binary @data/uploads/<known>.jpg \
-  "http://localhost:8000/estimate?corners=<x0,y0,...,x3,y3>" | jq .placement
+  http://localhost:8000/estimate | jq .placement
 ```
 
-Reference points on record: `img_0566` → 64/64, `up_20260718_0000` → 64/64,
-`up_20260718_0001` → 59/64 (the steep dim board).
+A labeled photo has its truth in `data/uploads/<known>.label.json`; `eval` scores the
+whole set at once ([[measuring-accuracy]]).
 
 **Then check the GPU:**
 
@@ -260,55 +251,12 @@ Reference points on record: `img_0566` → 64/64, `up_20260718_0000` → 64/64,
 nvidia-smi --query-compute-apps=pid,used_memory --format=csv
 ```
 
-> [!bug] The server squats GPU memory even when you think it is CPU-only
-> The DINOv2 embedder's ONNX session takes `CUDAExecutionProvider` successfully even when the
-> trained model's session falls back to CPU — so "the server is CPU-only" was silently false
-> after the ensemble deploy, holding 2.1 GB on a 4 GB card and poised to OOM the next training
-> run. During training campaigns, serve with `CUDA_VISIBLE_DEVICES=""`; CPU reads are ~0.6 s
-> per board, indistinguishable in the phone flow.
-
-The same rule extends to the test suite: when the GPU is busy, run
-`CUDA_VISIBLE_DEVICES="" uv run pytest`, or the DINOv2 session fails with a BFCArena OOM that
-looks exactly like a code regression.
-
-## Recovering a poisoned bank
-
-Symptoms: reads that were fine degrade, often with a systematic signature — White/Black
-flipped on the back ranks (a rotation-poisoned calibrate), or plausible-looking pieces in the
-wrong classes (a mid-game board banked as "start"). See
-[[calibration-and-the-bank#The four ways this got poisoned]].
-
-```bash
-uv run python tools/rebuild_session_bank.py
-```
-
-It rebuilds the bank from the base bank plus every retained calibrate upload, applying the
-same orientation probe and piece-square agreement gate the server now enforces — so it
-*reports* which calibrates it rejected rather than silently dropping them. In both real
-incidents it flagged exactly the one poisoned photo and salvaged the rest.
-
-Then re-verify with a known photo, as above.
-
-## Manual calibration
-
-Rarely needed — auto-calibration covers the normal case — but available when you want to
-calibrate from a specific labeled position:
-
-```bash
-uv run board-reader-inference calibrate \
-  --photo photo.jpg --corners x0,y0,x1,y1,x2,y2,x3,y3 \
-  --backbone dinov2 --placement "<FEN field 1>" -o models/exemplars_session.npz
-```
-
-Corners are the playing-surface corners in `a8,h8,h1,a1` order. Defaults match the deployed
-geometry (`--headroom 1.6 --side-pad 0.15`).
-
-The HTTP equivalent is `POST /calibrate`, which additionally applies the orientation probe and
-the agreement gate — prefer it when calibrating from the phone.
+When the GPU is busy, run the test suite with `CUDA_VISIBLE_DEVICES="" uv run pytest`
+(`make test` already does), or a real ONNX session fails with a BFCArena OOM that looks
+exactly like a code regression.
 
 ## Related
 
 - [[architecture]] — what each process is
-- [[calibration-and-the-bank]] — what the bank is and how it breaks
-- [[operating-envelope]] — whether a bad read is a bug or a camera angle
+- [[operating-envelope]] — whether a bad read is a bug or the framing
 - [[TESTING]] — the full manual test guide

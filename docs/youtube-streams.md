@@ -16,7 +16,7 @@ registry of what was tried, what survived, and why.
 
 Every extracted frame of each broadcast was run through
 `board_reader_core.boarddetect.detect_board_quad` + `quad_aspect`, and the median
-projected board aspect compared against the [[operating-envelope#Camera angle|camera
+projected board aspect compared against the [[operating-envelope#Camera angle and light|camera
 angle]] thresholds: usable at `>= 0.73`, `very_low_angle` fires below `0.62`.
 
 | slug | video id | detections | median aspect | verdict |
@@ -142,7 +142,7 @@ Nothing is lost when a video is deleted: the video id, its crop, and any frames 
 extracted are enough to reproduce it exactly with `yt-dlp` + `tools/video/crops.csv`.
 Frames live at `data/streams/frames/<slug>_<video_id>/` and are kept deliberately — they
 are documented out-of-envelope hard cases, useful for testing the low-angle regime
-[[operating-envelope#Camera angle|synthetic training data now samples]] rather than for
+[[operating-envelope#Camera angle and light|synthetic training data now samples]] rather than for
 production recognition.
 
 All of `data/` (including `data/streams/videos/` and `data/streams/frames/`) is

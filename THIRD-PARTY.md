@@ -38,23 +38,13 @@ copyleft obligation.
 
 ## 2. Model artifacts are NOT redistributable
 
-**Do not attach `models/*.onnx`, exemplar banks, or fine-tuned checkpoints to a release,
-and do not bake them into a published image.**
+**Do not attach `models/*.onnx` (or any older in-house model, exemplar bank or
+checkpoint still on disk) to a release, and do not bake them into a published image.**
 
-The shipped recognition model is trained on:
-
-| Source | License | Consequence |
-|---|---|---|
-| ChessReD (Masouris & van Gemert, 4TU.ResearchData) | **CC BY-NC-SA 4.0** | non-commercial; share-alike |
-| ChessR Blender renders (CGTrader-derived geometry) | **murky / unclear** | segregated and droppable by design |
-| ChessRender360 | CC BY 4.0 | clean |
-| chesscog transfer set | CC BY | clean |
-| Zenodo piece crops | CC BY | clean, auxiliary only |
-| 8 scouted 3D sets | CC0 / CC BY | clean |
-
-The resulting weights are a derivative of the first two rows: **fine for personal and
-research use, not for commercial use, and not ours to redistribute.** See
-[docs/training-and-data.md](docs/training-and-data.md) for the full ledger.
+The in-house crop classifier that served until 2026-11-24 was trained on ChessReD
+(**CC BY-NC-SA 4.0**) and render geometry of unclear licence, so those weights were never
+redistributable either; they are no longer served (see
+[docs/training-and-data.md](docs/training-and-data.md)).
 
 `.gitignore` enforces this — `models/` (except the ChessQ release descriptors, which
 hold no weights), `data/`, `scratch/`, `recordings/` and `*.onnx` never enter the

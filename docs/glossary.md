@@ -38,77 +38,62 @@ difference between two strings, *not* a claim that a move happened: a hand cross
 a misread and a real capture all produce transitions identically. What the headless tail
 prints; telling them apart is the consumer's job.
 
-**Status** — `ok | recalibrating | needs_setup | stale`. Notably there is no `illegal`;
-legality is not ours to judge, and an illegal-looking placement is reported as `ok`.
+**Status** — `ok | recalibrating | needs_setup | stale`. Only `ok` is emitted; the others are
+reserved (plan decision D8). Notably there is no `illegal`; legality is not ours to judge, and
+an illegal-looking placement is reported as `ok`.
 
 ## Geometry
 
-**Corners** — the four playing-surface corners in `a8, h8, h1, a1` order. Everything
-geometric is expressed against them.
+**Corners** — the four playing-surface corners in `a8, h8, h1, a1` order. /camera still
+tracks them and the wire still carries them until Phase C of the simplification plan;
+recognition ignores them.
 
-**Corner quad** — the four corners as projected into the photo; a quadrilateral, not a
-rectangle.
+**Chess frame** — the convention every placement is in: rank 8 first, file a first, as FEN
+writes it, whatever way the board faces the camera. The recognizer resolves it per frame;
+events, labels, truth files, eval and replay all use it. See
+[[recognition-pipeline#The chess frame]].
 
-**Projected board aspect** — the short side of the corner quad divided by the long side. A
-calibration-free proxy for camera elevation, and the basis of the `very_low_angle` warning.
-See [[operating-envelope#Camera angle]].
+**Corner frame** — the old convention, in which a placement was read in the frame the
+operator's corners defined. Only older labels and upload sidecars carry it; `eval` skips
+corner-frame labels.
 
-**Headroom** — how far each square's crop box extends *upward* from the square's base, in
-square-widths. `1.6` means "a whole standing piece". Getting this wrong decapitates pieces —
-the single most expensive geometry bug in the project.
-
-**Side pad** — sideways padding of the crop box, in square-widths. Deployed at `0.15`.
-
-**Rectification** — warping the board to a canonical top-down view. The streaming path uses
-it; the snapshot path deliberately does not, because the warp smears tall pieces and the tile
-truncates them.
-
-**Photo boxes / full-piece boxes** — the alternative to rectified tiles: each square's
-projected base quad extended by headroom, cropped from the *original* photo.
-
-**Autorotate** — resolving the grid rotation of a single frame by chess plausibility (fewest
-pawns on ranks 1/8, tie-broken by White's mass nearer rank 1). Applied only while the operator
-has not hand-placed or relabelled corners.
+**Framing** — how much of the frame the board fills. ChessQ needs the board to span most of
+the frame width. See [[recognition-pipeline#Framing: the board must fill the frame]].
 
 ## Recognition
 
-**Estimator** — anything satisfying `estimate(frame) -> PositionEvent`. The seam every
-recognition approach plugs into.
+**Recognizer** — anything satisfying the `Recognizer` protocol (`recognizer.py`): a whole BGR
+frame in, its board's `(8, 8, 13)` distribution out, in the chess frame. The seam every
+recognition model plugs into.
 
-**Embedder** — a frozen backbone mapping a crop to a vector (DINOv2 ViT-S/14 → 384-d). Used by
-the bank path; the trained path skips it and goes crop → logits directly.
+**ChessQ Lite V6** — the served recognizer (DESIGN D10): Lichess's whole-frame board model,
+`BR_CHESSQ`, fetched by `make models`, PolyForm Noncommercial.
 
-**Exemplar bank** — the calibration classifier: every calibration crop kept as its own
-exemplar, a query scored by nearest exemplar per class. Beats class centroids by 33 squares on
-leave-one-out. See [[calibration-and-the-bank]].
+**Stub recognizer** — the walking skeleton: one fixed placement, whatever the pixels. Serves,
+loudly, when `BR_CHESSQ` is unset or names no file.
 
-**Centroids** — the earlier per-class-mean classifier. Superseded by the bank, still loadable.
+**Frame read** — `recognizer.frame_reader(recognizer)`: the one function from a wire frame to
+its position event, run by `/estimate`, the ingest workers and replay.
 
-**Transductive centering** — re-centering the bank and the query batch each on their own mean
-before the cosine step, which absorbs per-photo lighting and backbone shift.
+**Prior / repair** — the hard-constraint decoder (`prior.py`): the nearest possible board to a
+read, riding beside it as `prior`; the read itself is never rewritten.
 
-**Session bank** — the persisted, growing exemplar bank for the current set. Written **only**
-when `BR_SESSION_BANK` is set. The one piece of durable state in an otherwise stateless system,
-and therefore the one thing that can be silently corrupted.
+**Settled** — the debounced board (`stabilize.py`): the last placement that held for the
+settle window, riding on stream events as `settled`.
 
-**Bootstrap / self-refresh** — building the bank from a start-position sighting with no user
-action, and topping it up from later low-confidence start sightings to track lighting drift.
+**Zero-shot** — reading a chess set with no calibration for it. ChessQ is zero-shot on every
+set; there is no calibration round any more.
 
-**Ensemble** — the deployed recognizer: a distribution-level blend of the trained model and
-the session bank, weighted by bank maturity (≥1024 exemplars → 30/70 trained/bank).
-
-**Zero-shot** — reading a chess set with no calibration for it. The property the multi-style
-training campaign was fought for.
-
-**Shape bias** — a model relying on silhouette over colour and texture. Pursued through
-augmentation (which worked) and through Stylized-ImageNet initialization (which did not — it
-over-specialized to same-set cues).
+The old crop stack's terms — exemplar bank, session bank, embedder, centroids, ensemble,
+headroom, photo boxes, autorotate — are described in [[calibration-and-the-bank]] and
+[[training-and-data]].
 
 ## Infrastructure
 
-**Edge / L1** — the node at the board: capture, detect, rectify, forward. "The Pi".
+**Edge / L1** — the node at the board: capture, measure stability, forward (detection and
+rectification go in Phase C). "The Pi".
 
-**Inference / L2** — the node that recognizes: stateless per-frame estimator plus gateway.
+**Inference / L2** — the node that recognizes: stateless per-frame recognizer plus gateway.
 DESIGN calls it "central / Jetson".
 
 **Wire** — the L1→L2 frame format: a JSON header plus a JPEG. The *only* thing edge and

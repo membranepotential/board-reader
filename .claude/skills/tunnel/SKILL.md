@@ -24,8 +24,8 @@ HTTPS to a self-signed origin, which buys nothing — the tunnel already termina
 TLS at Cloudflare's edge. The 8443 bind exists for LAN use, where there is no
 edge to do it.
 
-Never tunnel `:8000`. The inference node has no auth of any kind: `/calibrate`
-rebuilds the exemplar bank and `/uploads` serves every photo ever ingested.
+Never tunnel `:8000`. The inference node has no auth of any kind: `/labels`
+writes ground truth and `/uploads` serves every photo ever ingested.
 
 ## Run it
 

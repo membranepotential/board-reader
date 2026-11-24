@@ -15,7 +15,7 @@ import rules below are enforced by a test, not by convention.
 |---|---|---|
 | `board-reader-core` (`board_reader_core`) | the shared contract: L3 protocol, L1→L2 wire, sim helpers, geometry-only board detection | numpy, opencv |
 | `board-reader-edge` (`board_reader_edge`) | the **edge** node ("Pi", L1): capture, detect, rectify, forward | core only |
-| `board-reader-inference` (`board_reader_inference`) | the **inference** node (L2): stateless estimator + gateway | core only |
+| `board-reader-inference` (`board_reader_inference`) | the **inference** node (L2): stateless recognizer + gateway | core only |
 | `board-reader-viewer` (`board_reader_viewer`) | serves the live-position UI and the phone pages (snapshot + camera), and relays the camera page's traffic to the inference node | nothing |
 
 > [!danger] The separation rule
@@ -26,7 +26,7 @@ import rules below are enforced by a test, not by convention.
 > and compose file are the only glue, and only across the network.
 >
 > The point is that the sim and the real deployment are the same system. If the browser
-> edge could reach into the estimator, the Pi could not.
+> edge could reach into the recognizer, the Pi could not.
 
 `DESIGN.md` calls the inference node "central / Jetson" and the edge node "Pi". Same
 concepts, friendlier names in code.
@@ -41,9 +41,9 @@ flowchart LR
   edge -->|WS /ingest: JSON header + JPEG| gw[inference gateway]
   camphone[phone: /camera page<br/>the browser edge] -->|"WS /ws/ingest (relay)"| vw[viewer server]
   vw -->|WS /ingest| gw
-  phone[phone: /snapshot page] -->|POST /estimate: photo + corners| gw
-  gw --> est[estimator]
-  est --> hub[position hub<br/>retains latest per board]
+  phone[phone: /snapshot page] -->|POST /estimate: photo| gw
+  gw --> rec["recognizer (ChessQ)"]
+  rec --> hub[position hub<br/>retains latest per board]
   hub -->|WS /viewer| viewer[viewer UI]
   gw -.->|HTTP response| phone
 ```
@@ -51,25 +51,24 @@ flowchart LR
 **Streaming path (`WS /ingest`)** — the design's main line, live since M2. The edge
 sends the board as two WebSocket messages, a JSON header then the binary JPEG. Every
 frame carries `board_id`, `capture_ts` (sensor time, not receive time), `seq`,
-`stability`, and (inside a burst) a `burst_id`. A frame may also carry **`corners`** —
-the playing-surface quad (a8,h8,h1,a1, in the JPEG's own pixels). Corners set means the
-JPEG is an *original* (un-rectified) camera image and the gateway routes it exactly as
-`POST /estimate` would: a photo-mode estimator cuts tall full-piece boxes from it, any
-other estimator gets a server-side rectification first (`ingest.estimate_frame` — one
-routing shared with the snapshot path so the two can never drift). No corners means the
-JPEG *is* the board crop, as before. Corners ride on every frame rather than in a
-`set_corners` control message, so a reconnecting edge, a restarted gateway and a
-mid-stream re-crop all need zero handshake.
+`stability`, and (inside a burst) a `burst_id`. The gateway reads every frame the same
+way `POST /estimate` reads a photo: the whole JPEG through the recognizer
+(`recognizer.frame_reader`), which finds the board and its orientation itself
+([[recognition-pipeline]]). A frame may still carry **`corners`** (the playing-surface
+quad): the edge and /camera send them until Phase C of the simplification plan, and old
+recordings hold them. `wire.Frame` parses them, the recording keeps them, and recognition
+ignores them.
 
 **The browser edge (`GET /camera` on the viewer)** — DESIGN §6's "virtual Pi", live, and
 a landscape-first full-screen viewfinder rather than a card stack. The phone's browser
 captures with `getUserMedia`, the operator drags the four board corners onto the preview
-(or lets `/detect` propose them; **rotate labels** decides which corner is a8 —
-orientation is the operator's, decision #15), and the page streams JPEG crops (the
-quad's bounding box plus headroom, long side ≤960 px) with rebased per-frame `corners`,
-throttled by a JS mirror of the edge's `MotionMeter` + `AdaptiveForwarder` (~1 fps at
-rest, ~10 fps through motion). Its **calibrate** button grabs a full-resolution frame
-and posts it through the guarded `/calibrate`.
+(or lets `/detect` propose them), and the page streams JPEG crops (the quad's bounding box
+plus headroom, long side ≤960 px) with rebased per-frame `corners`, throttled by a JS
+mirror of the edge's `MotionMeter` + `AdaptiveForwarder` (~1 fps at rest, ~10 fps through
+motion). The crop matters — ChessQ needs the board to fill most of the frame width
+([[recognition-pipeline#Framing: the board must fill the frame]]) — but the corners and
+their **rotate labels** no longer reach recognition. Phase C replaces the corner tracker
+below with a plain rectangle.
 
 Three things make it an instrument rather than a wizard, and all three hang off the
 tracker:
@@ -106,7 +105,7 @@ tracker:
 Because
 `getUserMedia` demands a secure context and phones balk at a second self-signed origin,
 the page talks *only* to the viewer's own origin: the viewer relays `/ws/ingest`,
-`/ws/viewer`, `/api/calibrate` and `/api/detect` to the inference node (pure network
+`/ws/viewer` and the node's HTTP API under `/api/` to the inference node (pure network
 glue — it still imports no `board_reader_*` package), and `--ssl` serves the whole
 thing over a cached self-signed certificate.
 
@@ -119,7 +118,7 @@ against the cached homography.
 
 On the **gateway**, the `/ingest` handler acks each frame on receipt and hands it to a
 per-board **latest-wins inbox** (one un-estimated frame; a newer one displaces it) whose
-worker runs the estimator off the event loop. A burst is therefore estimated at whatever
+worker runs the recognizer off the event loop. A burst is therefore estimated at whatever
 rate the model sustains — skipping the stale end of the burst, never the freshest frame —
 and a slow model can't stall viewers, HTTP, or the socket. An ack means *received*, not
 *estimated*.
@@ -130,7 +129,7 @@ received (`board_reader_core.recording`). It sits at `/ingest` deliberately: tha
 the one socket *every* edge crosses, so the CLI feed, a Pi and the phone `/camera`
 page are all recorded without any of them knowing, and a future edge is recorded the
 day it is written. It also sits **before** the latest-wins inbox — a recording is the
-*input* to a run, not a log of what the estimator got round to, so replaying it can
+*input* to a run, not a log of what the recognizer got round to, so replaying it can
 reproduce the drops rather than inherit them.
 
 `board-reader-edge feed --recording <dir>` puts a session back on the wire, re-sending
@@ -138,17 +137,13 @@ the stored bytes verbatim (no JPEG round trip, which would perturb the very pixe
 reproduction is about). Recording is on for any `serve`d run and off for
 `create_app()` in tests — see [[runbook#Reproducing a run]].
 
-**Snapshot path (`POST /estimate`)** — a convenience ingress that turned into the way the
-system is actually used today. The body is the **original photo**, not a rectified crop,
-plus the four surface corners as a query parameter. Cropping full-piece boxes from the
-original photo beats cropping tiles from a warped rectification, because the warp smears
-tall pieces and the tile truncates them. See [[recognition-pipeline]].
+**Snapshot path (`POST /estimate`)** — one photo in, one position event out. The body is
+the photo as shot; nothing else is needed, because the recognizer finds the board in it.
+See [[recognition-pipeline]].
 
 > [!note] Why `/estimate` publishes to the hub
 > A snapshot read is a real position event, so it goes to the hub like any other and any
-> connected viewer sees it. The one exception is the uncalibrated occupancy-only answer —
-> that is returned in the HTTP response but never published, because the hub is supposed
-> to carry positions, not "something is on this square".
+> connected viewer sees it.
 
 ## Surfaces
 
@@ -158,26 +153,26 @@ tall pieces and the tile truncates them. See [[recognition-pipeline]].
 |---|---|
 | `WS /ingest` | edge → gateway frame stream |
 | `WS /viewer` | position-event stream out (retained latest per board first, then live) |
-| `POST /estimate` | one photo → one position event (`corners`, `autorotate`, `debug`) |
-| `POST /calibrate` | one labeled photo → per-set exemplar bank ([[calibration-and-the-bank]]) |
-| `POST /detect` | photo → proposed corner quad, geometry only |
+| `POST /estimate` | one photo → one position event (+ `prior`, `upload`, `warnings`) |
+| `POST /labels/{upload}` · `GET /uploads` · `GET /uploads/{id}/photo` | ground-truth labels for retained photos (`BR_SAVE_UPLOADS`), in the chess frame |
+| `POST /detect` | photo → proposed corner quad, geometry only (used by /camera until Phase C) |
 | `GET /boards/{id}` | latest retained event for a board |
-| `GET /boards/{id}/frame` | latest raw JPEG ingested for a board (video-like preview; `X-Corners` when the stream stated the quad) |
-| `GET /healthz` | liveness (+ `recording`: session path, frames, bytes) — see the warning in [[runbook#Verifying a restart]] |
+| `GET /boards/{id}/frame` | latest raw JPEG ingested for a board (video-like preview) |
+| `GET /healthz` | liveness (+ `ingest` counters, `recognizer`: name, model, `fallback` when the stub serves; `recording`: session path, frames, bytes) — see the warning in [[runbook#Verifying a restart]] |
 
 **Viewer node** (`:8080`)
 
 | Surface | Purpose |
 |---|---|
 | `GET /` | live-position UI (chessground), one card per board |
-| `GET /snapshot` | the phone page: photo → position, zero taps |
+| `GET /snapshot` | the phone page: capture → read → repair → output (a photo → a position, correctable and labelable) |
 | `GET /camera` | the phone page: live camera → frame stream (the browser edge) |
 | `WS /ws/ingest` · `WS /ws/viewer` | same-origin relays to the inference node's sockets, for `/camera` |
-| `POST /api/calibrate` · `POST /api/detect` | same-origin relays to the inference node's HTTP, for `/camera` |
+| `/api/<path>` | same-origin relay of the inference node's whole HTTP API |
 
 The snapshot page's correction panel is where a wrong square gets fixed — the privileged
 Empty row, then a colour-symmetric piece grid with the square's actual probabilities, so the
-operator can see *what the estimator was torn between* rather than just that it was wrong:
+operator can see *what the recognizer was torn between* rather than just that it was wrong:
 
 ![[correction-panel-mobile.png|300]]
 
@@ -213,14 +208,14 @@ L1→L2 wire framing — and the differences between the copies were the bugs.
 | `lib/protocol.ts` | parses the wire — L3 position events off `/ws/viewer`, L1→L2 headers on `/ws/ingest`, the node's HTTP replies — the one place untrusted wire data becomes a typed value |
 | `lib/api.ts` | same-origin, always-relative URL construction (`/api/…`, `/ws/…`) — nothing here ever names an origin, which is what keeps the pages working unchanged on a LAN, over https, and behind a tunnel |
 | `lib/board/fen.ts` | FEN field 1 ⇄ 8×8 grid, clamped and re-emitted so a malformed placement can't shift the grid the diff and chessground both index into |
-| `lib/geometry/{tracker,corners,homography}.ts` | the board-plane tracker itself — a line-for-line port of the deleted `static/tracker.js`, numerics pinned by `tracker.test.ts`, the port of the deleted `packages/viewer/tests/tracker_checks.mjs` |
+| `lib/geometry/{tracker,corners}.ts` | the board-plane tracker itself — a line-for-line port of the deleted `static/tracker.js`, numerics pinned by `tracker.test.ts`, the port of the deleted `packages/viewer/tests/tracker_checks.mjs` |
 | `lib/edge/{motion,ingest}.ts` | the `/camera` page's browser edge: a JS mirror of `board_reader_edge`'s `MotionMeter`/`AdaptiveForwarder`, and the two-message (JSON header + JPEG) `/ws/ingest` sender |
 | `lib/stores/{positions.svelte,liveness}.ts` | the live position stream as Svelte 5 state — deliberately not a state machine over positions (DESIGN D1): the only history kept is the previous grid, and only to diff a changed square |
 
 `src/routes/` holds the three pages (`+page.svelte` for `/`, `camera/+page.svelte`,
 `snapshot/+page.svelte`) and the page-specific components each composes from
-`lib/components/{live,camera,snapshot}/` — UI, not shared logic. 333 Vitest cases
-cover `src/lib/**` today, and 16 Playwright specs drive the three built pages in a
+`lib/components/{live,camera,snapshot}/` — UI, not shared logic. 342 Vitest cases
+cover `src/lib/**` today, and 46 Playwright tests drive the three built pages in a
 real Chromium; see [[TESTING#1. Automated tests]].
 
 The vendored chessground 9 (`static/vendor/chessground*`) is gone with the rest of
@@ -239,10 +234,11 @@ Core still imports neither node, so the separation rule holds. What moved is the
 location*, not the responsibility.
 
 > [!important] Detection returns geometry, never orientation
-> `detect_board_quad` returns four corners in geometric order. Which physical corner is
-> `a8` is not knowable from the geometry, and the CV layer is forbidden from inferring it
-> from the pieces (DESIGN decision #15). Orientation is resolved separately — see
-> [[recognition-pipeline#Orientation]].
+> `detect_board_quad` returns four corners in geometric order; which physical corner is
+> `a8` is not knowable from the geometry. Recognition no longer needs it: the recognizer
+> infers orientation from the pieces and reports the chess frame (D10 reverses decision
+> #15) — see [[recognition-pipeline#The chess frame]]. `/detect`, `core.boarddetect` and the
+> /camera tracker go in Phase C.
 
 ## The position event
 

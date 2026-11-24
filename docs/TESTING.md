@@ -10,27 +10,27 @@ Two layers, both required by the project's "user-testable from the start" princi
 
 ## 0. Read this first (the 60-second version)
 
-The suite is **fast — ~20 s for all ~1035 tests**. If testing is costing you more
+The suite is **fast — ~16 s for all ~858 tests**. If testing is costing you more
 than that, you are doing one of the things in this section. Read it before you run
 anything; do not read the remaining 600 lines unless you are adding a test.
 
 **The only two commands you normally need:**
 
 ```bash
-make test                                  # everything, ~20s. The gate before a commit.
+make test                                  # everything, ~16s. The gate before a commit.
 uv run pytest packages/inference/tests/test_server.py -q    # one file, while iterating
 ```
 
-| Want | Run | Cost (measured 2026-08-27, one suite at a time) |
+| Want | Run | Cost (measured 2026-11-24, one suite at a time) |
 |---|---|---|
-| The gate (before committing) | `make test` | **20 s** — all ~1035 |
+| The gate (before committing) | `make test` | **~16 s** — all ~858 |
 | One file / one test | `uv run pytest <path>[::<test>] -q` | 1–8 s |
-| One package | `uv run pytest packages/<pkg> -q` | core 8 s · edge 3 s · viewer 11 s · **inference 35 s** |
-| Recognition changes only | `make test-gpu` | 2 s, **needs an idle GPU** |
+| One package | `uv run pytest packages/<pkg> -q` | core 9 s (110) · edge 4 s (130) · viewer 11 s (56) · inference 12 s (435) |
+| Recognition changes only | `make test-gpu` | a few s, **needs an idle GPU** |
 
-Note the trap in row 3: `packages/inference` is 614 of the ~1035 tests and runs
-*serially*, so scoping to it (35 s) is **slower than running everything** with
-`make test` (20 s). Narrow to a file, or just run the gate.
+The rest of the ~858 are `tests/` (42) and `tools/video/tests` (85). A package runs
+*serially*, so scoping to `packages/inference` costs about as much as `make test`.
+Narrow to a file, or just run the gate.
 
 **Rules that save the most time:**
 
@@ -40,8 +40,8 @@ Note the trap in row 3: `packages/inference` is 614 of the ~1035 tests and runs
   you selected; `make test` already parallelises the full suite. Plain `uv run
   pytest <path>` is the fast path for one file.
 - **Don't run `uv run pytest` bare to check your work** — that is the whole suite
-  *serially*, ~60 s, and it re-enables the GPU tests. `make test` is strictly better.
-- **Never run two suites at once**, or a suite alongside a training run. The tests
+  *serially*, ~23 s, and it re-enables the GPU test. `make test` is strictly better.
+- **Never run two suites at once**, or a suite alongside a replay or `make gate`. The tests
   are CPU-saturating by design (`-n auto`); two at once is how the flakes below get
   triggered, and it makes both runs slower than running them in sequence.
 - **`make test` is green or the code is broken.** It is not "usually green". If it
@@ -89,49 +89,53 @@ reasoning.
 
 ```bash
 uv sync                # once, to set up the workspace venv
-make test              # the suite across all cores, minus GPU tests (green), ~20s
-make test-gpu          # the 2 GPU tests alone — an idle GPU, or they flake
+make test              # the suite across all cores, minus the GPU test (green), ~16s
+make test-gpu          # the GPU test alone — an idle GPU, or it flakes
 make test-all          # everything, GPU included
-uv run pytest          # the whole suite, serially (~60s)
+uv run pytest          # the whole suite, serially (~23s)
 uv run pytest -q       # quiet
 uv run pytest packages/inference          # just one package
 uv run pytest tests/test_end_to_end.py    # the real-network walking-skeleton test
 ```
 
 > [!note] Why `make test` is not the whole suite
-> Two tests build a real ONNX `InferenceSession` and take the CUDA execution
-> provider. On an idle machine they pass; on a busy one — a training run, or a
-> second agent session running its own suite — session creation dies with
-> `BFCArena Failed to allocate memory`, and the pressure has been observed
-> taking unrelated OpenCV allocations down with it. They are marked `gpu` and
-> deselected by default, so a red suite means the *code* is red. Run them
-> deliberately with `make test-gpu` before trusting a recognition change.
+> One test (the real-V6 still in `test_chessq.py`) builds a real ONNX
+> `InferenceSession` and takes the CUDA execution provider. On an idle machine it
+> passes; on a busy one — a replay, or a second agent session running its own
+> suite — session creation dies with `BFCArena Failed to allocate memory`, and the
+> pressure has been observed taking unrelated OpenCV allocations down with it. It is
+> marked `gpu` and deselected by default, so a red suite means the *code* is red.
+> Run it deliberately with `make test-gpu` before trusting a recognition change.
 
-What's covered today (M0 + M1 rectification):
+What's covered today — the main files (`git ls-files 'packages/*/tests/*.py'
+'tests/*.py'` lists them all):
 
 | Area | File | Proves |
 |---|---|---|
 | L3 protocol | `packages/core/tests/test_protocol.py` | placement⇄distribution, validation, JSON roundtrip |
-| Wire format | `packages/core/tests/test_wire.py` | JPEG + header frame roundtrip |
+| Wire format | `packages/core/tests/test_wire.py` | JPEG + header frame roundtrip; legacy `corners` still parse |
 | Sim renderer + warp | `packages/core/tests/test_sim.py` | board images render; perspective warp + ground-truth quad |
 | Frame sources | `packages/edge/tests/test_source.py` | video/dir/synthetic/repeat sources |
 | Edge adapter | `packages/edge/tests/test_adapter.py` | frames → wire envelopes, throttle, **rectify + suppress** |
 | **Rectification** | `packages/edge/tests/test_rectify.py` | **detect angled board, un-warp round-trip, manual corners, bump→recalibrating, blank→needs_setup** |
-| **Square cropping** | `packages/inference/tests/test_squares.py` | **64 crops in protocol order, inset/resize** |
-| **Embedder** | `packages/inference/tests/test_embed.py` | **lightweight embedder shape, L2-norm, distinct glyphs** |
-| **Centroids** | `packages/inference/tests/test_centroid.py` | **few-shot calibration, self-consistency, generalisation, absent classes, save/load** |
-| Estimator | `packages/inference/tests/test_estimator.py` | stub emits valid events; **CentroidEstimator reads pixels** |
+| **Recognizer seam** | `packages/inference/tests/test_recognizer.py` | **the stub, the event a distribution becomes, the one frame read, the environment builder and its loud fallback** |
+| **ChessQ** | `packages/inference/tests/test_chessq.py` | **preprocessing and output mapping on a fake model; one `gpu` test reads a held-out still with the real V6** |
+| **Repair + settle** | `packages/inference/tests/test_prior.py`, `test_stabilize.py` | **an impossible board is repaired at its weakest square and a possible one is left byte-for-byte; the per-square debounce behind `settled`** |
 | **Recording format** | `packages/core/tests/test_recording.py` | **byte-exact round trip, corners survive, truncated session still replays, size cap** |
 | **Ingress recording** | `packages/inference/tests/test_recording_ingest.py` | **every `/ingest` frame lands on disk (incl. pre-filter drops); off unless asked; a write failure never breaks the stream** |
-| **Replay** | `packages/edge/tests/test_recording_replay.py` | **replays the recorded bytes without re-encoding, paces by capture time, refuses to reprocess** |
+| **Replay (edge)** | `packages/edge/tests/test_recording_replay.py` | **replays the recorded bytes without re-encoding, paces by capture time, refuses to reprocess** |
+| **Replay (inference)** | `packages/inference/tests/test_replay.py` | **driven by the recorded clock, byte-identical events on a re-run, the frame policy is asked** |
+| **Labels + eval** | `test_labels.py`, `test_server_labels.py`, `test_evaluate.py`, `test_trial.py`, `test_calibration.py` | **chess-frame labels, `eval`, `eval-session`, temperature scaling** |
 | **Position stream consumer** | `packages/inference/tests/test_positions.py` | **transitions of a real move, first-sighting ≠ unchanged, per-board diffing, NDJSON capture rebuilds the identical event, `--changes-only` drops keepalives** |
 | Hub | `packages/inference/tests/test_hub.py` | retained-latest, fan-out, overflow |
 | Gateway | `packages/inference/tests/test_server.py` | ingest → viewer over WS (in-process) |
 | **Read scheduling** | `packages/inference/tests/test_schedule.py` | **burst detection matches the forwarder's hysteresis; the keepalive floor survives a dead, stuck, absent or NaN meter and a backwards clock; no config spelling switches it off; a new move cancels the last one's owed reads; spec strings round-trip** |
 | **Scheduling, live** | `packages/inference/tests/test_ingest_schedule.py` | **the policy is observed on every arriving frame and asked at the drain, so a burst-end read gets `prefer_frame`'s sharper contender; per-board isolation; a frozen `capture_ts` falls back to the node's own keepalive; `BR_SCHEDULE` reaches the socket and `every-frame` restores the old gateway** |
-| Viewer | `packages/viewer/tests/test_viewer.py` | UI served, WS URL injected |
+| Viewer | `packages/viewer/tests/test_viewer_server.py` | UI served, WS URL injected |
 | **Layer split** | `tests/test_layer_separation.py` | edge/inference never import each other |
-| **End-to-end** | `tests/test_end_to_end.py` | real uvicorn + edge client + viewer WS |
+| **Deploy parity** | `tests/test_deploy_parity.py` | compose and `make dev` serve the same recognizer |
+| **End-to-end** | `tests/test_end_to_end.py`, `test_m2_stream.py` | real uvicorn + edge client + viewer WS; the adaptive stream |
+| **Position stream, e2e** | `tests/test_position_stream_e2e.py` | a fed position comes out of the pipe, read off the pixels by `tests/_sim_recognizer.py` — a test-side template matcher that reads `core.sim.render_board` renders exactly (ChessQ reads 0/14 of them) |
 
 ### Frontend (`packages/viewer/ui`)
 
@@ -144,9 +148,9 @@ make test-front                    # both layers, from the repo root — Vitest 
 
 cd packages/viewer/ui              # or, one at a time, from the package
 pnpm install --frozen-lockfile     # once; mirrors `uv sync --frozen`'s discipline
-pnpm test                          # Vitest — src/lib/**, node env, ~1s, 333 cases today
+pnpm test                          # Vitest — src/lib/**, node env, ~1s, 342 cases today
 pnpm check                         # svelte-kit sync + svelte-check, strict TS
-pnpm test:e2e                      # Playwright — 16 specs in a real Chromium, ~15s
+pnpm test:e2e                      # Playwright — 46 tests in a real Chromium, ~15s
 ```
 
 `make test-ui` and `make test-e2e` are the two halves of `make test-front`; each runs
@@ -207,13 +211,17 @@ docker compose up --build
 ```
 
 Then open **http://localhost:8080**. The edge replays a **synthetic recorded
-game** (looped forever) and forwards it adaptively (DESIGN D4), so you should see:
+game** (looped forever) and forwards it adaptively (DESIGN D4). ChessQ does not read
+these synthetic renders (0/14 perfect boards, [the runbook](runbook.md#running-it)),
+so this demo proves the pipe, not recognition: positions change, but they are not the
+game's positions. Without the weights the stub shows the start position throughout.
+You should see:
 
 - the connection chip turn **“live”** (green), a board card for **A1** with the
   position drawn by **chessground** (real pieces, coordinates) — the same board
   the snapshot page uses,
-- the position **evolving move by move** — each changed square ringed **green**,
-  fading pale and gone within a second,
+- the position **changing as the game moves** — each changed square ringed
+  **green**, fading pale and gone within a second,
 - the rhythm of an adaptive stream: **~1 ev/s at rest** (keepalive), jumping to
   **~10–12 ev/s** with a pulsing **“moving”** chip whenever the synthetic hand
   reaches over the board — the **stability** bar dips at the same moments,
@@ -225,16 +233,7 @@ game** (looped forever) and forwards it adaptively (DESIGN D4), so you should se
 - the **age** readout ticking and the card fading to **stale** if you stop the
   edge container (`docker compose stop edge`) — and recovering when it returns.
 
-The **calibrate** button under each board rebuilds the node's piece bank from the
-live frame, for the set and lighting in front of the camera. Set the board to the
-**starting position**, let it settle, then press it: the card reports how many of
-the 13 classes were calibrated and how big the bank now is. It is disabled (hover
-it for the reason) while the card is stale, mid-motion, or not reading `ok`, and a
-frame that does not actually show the starting position is **refused** by the node
-with its reason shown on the card — calibrating from the wrong frame would poison
-the bank.
-
-The **rotate** button next to it turns the card's board picture in 90° steps —
+The **rotate** button under each board turns the card's board picture in 90° steps —
 purely cosmetic (CSS transform on the rendered card; the placement stays
 white's-view a8-first on the wire), for matching the screen to however you're
 standing relative to the physical board. At 90°/270° the coordinates turn
@@ -287,11 +286,10 @@ For an angled clip, add rectification — `--corners x0,y0,x1,y1,x2,y2,x3,y3`
 orientation) or `--rectify` for auto-detection (re-detects on a ~1 s cadence,
 crops intervening frames against the cached homography).
 
-> Note: with no `--centroids`, the estimator is still the M0 **stub** (fixed start
-> position, ignores pixels). The M1 recognition path is opt-in via calibration — see
-> Option E. The default M1 embedder is a lightweight stand-in that works on the
-> *synthetic* renderer; the real **DINOv2** backbone (for real angled photos) plugs
-> into the same `Embedder` seam next.
+> Note: the node reads the whole frame with ChessQ and ignores any `corners` on the
+> wire, so `--corners` and `--rectify` only change what the edge sends (a rectified
+> crop instead of the whole frame). Real footage needs the weights (`make models`);
+> without them the node serves the stub.
 
 ### Option D — See board detection + rectification (M1, WP-A)
 
@@ -328,43 +326,13 @@ With `--rectify`, the edge forwards canonical crops, and frames it can't localis
 bump, or no board) are **suppressed** rather than streamed as confidently-wrong
 geometry (DESIGN §4.4.1).
 
-### Option E — Live recognition (M1, centroid few-shot)
-
-Now the viewer shows what's *actually on the board*, not a fixed start position. The
-recognizer is calibrated few-shot from one labeled position (DESIGN §4.6):
-
-```bash
-# 1. Calibrate centroids from one labeled (rectified) board — the start position has
-#    all 13 classes, so one frame calibrates the whole vocabulary.
-uv run python -c "import cv2; from board_reader_core.sim import render_board; cv2.imwrite('/tmp/start.png', render_board())"
-uv run board-reader-inference calibrate --image /tmp/start.png -o /tmp/centroids.npz
-#    -> "calibrated 13/13 class centroids"
-
-# 2. Serve the gateway with the M1 estimator (instead of the stub):
-uv run board-reader-inference serve --centroids /tmp/centroids.npz
-
-# 3. Viewer (terminal 2) + feed any position (terminal 3):
-uv run board-reader-viewer --port 8080            # open http://localhost:8080
-uv run board-reader-edge feed --synthetic 0 --throttle \
-  --placement "r1bqkb1r/pppp1ppp/2n2n2/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R"
-```
-
-The board card now renders the **fed mid-game position** with per-square confidences —
-recognition is reading the pixels. Change `--placement` and the viewer follows.
-
-> The default `lite` embedder is tuned for the synthetic renderer. For real angled
-> footage, first `board-reader-edge rectify` the frame, then calibrate + serve with the
-> **DINOv2** backbone (`--backbone dinov2`). That needs the converted model at
-> `models/dinov2_small.onnx` — build it once from official Meta weights:
->
-> ```bash
-> cd ../dinov2-export && uv run python ../board-reader/tools/export_dinov2_onnx.py \
->   --out ../board-reader/models/dinov2_small.onnx     # see tools/README.md
-> uv run board-reader-inference calibrate --image rect.png --backbone dinov2 -o c.npz
-> ```
->
-> The centroids file records its backbone, so `serve --centroids c.npz` auto-selects the
-> matching embedder.
+> [!note] Options E, G and H are gone
+> They demoed the earlier recognition stack — centroid few-shot calibration (E), the
+> occupancy bank with start-position auto-calibration (G), and the trained crop
+> classifier with its bank, cascade and calibration average (H). That stack was
+> removed when ChessQ became the only recognizer; the last commit that has it, with
+> these walkthroughs, is `457cf96`. The letters are kept so links to the other
+> options stay valid.
 
 ### Option F — Phone snapshot → Lichess
 
@@ -374,10 +342,10 @@ only produces placement + confidences; side-to-move, castling guess, and the
 Lichess URL are assembled in the page.
 
 ```bash
-# 1. Serve inference with real recognition (a DINOv2 calibration file for your set —
-#    centroids or the kNN exemplar bank the CLI/session calibration now builds):
-uv run board-reader-inference serve --host 0.0.0.0 --port 8000 \
-  --centroids models/centroids_dinov2.npz
+# 1. Serve inference with real recognition (ChessQ; `make models` first):
+BR_CHESSQ=models/chessq/cq-vit-s-644-v6-seed1-onnx-int8-r1.onnx \
+BR_SAVE_UPLOADS=data/uploads \
+  uv run board-reader-inference serve --host 0.0.0.0 --port 8000
 
 # 2. Serve the viewer on the LAN:
 uv run board-reader-viewer --host 0.0.0.0 --port 8080
@@ -385,299 +353,102 @@ uv run board-reader-viewer --host 0.0.0.0 --port 8080
 # 3. On the phone (same Wi-Fi), open  http://<this-machine's-LAN-IP>:8080/snapshot
 ```
 
-Flow: take/pick a photo → the page **auto-detects the board**, places four
-labeled corner handles and reads the position, with no further taps. The photo
-stays on screen next to the board it produced, at the same size; check that
-**a8** sits on the board's a8 corner (**Rotate labels** if not — geometry can't
-know the orientation), drag any handle to fine-tune. The estimated board renders
-with low-confidence squares outlined red, plus **Open in Lichess analysis /
-editor** links (side-to-move toggle on the page). If auto-detection fails, stage
-2 says so and the page falls back to tapping the four corners yourself in the
-prompted order **a8, h8, h1, a1** (press-drag-release; a loupe magnifies under
-your finger), then *Read position*. Reads send the **photo + corners** — the
-server crops each square with headroom from the original view, so pieces are
-seen whole rather than smeared by the top-down warp.
+`make dev` does steps 1 and 2 in one command and prints the URL.
+
+Flow: take or pick a photo → the page reads it at once, with no further taps.
+There are no corners to set: ChessQ finds the board and its orientation in the
+whole photo (DESIGN D10). The photo stays on screen next to the board it produced,
+at the same size. The board renders with low-confidence squares outlined red, plus
+**Open in Lichess analysis / editor** links (side-to-move toggle on the page).
+**Read position** reads the same photo again.
 
 **The page is the diagnostic surface for the reader** (viewer aspect). Under the
-photo and the board, the seven stages of the read are listed in the order they
-run — *capture · board detection · rectify & geometry · square sampling ·
-classification · orientation · position output*. Each row always shows its state
-and headline numbers; expanding it shows the full evidence, and nothing is
-behind an opt-in toggle (`?debug=1` is always requested):
+photo and the board, the four stages of the read are listed in the order they run —
+*capture · read · impossible-board repair · position output*. Each row always shows
+its state and headline numbers; expanding it shows the full evidence:
 
-1. **Capture** — posted size, JPEG size, mean luma against the server's
+1. **Capture** — posted size (downscaled in the browser to a 1600 px long side;
+   that image is exactly what is POSTed), JPEG size, mean luma against the server's
    `LOW_LIGHT_MEAN` (55).
-2. **Board detection** — auto vs hand-placed, `/detect` latency, the four corner
-   coordinates, whether server auto-rotation is still in play.
-3. **Rectify & geometry** — the rectified preview plus projected aspect against
-   `LOW_ANGLE_HW` (0.62), edge lengths, square pitch.
-4. **Square sampling** — the sampling boxes drawn on the photo and the 64
-   model-input crops as the classifier received them.
-5. **Classification** — mean/weakest per-square confidence, an 8×8 confidence
-   map (click a cell to inspect that square), the least-confident squares, and
-   any `autocalibrated` / `bank_refreshed` / `warnings` the server volunteered.
-6. **Orientation** — whether `autorotate=1` was sent and what rotation came back.
-7. **Position output** — the FEN, side-to-move, Lichess links, the corrections
-   made by hand, a material census (two kings, ≤8 pawns), and the raw event JSON.
+2. **Read** — mean/weakest per-square confidence, an 8×8 confidence map (click a
+   cell to inspect that square), the least-confident squares, and any `warnings`
+   the server volunteered. The read is always in the chess frame (rank 8 on top).
+3. **Impossible-board repair** — every square the hard-constraint decoder
+   relabelled (two kings, a pawn on the back rank, too many pieces), cheapest first.
+   The board above shows the repaired position; the raw distribution is untouched.
+4. **Position output** — the FEN, side-to-move, Lichess links, copy FEN / copy raw
+   event, the corrections made by hand, and a material census (two kings, ≤8 pawns).
 
-**Correcting a square:** click it once to inspect — the switcher beside the
-board shows the crop the model saw, what it read, the full 13-class
-distribution, and a White/Black grid to assign from. Click the same square again
-to toggle through its top-3 readings (the fast fix). On a desktop the arrow keys
-move the selection and FEN letters assign (`K` white king, `k` black king, `.`
-empty, `esc` closes). Inspecting never changes a square; only assigning does.
+**Correcting a square:** click it once to inspect — the inspector beside the board
+shows what the model read and the full 13-class distribution, and a White/Black grid
+to assign from. Click the same square again to toggle through its top-3 readings
+(the fast fix). On a desktop the arrow keys move the selection and FEN letters
+assign (`K` white king, `k` black king, `.` empty, `esc` closes). Inspecting never
+changes a square; only assigning does.
 
-**Recent positions** at the bottom logs every read of the session. Selecting one
-restores the whole pipeline view — that photo, its corners, its crops, its
-distributions and its own corrections — so two reads can be compared without
-re-shooting either. It lives in memory only and is gone on reload.
+**Saving a label:** **Save labelling** under the board keeps the board as shown as
+the true position for this photo — see Option I.
+
+**History** at the bottom lists every read of the session merged with every photo
+the node still retains, newest first. Selecting a session read restores the whole
+pipeline view — that photo, its distribution and its own corrections — so two reads
+can be compared without re-shooting either. Selecting a retained photo loads it and
+reads it again.
 
 Notes:
 - The page reaches inference through the viewer's `/api` relay, on whatever origin
   it was loaded from, so no extra config is needed on a LAN, over https, or behind
   a tunnel. `BR_INFERENCE_HTTP` on the viewer is what points that relay at the node
   when inference runs elsewhere.
-- `POST /estimate` on the inference node accepts a **rectified** top-down crop
-  (JPEG body) and returns the position event JSON — handy for scripting:
-  `curl -s --data-binary @crop.jpg -H 'Content-Type: image/jpeg' localhost:8000/estimate`
-- Without `--centroids` you get the M0 stub (fixed start position) — fine for
-  testing the plumbing, useless for real photos.
-- The page's **Calibrate (start position)** button hits `POST /calibrate`, which
-  now builds a kNN exemplar bank in the photo's own lighting (the
-  leave-one-photo-out-validated replacement for centroid averaging, DESIGN
-  §4.6) and hot-swaps it in. Calibrating again — same set, different lighting,
-  or a later position — **adds** that photo's exemplars to the running bank
-  rather than throwing the old ones away, so repeated calibration only helps.
-- Set `BR_SAVE_UPLOADS=data/uploads` on `serve` to keep every posted photo (+
-  its corners/placement metadata) — real-world shots become labeled eval data.
-
-### Option G — Zero-setup: occupancy + start-position auto-calibration
-
-No calibration file for the set at hand? Serve with an **occupancy bank**
-instead (built from ChessReD by `tools/build_exemplar_bank_chessred.py`;
-CC BY-NC-SA — local use only, never committed):
-
-```bash
-BR_OCCUPANCY_BANK=models/exemplars_chessred.npz BR_SAVE_UPLOADS=data/uploads \
-BR_SESSION_BANK=models/exemplars_session.npz \
-  uv run board-reader-inference serve --host 0.0.0.0 --port 8000
-```
-
-`BR_SESSION_BANK` opts into persisting/restoring calibration across restarts;
-without it every calibration lives in memory only (nothing is ever written —
-deliberate, so tests and ad-hoc runs can never clobber a real bank).
-
-Manual test, on the phone (`/snapshot` as in Option F):
-
-1. Photograph any **mid-game** position of a set the server has never seen →
-   the response is occupancy-only (which squares are occupied, no piece types)
-   plus the hint to show the starting position. Nothing is published to the hub.
-2. Photograph the **starting position** → the server detects its occupancy
-   pattern (any rotation; White's side by piece brightness), silently
-   calibrates piece types from that very photo, and answers with a full
-   position event (response carries an `autocalibrated` block). Verify the
-   rendered board is the start position.
-3. Photograph the mid-game position again → full recognition, no calibration
-   button ever pressed.
-4. Restart the server with the same env → recognition still works: the session
-   bank (`models/exemplars_session.npz`) is restored on startup whenever
-   auto-calibration is enabled. (Delete/move that file to rehearse the
-   cold-start flow again.)
-
-To also demo the true cold start, temporarily move `models/exemplars_session.npz`
-away before step 1.
-
-Two further behaviors to verify on any `/estimate`:
+- `POST /estimate` on the inference node accepts a whole photo (JPEG body) and
+  returns the position event JSON — handy for scripting:
+  `curl -s --data-binary @photo.jpg -H 'Content-Type: image/jpeg' localhost:8000/estimate`
 - **Low-light warning**: a very dark photo (mean brightness < 55/255) makes the
   response carry `"warnings": ["low_light"]` and the page show a dimness hint.
-- **Calibrated self-refresh**: photographing the *starting position* in lighting
-  the bank doesn't cover yet (read confidence below 0.8) makes the response
-  carry `"bank_refreshed": {...}` — the bank grew from that photo; subsequent
-  reads in that lighting improve. Mid-game photos never trigger it.
-
-### Option H — Trained zero-shot model + calibration booster (pre-D10; needs `BR_CHESSQ=` empty)
-
-The production configuration serves the multi-style trained classifier with the
-per-set bank as an ensemble booster (DESIGN §4.6):
-
-```bash
-BR_MODEL=models/run_e/model.onnx BR_SAVE_UPLOADS=data/uploads \
-BR_SESSION_BANK=models/exemplars_session.npz \
-  uv run board-reader-inference serve --host 0.0.0.0 --port 8000
-```
-
-`models/run_e/model.onnx` is the deployed model — the same path
-[compose.yaml](../compose.yaml) and [runbook.md](runbook.md) use; take it from
-there rather than from memory. The superseded
-`models/piece_classifier_multistyle_v1.onnx` is still on disk and still loads,
-but it has no `.onnx.meta.json` sidecar, so serving it silently applies v1's
-short-crop geometry to whatever weights you point at — the decapitation
-signature (kings on the back rank read as bishops). The server now warns on
-stderr when a sidecar is missing; do not ignore that line.
-
-**Two models instead of one (the cascade).** `BR_MODEL_B` names a second crop
-classifier trained on a *different* crop geometry and turns the pair into a
-confidence-gated cascade: every square is read by `BR_MODEL`, and only the
-squares it was unsure about (max probability below `BR_CASCADE_TAU`, default
-`0.95`) are re-read by `BR_MODEL_B` — cropped with **its own** sidecar geometry —
-and the two distributions averaged 50/50.
-
-```bash
-BR_MODEL=models/run_e/model.onnx \
-BR_MODEL_B=scratch/runs/run_f/model.onnx \
-  uv run board-reader-inference serve --host 0.0.0.0 --port 8000
-```
-
-Measured 2026-08-11 on 60 boards: `user_photos` 0.938 → 0.956,
-`chesscog_transfer` 0.819 → 0.861, OVERALL 0.696 → 0.718, at ~1.3× the single
-model's cost because the second model sees under 30% of squares. Two things to
-check by hand:
-
-- `GET /healthz` grows a `cascade` block naming both models and counting
-  `squares` / `deferred` / `deferred_fraction`. After a handful of real photos
-  the fraction should sit near 0.3; if it is near 1.0 the first model is
-  unconfident on everything (wrong geometry? wrong model?), and if it is 0.0 the
-  second model is never being consulted.
-- A `BR_MODEL_B` that cannot load, or that has no `.onnx.meta.json` sidecar, is a
-  **hard startup failure**, not a warning — unlike `BR_MODEL`, whose fresh-clone
-  fallback exists so `docker compose up` works without `models/`. Asking for the
-  cascade and silently getting one model would only ever show up much later as
-  "the ensemble didn't help".
-
-`run_f` is deployed at `models/run_f/` and `compose.yaml` sets both members, so
-the Docker demo runs the cascade whenever `models/` is populated. A fresh clone
-(neither model file present) degrades to the stub exactly as `BR_MODEL` alone
-always has; only a *partial* pair is a hard startup error.
-
-**A model tuned for one board (the calibration average).** `BR_MODEL_TUNED` names
-a fine-tune of `BR_MODEL` on the operator's own board, produced offline by
-`tools/train/calibrate_finetune.py`. It is a different trade from the cascade:
-the cascade buys accuracy on *any* board, this buys more accuracy on *one*.
-
-Producing it needs only calibrate frames already sitting in `data/uploads` — a
-calibrate sidecar carries the corners and means "this board is in the start
-position", which is where the labels come from for free:
-
-```bash
-tools/train/calibrate_finetune.sh \
-  --frames ../../data/uploads/20260717-232704-0011-calibrate.jpg \
-           ../../data/uploads/20260718-155204-0010-calibrate.jpg \
-           ../../data/uploads/20260806-232827-0008-calibrate.jpg \
-  --out ../../scratch/tuned/user_board          # add --dry-run to just see the sessions
-```
-
-The tool **refuses to run on frames from fewer than three capture sessions** (it
-clusters them by sidecar `ts`; a gap over an hour starts a new session). That is
-not caution, it is the measurement: 3 frames from 1 sitting scored 0.932 on
-`user_photos`, *below* the un-tuned 0.938, while 3 frames from 3 sittings scored
-0.968. Condition diversity is the ingredient, not frame count. `--force`
-overrides and says loudly that the result is outside every measured
-configuration. Expect ~60 s on the GPU, and note that the onnxscript traceback
-printed during export is expected noise — the success signal is the `round-trip
-OK` line under it.
-
-```bash
-BR_MODEL=models/run_e/model.onnx \
-BR_MODEL_TUNED=scratch/tuned/user_board/tuned.onnx \
-  uv run board-reader-inference serve --host 0.0.0.0 --port 8000
-```
-
-Measured 2026-08-11 on the five `user_photos` boards: 0.938 → **0.969**,
-hallucinations unchanged at 1, wrong-type 19 → 9, and the decapitation
-confusions gone (queen recall 0.40 → 1.00). Verified through this serving path,
-not just the experiment. Three things to check by hand:
-
-- `GET /healthz` grows a `tuned` block naming the tuned model **and its base**.
-  If it is missing, the average is not running.
-- **Never serve the tuned model as `BR_MODEL`.** Alone it reads 0.966 but invents
-  pieces on empty squares (hallucinations 1 → 4 on the same five boards); the
-  base's confident "empty" is what votes them back down. The server enforces
-  this: `BR_MODEL_TUNED` without `BR_MODEL` is a hard startup error, with no
-  fresh-clone grace — a tuned model only exists because somebody ran the tool.
-- `BR_MODEL_TUNED` **and** `BR_MODEL_B` together is also a hard startup error.
-  Both pairings are measured; stacking them is not, and the error names the two
-  numbers (0.969 calibrated vs 0.956 zero-shot) so the choice is informed.
-
-The `≥3 sessions` rule is unit-tested in the workspace suite
-(`tools/train/tests/test_calibrate_finetune.py`, the one torch-free file in that
-directory — it is named explicitly in `testpaths`).
-
-Manual test, on the phone (`/snapshot` as in Option F):
-
-1. With `models/exemplars_session.npz` moved away, photograph a **mid-game**
-   position → a full position event from the trained model alone (zero-shot; no
-   occupancy-only mode, no calibration needed).
-2. Photograph the **starting position** → the response carries an
-   `autocalibrated` block: the trained path bootstrapped its own booster bank
-   from that photo. Subsequent reads answer through the 50/50 ensemble (better
-   in bank-covered conditions, never worse elsewhere). With `BR_SESSION_BANK`
-   set, the bank persists and the ensemble is restored on restart.
-3. Tapping **Calibrate** at any point *adds* to the booster bank — it never
-   replaces the trained model. Calibrate labels are orientation-guarded: if the
-   corner labeling disagrees with the trained model's own reading of the photo
-   by a rotation, the labels are rotated into agreement (response carries
-   `"label_rotation"`), so a calibrate over auto-detected (arbitrarily
-   oriented) corners can never poison the bank with color-swapped exemplars.
-   If a bank is suspected poisoned anyway:
-   `CUDA_VISIBLE_DEVICES= uv run python tools/rebuild_session_bank.py` rebuilds
-   it from all retained calibrate uploads with the same verification.
-4. **Orientation auto-correction**: photograph the board with the camera on
-   Black's side and accept the auto-detected corners (don't touch the handles) —
-   the read comes back with White at the bottom anyway and the response carries
-   `"autorotated": 180` (the UI shows a banner). Hand-placing or relabeling
-   corners disables this — the operator's orientation is authoritative.
-5. **Sidecar labeling** (`BR_SAVE_UPLOADS`): each retained `*-estimate.json`
-   now records the predicted `placement` (and `autorotated` when applied), so
-   every field shot is ready-made eval data.
-6. **Flat-angle warning**: photograph the board with the phone nearly at board
-   level (projected quad aspect < 0.62) — the response carries
-   `"warnings": ["very_low_angle"]` and the page tells you to raise the phone.
-   Recognition is not trustworthy at such angles (yet).
-7. **Calibrate rejection**: tap Calibrate on a photo that does NOT show the
-   claimed position (e.g. a mid-game board with the default start placement) —
-   the server answers 422 with the reason (fewer than 60% of claimed piece
-   squares agree with its own reading) and the bank is untouched.
+- Without the ChessQ weights you get the stub (fixed start position) — fine for
+  testing the plumbing, useless for real photos.
+- Set `BR_SAVE_UPLOADS=data/uploads` on `serve` to keep every posted photo (+ its
+  sidecar: predicted placement, read frame, prior flips) — real-world shots become
+  eval data.
 
 ### Option I — Confirm ground truth, then score the reader
 
 The two halves of measuring whether the snapshot app actually works: collect
 labels through normal use, then run the deployed stack against them.
 
-**Collecting a label** (needs `BR_SAVE_UPLOADS` — Option H's serve line has it):
+**Collecting a label** (needs `BR_SAVE_UPLOADS` — Option F's serve line and
+`make dev` set it):
 
 1. Photograph a position and read it as usual.
-2. In **7. Position output**, fix any wrong squares (tap a square, pick the
-   right piece), then press **Confirm as ground truth**. The button also appears
-   when nothing is wrong — confirming a flawless read is exactly as much a label
-   as fixing four squares, and the perfect-board rate is made of both.
+2. Fix any wrong squares (tap a square, pick the right piece), then press **Save
+   labelling** under the board. The button is there when nothing is wrong too —
+   saving a flawless read is exactly as much a label as fixing four squares, and
+   the perfect-board rate is made of both.
 3. A `data/uploads/<stem>.label.json` appears next to the photo, holding the
-   position, the corners, and what the server predicted at the time. Editing a
-   square after saving re-arms the button — a label describes one exact position.
-4. The label is stored in the frame the **corners** define: if the read was
-   `autorotated`, the turn is undone first, so a later model whose orientation
-   guess differs is still scored against the same truth.
+   position in the chess frame (`"frame": "chess"`), the squares the decoder
+   repaired (`prior_flips`), and what the server predicted at the time. Editing a
+   square after saving turns the button into **Update labelling** — a label
+   describes one exact position.
 
-> Labels are scoring data only. Nothing feeds them back into the calibration
-> bank — that is the contamination they exist to measure.
+> Labels are scoring data only. Nothing reads them back into the reader — a reader
+> fitted on its own eval boards is the contamination they exist to measure.
 
 **Scoring:**
 
 ```bash
 uv run board-reader-inference eval                    # data/eval + data/uploads
-BR_MODEL=models/run_e/model.onnx uv run board-reader-inference eval   # one member
-uv run board-reader-inference eval --json report.json --autorotate
+uv run board-reader-inference eval --json report.json
+uv run board-reader-inference eval --no-prior         # the raw read, no repair
 ```
 
-The harness builds the estimator from the environment exactly as `serve` does,
+The harness builds the recognizer from the environment exactly as `serve` does,
 prints that configuration above the report, and leads with **perfect boards**,
 not per-square accuracy — 94.5% per square is ~3.5 wrong squares on a board, and
 a position with 3 wrong squares is not a position. It then breaks errors into
 hallucination / missed / colour / type, and prints a reliability diagram: the
 gap between claimed confidence and observed accuracy is what says whether a 0.97
-means anything.
-
-If a calibration bank is active the report warns that boards the bank was built
-from are not held out. Take a number carrying that warning as an upper bound.
+means anything. Labels still in the corner frame are skipped with a warning; see
+Option P.
 
 ### Option J — Phone live camera (the browser edge, DESIGN §6 "virtual Pi")
 
@@ -686,9 +457,9 @@ forwarding all happen in the phone's browser; the desktop shows the position
 evolving on the live viewer.
 
 `make dev` sets all of this up — it starts inference plus **two** binds of the
-viewer, serves the **same cascade `docker compose up` does** (it prints the
-composition it resolved, and falls back to `BR_MODEL` alone with a warning if
-`models/run_f/` is absent), and prints the URL for each page:
+viewer, serves the **same recognizer `docker compose up` does** (it prints what it
+serves, or a `!!` line when the ChessQ weights are missing and the stub serves), and
+prints the URL for each page:
 
 ```bash
 make dev
@@ -709,8 +480,9 @@ terminates TLS for you — see `.claude/skills/tunnel`.
 By hand, if you want different ports or only the camera:
 
 ```bash
-# 1. Inference with real recognition (same env as Option H):
-BR_MODEL=models/run_e/model.onnx uv run board-reader-inference serve --host 0.0.0.0
+# 1. Inference with real recognition (same env as Option F):
+BR_CHESSQ=models/chessq/cq-vit-s-644-v6-seed1-onnx-int8-r1.onnx \
+  uv run board-reader-inference serve --host 0.0.0.0
 
 # 2. Viewer with TLS — getUserMedia requires a secure context on a phone:
 BR_INFERENCE_WS=ws://localhost:8000/viewer BR_INFERENCE_HTTP=http://localhost:8000 \
@@ -723,39 +495,26 @@ uv run board-reader-viewer --host 0.0.0.0 --port 8443 --ssl
 ```
 
 Flow: open the page **in landscape** — not just by design preference: a portrait
-frame is **hard-blocked** (an overlay says "turn the phone sideways"; detect,
-calibrate and start are disabled until the phone turns). The node's per-square
-crops extend toward the top of the image, so a board lying sideways in the frame
-reads garbage that looks like a position problem — it cost the 2026-08-27 field
-day, hence a block rather than a warning.
+frame is **hard-blocked** (an overlay says "turn the phone sideways"; detect and
+start are disabled until the phone turns). The block dates from the crop-classifier
+reader, whose per-square crops extended toward the top of the image, so a sideways
+board read garbage — it cost the 2026-08-27 field day. ChessQ squashes a portrait
+frame badly too ([[operating-envelope#Framing]]); the block stays until Phase C.
 Allow the camera and the preview fills the screen. **The board is found on its own**:
 once the picture holds still, after a short settle delay (~2.5 s, so autoexposure and
 autofocus have caught up) the page detects the board without being asked — no framing
-step in the common case. Six controls sit on a rail (a right-hand column in landscape,
-a 3×2 dock at the bottom in portrait): `more` · `position` · `detect board` ·
-`rotate labels` · `calibrate` · `start`/`stop`.
+step in the common case. Four controls sit on a rail (a right-hand column in
+landscape, a dock at the bottom in portrait): `more` · `position` · `detect board` ·
+`start`/`stop`. A fifth, `rotate labels`, appears on the rail only when a
+re-detection may have moved a8 (below); otherwise it lives in the **more** sheet.
 
-**rotate labels** is still how the operator *overrides* which corner is a8 —
-geometry cannot know that (decision #15) — but a calibration now sets it without
-help: `/calibrate` resolves the true labelling from the pieces and the page folds
-the reply's `label_rotation` into its own corners (the banner says
-`labels aligned from the pieces (turned 90°)`), so nobody presses rotate after a
-calibrate any more. And when `/calibrate` refuses because the *photo* is rotated
-(the portrait failure reaching the node some other way), the banner says that one
-actionable sentence instead of the node's full paragraph. **detect
-board** re-runs detection on demand, for the cases automatic detection does not reach
-(a bad angle, nothing recognisable as a board); the four corner handles are always
-there to drag by hand too. **calibrate** grabs one full-resolution frame and posts it
-through the guarded `/calibrate` (board must show the starting position, pieces at
-rest) — and the FIRST one fires by itself: once streaming is on and the live
-reading looks like a start position sitting still (`shouldAutoCalibrate`,
-occupancy-banded in any rotation, stability ≥ 0.9), the page runs the same
-full-res sharpest-frame burst unprompted, so the whole session flow is aim →
-start → play. The node's agreement gate stays the authority — a false trigger is
-refused quietly and retried after a 30 s cooldown. Because `/calibrate` is
-additive, tapping the pill from a second or third angle still grows the same bank
-rather than replacing it, and the button's own label carries the running count
-(`calibrate · 3`). **position** shows or hides a floating live-position
+**rotate labels** is how the operator says which corner is a8 — geometry cannot know
+that (decision #15). The node no longer needs it (ChessQ finds the orientation
+itself and ignores the streamed corners); the labelling still drives the quad on the
+page until Phase C. **detect board** re-runs detection (`/detect`) on demand, for the
+cases automatic detection does not reach (a bad angle, nothing recognisable as a
+board); the four corner handles are always there to drag by hand too. The session
+flow is aim → start → play. **position** shows or hides a floating live-position
 board that can be dragged by its header and resized from a corner grip. **more** opens
 a slide-up sheet holding the board id, the lens picker, tracking on/off, reset crop,
 the stats strip (frames/rate/stability), a **what the reader sees** section carrying the
@@ -765,13 +524,11 @@ placement string and the low-confidence legend, and the framing explanation.
 What streams is not the raw frame, and the page shows you exactly what does: the dashed
 box drawn around the quad is the crop being sent — the quad's bounding box with a margin,
 and considerably more headroom above the top edge, which is where tall pieces stand up out
-of the board. It goes downscaled, with the quad riding on every frame header as `corners`
-— the gateway then cuts full-piece boxes from the original view, exactly as a snapshot
-read would. The
-rate is adaptive (~1 fps at rest, bursts through motion). The desktop live viewer
-(`/`) shows the same board id, where the preview pane displays the very frames the
-phone is sending and its calibrate button now honours the streamed corners
-(`X-Corners`).
+of the board. It goes downscaled, with the quad still riding on every frame header as
+`corners` (legacy: the node ignores them and reads the whole crop). The rate is
+adaptive (~1 fps at rest, bursts through motion). The desktop live viewer (`/`) shows
+the same board id, where the preview pane displays the very frames the phone is
+sending.
 
 What to check:
 - Stability ~1.0 and ~1 fps with the board at rest; a burst and a dipping stability
@@ -802,12 +559,6 @@ What to check:
   the chosen `frame_seq`.
 - Drag **position**'s header to move it and its corner grip to resize it; it survives
   a rotation without ending up off-screen.
-- After **calibrate**, a banner reports the class count and the bank size, and the
-  button's own count goes up.
-- Zero-tap: on a fresh bank, set up the start position, press only **start** —
-  within a few seconds of the board sitting still the banner reads `Calibrated
-  automatically from the start position, …` with no calibrate tap. Set up a
-  mid-game position instead and it never fires.
 
 **Tracking (DESIGN §4.4.1(a)).** Once the corners are set they follow the board: pick
 the phone up, move it, put it down somewhere else and the quad — with its `a8`
@@ -845,8 +596,7 @@ stall of a few seconds escalates play → reopen with backoff. Every attempt is 
 `client-logs/` (see Option K's post-mortem kit).
 
 **Impossible boards.** The live panel draws the node's prior-repaired placement:
-force a two-kings read (swap the queen for a spare king mid-stream, or just watch
-a marginal angle) and the panel shows one king, the repaired square ringed red,
+force a two-kings read (swap the queen for a spare king mid-stream) and the panel shows one king, the repaired square ringed red,
 `repaired N` in the status line. The raw argmax stays on the wire untouched.
 
 ### Option K — Reproduce a run from its recording (WP-H2)
@@ -906,7 +656,7 @@ tail -f recordings/*/events.ndjson | jq -c '{seq, placement, prior: .prior.flips
 Each line also carries `evidence`: the **top-2 digest**, 64 squares in board
 order, each `[[class, p], [runner-up, p]]`. It is what survives dropping
 `square_dist`, and it is the difference between "d8 read `k`" and "d8 read `k` at
-0.51 over `q` at 0.49" — a near-miss the crop nearly answered, or a conviction the
+0.51 over `q` at 0.49" — a near-miss the read nearly answered, or a conviction the
 evidence never contained. Read one square straight off the file:
 
 ```bash
@@ -925,7 +675,7 @@ Three more places to look after a phone trial:
   refused frames; `BR_LOG_LEVEL=DEBUG` logs every read.
 - `client-logs/*.ndjson` (written by the **viewer**) — the phone's own story:
   socket status changes, camera track mute/ended, stall-watchdog play/reopen
-  attempts, calibrate/detect outcomes, `pagehide`. This is the file that says
+  attempts, detect outcomes, `pagehide`. This is the file that says
   *why the node heard silence* — a page that never connected, a camera that
   froze, or a stream whose every frame was refused all look identical from the
   node's side. While streaming it also beats every 10 s (`kind: "heartbeat"`,
@@ -933,7 +683,7 @@ Three more places to look after a phone trial:
   which kind of quiet it was — `jq -c 'select(.kind=="heartbeat") | .detail'
   client-logs/*.ndjson`.
 - `curl -s localhost:8000/healthz | jq .ingest` — `received/estimated/dropped/
-  failed/skipped/refused/unscheduled/backstopped` counters; all zeros while the
+  failed/refused/unscheduled/backstopped` counters; all zeros while the
   phone claims to stream means the frames never arrived. `unscheduled` far above
   `estimated` is the **read scheduler working** (`BR_SCHEDULE`, ~12x fewer reads),
   not a stall; `backstopped` above zero means that edge's `capture_ts` stopped
@@ -987,7 +737,7 @@ nothing (an empty stream is not a working one), `2` when there is no gateway at 
 
 ---
 
-### Option M — Score a trial recording (and export crops from it)
+### Option M — Score a trial recording
 
 Option K replays a recording. This one *grades* it. A trial — a person at a real
 board with a phone on the /camera page — records every frame and every published
@@ -1051,10 +801,6 @@ label is only as good as the estimator that produced it):
 ```bash
 # 2. Score it (no model, no GPU — it reads events.ndjson, ~0.1 s):
 uv run board-reader-inference eval-session recordings/20260813-193308
-
-# 3. Same run, plus per-square training crops labeled from the same truth:
-uv run board-reader-inference eval-session recordings/20260813-193308 \
-    --export-crops data/external/trial_20260813 --every 5 --json trial.json
 ```
 
 Scoring **always** writes the full report as JSON — `<recording>/report.json`
@@ -1077,21 +823,14 @@ What to check:
 - **`raw · evidence on the N wrong squares`** answers "is this fixable?" without
   putting the model back in the loop: how often truth was the runner-up, the
   median `p(read) - p(truth)` margin, and the same split per confusion pair.
-  Small margins with truth ranked second mean the crop carries the answer;
+  Small margins with truth ranked second mean the read nearly had the answer;
   truth outside the top 2 means the evidence is not there at all;
-- **`attractor: 'b' demoted below margin 0.20`** is the guard on the shipped
-  black-bishop demotion (see [[recognition-pipeline#The black-bishop demotion]]).
-  It reports how close this session's *correctly* read black bishops came to the
-  margin the rule fires below. A `! WARNING` there means the gap the rule's safety
-  rests on has narrowed to under 0.05 on this set — re-check the constant before
-  trusting the score, because below it the rule starts eating correct squares
-  silently. `report.json` carries the same under `attractor_guard`;
+- the **`frame:`** line says how many raw reads agree with the truth unturned; a
+  `! WARNING ... turned` line means the truth file is not in the chess frame
+  (Option P);
 - **`timing`** is the rate story a placement score cannot show — frames in (fps),
   reads out (reads/s), frames per read, and the capture→publish latency a live
-  display actually feels. It reads the frame *index* only, never the JPEGs;
-- the export writes a `labels_normalized.json` crop-level style plus an
-  `export.json` naming the geometry that cut it. `uv run --directory tools/train
-  python styles.py` should then list it, and `python cropcache.py <style>` shard it.
+  display actually feels. It reads the frame *index* only, never the JPEGs.
 
 Exit codes: `0` scored, `1` nothing left to score, `2` no `truth.json` (skeleton
 printed) or a `truth.json` that cannot be trusted.
@@ -1099,32 +838,34 @@ printed) or a `truth.json` that cannot be trusted.
 ### Option N — Replay a take through today's stack (offline benchmarking)
 
 Option M grades the events a run *published*. This one produces fresh ones: it
-pushes the recorded frames back through the estimator stack the environment
-builds today — the same routing decision, the same prior repair, the same
-debounce, the same event writer the live gateway uses — and writes them as a new
+pushes the recorded frames back through the recognizer the environment builds
+today — the same read, the same prior repair, the same debounce, the same event
+writer the live gateway uses — and writes them as a new
 recording-shaped directory. **A recorded take replaces a live one for
 iteration:** change the code, replay, score, diff. No phone, no board, no server.
 
 ```bash
 # Whatever `serve` runs is what replay runs — same env vars, same builder:
-BR_MODEL=models/run_e/model.onnx BR_MODEL_B=models/run_f/model.onnx \
-BR_SESSION_BANK=models/exemplars_session.npz BR_GPU_MEM_LIMIT_MB=1024 \
+BR_CHESSQ=models/chessq/cq-vit-s-644-v6-seed1-onnx-int8-r1.onnx \
 uv run board-reader-inference replay recordings/20260813-193308 --score
 ```
+
+`make gate GATE_NAME=<name>` runs this over the four gate takes and prints the table
+(Option P, step 4).
 
 It lands beside the take it came from, so a benchmark can always be traced to its
 input — and the source recording itself is never written to:
 
 ```
-recordings/20260813-193308/replays/<name>/manifest.json  # source, git, BR_MODEL*, digest
+recordings/20260813-193308/replays/<name>/manifest.json  # source, git, BR_CHESSQ, digest
                                         /events.ndjson   # the fresh reads
                                         /frames.ndjson   # the replayed lines (thin)
                                         /jpeg -> ../../jpeg          (symlink)
                                         /truth.json -> ../../truth.json
 ```
 
-`<name>` defaults to `<git describe>-<digest of the BR_MODEL* env, including each
-model file's size and mtime>`: the same code against the same models replays into
+`<name>` defaults to `<git describe>-<digest of BR_CHESSQ, including the model
+file's size and mtime>`: the same code against the same models replays into
 the same directory (a re-run supersedes its own answer), a different model — or
 the same path retrained in place — lands beside it. **The default is only offered
 on a clean tree**: two sets of uncommitted changes describe identically, so they
@@ -1142,15 +883,9 @@ command prints the `eval-session` line to run.
 > its own frames, while a replay reads every frame the policy asks for — blurry
 > ones included. **A replay-vs-recorded raw delta is not a code result**: the two
 > numbers come from different frame populations and the replayed one is
-> systematically pessimistic. Treat it as directional at most.
->
-> The second gap is the same size and points the other way: during a served run
-> `/calibrate` (and `/estimate`'s §4.6 auto-calibration) **hot-swaps** the active
-> estimator and the stream picks it up on its next frame, so a take where the
-> operator calibrated ten seconds in was read by two different estimators — its
-> early frames by one that had never seen this set. Replay freezes today's
-> estimator and bank for the whole take, so those early frames are read with
-> knowledge the live run did not have yet.
+> systematically pessimistic. Treat it as directional at most. (Takes recorded
+> before 2026-11-24 have a second gap: the old stack's calibration swapped the
+> reader mid-take, which a replay cannot reproduce.)
 >
 > The comparison that means something is **two replays of the same recording**:
 > same frames, same order, same freeze — so a difference between them is a
@@ -1191,8 +926,8 @@ What to check:
 > reproduces the run. A policy sees the recorded header (`seq`, `capture_ts`,
 > `stability`, `sharpness`, `burst_id`) and not the pixels, so a declined frame
 > costs not even a JPEG read — and "estimate this one" is a request, not a
-> guarantee (the frame may have no JPEG behind it or route `Uncalibrated`; those
-> land in their own counters and are not charged to the policy).
+> guarantee (the frame may have no JPEG behind it; that lands in its own counter
+> and is not charged to the policy).
 >
 > **`--restamp-stability` is mandatory when scheduling the older takes.** Anything
 > recorded before the 2026-08-27 evening meter fix carries the old absolute-scale
@@ -1209,7 +944,7 @@ What to check:
 > Sparse policies and restamps join the default replay directory name, so a sweep's
 > rows never land on top of each other.
 
-### Option O — ChessQ Lite, the default recognizer (`BR_CHESSQ`)
+### Option O — ChessQ Lite, the recognizer (`BR_CHESSQ`)
 
 `BR_CHESSQ=<model.onnx>` serves Lichess's ChessQ Lite: one model reads the whole
 frame and finds the board and its orientation itself (DESIGN D10). Both entry
@@ -1222,7 +957,7 @@ pinned revision its committed descriptor names, and checks the SHA-256.
    Run it again: it prints `ok` and downloads nothing.
 1. Start the stack: `make dev`. Expected: `recognition ChessQ Lite (...) — the same
    recognizer compose.yaml serves`, and the inference log prints `serving ChessQ
-   from BR_CHESSQ=... (calibration disabled)`.
+   from BR_CHESSQ=...`.
 2. Run `curl -s localhost:8000/healthz`. Expected: a `"recognizer": {"name":
    "chessq", "model": ...}` entry naming the file.
    **Missing weights:** `make dev BR_CHESSQ=models/chessq/absent.onnx`. Expected:
@@ -1233,10 +968,7 @@ pinned revision its committed descriptor names, and checks the SHA-256.
 3. Open `/camera` on the phone (Option J) and point it at a board. Expected: the
    live page shows positions within ~1 s per read (ChessQ runs ~0.4 s on the
    GPU, ~0.6–1.1 s on CPU).
-4. Press calibrate on `/camera` or `/snapshot`. Expected: HTTP 409, "calibration
-   is off while the 'chessq' recognizer serves", and the node keeps serving ChessQ
-   (`/healthz` still shows the `recognizer` entry).
-5. Replay a take with ChessQ (Option N), with **only** `BR_CHESSQ` set:
+4. Replay a take with ChessQ (Option N), with **only** `BR_CHESSQ` set:
    `BR_CHESSQ=models/chessq/cq-vit-s-644-v6-seed1-onnx-int8-r1.onnx uv run
    board-reader-inference replay recordings/20260828-111421 --policy burst-end
    --name cq-v6 --score`. Expected: the manifest's `estimator` is
@@ -1246,18 +978,18 @@ Automated: `packages/inference/tests/test_chessq.py` and `test_recognizer.py` (f
 model and the stub; the one real-weights test is `gpu`-marked and runs under `make
 test-gpu`, skipping when the weights or the held-out still are absent),
 `tests/test_fetch_models.py` (`make models`) and `tests/test_deploy_parity.py`
-(both entry points serve ChessQ and nothing of the old stack).
+(both entry points serve ChessQ and nothing of the old stack). The e2e stream test
+uses `tests/_sim_recognizer.py` instead, because ChessQ does not read sim renders.
 
 ### Option P — The chess frame: label, eval and gate a recognizer (DESIGN D10)
 
 A recognizer reads the chess frame and finds the orientation itself, so labels,
 eval and replays are all in the chess frame.
 
-1. Under ChessQ (Option O), photograph a board on `/snapshot` **without** setting
-   corners, correct any wrong squares, and confirm. Expected: the label is saved
-   (`/labels` answers `"frame": "chess"`), and `data/uploads/<id>.label.json`
-   carries `"frame": "chess"` and `"corners": null`. Ticking autorotate changes
-   nothing: the answer has no `autorotated` field.
+1. Under ChessQ (Option O), photograph a board on `/snapshot`, correct any wrong
+   squares, and press **Save labelling**. Expected: the label is saved (`/labels`
+   answers `"frame": "chess"`), and `data/uploads/<id>.label.json` carries
+   `"frame": "chess"` and `"corners": null`.
 2. Run `BR_CHESSQ=models/chessq/cq-vit-s-644-v6-seed1-onnx-int8-r1.onnx uv run
    board-reader-inference eval data/eval data/uploads`. Expected: the header names
    `ChessQRecognizer(...)`; labels still in the corner frame are skipped with a

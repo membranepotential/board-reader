@@ -19,9 +19,9 @@ aspects:
           values) must match what board_reader_core.protocol actually emits.
       - aspect: inference
         role: >-
-          A changed or struck-through decision (e.g. §4.6 recognition model,
-          decision #15 orientation) must be reflected in the estimator and
-          gateway code, or the code is violating a locked decision.
+          A changed or struck-through decision (e.g. D10 the recognizer, the
+          chess frame) must be reflected in the recognizer and gateway code, or
+          the code is violating a locked decision.
       - aspect: docs
         role: >-
           Decisions are stated once, in DESIGN; the docs vault explains and
@@ -38,11 +38,9 @@ aspects:
       - aspect: inference
         role: >-
           A change to CLASSES order, PositionEvent fields, or the wire header
-          must be matched in the estimators and the gateway that construct them.
-          Also holds `LOW_ANGLE_ASPECT` / `quad_aspect` (moved here from a
-          private `_quad_aspect` in board_reader_inference.server so the
-          camera-angle threshold has one source): a changed threshold changes
-          the `very_low_angle` serving warning.
+          must be matched in the recognizers (chessq.py maps its own class
+          order onto CLASSES) and the gateway that construct events. The wire
+          must keep parsing `corners`: old recordings replay with them.
       - aspect: edge
         role: >-
           A change to the wire frame header or JPEG encoding must be matched in
@@ -50,12 +48,7 @@ aspects:
       - aspect: viewer
         role: >-
           A change to the position-event JSON shape must be matched in the
-          viewer and snapshot pages that render it. The viewer also carries its
-          own literal copy of `0.62` (`LOW_ANGLE_ASPECT`,
-          packages/viewer/ui/src/lib/protocol.ts) — it cannot import core, so
-          this copy has to be updated by hand if the threshold moves;
-          `lib/geometry/corners.test.ts` and the snapshot pipeline tests are
-          what would catch a stale one.
+          viewer and snapshot pages that render it.
       - aspect: design
         role: >-
           A protocol change that is not merely additive needs DESIGN §5 updated
@@ -75,16 +68,17 @@ aspects:
 
   inference:
     description: >-
-      board_reader_inference — the stateless per-frame estimator plus the
-      gateway (WS /ingest, WS /viewer, POST /estimate|/calibrate|/detect).
-      Holds the estimator stack: trained model, exemplar bank, ensemble,
-      auto-calibration.
+      board_reader_inference — the stateless per-frame recognizer (ChessQ Lite
+      V6 behind recognizer.py) plus the gateway (WS /ingest, WS /viewer,
+      POST /estimate, /labels, /uploads, /detect), the prior repair, the
+      settle debounce, read scheduling, recording, replay and eval.
     files: ["packages/inference/src/**"]
     affects:
       - aspect: tests
         role: >-
-          New estimator behaviour, endpoint, or guardrail (rejection, warning,
-          rotation) ships with a test that exercises it.
+          New recognizer behaviour, endpoint, or guardrail (warning, repair,
+          schedule) ships with a test that exercises it, and a change that can
+          move a read is held to the replay gate (`make gate`).
       - aspect: testing-guide
         role: >-
           A new operator-visible behaviour (endpoint, warning, env var, failure
@@ -92,21 +86,21 @@ aspects:
           to be runnable and observable by a person.
       - aspect: docs
         role: >-
-          Changed thresholds, env vars, estimator precedence, or crop geometry
-          must be updated in the docs vault — the runbook and pipeline notes
-          quote concrete values.
+          Changed thresholds, env vars, settle values or the recognizer must be
+          updated in the docs vault — the runbook and pipeline notes quote
+          concrete values.
       - aspect: viewer
         role: >-
-          A changed request or response shape on /estimate, /calibrate, or
-          /detect must be matched in the snapshot page that calls them.
+          A changed request or response shape on /estimate, /labels, /uploads
+          or /detect must be matched in the pages that call them.
       - aspect: deploy
         role: >-
           A new or renamed env var that the deployed configuration relies on
           must be set in BOTH entry points — compose.yaml and the Makefile's
           `dev` target — or recorded as deliberately environment-specific in
-          tests/test_deploy_parity.py. Setting it in one place is how the
-          confidence-gated cascade ended up running in the demo but not under
-          `make dev` for two days without a single failure.
+          tests/test_deploy_parity.py. Setting it in one place is how an
+          earlier model configuration ran in the demo but not under `make dev`
+          for two days without a single failure.
 
   edge:
     description: >-
@@ -195,10 +189,11 @@ aspects:
 
   models:
     description: >-
-      External state — the model and calibration artifacts actually on disk.
-      Git-ignored (non-redistributable training-data licenses), so the repo can
-      only describe them, never contain them.
-    probe: "ls -1 models models/run_e 2>/dev/null"
+      External state — the recognizer weights actually on disk (models/chessq/,
+      fetched by `make models` against the committed release descriptors).
+      Git-ignored (PolyForm Noncommercial), so the repo can only describe them,
+      never contain them.
+    probe: "ls -1 models/chessq 2>/dev/null"
     affects:
       - aspect: docs
         role: >-
@@ -207,14 +202,13 @@ aspects:
           rather than assumed.
       - aspect: deploy
         role: >-
-          BR_MODEL and BR_MODEL_B must point at model files that exist — in
-          compose.yaml and in the Makefile's defaults alike. A partial pair (one
-          member present) is a hard startup error by design, so a half-populated
-          models/ dir breaks a run rather than degrading it.
+          BR_CHESSQ must name the same model file in compose.yaml and in the
+          Makefile's defaults. A missing file degrades to the stub recognizer,
+          loudly (plan decision D2), so check /healthz's recognizer block after
+          a change.
       - aspect: status
         role: >-
-          A newly trained or newly deployed model is a state change the
-          dashboard has to reflect.
+          A newly deployed model is a state change the dashboard has to reflect.
 
   evaldata:
     description: >-
@@ -257,15 +251,15 @@ aspects:
       - aspect: tests
         role: >-
           tests/test_deploy_parity.py is the executable half of this aspect: the
-          recognition env family (BR_MODEL, BR_MODEL_B, BR_MODEL_TUNED,
-          BR_CASCADE_TAU, BR_CENTROIDS, BR_CHESSQ) must be identical across compose.yaml and
+          recognition env (BR_CHESSQ) must be identical across compose.yaml and
           `make dev`, and any var set by only one of them must carry a recorded
           reason. A new deploy-time env var means that guard needs updating.
 
   docs:
     description: >-
-      The Obsidian docs vault — architecture, recognition pipeline, calibration,
-      operating envelope, runbook, training/data, glossary. Explains how the
+      The Obsidian docs vault — architecture, recognition pipeline, measuring
+      accuracy, operating envelope, runbook, glossary, and the historical
+      calibration and training notes. Explains how the
       system currently behaves (DESIGN owns why it was decided that way).
     files: ["docs/index.md", "docs/architecture.md", "docs/recognition-pipeline.md", "docs/calibration-and-the-bank.md", "docs/measuring-accuracy.md", "docs/operating-envelope.md", "docs/runbook.md", "docs/training-and-data.md", "docs/glossary.md", "docs/youtube-streams.md"]
     affects:

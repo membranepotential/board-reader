@@ -6,86 +6,64 @@ tags: [board-reader/recognition, board-reader/ops]
 # Operating envelope
 
 Where the reader works, where it does not, and the numbers behind each boundary. Everything
-here was measured on real photographs, not inferred.
+here was measured on real photographs, not inferred. The recognizer is ChessQ Lite V6
+([[recognition-pipeline]]); it reads the whole frame and finds the board itself.
 
 ## The short version
 
 | Condition | Threshold | What the server does |
 |---|---|---|
-| Camera elevation (projected board aspect) | usable ≥ 0.73; warn below **0.62**; garbage at 0.56 | `very_low_angle` warning |
+| Board size in the frame | board ≥ **50 %** of frame width; ~83 % is best; 35 % fails | nothing |
 | Light level (mean pixel value) | warn below **55**; evening rooms measure ~37 | `low_light` warning |
-| Chess set | any — zero-shot; a calibration photo makes it better | nothing |
+| Chess set | any — zero-shot, no calibration | nothing |
 | Position | any — no start-position requirement | nothing |
 
-Neither warning blocks a read. The design streams what it sees and flags what it doubts;
-suppressing output is reserved for a *geometrically* invalid state (a bumped or repositioned
-camera), because a mis-localized camera produces confidently-wrong crops and a consumer
-cannot tell a confident lie from a real read.
+The warning does not block a read. The design streams what it sees and flags what it
+doubts (DESIGN D1): an illegal-looking board is still reported as `ok`.
 
-## Camera angle
+## Framing
 
-The measure is the **projected board aspect**: the short side of the corner quad over its
-long side. It is a proxy for elevation that needs no calibration — just the corners you
-already have.
+ChessQ squashes the whole input to 644×644, so a board that fills little of the frame
+loses pixels and its squares get distorted. Measured on 467 images
+([[2026-11-24-chessq-framing]]):
 
-| Aspect | Elevation, roughly | Behaviour |
+| Board share of frame width | Per-square | Perfect boards |
 |---|---|---|
-| 0.73 – 0.88 | ~45–55° | the band every good result was measured in |
-| 0.62 – 0.73 | ~40° | degraded; the warning fires below 0.62 |
-| ~0.56 | seated across the table, phone barely raised | **near-random output** |
-
-At 0.56 the failure is geometric, not statistical: pieces occlude whole ranks, and each
-square's crop mostly contains the *next* rank's piece. Corners and orientation can both be
-perfectly correct and the read is still worthless. The regime is simply outside anything
-trained or evaluated.
+| ~83 % (as photographed) | 99.4 % | 82 % |
+| 50 % (16:9, centered) | 99.3 % | 79 % |
+| 35 % (16:9, centered) | 91–99 % (padding-dependent) | 5–69 % |
+| 80 % of a portrait 9:16 frame | 98.4 % | 57 % |
 
 > [!tip] The fix is free
-> Raise the phone. The UI says so when the warning fires.
+> Frame the board so it fills at least half the width of a landscape shot. Do not send a
+> wide room shot; crop to the board with a margin first.
 
-Synthetic training data now samples aspect 0.5–0.9 (mode ~0.75, with a deliberate ~23% tail
-in 0.5–0.65), so the flat-angle regime is being *learned* rather than only warned about.
+## Camera angle and light
 
-## Light
-
-Warm dim tungsten room light is the hardest realistic condition, and it interacts badly with
-steep angles. The trained model alone drops to ~84% there, which is the one regime where a
-per-set calibration still clearly beats it — so the calibrate path covers exactly the gap the
-zero-shot path leaves.
-
-The self-refresh mechanism ([[calibration-and-the-bank#Zero-interaction calibration]]) is the
-practical answer: photographing the board before each game in that evening's light took
-dim-room accuracy from ~50% to 98.8%.
-
-## The steep-and-dim corner
-
-The two worst conditions together are the known weakness. Its mechanism is understood — see
-[[recognition-pipeline#Cropping is where the accuracy is]] — and the fix was to retrain with
-tall crops, which moved the hardest board from 57/64 to 59/64 with the ensemble. It is
-improved, not solved.
-
-> [!example] What failure looks like
-> Not noise. **Systematic major-piece confusion**: q→b, K→Q, R→P, B→P, plus phantom pawns one
-> square above a decapitated head. If you see that signature, suspect crop geometry or camera
-> elevation — not the classifier.
+These limits were measured on the earlier crop-classifier stack (removed; last in
+`457cf96`). There, a projected board aspect below 0.62 (a camera barely raised above the
+table) gave near-random output, and warm dim room light was the hardest realistic
+condition. ChessQ has not been measured separately on flat angles or dim rooms; treat both
+as the likely weak spots until it is. Only the `low_light` warning remains on the server.
 
 ## What is measured on, and what that means
 
-Every accuracy figure in this repo is relative to a small labeled eval — currently 10 boards
-/ 640 squares of user photos plus 12 dim calibrate uploads. Two consequences worth holding
-onto:
+Every accuracy figure in this repo is relative to a small labeled eval: 21 stills
+(`ground_truth.json` 10, `heldout-20260831` 11), the chess-frame upload labels (47 boards
+in total with the stills), and the replay gate's four recorded takes (101 truth-covered
+boards). Two consequences worth holding onto:
 
-- Figures from different eval sizes are **not comparable**. A model evaluated on 19 boards
-  and one evaluated on 22 do not have comparable "overall" numbers; compare only on the
-  shared boards.
-- 10 boards is thin. A 6-square difference between two models is inside the noise you should
-  expect; a 50-square difference is not.
+- Figures from different eval sets are **not comparable**. Compare only on the shared
+  boards.
+- The sets are thin. A few squares' difference between two runs is inside the noise you
+  should expect; a large difference is not.
 
 `BR_SAVE_UPLOADS` exists to fix this over time: every phone photo is retained with a sidecar
-recording the predicted placement and whether it was auto-rotated, so every field shot becomes
+recording the predicted placement and the frame it was read in, so every field shot becomes
 eval data without forensics.
 
 ## Related
 
 - [[recognition-pipeline]] — the mechanisms behind these limits
-- [[calibration-and-the-bank]] — what to do about the dim regime
+- [[measuring-accuracy]] — how the numbers above are produced
 - [[runbook]] — checking a live server against these expectations

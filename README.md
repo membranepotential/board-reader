@@ -20,16 +20,13 @@ settled boards perfectly (the old cascade + bank: 5 and 35). Point a phone at a
 board via `/snapshot` or `/camera` and you get a position back with no taps and no
 calibration.
 
-The most recent live phone trial (2026-08-13) streamed **748/748 frames** without loss.
-Scored against hand-labelled truth for that recording (`recordings/<session>/report.json`,
-regenerate with `board-reader-inference eval-session`), the debounced `settled` board is
-**97.7 % per-square** and **25.8 % perfect boards** — that row is replayed offline, since
-the recording predates the settled block shipping. The residual is *entirely* one
-confusion — king vs queen on d8/e8, where a phone-height camera decapitates the rank-8
-crops — so a perfect board costs getting both of those squares right at once.
+The pipeline was then simplified around ChessQ: the calibration round, the exemplar
+bank, the in-house crop classifier and its training harness are gone, and every frame
+takes one read path ([the plan](docs/plans/2026-11-24-simplify-around-chessq.md),
+[recognition](docs/recognition-pipeline.md)).
 
-**Next up:** simplifying the pipeline around ChessQ, then retuning the settle window
-([the plan](docs/plans/2026-11-24-simplify-around-chessq.md)). See
+**Next up:** the edge's framing (a plain rectangle instead of the corner tracker), then
+retuning the settle window. See
 [STATUS.md](STATUS.md) for the current state and [DESIGN §7](docs/DESIGN.md) for the
 milestone ladder.
 
@@ -66,10 +63,10 @@ make test                                      # the test suite
 packages/
   core/        board_reader_core      — shared L3 protocol + L1→L2 wire + sim
   edge/        board_reader_edge      — the "Pi": capture & forward frames
-  inference/   board_reader_inference — stateless per-frame estimator + WS gateway
+  inference/   board_reader_inference — stateless per-frame recognizer + WS gateway
   viewer/      board_reader_viewer    — serves the live-position web UI
 docker/        one parametrised image; compose.yaml wires the three services
-tools/         offline tooling: bank builders, ONNX export, training harness
+tools/         offline tooling: model fetch, replay gate table, label migration, video capture
 docs/          DESIGN.md (decisions) + an Obsidian-linked doc set (index.md)
 aspects.yaml   which parts must stay in sync with which, and why
 ```
@@ -91,7 +88,6 @@ Two carve-outs, both spelled out in **[THIRD-PARTY.md](THIRD-PARTY.md)**:
 - **Model weights are not redistributable.** The core recognizer, ChessQ Lite V6, is
   **PolyForm Noncommercial 1.0.0**: personal and research use only, **not** commercial
   use. `make models` fetches it from its pinned upstream revision; only its release
-  descriptor (URL, size, SHA-256) is committed. The older in-house models derive from
-  ChessReD (CC BY-NC-SA 4.0) and geometry of unclear provenance. `models/`, `data/`,
+  descriptor (URL, size, SHA-256) is committed. `models/`, `data/`,
   `scratch/` and `recordings/` are git-ignored for exactly this reason — do not attach
   weights to a release or bake them into a published image.

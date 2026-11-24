@@ -1,213 +1,44 @@
 ---
 aliases: [calibration, exemplar bank, session bank]
-tags: [board-reader/recognition, board-reader/calibration]
+tags: [board-reader/recognition, board-reader/calibration, board-reader/history]
 ---
 
-# Calibration and the exemplar bank
+# Calibration and the exemplar bank (historical)
 
-Calibration is how the reader adapts to *your* chess set in *your* lighting. It is
-**optional, position-agnostic, and a booster** — it improves a working zero-shot
-recognizer, it never replaces it.
+> [!info] Removed on 2026-11-24 (DESIGN D10, plan decision D5)
+> ChessQ reads every piece set as shipped, so there is no calibration round any more.
+> `POST /calibrate`, the occupancy-only start, start-position auto-calibration, the
+> per-set exemplar bank (`BR_SESSION_BANK`, `BR_OCCUPANCY_BANK`, `BR_CENTROIDS`) and
+> `rebuild-bank` are deleted. The last commit that has all of it is `457cf96`; this note's
+> full text is in that commit too.
 
-Optional and position-agnostic are DESIGN decision #3: the system must work when dropped
-into an arbitrary mid-game position, and a calibration round may use *any* known labeled
-position, not specifically the start.
+## What it was
 
-## What the bank is
+The old crop classifier read piece *type* badly on a chess set it had never seen. The fix
+was a per-set **exemplar bank**: one photo of a known position (the start position by
+default) gave 64 labeled crops, embedded once, and every later square was blended 50/50
+between the trained classifier and a nearest-exemplar lookup in that bank. The bank could
+be built by a tap (`/calibrate`), with zero taps (a start position the classifier already
+read confidently), and offline from retained uploads.
 
-A **kNN exemplar bank**, not per-class means. Every calibration crop is kept as its own
-exemplar; a query square is scored by its **nearest exemplar per class** (per-class MAX
-cosine). Two details do most of the work:
+## What it taught
 
-- **Per-board transductive centering** — the bank and the query batch are each re-centered
-  on their own mean before the cosine step, which absorbs per-photo lighting and backbone
-  shift.
-- **Photometric variants** — each calibration crop is banked in several exposures.
+- **A bank scores near-perfectly on the photos it was built from.** Any eval that reuses
+  them is an upper bound, never a measurement — the rule behind keeping labels as eval data
+  only (`/labels` never feeds recognition). See [[measuring-accuracy]].
+- **Calibration poisons quietly.** A wrong corner orientation, a mid-game photo sent as the
+  start position, or a too-flat angle wrote wrong exemplars that then read with high
+  confidence. Each needed its own guard; the lesson is that an adaptation step is a second
+  model to validate, not a free improvement.
+- **Bank writes are not monotone.** Rebuilt banks lost 13 perfect boards on the four gate
+  takes ([[2026-08-29-bank-rematch]]). A calibrate on a new set helped that set and cost
+  the old takes 35 → 25 settled perfect boards, while per-square accuracy rose on every
+  take — per-square metrics hid the regression ([[2026-08-31-calibrate-before-after]]).
 
-Measured against class centroids, leave-one-photo-out on labeled real photos:
-
-| Classifier | Score | Empty→piece hallucinations |
-|---|---|---|
-| class centroids | 261 / 320 | 28 |
-| **kNN exemplar bank** | **294 / 320** | **6** |
-
-Centroid files remain loadable — the classifier kind is picked from the file, not from a
-flag. Calibrating from a new photo **adds** its exemplars to the running bank rather than
-replacing it, so the bank only grows.
-
-> [!tip] Calibrate in the light you will play in
-> Single-frame calibration transfers poorly across lighting: ~70–75% of 64 squares between
-> warm-lamp and daylight photos of the *same* set. Calibrating from both lightings recovers
-> ~90–95%. Gray-world white balance does not help — tested.
-
-## Zero-interaction calibration
-
-The operator never has to press anything. This is engineered out of the occupancy/type split
-in [[recognition-pipeline#Why piece type is the hard part]]: occupancy is style-robust, so
-the *occupancy pattern* of the chess starting position is unmistakable even on a set the
-system has never seen.
-
-```mermaid
-flowchart TD
-  photo[photo arrives at /estimate] --> read[read it with the current estimator]
-  read --> match{occupancy matches<br/>the start position?<br/>any of 4 rotations}
-  match -->|no| done[publish the event, done]
-  match -->|yes, no bank yet| boot["bootstrap: build a bank from THIS photo,<br/>labeled by its own reading,<br/>masked to agreeing squares"]
-  match -->|yes, bank exists but read was weak| refresh["self-refresh: append label-confirmed<br/>exemplars from this photo"]
-  boot --> answer[re-answer through the upgraded ensemble]
-  refresh --> done
-```
-
-Three properties keep this honest:
-
-- **Any of the four rotations** counts as a match, which also self-corrects a rotated corner
-  detection. White's side is resolved by piece brightness.
-- Only squares whose occupancy **agrees** with the start pattern contribute labels, so a
-  photo taken a move or two into the game never banks a wrong label.
-- The self-refresh path fires on *low-confidence* start sightings, so photographing the board
-  before each game keeps adapting the bank to that evening's lighting with zero interaction.
-  Validated: dim-room accuracy went from ~50% to 98.8% purely from same-conditions appends.
-
-**The whole UX is: photograph the board before the game starts.** No buttons, no labeling.
-
-## The four ways this got poisoned
-
-The bank is persisted state in an otherwise stateless system, which makes it the one thing
-that can be silently corrupted and then serve confident garbage. It happened four times.
-Each fix is now a guardrail in the code.
-
-> [!bug]- Incidents 1 & 2 — the bank clobbered by the test suite
-> Persistence used a **cwd-relative default path**, so an ordinary `pytest` run overwrote the
-> real calibration bank. The second time, a restart loaded the clobbered file and served
-> garbage.
->
-> **Fix:** persistence is opt-in. The bank is written only when `BR_SESSION_BANK` names a
-> path; unset means calibration lives in memory and *nothing* is ever written. Guarded by a
-> no-write test.
->
-> **Ops rule this produced:** verify a restart with a known-photo read, not with `healthz`.
-
-> [!bug]- Incident 3 — the fix that hid the bug
-> With `autorotate` live, auto-detected corners that were 180° off produced *correct-looking
-> reads* — the server silently rotated them. But **`/calibrate` still trusted the corner
-> orientation**, so an operator's calibrate tap pushed colour-swapped exemplars into the
-> persisted bank. Reads degraded to ~58/64 with White/Black flips on the back ranks.
->
-> **Fix:** `/calibrate` probes the photo with the stateless trained member — which cannot
-> have been poisoned — and rotates the claimed labels into agreement, accepting a rotation
-> only when it beats the as-given labels by ≥8 squares. The chosen rotation comes back as
-> `label_rotation`.
->
-> **The general lesson:** any affordance that silently corrects a user-visible error masks
-> that same error from every flow that still trusts it. When you add an auto-correction,
-> audit every path that consumes the uncorrected value.
-
-> [!bug]- Incident 4 — calibrating a mid-game board as "start"
-> Operators tap Calibrate on whatever is on the board. A mid-game position got calibrated as
-> the start position.
->
-> **Fix:** `/calibrate` rejects with **HTTP 422** when fewer than 60% of the *claimed piece
-> squares* agree with a stateless probe of the photo, at the best rotation. The reason is
-> shown in the UI.
->
-> **Why piece squares and not all squares:** a mid-game board and the start position share a
-> mostly-empty middle, which inflates whole-board agreement to ~40/64 and hides the mismatch
-> completely. Whole-board agreement is the wrong metric for verifying a claimed placement;
-> piece-square agreement is the right one. This is exactly how the poisoning slipped past
-> intuition.
-
-Recovery from any of these is `tools/rebuild_session_bank.py` — see
-[[runbook#Recovering a poisoned bank]].
-
-## The second adaptation mechanism: the calibration fine-tune
-
-The bank is not the only thing a calibrate photo can buy. Since 2026-08-11 the *same stored
-frames* can also fine-tune the deployed classifier itself — LP-FT (linear probe, then
-full fine-tune) on that one board — producing a per-board `tuned.onnx` that is served as a
-**50/50 average with the base model**, not as a replacement (`BR_MODEL_TUNED`; see
-[[runbook]]). The bank adapts the *comparison*; this adapts the *model*. They stack.
-
-Measured on the user's own board: per-square 0.938 → **0.969** [0.966–0.972, 3 seeds],
-wrong-type errors 19 → 9, hallucinations 1, occupancy held — and **no catastrophic
-forgetting**: `chesscog_transfer`, an unseen physical set, *gains* (0.819 → 0.856). Live
-`/estimate` reads 63/64 against the base model's 58/64, from a 56-second fine-tune.
-
-> [!important] Session diversity is the lever — frame count is not
-> Three frames from **three different lighting sessions** produce the result above. Frames
-> from a single sitting are worthless for tuning **no matter how many you take** (2 frames /
-> 1 session was the original pre-registration, and it did not validate: 0.935 vs 0.938).
-> This is the same finding as the calibrate-in-your-playing-light tip above, sharpened: what
-> the model needs is *variation*, and one sitting contains none.
->
-> `calibrate_finetune.py` enforces this — it **refuses** input that does not span ≥3 sessions
-> and quotes the measurement when it does; `--force` overrides loudly.
-
-Two limits on record. Generalization was only ever measured on the same five `user_photos`,
-so this is a per-board win, not a proven general one. And a tuned model **cannot be combined
-with the two-model cascade** — that stack has never been measured, so requesting both is a
-hard startup error rather than a silent guess.
-
-## The fifth way it went wrong: it ate the eval set
-
-Not a corruption — a measurement failure. `tools/build_exemplar_bank.py` builds the
-bank's base *from `data/eval/ground_truth.json`*, so the bank has seen nine of the ten
-boards it is scored on. It returns 64/64 on exactly those nine and **43/64** on the one
-it never saw, and that inflated an ensemble headline for months.
-
-The bank being near-perfect on conditions it has seen is the feature, not the bug — it
-is why the ensemble works at all. The bug is scoring it there. See
-[[measuring-accuracy#Contamination]].
-
-## Rebuilding the bank offline (`rebuild-bank`, 2026-08-28)
-
-Since serve-time occlusion masking shipped (`BR_CROP_MASK=gray`,
-[[recognition-pipeline#Occlusion masking — the deployed default since 2026-08-28]]), the
-live bank has a domain mismatch: **masked query embeddings are compared against unmasked
-exemplar embeddings**. The bank stores no pixels, so re-embedding means going back to
-source — and every `/calibrate` post persists its photo + corners + placement under
-`data/uploads/`, which is exactly enough:
-
-```bash
-board-reader-inference rebuild-bank --uploads data/uploads --mask gray -o bank.npz
-```
-
-It reuses the live calibrate machinery verbatim — including the label guard: the
-agreement rule was extracted out of the live session into `session.verify_labels`, so
-`/calibrate` and the rebuild now share one implementation (default-on,
-`--guard-model models/run_e/model.onnx`, `--no-verify-labels` to skip). Pre-rectified
-384×384 warps — out-of-domain for photo crops, and provably inert under masking (0/64
-crops change) — are excluded by default. On the current corpus: **54 uploads → 31 used,
-10 guard-rejected** (five near-total label mismatches, one 7/32, and the four
-2026-08-27 portrait-phone uploads the live path also rejected), 13 rectified. Both
-banks: 7,936 exemplars, differing **only** in masking (7,536 rows change; verdict lists
-identical by construction — the guard probes unmasked crops regardless of `--mask`, or
-the corpus itself would depend on the mask setting).
-
-Curated three-way (shipped members, `BR_CROP_MASK=gray`): baseline 305/320 →
-rebuilt-unmasked **307** → rebuilt-masked **308** — corpus +2, masking +1. Not a
-deployment verdict — and indeed the take replays *inverted* it
-([[2026-08-29-bank-rematch]]): the rebuilt banks lose 13 perfect boards on the 4-take
-gate because they cannot contain the auto-calibrate exemplars grown live from those
-sessions' frames (pixels only in `recordings/`, never in uploads). The bank's
-deployed value is session adaptation; corpus quality is second to it.
-
-> [!warning] A bigger bank is not a better bank — judge calibration too
-> The first, unguarded rebuild (all 54 uploads, 13,824 rows) scored one square
-> *higher* (309) while collapsing mean board confidence 0.59 → 0.51: the polluted and
-> out-of-domain rows were buying per-square points by flattening every softmax. The
-> guarded 7,936-row bank holds confidence at baseline levels. Per-square alone would
-> have rewarded the worse bank — candidate banks must be judged on calibration as well
-> as accuracy.
-
-Two more properties to keep in mind: **residuals reorder, they don't just shrink**
-(the non-monotone-bank-writes effect — boards clean under the baseline can pick up
-errors under a better-average bank), and `verify_labels` **cannot reject an all-empty
-placement** (`agree < 0.6 × 0` never triggers) — a pre-existing live-path hole found
-while testing the guard, tracked in [[STATUS]].
+Any future adaptation to a specific set is an offline LoRA producing a new ONNX file
+(plan decision D5), measured on the replay gate like any other model.
 
 ## Related
 
-- [[measuring-accuracy]] — why a bank-backed number is an upper bound, and what to do instead
-- [[recognition-pipeline]] — the bank is one member of the deployed ensemble
-- [[runbook]] — env vars, verification, recovery
-- [[operating-envelope]] — the conditions under which a calibrate is worth doing at all
+- [[recognition-pipeline]] — what reads boards now
+- [[training-and-data]] — the other deleted half of the old stack
