@@ -49,7 +49,11 @@ from board_reader_inference.estimator import CentroidEstimator, Estimator
 from board_reader_inference.hub import PositionHub
 from board_reader_inference.ingest import FrameIngest
 from board_reader_inference.legacy import estimator_from_bank
-from board_reader_inference.recognizer import RecognizerEstimator, build_from_env
+from board_reader_inference.recognizer import (
+    RecognizerEstimator,
+    build_from_env,
+    read_frame,
+)
 from board_reader_inference.routing import PhotoRead, ReadView, Uncalibrated
 from board_reader_inference.schedule import EveryFrame, FramePolicy, parse_policy
 from board_reader_inference.session import (
@@ -645,7 +649,14 @@ def create_app(
                     session.refresh_bank, frame, route.corners, event
                 )
         rotated_deg = None
-        if isinstance(route, PhotoRead) and _parse_debug(autorotate):
+        # A recognizer reads the chess frame and resolves orientation itself
+        # (DESIGN D10), so its read is never turned; ``autorotate`` is ignored.
+        frame_of_read = read_frame(route.estimator)
+        if (
+            isinstance(route, PhotoRead)
+            and frame_of_read == "corners"
+            and _parse_debug(autorotate)
+        ):
             from board_reader_core.protocol import PositionEvent
 
             from board_reader_inference.autocalib import resolve_rotation
@@ -689,6 +700,7 @@ def create_app(
             result["autorotated"] = rotated_deg
         _annotate_upload(
             sidecar,
+            frame=frame_of_read,
             placement=event.placement,
             autorotated=rotated_deg,
             prior_flips=[f.square for f in repair.flips],
@@ -809,9 +821,11 @@ def create_app(
         The snapshot page's correction panel already has a human fixing wrong
         squares; this is where that answer is kept instead of being discarded on
         reload. Body: ``{"placement": <FEN field 1>, "corrections": <int>}`` —
-        the position **as displayed**, whose ``autorotate`` turn is undone by
-        :func:`labels.save_label` so the stored truth is in the frame the photo's
-        corners define and never depends on a model output.
+        the position **as displayed**. The label is written in the frame the read
+        was made in (the upload sidecar's ``frame``): a recognizer's read is in
+        the chess frame and needs no corners; an older corner-frame read needs its
+        corners, and its ``autorotate`` turn is undone by :func:`labels.save_label`
+        so the stored truth never depends on a model output.
 
         Labels are **eval data only**: nothing reads them back into the
         calibration bank. Fitting on them would recreate exactly the
@@ -819,7 +833,7 @@ def create_app(
         """
         from board_reader_core.protocol import parse_placement
 
-        from board_reader_inference.labels import UPLOAD_ID, save_label
+        from board_reader_inference.labels import UPLOAD_ID, parse_frame, save_label
 
         if not save_dir:
             return JSONResponse(
@@ -845,9 +859,10 @@ def create_app(
             return JSONResponse({"error": f"bad label: {e}"}, status_code=400)
         try:
             meta = json.loads(sidecar.read_text())
+            frame = parse_frame(meta.get("frame"))
         except (OSError, ValueError):
-            meta = {}
-        if not meta.get("corners"):
+            meta, frame = {}, "corners"
+        if frame == "corners" and not meta.get("corners"):
             # A placement only means something in a stated frame. Without the
             # corners the photo cannot be re-cropped, so an eval could never
             # replay this board — refuse rather than write a label nothing loads.
@@ -865,6 +880,7 @@ def create_app(
             path = save_label(
                 Path(save_dir),
                 upload_id,
+                frame=frame,
                 placement=placement,
                 corners=meta.get("corners"),
                 predicted=meta.get("placement"),
@@ -881,6 +897,7 @@ def create_app(
             {
                 "saved": str(path),
                 "placement": json.loads(path.read_text())["placement"],
+                "frame": frame,
                 "corrections": corrections,
             }
         )

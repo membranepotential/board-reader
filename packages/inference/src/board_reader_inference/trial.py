@@ -34,6 +34,13 @@ settled block existed get it **derived** here, by replaying the same
 :class:`~board_reader_inference.stabilize.BoardStabilizer` the gateway now runs
 live; the report says so, because a replayed number is not a recorded one.
 
+**The truth-frame check.** Truth is written in the chess frame (DESIGN D10), and a
+recognizer reads in it, so on every scored raw read the board should agree with
+its truth unturned. The report counts, per quarter-turn, the reads that agree with
+the truth best when turned that far (:func:`.labels.best_rotation`) and warns when
+the majority is not 0° — a truth file written in another frame, or a recognizer
+misreading the orientation.
+
 Scoring reads only ``events.ndjson`` — no model, no GPU, a fraction of a second.
 ``--export-crops`` is the other half: it goes back to the recorded JPEGs and cuts
 per-square training crops labelled from the same truth, in the layout
@@ -64,6 +71,7 @@ from board_reader_core.recording import EVENTS_NAME, Recording
 
 from board_reader_inference.estimator import ATTRACTOR, ATTRACTOR_MARGIN
 from board_reader_inference.evaluate import square_errors
+from board_reader_inference.labels import best_rotation
 from board_reader_inference.squares import (
     DEFAULT_GEOMETRY,
     CropGeometry,
@@ -532,6 +540,35 @@ def _score_stream(
     )
 
 
+@dataclass(frozen=True)
+class TruthFrame:
+    """How many scored raw reads agree with their truth best at each quarter-turn."""
+
+    by_rotation: tuple[int, int, int, int]
+
+    @property
+    def reads(self) -> int:
+        return sum(self.by_rotation)
+
+    @property
+    def verdict(self) -> int:
+        """The quarter-turn most reads agree under; 0 wins ties."""
+        return max(range(4), key=lambda k: (self.by_rotation[k], k == 0))
+
+    def to_dict(self) -> dict:
+        return {
+            "reads": self.reads,
+            "by_rotation_deg": {str(90 * k): n for k, n in enumerate(self.by_rotation)},
+            "verdict_deg": 90 * self.verdict,
+        }
+
+
+def score_truth_frame(reads: list[ScoredRead], truth: SessionTruth) -> TruthFrame:
+    """The truth-frame check (module docstring) over the raw stream."""
+    turns = Counter(best_rotation(truth.segments[r.segment].placement, r.raw) for r in reads)
+    return TruthFrame(by_rotation=(turns[0], turns[1], turns[2], turns[3]))
+
+
 # --------------------------------------------------------------------------- #
 # Evidence and timing — the two things a placement alone cannot tell you
 # --------------------------------------------------------------------------- #
@@ -872,6 +909,7 @@ class SessionReport:
     evidence: EvidenceScore
     attractor: AttractorGuard
     timing: Timing
+    frame: TruthFrame
     export: CropExport | None = None
     #: Where :func:`run` wrote the JSON, once it has.
     written_to: Path | None = None
@@ -897,6 +935,7 @@ class SessionReport:
                 "prior_missing": self.prior_missing,
             },
             "settled_derived": self.settled_derived,
+            "truth_frame": self.frame.to_dict(),
             "streams": [s.to_dict() for s in self.streams],
             "evidence": self.evidence.to_dict(),
             "attractor_guard": self.attractor.to_dict(),
@@ -928,6 +967,15 @@ class SessionReport:
                 f"prior:     {self.prior_missing} event(s) carried no repair; the "
                 "prior row falls back to the raw board for those"
             )
+        f = self.frame
+        if f.reads and f.verdict:
+            lines.append(
+                f"frame:     ! WARNING {f.by_rotation[f.verdict]}/{f.reads} raw reads agree "
+                f"with the truth best turned {90 * f.verdict}° — the truth and the "
+                "reads are not in the same frame"
+            )
+        elif f.reads:
+            lines.append(f"frame:     {f.by_rotation[0]}/{f.reads} raw reads agree with the truth unturned")
         return lines
 
     def _render_streams(self) -> list[str]:
@@ -1185,6 +1233,7 @@ def score_session(recording: Recording, truth: SessionTruth) -> SessionReport:
         # Timed over every event this board published, not just the scored ones:
         # a guard-excluded read still cost the estimator the same work.
         timing=measure_timing(recording, truth.board_id, mine),
+        frame=score_truth_frame(reads, truth),
     )
 
 

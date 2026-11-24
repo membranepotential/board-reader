@@ -7,13 +7,14 @@ import json
 import numpy as np
 import pytest
 
-from board_reader_core.protocol import START_PLACEMENT, parse_placement
+from board_reader_core.protocol import START_PLACEMENT, encode_placement, parse_placement
 
 from board_reader_inference.labels import (
     LABEL_SUFFIX,
     SOURCE_CONFIRMED,
     SOURCE_CURATED,
     UPLOAD_ID,
+    best_rotation,
     load_labels,
     rotate_placement,
     rotate_square,
@@ -66,7 +67,7 @@ def test_save_label_stores_truth_in_the_corner_frame(tmp_path):
     path = save_label(
         tmp_path,
         "20260806-210118-0000-estimate",
-        placement=shown,
+        frame="corners", placement=shown,
         corners=CORNERS,
         predicted=shown,
         corrections=2,
@@ -82,7 +83,7 @@ def test_save_label_stores_truth_in_the_corner_frame(tmp_path):
 def test_save_label_without_rotation_stores_the_placement_as_given(tmp_path):
     path = save_label(
         tmp_path, "20260806-210118-0001-estimate",
-        placement=MIDGAME, corners=CORNERS, predicted=MIDGAME,
+        frame="corners", placement=MIDGAME, corners=CORNERS, predicted=MIDGAME,
         corrections=0, autorotated=0,
     )
     assert json.loads(path.read_text())["placement"] == MIDGAME
@@ -92,7 +93,7 @@ def test_save_label_rejects_a_malformed_placement(tmp_path):
     with pytest.raises(ValueError):
         save_label(
             tmp_path, "20260806-210118-0002-estimate",
-            placement="not/a/position", corners=CORNERS, predicted=None,
+            frame="corners", placement="not/a/position", corners=CORNERS, predicted=None,
             corrections=0, autorotated=0,
         )
     assert not list(tmp_path.glob(f"*{LABEL_SUFFIX}"))
@@ -102,7 +103,7 @@ def test_load_labels_reads_a_directory_of_confirmed_labels(tmp_path):
     stem = "20260806-210118-0000-estimate"
     _photo(tmp_path, stem)
     save_label(
-        tmp_path, stem, placement=MIDGAME, corners=CORNERS,
+        tmp_path, stem, frame="corners", placement=MIDGAME, corners=CORNERS,
         predicted=MIDGAME, corrections=1, autorotated=0,
     )
     boards = load_labels([tmp_path])
@@ -118,7 +119,7 @@ def test_load_labels_reads_a_directory_of_confirmed_labels(tmp_path):
 def test_load_labels_skips_a_label_whose_photo_is_gone(tmp_path):
     """A label without its image cannot be replayed, so it is not eval data."""
     save_label(
-        tmp_path, "20260806-210118-0000-estimate", placement=MIDGAME,
+        tmp_path, "20260806-210118-0000-estimate", frame="corners", placement=MIDGAME,
         corners=CORNERS, predicted=None, corrections=0, autorotated=0,
     )
     assert load_labels([tmp_path]) == []
@@ -131,7 +132,7 @@ def test_load_labels_skips_a_label_with_no_corners(tmp_path):
     stem = "20260806-210118-0000-estimate"
     _photo(tmp_path, stem)
     save_label(
-        tmp_path, stem, placement=MIDGAME, corners=None,
+        tmp_path, stem, frame="corners", placement=MIDGAME, corners=None,
         predicted=None, corrections=0, autorotated=0,
     )
     assert load_labels([tmp_path]) == []
@@ -141,7 +142,7 @@ def test_load_labels_survives_a_corrupt_label(tmp_path):
     stem = "20260806-210118-0000-estimate"
     _photo(tmp_path, stem)
     save_label(
-        tmp_path, stem, placement=MIDGAME, corners=CORNERS,
+        tmp_path, stem, frame="corners", placement=MIDGAME, corners=CORNERS,
         predicted=None, corrections=0, autorotated=0,
     )
     (tmp_path / f"20260806-210118-0009-estimate{LABEL_SUFFIX}").write_text("{ truncated")
@@ -178,7 +179,7 @@ def test_load_labels_deduplicates_and_sorts(tmp_path):
         stem = f"20260806-210118-{seq}-estimate"
         _photo(tmp_path, stem)
         save_label(
-            tmp_path, stem, placement=MIDGAME, corners=CORNERS,
+            tmp_path, stem, frame="corners", placement=MIDGAME, corners=CORNERS,
             predicted=None, corrections=0, autorotated=0,
         )
     ids = [b.board_id for b in load_labels([tmp_path, tmp_path])]
@@ -243,7 +244,7 @@ def test_label_records_the_decoder_repairs_in_the_corner_frame(tmp_path):
     save_label(
         tmp_path,
         "20260806-210118-0000-estimate",
-        placement=START_PLACEMENT,
+        frame="corners", placement=START_PLACEMENT,
         corners="0,0,8,0,8,8,0,8",
         predicted=START_PLACEMENT,
         corrections=0,
@@ -261,7 +262,7 @@ def test_label_without_repairs_records_an_empty_list_not_a_missing_key(tmp_path)
     save_label(
         tmp_path,
         "20260806-210118-0000-estimate",
-        placement=START_PLACEMENT,
+        frame="corners", placement=START_PLACEMENT,
         corners="0,0,8,0,8,8,0,8",
         predicted=START_PLACEMENT,
         corrections=0,
@@ -271,3 +272,71 @@ def test_label_without_repairs_records_an_empty_list_not_a_missing_key(tmp_path)
         (tmp_path / f"20260806-210118-0000-estimate{LABEL_SUFFIX}").read_text()
     )
     assert meta["prior_flips"] == []
+
+
+# --------------------------------------------------------------------------- #
+# Frames (DESIGN D10)
+# --------------------------------------------------------------------------- #
+
+
+def test_a_chess_frame_label_needs_no_corners_and_is_stored_as_shown(tmp_path):
+    stem = "20261124-101010-0000-estimate"
+    _photo(tmp_path, stem)
+    path = save_label(
+        tmp_path, stem, frame="chess", placement=MIDGAME, corners=None,
+        predicted=MIDGAME, corrections=0, autorotated=0,
+    )
+    meta = json.loads(path.read_text())
+    assert (meta["frame"], meta["placement"]) == ("chess", MIDGAME)
+    [board] = load_labels([tmp_path])
+    assert (board.frame, board.corners, board.placement) == ("chess", None, MIDGAME)
+
+
+def test_a_chess_frame_read_is_never_autorotated(tmp_path):
+    with pytest.raises(ValueError, match="never autorotated"):
+        save_label(
+            tmp_path, "20261124-101010-0001-estimate", frame="chess", placement=MIDGAME,
+            corners=None, predicted=None, corrections=0, autorotated=90,
+        )
+
+
+def test_a_label_without_a_frame_key_is_a_corner_frame_label(tmp_path):
+    """Every label written before D10 lacks the key and is in the corner frame."""
+    stem = "20260806-210118-0000-estimate"
+    _photo(tmp_path, stem)
+    path = save_label(
+        tmp_path, stem, frame="corners", placement=MIDGAME, corners=CORNERS,
+        predicted=None, corrections=0, autorotated=0,
+    )
+    meta = json.loads(path.read_text())
+    del meta["frame"]
+    path.write_text(json.dumps(meta))
+    assert load_labels([tmp_path])[0].frame == "corners"
+
+
+def test_ground_truth_entries_carry_their_frame(tmp_path):
+    photo = tmp_path / "board.jpg"
+    photo.write_bytes(b"x")
+    gt = tmp_path / "ground_truth.json"
+    gt.write_text(json.dumps({
+        "chess": {"placement": MIDGAME, "source": str(photo), "frame": "chess"},
+        "legacy": {"placement": MIDGAME, "source": str(photo),
+                   "corners_a8_h8_h1_a1": [[10, 10], [90, 10], [90, 90], [10, 90]]},
+        "frameless": {"placement": MIDGAME, "source": str(photo)},
+    }))
+    frames = {b.board_id: (b.frame, b.corners is None) for b in load_labels([gt])}
+    # A corner-frame entry with no corners has no frame to be true in: skipped.
+    assert frames == {"chess": ("chess", True), "legacy": ("corners", False)}
+
+
+@pytest.mark.parametrize("k", [0, 1, 2, 3])
+def test_best_rotation_finds_the_turn_that_aligns_a_read(k):
+    read = rotate_placement(MIDGAME, -k)
+    assert best_rotation(MIDGAME, read) == k
+
+
+def test_best_rotation_survives_misread_squares_and_prefers_zero_on_ties():
+    grid = parse_placement(rotate_placement(MIDGAME, 2))
+    grid[0][0], grid[4][4] = "q", "empty"  # two squares misread as well
+    assert best_rotation(MIDGAME, encode_placement(grid)) == 2
+    assert best_rotation("8/8/8/8/8/8/8/8", "8/8/8/8/8/8/8/8") == 0

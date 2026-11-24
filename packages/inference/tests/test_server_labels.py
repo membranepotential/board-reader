@@ -166,3 +166,53 @@ def test_labels_do_not_change_the_running_estimator(retaining):
     upload = _estimate(retaining)["upload"]
     retaining.post(f"/labels/{upload}", json={"placement": MIDGAME, "corrections": 4})
     assert retaining.app.state.estimator is before
+
+
+# --------------------------------------------------------------------------- #
+# Chess frame (DESIGN D10): a recognizer's read needs no corners and is never turned
+# --------------------------------------------------------------------------- #
+
+
+@pytest.fixture
+def recognizing(tmp_path, monkeypatch):
+    """A retaining gateway serving a recognizer that reads ``MIDGAME``."""
+    from board_reader_inference.recognizer import RecognizerEstimator, StubRecognizer
+
+    monkeypatch.setenv("BR_SAVE_UPLOADS", str(tmp_path))
+    monkeypatch.chdir(tmp_path)
+    est = RecognizerEstimator(StubRecognizer(MIDGAME))
+    return TestClient(create_app(est, PositionHub()))
+
+
+def test_a_recognizer_read_ignores_autorotate(recognizing):
+    r = recognizing.post(
+        "/estimate?autorotate=1&corners=0,0,80,0,80,80,0,80",
+        content=encode_jpeg(render_board()),
+        headers={"Content-Type": "image/jpeg"},
+    )
+    body = r.json()
+    assert body["placement"] == MIDGAME
+    assert "autorotated" not in body
+
+
+def test_a_recognizer_read_is_labeled_in_the_chess_frame_without_corners(
+    recognizing, tmp_path
+):
+    upload = _estimate(recognizing, corners=None)["upload"]
+    r = recognizing.post(f"/labels/{upload}", json={"placement": MIDGAME})
+    assert r.status_code == 200
+    assert r.json()["frame"] == "chess"
+    meta = json.loads((tmp_path / f"{upload}{LABEL_SUFFIX}").read_text())
+    assert (meta["frame"], meta["placement"], meta["corners"]) == ("chess", MIDGAME, None)
+
+    from board_reader_inference.labels import load_labels
+
+    [board] = load_labels([tmp_path])
+    assert (board.frame, board.corners) == ("chess", None)
+
+
+def test_a_corner_frame_read_is_still_labeled_in_the_corner_frame(retaining, tmp_path):
+    upload = _estimate(retaining)["upload"]
+    assert retaining.post(f"/labels/{upload}", json={"placement": MIDGAME}).json()["frame"] == (
+        "corners"
+    )

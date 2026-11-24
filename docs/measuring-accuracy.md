@@ -134,8 +134,18 @@ this is the number that decision should be made against.
 
 ## Where truth comes from
 
-Two sources, both read by `board_reader_inference.labels`, both keyed to the frame
-the photo's **corners** define rather than to any model output.
+Two sources, both read by `board_reader_inference.labels`, both keyed to a stated
+frame rather than to any model output. Every label carries a `frame`
+(DESIGN D10): `"chess"` — the board as a player names it, a8 being Black's
+queen-side corner, corners optional — or `"corners"`, the frame the photo's corners
+define (every label written before D10, and any file without the key). A
+recognizer (`BR_CHESSQ`) reads the chess frame, so `eval` scores it on chess-frame
+labels only and skips the others with a warning;
+`tools/migrate_labels_to_chess_frame.py` converts them. Every board also gets a
+**frame diagnostic**: the quarter-turn under which the read agrees best with the
+truth. `frame: n/n read in the truth's frame` is the healthy line; a `TURNED`
+board is a misread orientation or a label in the wrong frame. `eval-session`
+prints the same check over a recording's raw reads.
 
 ### Confirmed labels (`*.label.json`)
 
@@ -288,7 +298,7 @@ uv run board-reader-inference eval --temperature        # + confidence calibrati
 ```
 
 The harness builds its estimator from the environment through the same
-`_default_estimator()` the gateway uses, so it measures **what actually serves** —
+`recognizer.build_from_env()` the gateway uses, so it measures **what actually serves** —
 ensemble, blend weight and all — and prints that configuration above every report.
 `--autorotate` folds the orientation guess back in; without it the score isolates
 recognition from orientation.
@@ -304,6 +314,11 @@ a repair that trades a right square for a wrong one is not an improvement. Pass
 `--temperature` adds the calibration block described above. It is off by default
 because it costs a leave-one-out fit per board and, unlike the decoder, it does not
 serve — it is a measurement of what honest confidences *would* look like.
+
+**The replay gate.** `make gate GATE_NAME=<new>` replays the four gate takes
+through `BR_CHESSQ`, scores each, and prints `tools/gate_table.py`'s table against
+`cq-v6`: raw per-square and raw / prior / settled perfect boards per take, with a
+pooled total. A change that should not move the reader must print every cell once.
 
 Contrast with `tools/train/evaluate.py`, which scores the trained model alone inside
 the training venv and never sees the ensemble. That one answers "did the training

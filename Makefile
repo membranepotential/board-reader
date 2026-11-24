@@ -8,6 +8,7 @@
 #   make test     the suite in parallel, minus the GPU tests
 #   make test-gpu the GPU tests alone (needs an idle GPU)
 #   make test-all everything, GPU included
+#   make gate     replay the four gate takes and print them against cq-v6
 #
 # `dev` depends on `ui`, unconditionally: the viewer server (server.py) refuses to
 # start if packages/viewer/src/board_reader_viewer/web/ is missing, and that
@@ -41,7 +42,7 @@
 # the group again — bash recurses until it overflows its stack and segfaults.
 # The trap disarms itself first for the same reason.
 
-.PHONY: dev dev-cpu ui stop test test-gpu test-all test-ui test-e2e test-front lint lint-fix
+.PHONY: dev dev-cpu ui stop test test-gpu test-all test-ui test-e2e test-front lint lint-fix gate
 
 # `wait -n` below is a bashism, and the teardown relies on bash trap semantics.
 SHELL := /bin/bash
@@ -220,6 +221,25 @@ test-gpu:
 
 test-all:
 	uv run pytest -n auto
+
+# The replay gate (docs/reports/2026-11-24-chessq-v6-replay-gate.md): re-read the
+# four gate takes through BR_CHESSQ alone, score each against its truth.json, and
+# print the table against GATE_BASE. Serial — each replay wants the GPU. The takes
+# and their replay flags live in tools/gate_table.py, so this recipe and the table
+# can never disagree about what the gate is. GATE_NAME must be new for a new
+# measurement: a replay overwrites its own directory.
+BR_CHESSQ ?= models/chessq/cq-vit-s-644-v6-seed1-onnx-int8-r1.onnx
+GATE_NAME ?= gate
+GATE_BASE ?= cq-v6
+
+gate:
+	@test -f "$(BR_CHESSQ)" || { echo "!! $(BR_CHESSQ) missing — run 'make models'"; exit 2; }
+	@uv run python tools/gate_table.py --replay-args | while read -r take flags; do \
+	  echo "  replaying $$take as $(GATE_NAME)"; \
+	  BR_CHESSQ=$(BR_CHESSQ) uv run board-reader-inference replay "recordings/$$take" \
+	    --name $(GATE_NAME) --score $$flags > /dev/null || exit 1; \
+	done
+	@uv run python tools/gate_table.py $(GATE_BASE) $(GATE_NAME)
 
 # The lint gate. Ruff is pinned in the dev dependency group, not run through
 # `uvx`, so every checkout and every agent lints with the same ruleset — a gate

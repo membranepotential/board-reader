@@ -780,3 +780,30 @@ def test_attractor_guard_says_nothing_without_a_digest(tmp_path):
     assert report.attractor.headroom is None and not report.attractor.at_risk
     assert report.to_dict()["attractor_guard"]["min_margin"] is None
     assert "attractor:" not in report.render()
+
+
+# --------------------------------------------------------------------------- #
+# The truth-frame check (DESIGN D10)
+# --------------------------------------------------------------------------- #
+
+
+def test_reads_in_the_truths_frame_pass_the_frame_check(tmp_path):
+    report = score_session(_session(tmp_path, FLIPFLOP_EVENTS), _truth())
+    assert report.frame.by_rotation == (6, 0, 0, 0)
+    assert report.frame.verdict == 0
+    assert report.to_dict()["truth_frame"]["verdict_deg"] == 0
+    assert "6/6 raw reads agree with the truth unturned" in report.render()
+
+
+def test_truth_written_a_half_turn_off_is_flagged(tmp_path):
+    from board_reader_inference.labels import rotate_placement
+
+    turned = _truth(
+        segments=(
+            TruthSegment(0, rotate_placement(START_PLACEMENT, 2)),
+            TruthSegment(100, rotate_placement(E4, 2)),
+        )
+    )
+    report = score_session(_session(tmp_path, FLIPFLOP_EVENTS), turned)
+    assert report.frame.verdict == 2
+    assert "WARNING 6/6 raw reads agree with the truth best turned 180°" in report.render()

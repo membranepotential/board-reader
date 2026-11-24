@@ -35,6 +35,7 @@ from board_reader_core.wire import Frame
 
 from board_reader_inference.chessq import ChessQRecognizer
 from board_reader_inference.estimator import CentroidEstimator, Estimator
+from board_reader_inference.labels import BoardFrame
 from board_reader_inference.routing import RECTIFIED_GEOMETRY
 from board_reader_inference.squares import CropGeometry
 
@@ -114,6 +115,14 @@ class RecognizerEstimator:
     def estimate_photo(self, frame: Frame, corners: np.ndarray) -> PositionEvent:
         """The photo path routing sends original pixels to; ``corners`` are unused."""
         return self.estimate(frame)
+
+
+def read_frame(estimator: Estimator) -> BoardFrame:
+    """The frame ``estimator``'s placements are in: the recognizer's own (chess), or
+    the frame the frame's corners define for every pre-D10 estimator."""
+    if isinstance(estimator, RecognizerEstimator):
+        return estimator.recognizer.frame
+    return "corners"
 
 
 #: The estimator settings ``BR_CHESSQ`` outranks, named at startup when also set.

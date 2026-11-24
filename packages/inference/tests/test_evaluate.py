@@ -58,6 +58,7 @@ def _board(board_id: str = "b0", placement: str = MIDGAME, image=None) -> Labele
     return LabeledBoard(
         board_id=board_id,
         image=image if image is not None else _PHOTO,
+        frame="corners",
         corners=CORNERS,
         placement=placement,
         source="confirmed",
@@ -416,7 +417,7 @@ def test_run_loads_labels_from_disk_and_reads_the_photos(tmp_path):
     (tmp_path / f"{stem}.jpg").write_bytes(encode_jpeg(render_board(MIDGAME)))
     save_label(
         tmp_path, stem,
-        placement=MIDGAME, corners="0,0,100,0,100,100,0,100",
+        frame="corners", placement=MIDGAME, corners="0,0,100,0,100,100,0,100",
         predicted=MIDGAME, corrections=1, autorotated=0,
     )
     est = FakeEstimator({stem: _dist_with(MIDGAME, {"g1": ("B", 0.9)})})
@@ -436,7 +437,7 @@ def test_run_undoes_autorotation_so_truth_survives_the_orientation_guess(tmp_pat
     (tmp_path / f"{stem}.jpg").write_bytes(encode_jpeg(render_board(MIDGAME)))
     shown = rotate_placement(MIDGAME, 2)
     save_label(
-        tmp_path, stem, placement=shown, corners="0,0,100,0,100,100,0,100",
+        tmp_path, stem, frame="corners", placement=shown, corners="0,0,100,0,100,100,0,100",
         predicted=shown, corrections=0, autorotated=180,
     )
     est = FakeEstimator({stem: dist_from_placement(MIDGAME)})
@@ -471,3 +472,44 @@ def test_temperature_report_is_absent_unless_asked_for():
     from board_reader_inference.evaluate import Report
 
     assert Report(boards=[], estimator="x").temperature is None
+
+
+# --------------------------------------------------------------------------- #
+# Recognizers and the frame diagnostic (DESIGN D10)
+# --------------------------------------------------------------------------- #
+
+
+def _chess_board(board_id: str = "c0") -> LabeledBoard:
+    return LabeledBoard(
+        board_id=board_id, image=_PHOTO, frame="chess", corners=None,
+        placement=MIDGAME, source="curated",
+    )
+
+
+def test_a_recognizer_reads_chess_labels_whole_and_skips_corner_frame_ones():
+    from board_reader_inference.recognizer import RecognizerEstimator, StubRecognizer
+
+    est = RecognizerEstimator(StubRecognizer(MIDGAME))
+    report = evaluate(est, [_chess_board(), _board("legacy")], prior=False)
+    assert [b.board_id for b in report.boards] == ["c0"]
+    assert report.perfect_boards == 1 and report.skipped == ["legacy"]
+    assert any("corner-frame label(s) skipped" in w for w in report.warnings)
+    assert report.estimator == "StubRecognizer"
+    assert report.to_dict()["rotated_boards"] == []
+
+
+def test_a_turned_read_is_flagged_by_the_frame_diagnostic():
+    from board_reader_inference.labels import rotate_placement
+    from board_reader_inference.recognizer import RecognizerEstimator, StubRecognizer
+
+    est = RecognizerEstimator(StubRecognizer(rotate_placement(MIDGAME, 2)))
+    report = evaluate(est, [_chess_board()], prior=False)
+    assert report.boards[0].rotation == 2
+    assert report.to_dict()["rotated_boards"] == [{"board_id": "c0", "rotation": 180}]
+    assert "TURNED: c0 180°" in report.render()
+
+
+def test_a_corner_frame_estimator_skips_labels_without_corners():
+    est = FakeEstimator({"b0": _dist_with(MIDGAME, {})})
+    report = evaluate(est, [_board(), _chess_board()], prior=False)
+    assert [b.board_id for b in report.boards] == ["b0"] and report.skipped == ["c0"]

@@ -1241,6 +1241,34 @@ Automated: `packages/inference/tests/test_chessq.py` (fake model; the one
 real-weights test is `gpu`-marked and runs under `make test-gpu`, skipping when the
 weights or the held-out still are absent).
 
+### Option P — The chess frame: label, eval and gate a recognizer (DESIGN D10)
+
+A recognizer reads the chess frame and finds the orientation itself, so labels,
+eval and replays are all in the chess frame.
+
+1. Under ChessQ (Option O), photograph a board on `/snapshot` **without** setting
+   corners, correct any wrong squares, and confirm. Expected: the label is saved
+   (`/labels` answers `"frame": "chess"`), and `data/uploads/<id>.label.json`
+   carries `"frame": "chess"` and `"corners": null`. Ticking autorotate changes
+   nothing: the answer has no `autorotated` field.
+2. Run `BR_CHESSQ=models/chessq/cq-vit-s-644-v6-seed1-onnx-int8-r1.onnx uv run
+   board-reader-inference eval data/eval data/uploads`. Expected: the header names
+   `ChessQRecognizer(...)`; labels still in the corner frame are skipped with a
+   warning that names `tools/migrate_labels_to_chess_frame.py`; a `frame:` line says
+   how many boards were read in the truth's frame and lists any `TURNED` board.
+3. Run `uv run board-reader-inference eval-session recordings/20260828-111421/replays/cq-v6`.
+   Expected: a `frame:` line, `21/21 raw reads agree with the truth unturned`
+   (a `! WARNING ... turned 180°` line instead means the truth file is not in the
+   chess frame).
+4. Run `make gate GATE_NAME=<new-name>` on an idle GPU. Expected: four
+   `replaying ...` lines (about a minute in all), then the gate table
+   `cq-v6 → <new-name>` with a total row. An unchanged pipeline prints every cell
+   once (no `→`): 92/101 raw, 92/101 prior, 84/101 settled perfect.
+   `uv run python tools/gate_table.py tkr-shipped cq-v6` prints the adoption gate.
+
+Automated: `test_labels.py`, `test_server_labels.py`, `test_evaluate.py` and
+`test_trial.py` (frame sections), `tests/test_gate_table.py`.
+
 ---
 
 ## Quick health checks

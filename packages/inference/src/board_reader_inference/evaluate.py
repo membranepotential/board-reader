@@ -14,10 +14,17 @@ belongs to the thing the snapshot page talks to. The configuration is printed
 above every report, because an accuracy figure without its estimator is a rumour.
 
 Truth comes from :mod:`.labels` (operator-confirmed labels and the curated
-``ground_truth.json``), always in the frame the photo's corners define. The
-estimator is therefore scored on recognition given a labeled board, with
-orientation held fixed; ``--autorotate`` folds the orientation guess back in for
-an end-to-end figure.
+``ground_truth.json``). A recognizer (DESIGN D10, :mod:`.recognizer`) reads the
+whole photo, resolves the orientation itself and is scored only on chess-frame
+labels; a corner-frame label cannot say which way its board really faces, so it
+is skipped and counted. The pre-D10 estimators read through the label's corners
+and are scored in that frame, with orientation held fixed; ``--autorotate`` folds
+their orientation guess back in for an end-to-end figure.
+
+**Frame diagnostic.** Every board also records the quarter-turn under which its
+read agrees best with its truth (:func:`.labels.best_rotation`). A non-zero turn
+means the read and the label disagree about which way the board faces — for a
+recognizer, a misread orientation or a label in the wrong frame.
 
 ``--prior`` adds a second, opt-in score: the same distributions run through the
 hard-constraint decoder (:mod:`.prior`). It is reported *beside* the estimator's own
@@ -48,8 +55,9 @@ from board_reader_core.protocol import (
 )
 from board_reader_core.wire import Frame
 
-from board_reader_inference.labels import LabeledBoard
+from board_reader_inference.labels import LabeledBoard, best_rotation
 from board_reader_inference.prior import PriorDecode, decode
+from board_reader_inference.recognizer import RecognizerEstimator
 
 #: Reliability-diagram resolution. Ten bins over [0, 1] is the conventional
 #: choice and keeps each row readable at the ~640-square scale we evaluate at.
@@ -122,6 +130,8 @@ class BoardResult:
     correct: int
     confidence: float  # mean per-square max probability
     errors: tuple[SquareError, ...]
+    #: Quarter-turns under which the read agrees best with the truth; 0 = same frame.
+    rotation: int = 0
 
     @property
     def perfect(self) -> bool:
@@ -137,6 +147,7 @@ class BoardResult:
             "total": GRID * GRID,
             "perfect": self.perfect,
             "confidence": round(self.confidence, 4),
+            "rotation": self.rotation,
             "errors": [
                 {
                     "square": e.square,
@@ -393,6 +404,9 @@ class Report:
     bins: list[Bin] = field(default_factory=list)
     ece: float = 0.0
     warnings: list[str] = field(default_factory=list)
+    #: Labels found but not scorable by this estimator (corner-frame truth under a
+    #: recognizer, or no corners under a corner-frame estimator), by board id.
+    skipped: list[str] = field(default_factory=list)
     #: Populated only with ``--prior``: the same boards re-scored after the
     #: hard-constraint decoder. Empty means the decoder was not run at all, which
     #: is not the same as it having found nothing to do.
@@ -406,6 +420,11 @@ class Report:
     @property
     def perfect_boards(self) -> int:
         return sum(b.perfect for b in self.boards)
+
+    @property
+    def rotated(self) -> list[BoardResult]:
+        """Boards whose read agrees with the truth best when turned (the frame check)."""
+        return [b for b in self.boards if b.rotation]
 
     @property
     def prior_perfect_boards(self) -> int:
@@ -436,6 +455,10 @@ class Report:
             "estimator": self.estimator,
             "warnings": self.warnings,
             "boards": len(self.boards),
+            "skipped": self.skipped,
+            "rotated_boards": [
+                {"board_id": b.board_id, "rotation": 90 * b.rotation} for b in self.rotated
+            ],
             "perfect_boards": self.perfect_boards,
             "squares": self.squares,
             "correct_squares": self.correct,
@@ -559,6 +582,11 @@ class Report:
 
     def render(self) -> str:
         if not self.boards:
+            if self.skipped:
+                return (
+                    f"no scorable labeled boards — {len(self.skipped)} skipped, their "
+                    f"truth is not in the frame {self.estimator} reads"
+                )
             return "no labeled boards found — nothing to evaluate"
         n = len(self.boards)
         lines = [f"estimator: {self.estimator}"]
@@ -567,6 +595,17 @@ class Report:
         lines.append(
             "boards:    "
             + f"{n} ({', '.join(f'{v} {k}' for k, v in sorted(by_source.items()))})"
+            + (f" · {len(self.skipped)} skipped (frame)" if self.skipped else "")
+        )
+        rotated = self.rotated
+        lines.append(
+            f"frame:     {n - len(rotated)}/{n} read in the truth's frame"
+            + (
+                " · TURNED: "
+                + ", ".join(f"{b.board_id} {90 * b.rotation}°" for b in rotated)
+                if rotated
+                else ""
+            )
         )
         lines.append("")
         lines.append(
@@ -628,6 +667,8 @@ class Report:
 
 def describe_estimator(est: object) -> str:
     """A one-line identity for whatever stack is about to be measured."""
+    if isinstance(est, RecognizerEstimator):
+        return describe_estimator(est.recognizer)
     name = type(est).__name__
     primary, booster = getattr(est, "primary", None), getattr(est, "booster", None)
     if primary is not None and booster is not None:
@@ -663,10 +704,31 @@ def has_bank(est: object) -> bool:
     )
 
 
+def scorable(estimator: object, board: LabeledBoard) -> bool:
+    """Whether ``board``'s truth is in the frame ``estimator`` reads in.
+
+    A recognizer reads the chess frame, so only chess-frame truth scores it; a
+    pre-D10 estimator reads the frame the corners define, so it needs corners.
+    """
+    if isinstance(estimator, RecognizerEstimator):
+        return board.frame == "chess"
+    return board.corners is not None
+
+
 def read_board(estimator: object, board: LabeledBoard, *, autorotate: bool = False) -> np.ndarray:
-    """Run the estimator over one labeled photo -> its (8, 8, 13) distribution."""
+    """Run the estimator over one labeled photo -> its (8, 8, 13) distribution.
+
+    A recognizer reads the whole photo (no corners, never autorotated).
+    """
     import cv2
 
+    if isinstance(estimator, RecognizerEstimator):
+        image = cv2.imread(str(board.image), cv2.IMREAD_COLOR)
+        if image is None:
+            raise ValueError(f"could not read {board.image}")
+        return np.asarray(estimator.recognizer.read(image), dtype=np.float32)
+    if board.corners is None:
+        raise ValueError(f"{board.board_id} has no corners to read through")
     photo_fn = getattr(estimator, "estimate_photo", None)
     if not callable(photo_fn):
         raise ValueError(
@@ -707,6 +769,7 @@ def score_board(board: LabeledBoard, dist: np.ndarray) -> BoardResult:
         correct=GRID * GRID - len(errors),
         confidence=float(conf.mean()),
         errors=errors,
+        rotation=best_rotation(board.placement, predicted),
     )
 
 
@@ -806,7 +869,8 @@ def evaluate(
     hits: list[np.ndarray] = []
     dists: list[np.ndarray] = []
     truth_indices: list[np.ndarray] = []
-    for board in boards:
+    skipped = [b.board_id for b in boards if not scorable(estimator, b)]
+    for board in (b for b in boards if scorable(estimator, b)):
         dist = read_board(estimator, board, autorotate=autorotate)
         result = score_board(board, dist)
         results.append(result)
@@ -825,6 +889,11 @@ def evaluate(
         np.concatenate(hits) if hits else np.empty(0, dtype=bool),
     )
     warnings: list[str] = []
+    if skipped and isinstance(estimator, RecognizerEstimator):
+        warnings.append(
+            f"{len(skipped)} corner-frame label(s) skipped: their truth does not say "
+            "which way the board faces (tools/migrate_labels_to_chess_frame.py)"
+        )
     if has_bank(estimator):
         warnings.append(
             "a calibration bank is active — boards it was built from are NOT held "
@@ -836,6 +905,7 @@ def evaluate(
         bins=bins,
         ece=ece,
         warnings=warnings,
+        skipped=skipped,
         prior=prior_results,
         temperature=(
             score_temperature(results, dists, truth_indices) if temperature else None

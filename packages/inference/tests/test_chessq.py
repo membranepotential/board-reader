@@ -57,7 +57,7 @@ def _logits_for(placement: str, peak: float = 8.0) -> np.ndarray:
 def test_class_order_is_the_published_contract() -> None:
     """Pinned to the release descriptor's ``output.class_symbols`` (V6 r1), written
     out here rather than derived, so a wrong ``CHESSQ_CLASSES`` cannot test itself."""
-    assert CHESSQ_CLASSES == "".join([".", "P", "N", "B", "R", "Q", "K", "p", "n", "b", "r", "q", "k"])
+    assert "".join([".", "P", "N", "B", "R", "Q", "K", "p", "n", "b", "r", "q", "k"]) == CHESSQ_CLASSES
 
 
 def _served(model) -> RecognizerEstimator:

@@ -15,19 +15,22 @@ Two on-disk shapes are understood:
 
 ``<stem>.label.json``
     Written by ``POST /labels/{upload}`` next to the retained photo
-    (``BR_SAVE_UPLOADS``). Self-contained: photo, corners, truth, and what the
-    server predicted at label time.
+    (``BR_SAVE_UPLOADS``). Self-contained: photo, frame, corners (if any), truth,
+    and what the server predicted at label time.
 
 ``ground_truth.json``
     The curated hand-labeled set (``data/eval/``): a mapping of board id ->
-    ``{placement, source, corners_a8_h8_h1_a1}``. Kept readable so the harness
-    runs on the boards we already have.
+    ``{placement, source, corners_a8_h8_h1_a1, frame}``. Kept readable so the
+    harness runs on the boards we already have.
 
-**Frame convention.** ``placement`` is always in the frame the ``corners``
-define — corner 0 is a8, corner 1 is h8, and so on. It is therefore independent
-of any model output: a read's ``autorotate`` quarter-turn is undone before the
-label is written, so re-running a different estimator over the same photo
-compares against the same truth.
+**Frame convention** (:data:`BoardFrame`, the ``frame`` key). ``"chess"`` (DESIGN
+D10): ``placement`` is the board as a chess player names it, a8 being Black's
+queen-side corner, whatever the camera saw; corners are optional. ``"corners"``
+(every label written before D10, and a file without the key): ``placement`` is in
+the frame the ``corners`` define — corner 0 is a8, corner 1 is h8, and so on; a
+read's ``autorotate`` quarter-turn is undone before such a label is written.
+Either way truth is independent of any model output, so re-running a different
+estimator over the same photo compares against the same truth.
 """
 
 from __future__ import annotations
@@ -37,6 +40,7 @@ import re
 import time
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal, get_args
 
 import numpy as np
 
@@ -54,6 +58,22 @@ UPLOAD_ID = re.compile(r"^\d{8}-\d{6}-\d{4}-(?:estimate|calibrate)$")
 #: from without the reader having to know about file layouts.
 SOURCE_CONFIRMED = "confirmed"  # a human confirmed it in the snapshot page
 SOURCE_CURATED = "curated"  # hand-authored ground_truth.json
+
+#: The frame a label's ``placement`` is written in (module docstring).
+BoardFrame = Literal["chess", "corners"]
+
+#: What a label file without a ``frame`` key means: it predates D10.
+LEGACY_FRAME: BoardFrame = "corners"
+
+
+def parse_frame(raw: object) -> BoardFrame:
+    """A label file's ``frame`` value; absent means :data:`LEGACY_FRAME`."""
+    if raw is None:
+        return LEGACY_FRAME
+    for frame in get_args(BoardFrame):
+        if raw == frame:
+            return frame
+    raise ValueError(f"unknown label frame {raw!r}")
 
 
 def rotate_placement(placement: str, k: int) -> str:
@@ -85,22 +105,42 @@ def rotate_square(square: str, k: int) -> str:
     return f"{'abcdefgh'[int(cols[0])]}{8 - int(rows[0])}"
 
 
+def best_rotation(truth: str, read: str) -> int:
+    """The quarter-turns ``k`` for which ``rotate_placement(read, k)`` agrees with
+    ``truth`` on the most squares; 0 wins every tie.
+
+    The frame diagnostic: a read in the same frame as its truth answers 0, and a
+    board read or labelled a half-turn off answers 2 even when a few squares are
+    misread, because a turned board disagrees on almost every occupied square.
+    """
+    want = np.array(parse_placement(truth), dtype="<U5")
+    got = np.array(parse_placement(read), dtype="<U5")
+    agree = [int((np.rot90(got, k) == want).sum()) for k in range(4)]
+    return max(range(4), key=lambda k: (agree[k], k == 0))
+
+
 @dataclass(frozen=True)
 class LabeledBoard:
     """One photo whose true position is known, ready to be read and scored."""
 
     board_id: str
     image: Path
-    corners: np.ndarray  # (4, 2) float32, a8/h8/h1/a1 in ``image`` pixels
-    placement: str  # truth, in the frame ``corners`` defines
+    frame: BoardFrame
+    corners: np.ndarray | None  # (4, 2) float32, a8/h8/h1/a1 in ``image`` pixels
+    placement: str  # truth, in ``frame``
     source: str  # SOURCE_CONFIRMED | SOURCE_CURATED
     note: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.frame == "corners" and self.corners is None:
+            raise ValueError(f"{self.board_id}: a corner-frame label needs its corners")
 
 
 def save_label(
     directory: Path,
     upload_id: str,
     *,
+    frame: BoardFrame,
     placement: str,
     corners: str | None,
     predicted: str | None,
@@ -110,10 +150,12 @@ def save_label(
 ) -> Path:
     """Write ``<upload_id>.label.json``; returns the path.
 
-    ``placement`` arrives as the operator *saw* it, i.e. after the read's
-    ``autorotated`` quarter-turns; those are undone here so what lands on disk is
-    in the corner frame. Re-labelling the same upload overwrites — the last
-    confirmation is the truth.
+    ``frame`` is the frame the read was made in. ``placement`` arrives as the
+    operator *saw* it; for a corner-frame read that is after the read's
+    ``autorotated`` quarter-turns, which are undone here so what lands on disk is
+    in the corner frame. A chess-frame read is never autorotated and needs no
+    corners. Re-labelling the same upload overwrites — the last confirmation is
+    the truth.
 
     ``prior_flips`` are the squares the hard-constraint decoder repaired in this
     read (:mod:`.prior`), in the frame the operator saw, un-rotated to the corner
@@ -125,6 +167,8 @@ def save_label(
     write them down. Nothing reads them back into the bank; see the module note.
     """
     k = (autorotated // 90) % 4
+    if frame == "chess" and k:
+        raise ValueError("a chess-frame read is never autorotated")
     truth = rotate_placement(placement, -k) if k else placement
     parse_placement(truth)  # reject a malformed label before it reaches disk
     flips = [rotate_square(s, -k) if k else s for s in (prior_flips or [])]
@@ -134,6 +178,7 @@ def save_label(
             {
                 "kind": "label",
                 "ts": time.time(),
+                "frame": frame,
                 "photo": f"{upload_id}.jpg",
                 "corners": corners,
                 "placement": truth,
@@ -151,26 +196,28 @@ def save_label(
 def _board_from_label(path: Path) -> LabeledBoard | None:
     try:
         meta = json.loads(path.read_text())
-        corners = parse_corners(meta["corners"])
+        frame = parse_frame(meta.get("frame"))
+        corners = parse_corners(meta["corners"]) if meta.get("corners") else None
         placement = meta["placement"]
         parse_placement(placement)
+        image = path.parent / str(meta.get("photo") or "")
+        if not image.exists():
+            return None
+        return LabeledBoard(
+            board_id=path.name[: -len(LABEL_SUFFIX)],
+            image=image,
+            frame=frame,
+            corners=corners,
+            placement=placement,
+            source=SOURCE_CONFIRMED,
+            note=(
+                f"{meta.get('corrections', 0)} correction(s)"
+                if meta.get("corrections")
+                else "confirmed as read"
+            ),
+        )
     except (OSError, ValueError, KeyError, TypeError):
-        return None  # a half-written or hand-mangled label is skipped, not fatal
-    image = path.parent / str(meta.get("photo") or "")
-    if not image.exists():
-        return None
-    return LabeledBoard(
-        board_id=path.name[: -len(LABEL_SUFFIX)],
-        image=image,
-        corners=corners,
-        placement=placement,
-        source=SOURCE_CONFIRMED,
-        note=(
-            f"{meta.get('corrections', 0)} correction(s)"
-            if meta.get("corrections")
-            else "confirmed as read"
-        ),
-    )
+        return None  # a half-written, frameless or hand-mangled label is skipped
 
 
 def _boards_from_ground_truth(path: Path) -> list[LabeledBoard]:
@@ -188,26 +235,27 @@ def _boards_from_ground_truth(path: Path) -> list[LabeledBoard]:
         return []
     boards: list[LabeledBoard] = []
     for board_id, meta in entries.items():
-        if not isinstance(meta, dict) or "corners_a8_h8_h1_a1" not in meta:
+        if not isinstance(meta, dict):
             continue
         image = Path(str(meta.get("source", ""))).expanduser()
         if not image.exists():
             continue
         try:
-            corners = np.asarray(meta["corners_a8_h8_h1_a1"], dtype=np.float32).reshape(4, 2)
+            raw = meta.get("corners_a8_h8_h1_a1")
+            corners = None if raw is None else np.asarray(raw, dtype=np.float32).reshape(4, 2)
             parse_placement(meta["placement"])
-        except (ValueError, KeyError, TypeError):
-            continue
-        boards.append(
-            LabeledBoard(
+            board = LabeledBoard(
                 board_id=board_id,
                 image=image,
+                frame=parse_frame(meta.get("frame")),
                 corners=corners,
                 placement=meta["placement"],
                 source=SOURCE_CURATED,
                 note=meta.get("note"),
             )
-        )
+        except (ValueError, KeyError, TypeError):
+            continue
+        boards.append(board)
     return boards
 
 
