@@ -17,7 +17,8 @@ confidences**. No moves, no legality, no PGN — those belong to the downstream 
 - **PGN builder** — temporal decoder (research ChessCam vs Viterbi/beam over legal moves) → live PGN panel
   with copy + Lichess analysis link; offline accuracy on the gate takes — running (agent; viewer lib/game/).
 - **changed_utc refine** — after a settle, pixel-compare the changed squares in the held frames (no extra
-  ChessQ reads) to find the first frame of the new board; truth + score for take 2 — running (agent).
+  ChessQ reads) to find the first frame of the new board; truth + score for take 2; then the energy
+  no-commit gate (`obscured` on the event) — running (agent).
 
 ## Done (2026-11-24 — the ChessQ rebuild; plan: [docs/plans/2026-11-24-simplify-around-chessq.md](docs/plans/2026-11-24-simplify-around-chessq.md))
 
@@ -40,8 +41,7 @@ confidences**. No moves, no legality, no PGN — those belong to the downstream 
 
 ## Next
 
-1. **Hand signal, built** — energy no-commit gate in chessq.py/stabilize.py/ingest.py (after the
-   changed_utc agent leaves stream/); `obscured` on the event; gate + a fresh resting-hand take.
+1. **Resting-hand re-test** (you) — after the energy gate lands: rest a hand on the board mid-game.
 3. **Record more varied games** — second set, second camera, other light. All gate takes are one
    set; the settle defaults are fitted to it.
 4. **Python edge on the control channel** (today: static `--roi`) — needed for a Pi/Jetson camera.
