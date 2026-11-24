@@ -158,12 +158,17 @@ chromium` (a one-off on a fresh checkout — Playwright pins its own browser bui
 
 `pnpm test` is the tested half of what the three hand-written pages used to
 triplicate: FEN⇄grid conversion (`lib/board/fen.ts`), the wire protocol parser
-(`lib/protocol.ts`), the board-plane tracker (`lib/geometry/tracker.ts`, pinned by
-the same checks that used to live in the deleted `tracker_checks.mjs`), the motion
-meter and the `/ws/ingest` framing (`lib/edge/`) — all plain TypeScript, run in
-`node`, no DOM.
+(`lib/protocol.ts`, including the camera config), the motion meter, focus score and
+`/ws/ingest` framing (`lib/edge/`), the phone's config-to-camera decisions
+(`components/camera/state.ts`) and the control page's crop editing, framing warnings
+and client (`lib/control/`) — all plain TypeScript, run in `node`, no DOM.
 
-`pnpm test:e2e` drives the three pages in a real Chromium (`tests/*.spec.ts`), against
+`camera.spec.ts` plays the node's half of the control channel: it answers the phone's
+report poll with a config of its choosing and decodes the JPEGs that reach
+`/ws/ingest`, so "the crop the config asked for is the crop sent" is measured in pixels.
+`control.spec.ts` drives `/control` against a simulated phone.
+
+`pnpm test:e2e` drives the pages in a real Chromium (`tests/*.spec.ts`), against
 the **built** app — `vite build` then `vite preview`, because the bundle is what the
 Python viewer serves. There is no inference node behind it: every `/api/…` call and the
 `/ws/viewer` socket is stubbed per test (`tests/helpers/node.ts`), so these need neither
@@ -189,7 +194,7 @@ cd packages/viewer/ui && pnpm dev                    # terminal 2: frontend -> h
 ```
 
 `make ui` (`pnpm build` under the hood) is the production build instead of the dev
-server: it prerenders all three routes straight into
+server: it prerenders all four routes straight into
 `packages/viewer/src/board_reader_viewer/web/` — see the note at the top of §2.
 
 ---
@@ -425,11 +430,13 @@ gap between claimed confidence and observed accuracy is what says whether a 0.97
 means anything. Labels still in the corner frame are skipped with a warning; see
 Option P.
 
-### Option J — Phone live camera (the browser edge, DESIGN §6 "virtual Pi")
+### Option J — Phone live camera, configured from the laptop (DESIGN D11)
 
-Point a phone at a real board and stream it live — capture, crop and adaptive
-forwarding all happen in the phone's browser; the desktop shows the position
-evolving on the live viewer.
+Point a phone at a real board and stream it live. The phone is a **dumb camera**: it
+only films and streams, and it has nothing to press. You set everything — the crop
+rectangle, the lens, the resolution, start and stop — on the laptop's `/control` page.
+The phone hears each change within half a second (its report poll) and applies it;
+capture, crop, motion and adaptive forwarding all still happen in the phone's browser.
 
 `make dev` sets all of this up — it starts inference plus **two** binds of the
 viewer, serves the **same recognizer `docker compose up` does** (it prints what it
@@ -441,18 +448,19 @@ make dev
 #   camera     https://<lan-ip>:8443/camera   (accept the warning once)
 #   snapshot   http://<lan-ip>:8080/snapshot
 #   live       http://<lan-ip>:8080
+# the control page is http://localhost:8080/control (the viewer's banner names it too)
 ```
 
 The camera page gets its own https origin because it is the only page that *needs*
-one: `getUserMedia` is refused outside a secure context. The https bind serves all
-three pages, though — every endpoint any of them touches is relayed by the viewer
-itself, so there is no mixed content to block. `/` and `/snapshot` are offered over
+one: `getUserMedia` is refused outside a secure context. The https bind serves every
+page, though — every endpoint any of them touches is relayed by the viewer itself, so
+there is no mixed content to block. `/`, `/snapshot` and `/control` are offered over
 http purely to spare the desktop a self-signed-certificate warning.
 
 To reach any of them from off the LAN, forward the http bind through a tunnel that
 terminates TLS for you — see `.claude/skills/tunnel`.
 
-By hand, if you want different ports or only the camera:
+By hand, if you want different ports:
 
 ```bash
 # 1. Inference with real recognition (same env as Option F):
@@ -462,103 +470,61 @@ BR_CHESSQ=models/chessq/cq-vit-s-644-v6-seed1-onnx-fp32.onnx \
 # 2. Viewer with TLS — getUserMedia requires a secure context on a phone:
 BR_INFERENCE_WS=ws://localhost:8000/viewer BR_INFERENCE_HTTP=http://localhost:8000 \
 uv run board-reader-viewer --host 0.0.0.0 --port 8443 --ssl
-# it prints the https://<lan-ip>:8443/camera URLs to type on the phone
+# it prints the https://<lan-ip>:8443/camera URLs to type on the phone,
+# and the /control URL to open on this machine
 
 # 3. On the phone: open the printed URL, accept the self-signed certificate once.
 #    (Android over USB instead: `adb reverse tcp:8443 tcp:8443`, then plain
 #    http://localhost:8443/camera — localhost is a secure context, no cert.)
 ```
 
-Flow: open the page **in landscape** — not just by design preference: a portrait
-frame is **hard-blocked** (an overlay says "turn the phone sideways"; detect and
-start are disabled until the phone turns). The block dates from the crop-classifier
-reader, whose per-square crops extended toward the top of the image, so a sideways
-board read garbage — it cost the 2026-08-27 field day. ChessQ squashes a portrait
-frame badly too ([[operating-envelope#Framing]]); the block stays until Phase C.
-Allow the camera and the preview fills the screen. **The board is found on its own**:
-once the picture holds still, after a short settle delay (~2.5 s, so autoexposure and
-autofocus have caught up) the page detects the board without being asked — no framing
-step in the common case. Four controls sit on a rail (a right-hand column in
-landscape, a dock at the bottom in portrait): `more` · `position` · `detect board` ·
-`start`/`stop`. A fifth, `rotate labels`, appears on the rail only when a
-re-detection may have moved a8 (below); otherwise it lives in the **more** sheet.
+**The session, step by step:**
 
-**rotate labels** is how the operator says which corner is a8 — geometry cannot know
-that (decision #15). The node no longer needs it (ChessQ finds the orientation
-itself and ignores the streamed corners); the labelling still drives the quad on the
-page until Phase C. **detect board** re-runs detection (`/detect`) on demand, for the
-cases automatic detection does not reach (a bad angle, nothing recognisable as a
-board); the four corner handles are always there to drag by hand too. The session
-flow is aim → start → play. **position** shows or hides a floating live-position
-board that can be dragged by its header and resized from a corner grip. **more** opens
-a slide-up sheet holding the board id, the lens picker, tracking on/off, reset crop,
-the stats strip (frames/rate/stability), a **what the reader sees** section carrying the
-placement string and the low-confidence legend, and the framing explanation.
-**start**/**stop** toggles streaming.
+1. Run `make dev` on the laptop. Expected: it prints the camera, snapshot and live URLs.
+2. On the phone, open `https://<lan-ip>:8443/camera` and accept the certificate warning
+   once. Expected: the camera permission prompt.
+3. Allow the camera. Expected: the picture fills the screen, and the status line at the
+   bottom reads `board phone · node connected · not streaming · 1920×1080 · <lens>`.
+4. Mount the phone over the board, in **landscape**. If it is upright, the status line
+   adds `portrait: turn the phone sideways` (it still streams; upright framing costs
+   about a quarter of perfect boards, [[operating-envelope#Framing]]).
+5. On the laptop, open `http://localhost:8080/control` (or the **camera control** link on
+   the live page). Expected: the chip reads `phone connected`, and within ~2 s the
+   phone's whole view appears as a preview, with the phone's lenses in the **lens** list
+   and its size under **frame delivered** in the Status panel.
+6. Drag a rectangle around the board on the preview, with a small margin, and press
+   **Save crop**. Expected: within ~1 s the phone shows the same rectangle as an outline
+   with the rest dimmed, and a warning on `/control` disappears or appears as the shape
+   needs (whole frame sent, a rectangle taller than wide or more than twice as wide as
+   tall, an upright phone).
+7. Optional: choose another **lens** (an iPhone lists each rear lens, e.g. *Back Ultra
+   Wide Camera*) or **resolution**. Expected: the phone's picture switches, and its status
+   line names the new lens and size. The rectangle stays on the board, because it is
+   stored in fractions of the frame.
+8. Press **Start streaming** on `/control`. Expected: the phone's status line turns
+   green, `streaming ~1.0 fps` at rest, and `/control` shows the cropped frame under
+   **What the node receives**, with **frames/s received** and **last frame** filled in
+   the Status panel and the **recognizer** named (`chessq`, or `stub` with the reason).
+9. Open the live page `http://localhost:8080` and move a piece. Expected: a burst on the
+   phone (fps rises to ~12 while the hand moves) and the new position on the live page
+   within a second or two of the hand leaving.
+10. Press **Stop streaming** on `/control`. Expected: the phone's status line reads
+    `not streaming` within ~1 s, and no new frames reach the node.
 
-What streams is not the raw frame, and the page shows you exactly what does: the dashed
-box drawn around the quad is the crop being sent — the quad's bounding box with a margin,
-and considerably more headroom above the top edge, which is where tall pieces stand up out
-of the board. It goes downscaled, with the quad still riding on every frame header as
-`corners` (legacy: the node ignores them and reads the whole crop). The rate is
-adaptive (~1 fps at rest, bursts through motion). The desktop live viewer (`/`) shows
-the same board id, where the preview pane displays the very frames the phone is
-sending.
-
-What to check:
-- Stability ~1.0 and ~1 fps with the board at rest; a burst and a dipping stability
-  bar the moment a hand enters; the moved piece appearing on both boards within a
-  second or two of the hand leaving.
-- Point the page at a real board for the first time: it detects the board on its own
-  within a few seconds of holding still, no tap needed. Point it at something with no
-  board in it instead (a wall, an empty table) — it retries with a growing gap between
-  attempts rather than on a flat timer, gives up after four tries, and says so as a
-  tappable line in the hint bar (`No board found — drag the handles onto it, or
-  look again`). Measured in a browser: four attempts, gaps of 8.7 s, 18.5 s and 32.7 s,
-  then silence. That matters more than it looks — a miss costs `/detect` 2-4 s of
-  OpenCV, so a flat 5 s retry would have kept the inference node busy roughly half the
-  time it was pointed at a wall.
-- After a re-detection that follows losing the board (see Tracking below), the labels
-  may have landed on a different physical corner: the warning banner does not
-  auto-dismiss, and **rotate labels** is the fix — nothing else clears it.
-- Rotate the phone mid-session (landscape to portrait and back) — the portrait
-  overlay appears at once, sending pauses (`stream paused` in the overlay), and on
-  turning back both clear by themselves: the quad is still on the board and frames
-  flow again, nothing pressed.
-- Shake the phone gently in its holder while streaming: readings should hold up
-  better than the shake suggests — every frame now carries an edge-measured
-  `sharpness` (tenengrad on the tracker's frame), and when the estimator is
-  behind, the node's inbox keeps the *sharpest* frame of the last second rather
-  than blindly the newest (`ingest.prefer_frame`). Verifiable after the fact in a
-  recording: `frames.ndjson` headers carry `sharpness`, `events.ndjson` carries
-  the chosen `frame_seq`.
-- Drag **position**'s header to move it and its corner grip to resize it; it survives
-  a rotation without ending up off-screen.
-
-**Tracking (DESIGN §4.4.1(a)).** Once the corners are set they follow the board: pick
-the phone up, move it, put it down somewhere else and the quad — with its `a8`
-labelling intact — is still on the board. The status chip reads `tracking — locked`.
-Things to try:
-
-- Cover the lens with a hand. The chip turns red to `tracking — lost, quad frozen`
-  and the quad goes dashed red and **stops moving** rather than wandering. Take the
-  hand away quickly and it re-locks by itself, no re-detection involved — a hand
-  sweeping over the board during a real game must not, and does not, trigger one.
-  Leave it lost for longer instead (several seconds, sustained) and the page
-  escalates: it re-runs detection on its own, deliberately keeps the labels as they
-  were, and raises the non-auto-dismissing warning described above.
-- Move fast enough to smear the picture — same short-loss recovery, and it re-locks
-  when you stop.
-- Drag a handle at any point: that re-anchors tracking on what you just said, so a
-  quad that has drifted is one touch from right. **tracking off** (in the **more**
-  sheet) disables it outright.
-
-**Lens (iPhone).** With more than one camera a **lens** picker is offered in the
-**more** sheet. Pick *Back Ultra Wide Camera* when the board will not fit the main
-lens from where the phone can sit; the choice is remembered by label. Expect visible
-barrel distortion near the frame edges — the four-corner quad is a projective model
-and fits the board progressively less well out there, so keep the board near the
-middle. Re-check the corners after switching: the frame size changes with the lens.
+What to check beyond the steps:
+- Stability ~1.0 and ~1 fps with the board at rest; a burst the moment a hand enters
+  the rectangle — and **no** burst for a hand moving outside it, since motion is
+  measured on the crop only.
+- Shake the phone gently in its holder while streaming: every frame carries an
+  edge-measured `sharpness` (tenengrad on the sent crop), and when the estimator is
+  behind, the node's inbox keeps the *sharpest* frame of the last second
+  (`ingest.prefer_frame`). Verifiable in a recording: `frames.ndjson` headers carry
+  `sharpness`, `events.ndjson` carries the chosen `frame_seq`.
+- Restart the inference node mid-session: the phone's status line says
+  `node unreachable`, then `node connected` again; the config is in memory only, so draw
+  the rectangle and press **Start streaming** again on `/control`.
+- Two boards: open `/camera?board=left` on one phone and `/control?board=left` on the
+  laptop (or type the id into the **board** field). Each board keeps its own config.
 
 **Camera stall recovery.** Phone cameras die quietly (backgrounding, a call,
 another app taking the lens); the page must come back on its own. Things to try
@@ -650,7 +616,8 @@ Three more places to look after a phone trial:
   refused frames; `BR_LOG_LEVEL=DEBUG` logs every read.
 - `client-logs/*.ndjson` (written by the **viewer**) — the phone's own story:
   socket status changes, camera track mute/ended, stall-watchdog play/reopen
-  attempts, detect outcomes, `pagehide`. This is the file that says
+  attempts, each config the phone applied (`config`, `capture`), the control link
+  going up or down (`control-link`), `pagehide`. This is the file that says
   *why the node heard silence* — a page that never connected, a camera that
   froze, or a stream whose every frame was refused all look identical from the
   node's side. While streaming it also beats every 10 s (`kind: "heartbeat"`,
