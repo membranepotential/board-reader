@@ -44,9 +44,18 @@ an illegal-looking placement is reported as `ok`.
 
 ## Geometry
 
-**Corners** — the four playing-surface corners in `a8, h8, h1, a1` order. /camera still
-tracks them and the wire still carries them until Phase C of the simplification plan;
+**Corners** — the four playing-surface corners in `a8, h8, h1, a1` order. Legacy since
+Phase C: no edge sends them; `wire.Frame` still parses them so old recordings replay, and
 recognition ignores them.
+
+**Crop rectangle** — the part of the camera frame the edge sends, in fractions of the full
+frame (`board_reader_core.control.CropRect`). Drawn on `/control` for the phone; `--roi`
+on the Python edge.
+
+**Camera config / report** — the control channel (DESIGN D11): the config is what
+`/control` chose for a board's camera (crop, lens, resolution, streaming); the report is
+what the phone says its camera is (lenses, frame size, stream state). The phone posts the
+report every 500 ms and applies the config in the reply.
 
 **Chess frame** — the convention every placement is in: rank 8 first, file a first, as FEN
 writes it, whatever way the board faces the camera. The recognizer resolves it per frame;
@@ -90,8 +99,9 @@ headroom, photo boxes, autorotate — are described in [[calibration-and-the-ban
 
 ## Infrastructure
 
-**Edge / L1** — the node at the board: capture, measure stability, forward (detection and
-rectification go in Phase C). "The Pi".
+**Edge / L1** — the node at the board: capture, crop to the configured rectangle, measure
+stability, forward. No detection or rectification. "The Pi"; in the sim, the phone's
+`/camera` page, a dumb camera configured from `/control`.
 
 **Inference / L2** — the node that recognizes: stateless per-frame recognizer plus gateway.
 DESIGN calls it "central / Jetson".

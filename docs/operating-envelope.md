@@ -36,7 +36,10 @@ loses pixels and its squares get distorted. Measured on 467 images
 
 > [!tip] The fix is free
 > Frame the board so it fills at least half the width of a landscape shot. Do not send a
-> wide room shot; crop to the board with a margin first.
+> wide room shot; crop to the board with a margin first: draw the rectangle on `/control`
+> (or pass `--roi` to the Python edge), and keep the phone in landscape. `/control` warns
+> when the whole frame is sent, when the rectangle is taller than wide or more than twice
+> as wide as tall, and when the phone is upright.
 
 ## Camera angle and light
 

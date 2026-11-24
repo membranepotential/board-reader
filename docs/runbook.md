@@ -54,8 +54,12 @@ uv run board-reader-edge feed             # synthetic feed
 uv run board-reader-edge feed --video clip.mp4 --throttle   # or a real clip
 ```
 
-**The phone flow** — `make dev`, then open `/snapshot` or `/camera` on the phone.
-By hand:
+**The phone flow** — `make dev`, then open `/snapshot` or `/camera` on the phone. The
+camera page has no controls: open `/control` on the laptop to draw the board's rectangle
+on the phone's preview, pick the lens and resolution, and start or stop the stream
+(DESIGN D11; the full walkthrough is [[TESTING#Option J — Phone live camera, configured from the laptop (DESIGN D11)]]).
+The camera config lives in the inference node's memory, so after a node restart set it
+again on `/control`. By hand:
 
 ```bash
 BR_CHESSQ=models/chessq/cq-vit-s-644-v6-seed1-onnx-fp32.onnx \
@@ -85,8 +89,7 @@ recognition.
 > choose the *same* one: once a model change landed in compose alone, and every live
 > phone test silently rehearsed a weaker reader than the demo. A new deploy-time variable therefore belongs in
 > **both** files, or in `tests/test_deploy_parity.py`'s recorded list of
-> deliberately environment-specific ones. `aspects.yaml` carries the pair as the
-> `deploy` aspect so `/drift` sees them together.
+> deliberately environment-specific ones.
 >
 > Since DESIGN D10 both set `BR_CHESSQ` and nothing else that shapes recognition.
 > `make dev` prints what it serves on startup (`recognition ChessQ Lite (...) — the
