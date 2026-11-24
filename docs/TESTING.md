@@ -117,20 +117,20 @@ What's covered today — the main files (`git ls-files 'packages/*/tests/*.py'
 | Sim renderer + warp | `packages/core/tests/test_sim.py` | board images render; perspective warp + ground-truth quad |
 | Frame sources | `packages/edge/tests/test_source.py` | video/dir/synthetic/repeat sources |
 | Edge adapter | `packages/edge/tests/test_adapter.py` | frames → wire envelopes, throttle, **static `--roi` crop, motion measured inside it, no `corners` sent** |
-| **Recognizer seam** | `packages/inference/tests/test_recognizer.py` | **the stub, the event a distribution becomes, the one frame read, the environment builder and its loud fallback** |
-| **ChessQ** | `packages/inference/tests/test_chessq.py` | **preprocessing and output mapping on a fake model; one `gpu` test reads a held-out still with the real V6** |
-| **Repair + settle** | `packages/inference/tests/test_prior.py`, `test_stabilize.py` | **an impossible board is repaired at its weakest square and a possible one is left byte-for-byte; the per-square debounce behind `settled`** |
+| **Recognizer seam** | `packages/inference/tests/recognition/test_recognizer.py` | **the stub, the event a distribution becomes, the one frame read, the environment builder and its loud fallback** |
+| **ChessQ** | `packages/inference/tests/recognition/test_chessq.py` | **preprocessing and output mapping on a fake model; one `gpu` test reads a held-out still with the real V6** |
+| **Repair + settle** | `packages/inference/tests/stream/test_prior.py`, `test_stabilize.py` | **an impossible board is repaired at its weakest square and a possible one is left byte-for-byte; the per-square debounce behind `settled`** |
 | **Recording format** | `packages/core/tests/test_recording.py` | **byte-exact round trip, corners survive, truncated session still replays, size cap** |
 | **Ingress recording** | `packages/inference/tests/test_recording_ingest.py` | **every `/ingest` frame lands on disk (incl. pre-filter drops); off unless asked; a write failure never breaks the stream** |
 | **Replay (edge)** | `packages/edge/tests/test_recording_replay.py` | **replays the recorded bytes without re-encoding, paces by capture time, refuses to reprocess** |
-| **Replay (inference)** | `packages/inference/tests/test_replay.py` | **driven by the recorded clock, byte-identical events on a re-run, the frame policy is asked** |
+| **Replay (inference)** | `packages/inference/tests/measurement/test_replay.py` | **driven by the recorded clock, byte-identical events on a re-run, the frame policy is asked** |
 | **Labels + eval** | `test_labels.py`, `test_server_labels.py`, `test_evaluate.py`, `test_trial.py`, `test_calibration.py` | **chess-frame labels, `eval`, `eval-session`, temperature scaling** |
 | **Position stream consumer** | `packages/inference/tests/test_positions.py` | **transitions of a real move, first-sighting ≠ unchanged, per-board diffing, NDJSON capture rebuilds the identical event, `--changes-only` drops keepalives** |
-| Hub | `packages/inference/tests/test_hub.py` | retained-latest, fan-out, overflow |
+| Hub | `packages/inference/tests/stream/test_hub.py` | retained-latest, fan-out, overflow |
 | Gateway | `packages/inference/tests/test_server.py` | ingest → viewer over WS (in-process) |
-| **Read scheduling** | `packages/inference/tests/test_schedule.py` | **burst detection matches the forwarder's hysteresis; the keepalive floor survives a dead, stuck, absent or NaN meter and a backwards clock; no config spelling switches it off; a new move cancels the last one's owed reads; spec strings round-trip** |
-| **Scheduling, live** | `packages/inference/tests/test_ingest_schedule.py` | **the policy is observed on every arriving frame and asked at the drain, so a burst-end read gets `prefer_frame`'s sharper contender; per-board isolation; a frozen `capture_ts` falls back to the node's own keepalive; `BR_SCHEDULE` reaches the socket and `every-frame` restores the old gateway** |
-| **Camera control** | `packages/core/tests/test_control.py`, `packages/inference/tests/test_camera_control.py` | **the config, report and socket messages refuse malformed input; the registry pushes a config to every phone and every control page, previews are wanted exactly while a page watches, a reconnecting phone hears its config again; with `BR_CAMERA_CONFIG` set the configs survive a restart (written atomically), a corrupt file is ignored with a warning, unset writes nothing, and `serve` sets the default; the board direction is the median of the latest reads, names the nearest side, flags a moved camera once the angle settled and resets on a new crop, lens or resolution; over the real sockets a config reaches the phone, a preview and the last streamed frame reach the page, a health tick arrives with the direction, and a bad message is refused without closing the socket** |
+| **Read scheduling** | `packages/inference/tests/stream/test_schedule.py` | **burst detection matches the forwarder's hysteresis; the keepalive floor survives a dead, stuck, absent or NaN meter and a backwards clock; no config spelling switches it off; a new move cancels the last one's owed reads; spec strings round-trip** |
+| **Scheduling, live** | `packages/inference/tests/stream/test_ingest_schedule.py` | **the policy is observed on every arriving frame and asked at the drain, so a burst-end read gets `prefer_frame`'s sharper contender; per-board isolation; a frozen `capture_ts` falls back to the node's own keepalive; `BR_SCHEDULE` reaches the socket and `every-frame` restores the old gateway** |
+| **Camera control** | `packages/core/tests/test_control.py`, `packages/inference/tests/control/test_camera.py` | **the config, report and socket messages refuse malformed input; the registry pushes a config to every phone and every control page, previews are wanted exactly while a page watches, a reconnecting phone hears its config again; with `BR_CAMERA_CONFIG` set the configs survive a restart (written atomically), a corrupt file is ignored with a warning, unset writes nothing, and `serve` sets the default; the board direction is the median of the latest reads, names the nearest side, flags a moved camera once the angle settled and resets on a new crop, lens or resolution; over the real sockets a config reaches the phone, a preview and the last streamed frame reach the page, a health tick arrives with the direction, and a bad message is refused without closing the socket** |
 | Viewer | `packages/viewer/tests/test_viewer_server.py`, `test_proxy.py` | the four prerendered pages served; `/api` and `/ws` reach the relay; no page names an absolute origin; the client log |
 | **Layer split** | `tests/test_layer_separation.py` | edge/inference never import each other |
 | **Deploy parity** | `tests/test_deploy_parity.py` | compose and `make dev` serve the same recognizer |
@@ -978,7 +978,7 @@ committed descriptors name, checks the SHA-256, and exports the fp32 ONNX.
    --name cq-v6 --score`. Expected: the manifest's `estimator` is
    `ChessQRecognizer` and its `env` lists `BR_CHESSQ`.
 
-Automated: `packages/inference/tests/test_chessq.py` and `test_recognizer.py` (fake
+Automated: `packages/inference/tests/recognition/test_chessq.py` and `test_recognizer.py` (fake
 model and the stub; the one real-weights test is `gpu`-marked and runs under `make
 test-gpu`, skipping when the weights or the held-out still are absent),
 `tests/test_fetch_models.py` and `tests/test_chessq_export.py` (`make models`:

@@ -277,7 +277,7 @@ def test_replay_config_digest_distinguishes_br_chessq(chessq_env):
 # The real release on one held-out still (`make test-gpu`; skips without files)
 # --------------------------------------------------------------------------- #
 
-_ROOT = Path(__file__).resolve().parents[3]
+_ROOT = Path(__file__).resolve().parents[4]
 _STILL = _ROOT / "data/eval/heldout-20260831/img_0763.label.json"
 
 

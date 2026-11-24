@@ -1,11 +1,7 @@
 ---
 paths:
   - 'packages/inference/src/board_reader_inference/measurement/**'
-  - 'packages/inference/tests/test_replay.py'
-  - 'packages/inference/tests/test_trial.py'
-  - 'packages/inference/tests/test_evaluate.py'
-  - 'packages/inference/tests/test_labels.py'
-  - 'packages/inference/tests/test_calibration.py'
+  - 'packages/inference/tests/measurement/**'
   - 'tools/gate_table.py'
   - 'tools/migrate_labels_to_chess_frame.py'
   - 'tests/test_gate_table.py'

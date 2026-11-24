@@ -4,10 +4,10 @@ paths:
   - 'packages/inference/src/board_reader_inference/stream/schedule.py'
   - 'packages/inference/src/board_reader_inference/stream/ingest.py'
   - 'packages/inference/src/board_reader_inference/stream/prior.py'
-  - 'packages/inference/tests/test_stabilize.py'
-  - 'packages/inference/tests/test_schedule.py'
-  - 'packages/inference/tests/test_ingest_schedule.py'
-  - 'packages/inference/tests/test_prior.py'
+  - 'packages/inference/tests/stream/test_stabilize.py'
+  - 'packages/inference/tests/stream/test_schedule.py'
+  - 'packages/inference/tests/stream/test_ingest_schedule.py'
+  - 'packages/inference/tests/stream/test_prior.py'
 ---
 
 # Read scheduling, the prior and the settle debounce

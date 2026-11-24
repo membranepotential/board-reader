@@ -1,8 +1,8 @@
 ---
 paths:
   - 'packages/inference/src/board_reader_inference/recognition/**'
-  - 'packages/inference/tests/test_onnxrt.py'
-  - 'packages/inference/tests/test_chessq.py'
+  - 'packages/inference/tests/recognition/test_onnxrt.py'
+  - 'packages/inference/tests/recognition/test_chessq.py'
   - 'Makefile'
   - 'tools/stop.sh'
   - 'tools/wtest.sh'
