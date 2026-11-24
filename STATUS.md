@@ -7,10 +7,10 @@ _reconciled: 2026-11-24 @ `480a5ea`_ · decisions: [docs/DESIGN.md](docs/DESIGN.
 A camera reads a live OTB board and streams timestamped **piece placements + per-square
 confidences**. No moves, no legality, no PGN — those belong to the downstream application layer.
 
-## Now (3 agents, files partitioned)
+## Now (2 agents, files partitioned)
 
-- **hand-signal probe** — is a square occluded? ChessQ intermediate outputs vs simple CV (edges,
-  long-term median) on the gate takes + live take 2 — running (read-only on src) — report in docs/reports.
+- **hand-signal probe DONE** (`8645523`): ChessQ frame energy (−logsumexp, mean of top-4 squares) flags hand
+  frames at AUC 0.97; as a no-commit gate: resting-hand take 9 wrong boards → 0, gate 314 → 311/361.
 - **priors DONE** (`5d0cdb2`..`61e1822`): decoder + `prior` field gone; count guard in `stream/rules.py`
   (python-chess, inference only); per-board `rules: standard|free`; one placement per event + `pending` +
   `changed_utc` (median 1.45 s after the true change vs 3.12 s); gate base `guard-only` 314/361, 0 leaks.
@@ -40,7 +40,8 @@ confidences**. No moves, no legality, no PGN — those belong to the downstream 
 
 ## Next
 
-1. **Hand signal, built** — implement the probe's recommendation (feeds the scheduler or stabilizer).
+1. **Hand signal, built** — energy no-commit gate in chessq.py/stabilize.py/ingest.py (after the
+   changed_utc agent leaves stream/); `obscured` on the event; gate + a fresh resting-hand take.
 3. **Record more varied games** — second set, second camera, other light. All gate takes are one
    set; the settle defaults are fitted to it.
 4. **Python edge on the control channel** (today: static `--roi`) — needed for a Pi/Jetson camera.
