@@ -13,10 +13,10 @@ import rules below are enforced by a test, not by convention.
 
 | Package (`import`) | Role | May import |
 |---|---|---|
-| `board-reader-core` (`board_reader_core`) | the shared contract: L3 protocol, L1→L2 wire, camera control contract, recording format, sim helpers | numpy, opencv |
+| `board-reader-core` (`board_reader_core`) | the shared contract: L3 protocol, L1→L2 wire, camera control contract (pydantic models, with their JSON Schema in `schema`), recording format, sim helpers | numpy, opencv, pydantic |
 | `board-reader-edge` (`board_reader_edge`) | the **edge** node ("Pi", L1): capture, static crop, forward | core only |
 | `board-reader-inference` (`board_reader_inference`) | the **inference** node (L2): stateless recognizer + gateway | core only |
-| `board-reader-viewer` (`board_reader_viewer`) | serves the live-position UI and the phone pages (snapshot + camera), and relays the camera page's traffic to the inference node | nothing |
+| `packages/viewer/ui` (Node) | the viewer: a SvelteKit app whose pages are prerendered, with `/api/*` and `/api/client-log` as routes, served by `server/main.ts`, which adds the `/ws/*` relay and the TLS port — `src/routes/api`, `server/{main,ws,tls}.ts`; pages `/`, `/camera`, `/control`, `/snapshot` | nothing |
 
 > [!danger] The separation rule
 > `edge` and `inference` **never import each other**. They communicate solely over the
@@ -87,7 +87,8 @@ inference node, and pushed to the phone, which applies it:
   and `camera_moved`); the page sends `configure` with the whole config. Both clients
   reconnect with backoff; a phone that loses the link keeps its last config and keeps
   streaming on `/ws/ingest`. The contract — every message type and its direction — is
-  `board_reader_core.control`; the node keeps the state
+  `board_reader_core.control` (each socket direction one union discriminated on
+  `type`, in the JSON Schema of `board_reader_core.schema`); the node keeps the state
   (`control.camera.CameraRegistry`, the single source of truth) and persists each
   board's config to `BR_CAMERA_CONFIG` (`serve` sets `data/camera-config.json`; empty
   keeps it in memory only), so a restart keeps the framing. Each socket's outbox keeps only the
@@ -128,7 +129,7 @@ Because
 the page talks *only* to the viewer's own origin: the viewer relays the node's sockets
 under `/ws/` (`/ws/ingest`, `/ws/viewer`, `/ws/boards/{id}/camera`,
 `/ws/boards/{id}/control`) and its HTTP API under `/api/` to the inference node (pure network
-glue — it still imports no `board_reader_*` package), and `--ssl` serves the whole
+glue — it imports nothing of the Python packages), and `--tls-port` serves the whole
 thing over a cached self-signed certificate.
 
 On the **Python edge** (`board-reader-edge feed`), frames are cropped to an optional
@@ -203,13 +204,15 @@ operator can see *what the recognizer was torn between* rather than just that it
 
 ![[correction-panel-mobile.png|300]]
 
-The viewer is a static-file server plus a relay, and it injects nothing into the pages.
-All three stay on the viewer's origin: the sockets come through `/ws/ingest` and
-`/ws/viewer`, and the node's whole HTTP API through a catch-all `/api/<path>` (see the
-browser-edge section above). `BR_INFERENCE_WS` / `BR_INFERENCE_HTTP` address the
-*viewer's* hop to the node and never reach the browser.
+The viewer serves the prerendered pages through adapter-node's handler and relays the
+node same-origin: the HTTP API through the catch-all route `/api/[...path]`, every
+socket through `server/ws.ts` (`/ws/<path>` → `/<path>`, so `/ws/ingest`, `/ws/viewer`,
+`/ws/boards/{id}/camera` and `/ws/boards/{id}/control` need no viewer change).
+`--tls-port` serves the same app over a cached self-signed certificate. The SvelteKit 3
+app builds to `packages/viewer/ui/build/` (`make ui`). `BR_INFERENCE_WS` /
+`BR_INFERENCE_HTTP` address the *viewer's* hop to the node and never reach the browser.
 
-One origin is what lets a single `--ssl` certificate cover everything a phone needs, and
+One origin is what lets a single certificate cover everything a phone needs, and
 it is also why the stack tunnels with one port forwarded (`.claude/skills/tunnel`).
 Until 2026-08-07 only the camera page worked this way; the live and snapshot pages were
 handed an absolute `http://<lan-ip>:8000` and talked to the node directly, which is why
@@ -217,13 +220,10 @@ the node still runs CORS middleware — nothing in this repo now depends on it.
 
 ## The frontend: one typed library, four routes
 
-The four pages are a SvelteKit 2 / Svelte 5 (runes) / TypeScript-strict app
-(`packages/viewer/ui`), prerendered by `adapter-static` (`make ui`, or `pnpm build`)
-straight into `packages/viewer/src/board_reader_viewer/web/` — generated and
-gitignored, not a source. `server.py` still serves exactly `index.html`,
-`snapshot.html`, `camera.html` and `control.html` out of that directory; those names now name build
-*output*, not hand-written files, and the server refuses to start if the directory
-is missing (see `docs/TESTING.md`).
+The four pages are a SvelteKit 3 / Svelte 5 (runes) / TypeScript-strict app
+(`packages/viewer/ui`), prerendered and built to `packages/viewer/ui/build/` (`make ui`,
+or `pnpm build`) — generated and gitignored, not a source. `server/main.ts` refuses to
+start if that directory is missing (see `docs/TESTING.md`).
 
 Before the rewrite, three hand-written HTML pages each carried their own
 near-identical copy of the same logic — FEN parsing, the board-plane tracker, the
@@ -271,6 +271,19 @@ both read as "0.4", and that difference is exactly what downstream probabilistic
 inference needs. At fp16 the grid is ~1.6 KB — negligible next to the JPEG.
 
 Full field-by-field spec: [[DESIGN#5. Position stream protocol (L3 output)]].
+
+**One contract, two languages (DESIGN D13).** Every JSON message between the node and
+the browser — position events and motion updates on `/viewer`, the frame header on
+`/ingest`, the camera control messages — is a strict pydantic dataclass in
+`board_reader_core` (`protocol`, `control`, `wire`; the shared rules in `wiremodel`).
+The models validate on construction, on assignment and on parsing: strict scalars,
+finite numbers, ranges as constraints, unknown keys refused, and a one-line
+`ValueError` naming the field. `python -m board_reader_core.schema` prints their JSON
+Schema, one document with a `$defs` entry per message and per socket union, and the
+viewer's TypeScript types and validators are generated from it. Two rules are beyond
+JSON Schema and are named by `x-check` for the TypeScript side to implement:
+`isPlacement` (eight ranks of eight squares) and `cropInside` (`x + w <= 1`,
+`y + h <= 1`).
 
 ## Who reads the stream
 

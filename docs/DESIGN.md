@@ -108,9 +108,10 @@ the which-side-running clock signal.
 | **ChessCam** (Pbatch) | phone in the browser, its own ChessQueries-architecture model | 39/43 held-out blitz games perfect |
 
 For most of the literature, per-frame whole-board recognition on real angled boards was
-the weak link. ChessQueries changed that: on our own four-take replay gate ChessQ Lite
-V6 reads 92/101 raw boards perfectly, cold, where our eight-month in-house stack read
-5/101 ([reports/2026-11-24-chessq-v6-replay-gate.md](reports/2026-11-24-chessq-v6-replay-gate.md)).
+the weak link. ChessQueries changed that: on our own replay gate, then four takes,
+ChessQ Lite V6 read 92/101 raw boards perfectly, cold, where our eight-month in-house
+stack read 5/101 ([reports/2026-11-24-chessq-v6-replay-gate.md](reports/2026-11-24-chessq-v6-replay-gate.md)). The gate now has seven takes
+(base `sp03-settle05-7`: 341/361 raw and 315/361 settled perfect).
 Sources: [plans/2026-10-09-chessqueries-handoff.md](plans/2026-10-09-chessqueries-handoff.md),
 [plans/2026-11-24-chesscam-camerachess.md](plans/2026-11-24-chesscam-camerachess.md).
 
@@ -237,7 +238,7 @@ Pi or Jetson latency is unmeasured (§9).
 
 **Context.** Eight months of in-house recognition (DINOv2 features, exemplar banks,
 calibration, multi-style crop classifiers, the black-bishop demotion) never beat
-~80 % cross-style piece type zero-shot. On the four-take replay gate the shipped stack
+~80 % cross-style piece type zero-shot. On the replay gate, then four takes, the shipped stack
 reached 5/101 raw and 35/101 settled perfect boards. ChessQ Lite V6 (ChessQueries'
 small model, which Lichess runs in the browser: the whole image squash-resized to
 644×644 in, 64×13 logits out) read the same frames cold at 92/101 raw and 84/101
@@ -336,6 +337,49 @@ reader pairs every text header with the next binary JPEG, and recording and repl
 on it; a control message there would change the framing every edge and every
 recording relies on, for one socket fewer on the phone.
 
+### D12 — The viewer is its own deployment unit, in Node (2026-11-24)
+
+**Status:** accepted (user, 2026-11-24).
+
+**Decision.** The viewer is its own deployment unit in Node/TypeScript (SvelteKit on
+adapter-node). SvelteKit has no WebSocket upgrade, so a short custom server
+(`server/main.ts`) relays the sockets and serves TLS; all HTTP stays in SvelteKit
+routes. A static build (adapter-static, `strict: false`) stays possible for the
+on-phone app.
+
+**Rejected.** Serving the UI from the inference node: it would tie the UI to the
+Jetson.
+
+### D13 — The wire contract is written once, in Python; TypeScript is generated (2026-11-24)
+
+**Status:** accepted (user, 2026-11-24).
+
+**Context.** Every JSON message between the node and the browser was written twice:
+as Python dataclasses with hand parsers in `board_reader_core`, and as TypeScript
+types with hand parsers in the viewer. The two drifted in what they accepted (the
+TypeScript parsers defaulted fields the Python ones required, and the other way round).
+
+**Decision.**
+- **Python is the source of truth.** Every message that crosses to the browser is a
+  strict pydantic dataclass in `board_reader_core` (`protocol`, `control`, `wire`,
+  built with `wiremodel`): strict scalar types, finite numbers, unknown keys refused,
+  ranges as field constraints. Validation lives in the models; the hand parsers are
+  gone. The models stay dataclasses because the nodes build them positionally and
+  compare them.
+- **The JSON Schema is exported** by `board_reader_core.schema` (`python -m
+  board_reader_core.schema`): one document, a `$defs` entry per message and per union
+  each socket carries, in serialization mode with defaults required (what the node
+  sends, every key present).
+- **TypeScript is generated from it**, types and runtime validators, and a test fails
+  when the generated file is stale.
+- **A rule no JSON Schema keyword can state** is a validator in the model plus an
+  `x-check` keyword naming it (`isPlacement`, `cropInside`); the TypeScript side
+  implements the named check, and a property test runs both on the same inputs.
+
+**Rejected.** Writing the TypeScript first or keeping two hand-written sides: drift is
+then found at runtime. A pydantic `BaseModel`: it takes no positional arguments, which
+the nodes use throughout.
+
 ---
 
 ## Superseded decisions
@@ -394,10 +438,10 @@ commit whose DESIGN.md carried every section with its dated amendments.
 
 | Package | Role | Main modules |
 |---|---|---|
-| `board-reader-core` | the shared contract | `protocol` (L3 events, §5), `wire` (L1→L2 frames, §4.5), `control` (camera config and report), `recording` (session directories), `sim` (synthetic renders, §6) |
+| `board-reader-core` | the shared contract | `protocol` (L3 events, §5), `wire` (L1→L2 frames, §4.5), `control` (camera config and report), `wiremodel` (how those are modelled) and `schema` (their JSON Schema, D13), `recording` (session directories), `sim` (synthetic renders, §6) |
 | `board-reader-edge` | the Python edge ("Pi") | `source` (camera, video, images, synthetic game, recording), `motion` (stability), `forwarder` (adaptive rate), `client` (WebSocket), `adapter` (pacing), `cli` (`feed`) |
 | `board-reader-inference` | the inference node ("Jetson") | at the root `server` (FastAPI gateway), `cli`, `positions` (headless `/viewer` client); `recognition/`: `recognizer` + `chessq` + `onnxrt` (the read); `stream/`: `ingest` (inbox + workers), `schedule` (read policy), `prior` (repair), `stabilize` (debounce), `hub`; `control/`: `camera` (the camera control channel); `measurement/`: `replay` / `evaluate` / `trial`, `labels`, `calibration` (temperature scaling for eval only) |
-| `board-reader-viewer` | serves the web UI and relays the node's API under `/api` and its sockets under `/ws` | `server`, `proxy`, `tls`; pages `/`, `/camera`, `/control`, `/snapshot` |
+| `packages/viewer/ui` (Node) | the viewer: a SvelteKit app whose pages are prerendered, with `/api/*` and `/api/client-log` as routes, served by `server/main.ts`, which adds the `/ws/*` relay and the TLS port (D12) | `src/routes/api`, `server/{main,ws,tls}.ts`; pages `/`, `/camera`, `/control`, `/snapshot` |
 
 **Separation rule.** `edge` and `inference` never import each other; they meet only on
 the wire. `core` imports neither. `tests/test_layer_separation.py` enforces it.
@@ -446,17 +490,23 @@ There is deliberately **no** "find the legal move" or "commit a move" step.
 
 ### 4.5 The inference node's interfaces (gateway, wire, hub)
 
-**Ingress (WebSocket `/ingest`).** One message per frame: a JSON header (`board_id`,
-`seq`, `capture_ts`, `stability`, optional `sharpness`, `clock`, `burst_id`) followed by
-the JPEG (`board_reader_core.wire`). The header may carry the legacy `corners`, which
-is parsed and ignored. The `control` message kind is reserved; nothing uses it.
+**Ingress (WebSocket `/ingest`).** Two messages per frame: the JSON header as a text
+message (`wire.FrameHeader`: `type`, `board_id`, `seq`, `capture_ts`, `stability`,
+`sharpness` or null, `clock`, `burst_id` or null), then its JPEG as the next, binary
+message. The node reads the two in lockstep, so nothing may be sent between them; the
+JPEG is outside the JSON Schema (D13). The header may carry the legacy `corners`,
+which is parsed and ignored, and which the JSON Schema leaves out. The node still
+parses headers leniently (`"seq": "4"` is a seq) rather than through `FrameHeader`;
+refusing that is open. The `control` message kind is reserved; nothing uses it.
 
 **Egress (WebSocket `/viewer`).** Position events as JSON (§5), the latest per board
 on connect, interleaved with motion updates (§5, display only, never retained).
 
 **Camera control (WebSockets `/boards/{id}/camera` and `/boards/{id}/control`).** The
 phone's and the control pages' sockets for one board's camera (D11); the messages are
-`board_reader_core.control`'s.
+`board_reader_core.control`'s. Every text message names itself with `type`, and each
+socket's direction is one discriminated union in the JSON Schema (`ReportMessage` and
+`PhoneDown` on the phone's, `ConfigureMessage` and `ControlDown` on a control page's).
 
 **HTTP.**
 
@@ -471,7 +521,8 @@ phone's and the control pages' sockets for one board's camera (D11); the message
 
 ## 5. Position stream protocol (L3 output)
 
-Contract: `board_reader_core.protocol`. One event per read:
+Contract: `board_reader_core.protocol` (pydantic models, D13; the JSON Schema of
+every message in this section is `board_reader_core.schema`'s). One event per read:
 
 ```json
 {
@@ -491,28 +542,34 @@ Contract: `board_reader_core.protocol`. One event per read:
 }
 ```
 
-- `utc` — the edge **capture** time, RFC 3339 with milliseconds.
-- `seq` — per-board monotonic; authoritative for ordering.
+- `utc` — the edge **capture** time, RFC 3339 UTC with milliseconds and a `Z`.
+- `seq` — per-board monotonic, a non-negative integer; authoritative for ordering.
 - `orientation` — always `a1_bottom_left`, reserved. The placement is in the chess
   frame (rank 8 first, file a first, as in FEN), resolved per frame by the recognizer.
 - `classes` — the 13-class index order of every per-square vector; uppercase = White,
   `empty` is index 0.
 - `square_dist` — **canonical output**: 8×8 13-vectors, rank 8 → rank 1, file a → h.
   Everything else is derived from it.
-- `placement` — FEN field 1, the per-square argmax.
+- `placement` — FEN field 1, the per-square argmax: eight ranks of eight squares, a
+  digit being a run of 1 to 8 empty squares (the `isPlacement` check).
 - `confidence` — the mean per-square maximum probability.
 - `stability` — `[0,1]`, 1 = at rest; advisory.
 - `clock.running` — `white|black|none`; always `none` until M6.
 - `status` — `ok|recalibrating|needs_setup|stale`. Only `ok` is emitted; the other three
   are reserved. There is **no `illegal`**: an illegal-looking board is `ok`.
-- `prior` (optional) — the hard-constraint decoder's repair, served **beside** the raw
-  fields: `{placement, flips: [{square, from, to, cost, constraint}], residual}`. The
+- Every field above is always sent; `square_dist` entries lie in [0, 1], and
+  `confidence` and `stability` too. Unknown keys are refused. That each square sums
+  to 1 and that `placement` is the argmax is checked by `PositionEvent.validate()`,
+  not by parsing: a distribution rounded to four decimals can tie two classes.
+- `prior` (optional, left out when absent) — the hard-constraint decoder's repair,
+  served **beside** the raw fields: `{placement, flips: [{square, from, to, cost,
+  constraint}], residual}`. The
   constraints are necessary conditions on the piece multiset (≤1 king per side, ≤16
   pieces per side, the promotion budget, no back-rank pawns when the frame is passed
   in). They are not legality. The node currently passes no frame, so the back-rank
   constraint is skipped. A consumer that smooths the raw distribution ignores this
   block and cannot double-count it.
-- `settled` (optional, streamed frames only) — a display debounce of the repaired reads:
+- `settled` (optional, left out when absent; streamed frames only) — a display debounce of the repaired reads:
   `{placement, pending: [squares reading differently, not yet adopted]}`. A square
   changes only after it held the same class on every read across **0.5 s** and **≥2
   reads**. A settlement is committed only if it does not make the board less possible
@@ -636,7 +693,7 @@ What is open now, in rough order:
    ([TESTING.md](TESTING.md), Option J). It validates D11; replay cannot, because crop
    and stability are baked into recordings.
 2. **More varied recordings:** a second physical set, a second camera, other lighting,
-   mid-game positions. The gate is four takes of one set (§9).
+   mid-game positions. The gate is seven takes of one set (§9).
 3. **The Python edge on the control channel:** today it takes a static `--roi`.
 4. **The ChessCam v2 hedge:** a second recognizer behind the seam, for the licence risk
    and for Pi/Jetson latency.
@@ -665,7 +722,7 @@ What is open now, in rough order:
 - **Framing (D11).** The board must fill ≥ ~50 % of the sent width; 35 % collapses
   perfect boards and portrait costs about a quarter of them. Wide framing was measured
   with synthetic padding only, and real distractors (people, other boards) are untested.
-- **One physical set in the gate.** All four gate takes film the same set and camera,
+- **One physical set in the gate.** All seven gate takes film the same set and camera,
   so the settle defaults and the accuracy numbers may not carry over.
 - **Orientation is inferred by the model.** A misread rotation would show as a whole
   board wrong at once. None was seen (zero rotation errors in the framing run). On the
