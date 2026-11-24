@@ -14,6 +14,7 @@
    * component-script scope, where SSR would run it.
    */
   import { onMount } from 'svelte';
+  import { resolve } from '$app/paths';
   import { VIEWER_SOCKET, wsUrl } from '$lib/api';
   import { PositionStream } from '$lib/stores/positions.svelte';
   import BoardCard from '$lib/components/live/BoardCard.svelte';
@@ -43,6 +44,7 @@
   <h1>board-reader · live positions</h1>
   <span class="conn" class:up={stream?.connection === 'live'}>{connectionLabel}</span>
   <span class="source">source: <code>{sourceUrl}</code></span>
+  <a class="control" href={resolve('/control')}>camera control</a>
 </header>
 
 <main>
@@ -94,6 +96,11 @@
   }
   .source code {
     color: #6b7280;
+  }
+  .control {
+    margin-left: auto;
+    font-size: 13px;
+    color: #6aa8ff;
   }
 
   main {
