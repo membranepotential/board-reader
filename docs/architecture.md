@@ -14,7 +14,7 @@ import rules below are enforced by a test, not by convention.
 | Package (`import`) | Role | May import |
 |---|---|---|
 | `board-reader-core` (`board_reader_core`) | the shared contract: L3 protocol, L1→L2 wire, sim helpers, geometry-only board detection | numpy, opencv |
-| `board-reader-edge` (`board_reader_edge`) | the **edge** node ("Pi", L1): capture, detect, rectify, forward | core only |
+| `board-reader-edge` (`board_reader_edge`) | the **edge** node ("Pi", L1): capture, static crop, forward | core only |
 | `board-reader-inference` (`board_reader_inference`) | the **inference** node (L2): stateless recognizer + gateway | core only |
 | `board-reader-viewer` (`board_reader_viewer`) | serves the live-position UI and the phone pages (snapshot + camera), and relays the camera page's traffic to the inference node | nothing |
 
@@ -41,6 +41,9 @@ flowchart LR
   edge -->|WS /ingest: JSON header + JPEG| gw[inference gateway]
   camphone[phone: /camera page<br/>the browser edge] -->|"WS /ws/ingest (relay)"| vw[viewer server]
   vw -->|WS /ingest| gw
+  laptop[laptop: /control page] -->|"PUT /api/boards/{id}/camera"| vw
+  camphone -.->|"POST /api/boards/{id}/camera/report<br/>reply = config"| vw
+  vw -.->|camera control| gw
   phone[phone: /snapshot page] -->|POST /estimate: photo| gw
   gw --> rec["recognizer (ChessQ)"]
   rec --> hub[position hub<br/>retains latest per board]
@@ -54,53 +57,47 @@ frame carries `board_id`, `capture_ts` (sensor time, not receive time), `seq`,
 `stability`, and (inside a burst) a `burst_id`. The gateway reads every frame the same
 way `POST /estimate` reads a photo: the whole JPEG through the recognizer
 (`recognizer.frame_reader`), which finds the board and its orientation itself
-([[recognition-pipeline]]). A frame may still carry **`corners`** (the playing-surface
-quad): the edge and /camera send them until Phase C of the simplification plan, and old
-recordings hold them. `wire.Frame` parses them, the recording keeps them, and recognition
-ignores them.
+([[recognition-pipeline]]). Old recordings carry a legacy **`corners`** field (the
+playing-surface quad the edge used to send): `wire.Frame` still parses it so they replay,
+the recording keeps it, and recognition ignores it. No edge sends it any more.
 
-**The browser edge (`GET /camera` on the viewer)** — DESIGN §6's "virtual Pi", live, and
-a landscape-first full-screen viewfinder rather than a card stack. The phone's browser
-captures with `getUserMedia`, the operator drags the four board corners onto the preview
-(or lets `/detect` propose them), and the page streams JPEG crops (the quad's bounding box
-plus headroom, long side ≤960 px) with rebased per-frame `corners`, throttled by a JS
-mirror of the edge's `MotionMeter` + `AdaptiveForwarder` (~1 fps at rest, ~10 fps through
-motion). The crop matters — ChessQ needs the board to fill most of the frame width
-([[recognition-pipeline#Framing: the board must fill the frame]]) — but the corners and
-their **rotate labels** no longer reach recognition. Phase C replaces the corner tracker
-below with a plain rectangle.
+**The browser edge (`GET /camera` on the viewer)** — DESIGN §6's "virtual Pi", and since
+Phase C a **dumb camera** (DESIGN D10, "dumb camera"): a full-screen viewfinder with one
+status line and **no controls at all**. Everything about what it films is set from the
+**control UI** on the laptop (`GET /control` on the viewer), held per board on the
+inference node, and pushed to the phone, which applies it:
 
-Three things make it an instrument rather than a wizard, and all three hang off the
-tracker:
-
-- **The quad follows the board** (`lib/geometry/tracker.ts`, DESIGN §4.4.1(a)). Pyramidal
-  Lucas-Kanade over the board's own 9×9 lattice of square corners, a RANSAC homography
-  over the points that agree, and the four corners pushed through it — ~3 ms a frame at
-  a 400 px working resolution. It **tracks** rather than re-detects on purpose: a fresh
-  detection returns an *unlabelled* quad (decision #15), so re-detecting downgrades a
-  bump into a §4.4.1(b) reposition, while a tracked quad carries `a8` along with it.
-  Losing the board (a hand over it, the lens covered) **freezes** the quad where it last
-  fitted and says so, rather than streaming a confidently wrong crop; it re-locks by
-  itself when the view comes back. Any deliberate corner change — a handle drag, a
-  detection, a reset — re-anchors it, so the operator always wins.
-- **Detection is automatic.** It fires on first sight of a board the page has never
-  framed, and again once tracking reports the board **lost for a sustained period**
-  (raw instantaneous loss fires on essentially every move of a real game, since
-  `PlaneTracker.lose()` deliberately freezes the quad rather than dropping it). Retries
-  back off exponentially and give up rather than poll on a flat timer: measured,
-  `detect_board_quad` returns in 91–198 ms on a hit but **2066–3865 ms on a miss**,
-  because a miss exhausts every coarse candidate. A re-detect after loss can land the
-  labels on a different physical corner — geometry alone can't tell (decision #15) — so
-  it deliberately keeps `rot` and raises a non-dismissing warning pointing at **rotate
-  labels**.
-- **The lens is the operator's.** iOS ≥16.3 exposes every rear lens through
+- **The control channel is a poll.** Every 500 ms the phone posts its
+  `CameraReport` — the lenses `enumerateDevices` lists, the label of the one open, the
+  frame size it delivers and the state of its stream — to
+  `POST /boards/{id}/camera/report`, and the reply is that board's `CameraConfig`: the
+  **crop rectangle** (fractions of the full frame, or none for the whole frame), the
+  **lens** (by label), the **capture resolution** (720p, 1080p or 2160p, asked for as an
+  `ideal` constraint) and **streaming** on/off. A config change reaches the phone within
+  one poll; nothing has to stay connected while the camera is idle. The contract is
+  `board_reader_core.control`; the node keeps it in memory (`camera_control.py`), so a
+  restart forgets the config and the control UI sets it again.
+- **The phone still crops, so the wire is unchanged.** It measures motion and sharpness
+  on the configured crop, throttles with a JS mirror of the edge's `MotionMeter` +
+  `AdaptiveForwarder` (~1 fps at rest, ~12 fps through motion), and streams the crop
+  (long side ≤ 960 px) on `/ws/ingest`. The crop matters — ChessQ needs the board to
+  fill at least half of the image width
+  ([[recognition-pipeline#Framing: the board must fill the frame]]) — which is why the
+  control UI warns about a missing, small or upright rectangle.
+- **A full-frame preview** (480 px long side, every 1.5 s) goes to
+  `POST /boards/{id}/camera/preview`, so the control UI can show the camera's whole field
+  of view and the rectangle on it, beside the cropped frame the node actually receives
+  (`GET /boards/{id}/frame`).
+- **Lenses are chosen by label.** iOS ≥16.3 exposes every rear lens through
   `enumerateDevices` (only once permission has populated the labels), but nothing
   identifies which is the ultra wide: deviceIds are per-session, labels are localised,
   order is not guaranteed, and iOS Safari implements no `zoom` capability to fake it
-  with. So the page lists them and remembers the choice **by label**, the only property
-  that survives a reload. The ultra wide fits a board the main lens cannot from close
-  up, at the cost of barrel distortion near the frame edges — where the four-corner
-  quad, being a projective model, fits the board progressively less well.
+  with. So the phone reports them all and the config names one **by label**, the only
+  property that survives a reload.
+
+What went in Phase C: the board-plane tracker, the labelled corners and rotate labels,
+automatic and periodic re-detection (`/detect`), and the portrait block. A portrait phone
+now streams anyway; it says so in its status line, and the control UI warns.
 
 Because
 `getUserMedia` demands a secure context and phones balk at a second self-signed origin,
@@ -109,12 +106,11 @@ the page talks *only* to the viewer's own origin: the viewer relays `/ws/ingest`
 glue — it still imports no `board_reader_*` package), and `--ssl` serves the whole
 thing over a cached self-signed certificate.
 
-On the **edge**, frames pass three stages, in cost order: a `MotionMeter` (32×32
-grayscale differencing → stability), the `AdaptiveForwarder` (DESIGN D4: ~1 fps
-keepalive at rest, ~12 fps burst through motion, with hysteresis), and only then the
-`Rectifier` — detection costs ~90–100 ms, so dropped frames never pay for it, and in
-auto mode it re-detects on a ~1 s capture-time cadence, cropping intervening frames
-against the cached homography.
+On the **Python edge** (`board-reader-edge feed`), frames are cropped to an optional
+static `--roi x,y,w,h` (fractions of the frame, the same `CropRect` the control channel
+uses), then pass a `MotionMeter` (32×32 grayscale differencing → stability) and the
+`AdaptiveForwarder` (DESIGN D4: ~1 fps keepalive at rest, ~12 fps burst through motion,
+with hysteresis). There is no detection and no rectification on any edge.
 
 On the **gateway**, the `/ingest` handler acks each frame on receipt and hands it to a
 per-board **latest-wins inbox** (one un-estimated frame; a newer one displaces it) whose
@@ -155,9 +151,11 @@ See [[recognition-pipeline]].
 | `WS /viewer` | position-event stream out (retained latest per board first, then live) |
 | `POST /estimate` | one photo → one position event (+ `prior`, `upload`, `warnings`) |
 | `POST /labels/{upload}` · `GET /uploads` · `GET /uploads/{id}/photo` | ground-truth labels for retained photos (`BR_SAVE_UPLOADS`), in the chess frame |
-| `POST /detect` | photo → proposed corner quad, geometry only (used by /camera until Phase C) |
 | `GET /boards/{id}` | latest retained event for a board |
 | `GET /boards/{id}/frame` | latest raw JPEG ingested for a board (video-like preview) |
+| `GET` · `PUT /boards/{id}/camera` | the board's camera config (crop, lens, resolution, streaming) plus the phone's last report, its age, and preview and last-frame metadata |
+| `POST /boards/{id}/camera/report` | the phone's poll: its report in, the config to apply out |
+| `POST` · `GET /boards/{id}/camera/preview` | the phone's low-rate full-frame JPEG, for the control UI |
 | `GET /healthz` | liveness (+ `ingest` counters, `recognizer`: name, model, `fallback` when the stub serves; `recording`: session path, frames, bytes) — see the warning in [[runbook#Verifying a restart]] |
 
 **Viewer node** (`:8080`)
@@ -166,7 +164,8 @@ See [[recognition-pipeline]].
 |---|---|
 | `GET /` | live-position UI (chessground), one card per board |
 | `GET /snapshot` | the phone page: capture → read → repair → output (a photo → a position, correctable and labelable) |
-| `GET /camera` | the phone page: live camera → frame stream (the browser edge) |
+| `GET /camera` | the phone page: a dumb camera that streams what the control UI configured (the browser edge) |
+| `GET /control` | the laptop page: crop rectangle on the phone's full-frame preview, lens, resolution, start/stop, health |
 | `WS /ws/ingest` · `WS /ws/viewer` | same-origin relays to the inference node's sockets, for `/camera` |
 | `/api/<path>` | same-origin relay of the inference node's whole HTTP API |
 
@@ -208,8 +207,7 @@ L1→L2 wire framing — and the differences between the copies were the bugs.
 | `lib/protocol.ts` | parses the wire — L3 position events off `/ws/viewer`, L1→L2 headers on `/ws/ingest`, the node's HTTP replies — the one place untrusted wire data becomes a typed value |
 | `lib/api.ts` | same-origin, always-relative URL construction (`/api/…`, `/ws/…`) — nothing here ever names an origin, which is what keeps the pages working unchanged on a LAN, over https, and behind a tunnel |
 | `lib/board/fen.ts` | FEN field 1 ⇄ 8×8 grid, clamped and re-emitted so a malformed placement can't shift the grid the diff and chessground both index into |
-| `lib/geometry/{tracker,corners}.ts` | the board-plane tracker itself — a line-for-line port of the deleted `static/tracker.js`, numerics pinned by `tracker.test.ts`, the port of the deleted `packages/viewer/tests/tracker_checks.mjs` |
-| `lib/edge/{motion,ingest}.ts` | the `/camera` page's browser edge: a JS mirror of `board_reader_edge`'s `MotionMeter`/`AdaptiveForwarder`, and the two-message (JSON header + JPEG) `/ws/ingest` sender |
+| `lib/edge/{motion,ingest,sharpness}.ts` | the `/camera` page's browser edge: a JS mirror of `board_reader_edge`'s `MotionMeter`/`AdaptiveForwarder`, the two-message (JSON header + JPEG) `/ws/ingest` sender, and the focus score |
 | `lib/stores/{positions.svelte,liveness}.ts` | the live position stream as Svelte 5 state — deliberately not a state machine over positions (DESIGN D1): the only history kept is the previous grid, and only to diff a changed square |
 
 `src/routes/` holds the three pages (`+page.svelte` for `/`, `camera/+page.svelte`,
@@ -225,20 +223,10 @@ to the scoped name.
 
 ## Where board detection lives
 
-Detection is conceptually an **edge** responsibility (DESIGN D4: the camera/board geometry
-is local and detection is cheap). But the algorithm lives in `board_reader_core.boarddetect`,
-because the browser edge cannot run OpenCV cheaply and needs to delegate detection to the
-inference node's `/detect`, while a real Pi edge imports the same module locally.
-
-Core still imports neither node, so the separation rule holds. What moved is the *code
-location*, not the responsibility.
-
-> [!important] Detection returns geometry, never orientation
-> `detect_board_quad` returns four corners in geometric order; which physical corner is
-> `a8` is not knowable from the geometry. Recognition no longer needs it: the recognizer
-> infers orientation from the pieces and reports the chess frame (D10 reverses decision
-> #15) — see [[recognition-pipeline#The chess frame]]. `/detect`, `core.boarddetect` and the
-> /camera tracker go in Phase C.
+Nowhere in the live pipe: the recognizer finds the board itself (D10). The geometric
+detector (`detect_board_quad`, `quad_aspect`) survives only as an offline QC tool in
+`tools/video/boarddetect.py`, where `check_angle.py` measures a broadcast's camera
+elevation with it. Core and both nodes no longer import it.
 
 ## The position event
 
