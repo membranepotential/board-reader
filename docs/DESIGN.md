@@ -187,7 +187,11 @@ day (the `board_reader_inference.schedule` module docstring).
 
 The edge forwards a low **keepalive** at rest (~1 fps) and a **burst** during motion
 (~12 fps, with hysteresis), so the consumer sees whole transitions without a full
-30 fps stream per board. This keeps the many-boards-per-node goal. Each frame carries
+30 fps stream per board. This keeps the many-boards-per-node goal. After a burst ends
+both forwarders (the Python edge and the phone's `motion.ts`) keep the burst rate for
+a **tail** of `tail_s` = 1 s, as rest frames (`burst_id` null), because the node reads
+the first calm frames after a move and would otherwise wait ~1 s for each keepalive
+frame ([latency round 2](reports/2026-11-24-latency-round2.md)). Each frame carries
 its capture time and `seq` (D5). D4's other half, board detection and rectification on
 the edge, is superseded by D11 (see [Superseded decisions](#superseded-decisions)).
 
@@ -242,12 +246,30 @@ settled perfect, with no crop of ours, no warp, no bank and no calibration
 
 **Decision.**
 - **One recognizer seam.** `board_reader_inference.recognizer` defines `Recognizer`
-  (`name`, `frame`, `model_path`, `read(image) -> (8,8,13)` in the chess frame),
+  (`name`, `model_path`, `read(image) -> Recognition`: the (8,8,13) distribution and the board's direction in the chess frame),
   `StubRecognizer`, `event_from_dist` and `build_from_env()`. ChessQ
   (`board_reader_inference.chessq`) is the implementation `BR_CHESSQ` selects. A
   second model (ChessCam v2, the hedge for licence and Pi/Jetson latency) is one more
   file behind the same seam.
 - **The chess frame is the only convention** (locked decision #15).
+- **The board's direction rides beside each read, and guards the stream**
+  (2026-11-24). The release's second output, `direction` (1,2), is the unit vector
+  from e1 toward e8 in the image as (cos, sin), cos up, sin right.
+  `Recognizer.read` returns a `Recognition`: the distribution and that bearing in
+  degrees clockwise from up (0 = White at the bottom, 90 = White on the left; the stub
+  reports none). It never enters the `PositionEvent`. On every gate take it read
+  87–91°, within ±2° inside a take. The **orientation guard**
+  (`ingest.OrientationGuard`) keeps each board's circular median of its last 9
+  published directions and drops a read more than **45°** off it, before the prior
+  repair and the debounce: such a read is almost certainly the board read turned. A
+  seq that does not advance starts the guard afresh; 5 drops in a row re-anchor it on
+  the new direction (the camera really turned). It runs in `ingest._read_with_prior`,
+  which the live worker and replay share, so the gate counts the same drops
+  (`/healthz` `ingest.misoriented`, replay `frames_misoriented`, a WARNING per drop).
+  Not on `POST /estimate`: a snapshot may be taken from any side. The gate is
+  unchanged with it (0 reads dropped, every event line identical to `sp03-settle05`).
+  Each live published read's direction goes to the camera registry, which tells
+  `/control` which side White sits on (D11).
 - **No calibration, no banks, no in-house models, no training harness.** Adapting to a
   new set is an offline LoRA fine-tune that produces a new ONNX file.
 - **Licence accepted.** The weights are PolyForm Noncommercial 1.0.0. `make models`
@@ -280,8 +302,9 @@ held over a board is the worst place to set that up.
 - **The laptop configures it** from `/control`: the crop rectangle drawn on the phone's
   full-frame preview, the lens, the capture resolution, and streaming on or off.
 - **The config is pushed to the edge and applied there.** The inference node holds it
-  per board, in memory, and is its single source of truth. The contract is
-  `board_reader_core.control`.
+  per board and is its single source of truth. It persists each board's config to
+  `BR_CAMERA_CONFIG` (`serve` sets `data/camera-config.json`; empty keeps it in memory
+  only), so a restart keeps the framing. The contract is `board_reader_core.control`.
 - **The channel is two WebSockets per board, and nothing polls** (2026-11-24).
   `WS /boards/{id}/camera` is the phone's: the node pushes the config on connect and
   on every change, and says `previews` on or off; the phone sends its report on
@@ -289,7 +312,8 @@ held over a board is the worst place to set that up.
   1.5 s, only while previews are on. `WS /boards/{id}/control` is each control page's:
   the node pushes the state (config, last report, phone connected) on connect and on
   every change, the latest preview and received frame, and a health tick once a
-  second; the page sends `configure` with the whole config. Previews are on exactly
+  second, which carries the board's direction (D10) as the side White sits on and
+  `camera_moved` when the settled direction moved more than 15°; the page sends `configure` with the whole config. Previews are on exactly
   while at least one control page is connected. Each socket's outbox keeps only the
   latest message of each type, so a slow client can make the node buffer nothing.
 - **The edge crops, meters and forwards.** It crops to the rectangle, measures motion
@@ -332,7 +356,7 @@ commit whose DESIGN.md carried every section with its dated amendments.
 | **Autorotate by chess plausibility** (`?autorotate=1`: fewest pawns on ranks 1/8) | The recognizer resolves orientation (locked decision #15). | [V6 gate](reports/2026-11-24-chessq-v6-replay-gate.md) | `git show 7f56f58:docs/DESIGN.md` (§4.6) |
 | **D8's "occluded squares get low confidence"; the optional burst voter** (§4.2, §4.4; the voter was never built) | D8 as rewritten: burst-end reads plus the `settled` debounce. | [settle tuning](reports/2026-11-24-settle-tuning.md) | `git show 7f56f58:docs/DESIGN.md` (D8, §4.4) |
 | **Corner-carrying frames** (`corners` on every wire frame; `POST /estimate?corners=`) | `corners` is a legacy wire field: still parsed so old recordings replay, never sent, ignored. `/estimate` takes the photo alone. | plan, Phase B–C | `git show 7f56f58:docs/DESIGN.md` (§4.5) |
-| **The ~2.5 s / 2-read settle window and the one-read `burst-end` schedule** | 1.0 s / 2 reads / 2 stale windows, with `burst-end:keepalive_s=2,burst_end_reads=3,spacing_s=0.6`. | [settle tuning](reports/2026-11-24-settle-tuning.md); [live latency](reports/2026-11-24-live-latency.md) | `git show 53c1468:docs/DESIGN.md` (§5) |
+| **The ~2.5 s / 2-read settle window and the one-read `burst-end` schedule; then 1.0 s with three reads 0.6 s apart** | 0.5 s / 2 reads / 2 stale windows, with `burst-end:keepalive_s=2,burst_end_reads=3,spacing_s=0.3` and the forwarder tail (D4). | [settle tuning](reports/2026-11-24-settle-tuning.md); [live latency](reports/2026-11-24-live-latency.md); [latency round 2](reports/2026-11-24-latency-round2.md) | `git show 53c1468:docs/DESIGN.md` (§5) |
 | **Old §7 milestones M1/M5 and §8 work packages WP-A, WP-B, WP-E as written for the DINOv2 pipeline** | §7 and §8 below, with a status per item. | — | `git show 7f56f58:docs/DESIGN.md` (§7, §8) |
 
 ---
@@ -382,23 +406,27 @@ the wire. `core` imports neither. `tests/test_layer_separation.py` enforces it.
 
 1. The edge captures a frame, crops it to the configured rectangle, and measures
    `stability` and `sharpness` on the crop.
-2. The forwarder decides whether to send (always during a burst, at the keepalive rate
-   at rest), JPEG-encodes the crop and stamps `capture_ts` and `seq`.
+2. The forwarder decides whether to send (always during a burst and for the 1 s tail
+   after it, at the keepalive rate at rest), JPEG-encodes the crop and stamps
+   `capture_ts` and `seq`.
 3. The node's `/ingest` handler acks the frame ("received", the edge's flow control),
-   lets the read scheduler observe its header, and puts it in the board's
+   lets the read scheduler observe its header, sends a motion update to `/viewer`
+   (§5; at most 5/s per board, always on a change), and puts the frame in the board's
    **latest-wins inbox**. Of two waiting frames the inbox keeps the sharper one.
 4. The board's worker takes the frame and asks the scheduler whether it is due. The
-   default policy is `burst-end:keepalive_s=2,burst_end_reads=3,spacing_s=0.6`: three
-   reads 0.6 s apart at the end of a motion burst, and a read whenever 2 s of capture
+   default policy is `burst-end:keepalive_s=2,burst_end_reads=3,spacing_s=0.3`: three
+   reads 0.3 s apart at the end of a motion burst, and a read whenever 2 s of capture
    time passed without one (the keepalive floor; 3 s until the
    [live latency report](reports/2026-11-24-live-latency.md), 1 s let hands settle). A wall-clock backstop covers a frozen
    `capture_ts`. `BR_SCHEDULE` overrides the policy.
 5. A due frame goes to `Recognizer.read` in a worker thread, giving a chess-frame
-   `square_dist`, then a `PositionEvent`.
-6. `prior.decode` attaches the repaired board (`prior`); `BoardStabilizer` attaches the
-   debounced board (`settled`).
+   `square_dist` and the board's direction, then a `PositionEvent`.
+6. The orientation guard drops the read if the board points more than 45° from its
+   recent reads (D10). Otherwise `prior.decode` attaches the repaired board (`prior`)
+   and `BoardStabilizer` the debounced board (`settled`).
 7. The hub publishes the event to `/viewer` subscribers and keeps the latest per board;
-   the recorder writes every ingested frame to a session directory for replay.
+   the recorder writes every ingested frame to a session directory for replay, and the
+   read's direction goes to the camera registry (D11).
 
 There is deliberately **no** "find the legal move" or "commit a move" step.
 
@@ -424,7 +452,7 @@ the JPEG (`board_reader_core.wire`). The header may carry the legacy `corners`, 
 is parsed and ignored. The `control` message kind is reserved; nothing uses it.
 
 **Egress (WebSocket `/viewer`).** Position events as JSON (§5), the latest per board
-on connect.
+on connect, interleaved with motion updates (§5, display only, never retained).
 
 **Camera control (WebSockets `/boards/{id}/camera` and `/boards/{id}/control`).** The
 phone's and the control pages' sockets for one board's camera (D11); the messages are
@@ -486,7 +514,7 @@ Contract: `board_reader_core.protocol`. One event per read:
   block and cannot double-count it.
 - `settled` (optional, streamed frames only) — a display debounce of the repaired reads:
   `{placement, pending: [squares reading differently, not yet adopted]}`. A square
-  changes only after it held the same class on every read across **1.0 s** and **≥2
+  changes only after it held the same class on every read across **0.5 s** and **≥2
   reads**. A settlement is committed only if it does not make the board less possible
   than it already is; a square blocked that way gives up after **2 windows** and the
   contested set falls through to the current read. The window is time, not a read
@@ -494,9 +522,30 @@ Contract: `board_reader_core.protocol`. One event per read:
   `BR_SETTLE_MIN_READS`, `BR_SETTLE_STALE_WINDOWS`; `/healthz` reports them. Evidence:
   [reports/2026-11-24-settle-tuning.md](reports/2026-11-24-settle-tuning.md) (gate:
   104/119 settled perfect, 110/119 raw, median move-to-settle 3.0 s; with the 2 s
-  keepalive 138/154 and 2.0 s, [live latency](reports/2026-11-24-live-latency.md)). This is not the
-  downstream smoother (D3): it uses no move model and no legality. The live viewer
-  draws `settled.placement`, and `prior.placement` where there is no `settled`.
+  keepalive 138/154 and 2.0 s, [live latency](reports/2026-11-24-live-latency.md); with
+  three reads 0.3 s apart and the 0.5 s window 140/156 and ~0.6 s from burst end to
+  settled, [latency round 2](reports/2026-11-24-latency-round2.md)). The window must
+  stay strictly between the burst-end spacing and the run's span (0.3 < 0.5 ≤ 0.6):
+  in the sweep a window that two reads span let a hand settle in 19 of 30 configs.
+  This is not the downstream smoother (D3): it uses no move model and no legality. The
+  live viewer draws `settled.placement`, and `prior.placement` where there is no
+  `settled`; it marks `pending` squares with dashed amber rings and shows no
+  confidence or stability bars.
+
+**Motion updates (display only).** Between the sparse position events, `/viewer` also
+carries one message per ingested frame, at most 5 a second per board but always when
+`moving` changes:
+
+```json
+{"type": "motion", "board_id": "A1", "moving": true, "stability": 0.42, "ts": 1795551874.25}
+```
+
+`ts` is the frame's `capture_ts`; `moving` is `stability` below the read scheduler's
+burst threshold (`schedule.ENTER_BURST`, 0.7, which the UI mirrors as `MOVING_BELOW`).
+A position event has no `type`, so only a consumer that reads every message as one has
+to change (`protocol.parse_viewer_message`). It is not a read: nothing records it,
+the hub does not retain it, and replay does not produce it. The live viewer's motion
+chip is driven by it.
 
 Nothing has been built on the far side of this socket yet: the viewer and the headless
 `board-reader-inference positions` tail render or capture the stream, and no
@@ -607,17 +656,21 @@ What is open now, in rough order:
   a local copy; ChessCam v2 behind the same seam as the hedge. No commercial use.
 - **Hands read as confident empties (D8).** ChessQ gives p ≥ 0.96 to an empty under an
   arm, so confidence cannot flag occlusion. The burst-end scheduler and the `settled`
-  debounce absorb it on the gate (no hand frame settles). A shorter settle window or a
-  stuck motion meter would let hands through; the 08-13 take settling all its boards is
-  the guard.
+  debounce absorb it on the gate (no hand frame settles). A settle window at or below
+  the burst-end spacing lets hands through (19 of 30 swept configs leaked one; the
+  shipped 3 × 0.3 s with 0.5 s leaked none), and so would a stuck motion meter; the
+  08-13 take settling all its boards is the guard. A hand resting still over the board
+  reads as rest and can settle under any window
+  ([latency round 2](reports/2026-11-24-latency-round2.md)).
 - **Framing (D11).** The board must fill ≥ ~50 % of the sent width; 35 % collapses
   perfect boards and portrait costs about a quarter of them. Wide framing was measured
   with synthetic padding only, and real distractors (people, other boards) are untested.
 - **One physical set in the gate.** All four gate takes film the same set and camera,
   so the settle defaults and the accuracy numbers may not carry over.
 - **Orientation is inferred by the model.** A misread rotation would show as a whole
-  board wrong at once. None was seen (zero rotation errors in the framing run); the
-  rotation diagnostics in `eval` and `eval-session` are the guard.
+  board wrong at once. None was seen (zero rotation errors in the framing run). On the
+  stream the orientation guard drops a read whose direction turns more than 45° (D10);
+  offline the rotation diagnostics in `eval` and `eval-session` remain.
 - **Jetson/Pi latency is unmeasured.** ~205 ms per read on a GTX 1650 (fp32, CUDA) and
   ~660 ms on the laptop CPU (int8). A Pi CPU would be far slower; ChessCam's smaller
   model is the fallback.

@@ -48,7 +48,7 @@ flowchart LR
   vw -->|POST /estimate| gw
   gw --> rec["recognizer (ChessQ)"]
   rec --> hub[position hub<br/>retains latest per board]
-  hub -->|WS /viewer| viewer[viewer UI]
+  hub -->|"WS /viewer: events + motion updates"| viewer[viewer UI]
   gw -.->|HTTP response, via the relay| phone
 ```
 
@@ -59,7 +59,10 @@ frame carries `board_id`, `capture_ts` (sensor time, not receive time), `seq`,
 gateway reads the frames its read scheduler picks the same way `POST /estimate` reads a
 photo: the whole JPEG through the recognizer
 (`recognizer.frame_reader`), which finds the board and its orientation itself
-([[recognition-pipeline]]). Old recordings carry a legacy **`corners`** field (the
+([[recognition-pipeline]]) and reports the board's direction in the image beside the
+read (DESIGN D10). A per-board **orientation guard** drops a streamed read whose
+direction is more than 45° off the board's recent reads, before the repair and the
+debounce see it. Old recordings carry a legacy **`corners`** field (the
 playing-surface quad the edge used to send): `wire.Frame` still parses it so they replay,
 the recording keeps it, and recognition ignores it. No edge sends it any more.
 
@@ -80,18 +83,21 @@ inference node, and pushed to the phone, which applies it:
   `WS /boards/{id}/control`: the node pushes the state (config, last report, whether
   the phone is connected) on connect and on every change, plus a health tick once a
   second (recognizer, ingest counters, last-frame age, frames per second, all on the
-  node's clock); the page sends `configure` with the whole config. Both clients
+  node's clock, and the board's direction from the live reads: the side White sits on,
+  and `camera_moved`); the page sends `configure` with the whole config. Both clients
   reconnect with backoff; a phone that loses the link keeps its last config and keeps
   streaming on `/ws/ingest`. The contract — every message type and its direction — is
-  `board_reader_core.control`; the node keeps the state in memory
-  (`camera_control.CameraRegistry`, the single source of truth), so a restart forgets
-  the config and the control UI sets it again. Each socket's outbox keeps only the
+  `board_reader_core.control`; the node keeps the state
+  (`camera_control.CameraRegistry`, the single source of truth) and persists each
+  board's config to `BR_CAMERA_CONFIG` (`serve` sets `data/camera-config.json`; empty
+  keeps it in memory only), so a restart keeps the framing. Each socket's outbox keeps only the
   latest message of each type, so a slow page cannot make the node buffer. The frames
   stay on `/ws/ingest`, whose framing and recording are unchanged
   ([DESIGN D11](DESIGN.md) says why the control messages did not join them).
 - **The phone still crops, so the wire is unchanged.** It measures motion and sharpness
   on the configured crop, throttles with a JS mirror of the edge's `MotionMeter` +
-  `AdaptiveForwarder` (~1 fps at rest, ~12 fps through motion), and streams the crop
+  `AdaptiveForwarder` (~1 fps at rest, ~12 fps through motion and for a 1 s tail after
+  it), and streams the crop
   (long side ≤ 960 px) on `/ws/ingest`. The meter's 32×32 thumbnail is an area average
   (the crop drawn at 256×256, then 8×8 block means), like the edge's `cv2.INTER_AREA`:
   drawn straight at 32×32 it kept the sensor noise and missed every hand
@@ -129,14 +135,18 @@ On the **Python edge** (`board-reader-edge feed`), frames are cropped to an opti
 static `--roi x,y,w,h` (fractions of the frame, the same `CropRect` the control channel
 uses), then pass a `MotionMeter` (32×32 grayscale differencing → stability) and the
 `AdaptiveForwarder` (DESIGN D4: ~1 fps keepalive at rest, ~12 fps burst through motion,
-with hysteresis). There is no detection and no rectification on any edge.
+with hysteresis, and the burst rate kept for `tail_s` = 1 s after a burst so the node's
+burst-end reads find fresh frames). There is no detection and no rectification on any edge.
 
 On the **gateway**, the `/ingest` handler acks each frame on receipt and hands it to a
 per-board **latest-wins inbox** (one un-estimated frame; a newer one displaces it) whose
 worker runs the recognizer off the event loop. A burst is therefore estimated at whatever
 rate the model sustains — skipping the stale end of the burst, never the freshest frame —
 and a slow model can't stall viewers, HTTP, or the socket. An ack means *received*, not
-*estimated*.
+*estimated*. Before the inbox, every frame also becomes a **motion update** on
+`/viewer` (`{"type": "motion", board_id, moving, stability, ts}`, at most 5/s per board,
+always on a change of `moving`), so the live view can show a hand on the board between
+the sparse reads. It is display state: never retained, recorded or replayed.
 
 **Recording (DESIGN WP-H2).** The same handler appends every arriving frame to a recording
 session — `manifest.json` + an append-only `frames.ndjson` + the JPEGs exactly as
@@ -167,14 +177,14 @@ See [[recognition-pipeline]].
 | Surface | Purpose |
 |---|---|
 | `WS /ingest` | edge → gateway frame stream |
-| `WS /viewer` | position-event stream out (retained latest per board first, then live) |
+| `WS /viewer` | position-event stream out (retained latest per board first, then live), interleaved with motion updates (DESIGN §5) |
 | `POST /estimate` | one photo → one position event (+ `prior`, `upload`, `warnings`) |
 | `POST /labels/{upload}` · `GET /uploads` · `GET /uploads/{id}/photo` | ground-truth labels for retained photos (`BR_SAVE_UPLOADS`), in the chess frame |
 | `GET /boards/{id}` | latest retained event for a board |
 | `GET /boards/{id}/frame` | latest raw JPEG ingested for a board (video-like preview) |
 | `WS /boards/{id}/camera` | the phone's camera control socket: report and previews up, config and `previews` on/off down |
 | `WS /boards/{id}/control` | a control page's socket: `configure` up; state, preview, received frame and a 1 Hz health tick down |
-| `GET /healthz` | liveness (+ `ingest` counters, `recognizer`: name, model, `fallback` when the stub serves; `recording`: session path, frames, bytes) — see the warning in [[runbook#Verifying a restart]] |
+| `GET /healthz` | liveness (+ `ingest` counters, `misoriented` among them: reads the orientation guard dropped; `recognizer`: name, model, `fallback` when the stub serves; `recording`: session path, frames, bytes) — see the warning in [[runbook#Verifying a restart]] |
 
 **Viewer node** (`:8080`)
 
@@ -268,8 +278,8 @@ The L3 egress has two consumers today, and both are deliberately memoryless.
 
 | Consumer | What it is |
 |---|---|
-| the **viewer** (`GET /`) | draws the latest event per board — a screen, not a record |
-| `board-reader-inference positions` | a headless tail of `WS /viewer`: each event on stdout in readable form, and with `--out` each event as one line of the exact §5 JSON the socket carried |
+| the **viewer** (`GET /`) | draws the latest event per board — a screen, not a record: the `settled` board, its `pending` squares as dashed amber rings, and a motion chip driven by the motion updates; no confidence or stability bars |
+| `board-reader-inference positions` | a headless tail of `WS /viewer`: each event on stdout in readable form, and with `--out` each event as one line of the exact §5 JSON the socket carried; it skips motion updates |
 
 Until the tail landed, the only consumer of that socket was a browser page, so a run's
 output could be watched but never captured, diffed, or asserted — the result lived on a
@@ -291,8 +301,9 @@ DESIGN §4.3), and a log of that is noise. A board's first event is always repor
 
 ## Temporal consistency — the layer nobody has built
 
-> [!warning] `stability` is computed on the edge, rides every event, and no consumer reads it
-> Inside the system the forwarder and the read scheduler use it; downstream, nothing does.
+> [!warning] `stability` is computed on the edge, rides every event, and no consumer segments moves on it
+> Inside the system the forwarder and the read scheduler use it; downstream, only the live
+> view's motion chip shows it (through the motion updates).
 > That is not a bug in the CV layer and not a violation of DESIGN. The layer that would
 > use it does not exist — in this repo or outside it.
 
@@ -315,7 +326,7 @@ frames yields a transition on *every single frame*. That is the honest picture o
 stateless estimator emits, and precisely the argument for the layer above it.
 
 One narrow exception ships since 08-13: the gateway attaches an advisory `settled` block
-to *streamed* events (DESIGN §5) — a per-square display debounce (an unbroken ~1 s of
+to *streamed* events (DESIGN §5) — a per-square display debounce (an unbroken 0.5 s of
 consistent reads, at least two, `board_reader_inference.stabilize`, never composing a board *less*
 possible than the one it already holds, and never stale by more than ~3 settle windows)
 over the repaired placements, born from the first
