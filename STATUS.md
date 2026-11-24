@@ -17,6 +17,9 @@ confidences**. No moves, no legality, no PGN — those are the downstream applic
   is written (`scratch/experiments/chessq-lite-probe/`) but **never run**, because
   it was stopped to free the CPU. Next: run it (int8, CPU, ~10 min), then
   go/no-go → Next 14.
+  2026-11-24: ChessCam's own MobileNetV4 ChessQ model (beats Lite V5 on real
+  video, outputs square positions) is a second candidate — see
+  [docs/plans/2026-11-24-chesscam-camerachess.md](docs/plans/2026-11-24-chesscam-camerachess.md).
 
 - **The 08-27 night wave is COMPLETE** (see Done). Estimator, scheduler,
   stabilizer, framing, recorder, harness all landed, reviewed, and
