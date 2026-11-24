@@ -1,7 +1,7 @@
 [project]
 name = "board-reader-edge"
 version = "0.1.0"
-description = "board-reader edge node (the Pi): capture, rectify (later), and forward frames"
+description = "board-reader edge node (the Pi): capture, crop and forward frames"
 requires-python = ">=3.12"
 license = "Apache-2.0"
 dependencies = [

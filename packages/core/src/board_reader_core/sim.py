@@ -65,13 +65,12 @@ def render_frames(placements: list[str], *, square_px: int = 48) -> list[np.ndar
 
 # --- Perspective simulation (the "angled broadcast view", DESIGN D8) -----------
 #
-# The real edge sees the board at an angle and must rectify it back to a canonical
-# top-down crop (WP-A). To develop and test that offline without a camera, we take a
-# canonical board image and warp it onto a larger canvas as a foreshortened
-# quadrilateral. Corner order is **TL, TR, BR, BL** everywhere — for a canonical
+# A real camera sees the board at an angle. To develop and test against that
+# offline, we take a canonical board image and warp it onto a larger canvas as a
+# foreshortened quadrilateral. Corner order is **TL, TR, BR, BL** everywhere — for a canonical
 # board (rank 8 top, file a left) that is a8, h8, h1, a1.
 
-# Corner order shared by the warp helpers and the edge rectifier.
+# Corner order of the warp helpers.
 CORNER_ORDER: tuple[str, ...] = ("a8", "h8", "h1", "a1")
 
 

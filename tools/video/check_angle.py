@@ -24,10 +24,9 @@ reliable on the cropped board than on a cluttered full broadcast frame
 (measured 2026-08-07 — full-frame detection failed on 3 of 6 videos and latched
 onto a 2D *overlay* board on a 4th, while the cropped frames detected fine).
 
-**Interpreter: ``uv run python``, not the system one.** This is the only tool
-here that imports ``board_reader_core`` (for ``detect_board_quad`` /
-``quad_aspect`` / ``LOW_ANGLE_ASPECT``), which lives in the workspace venv. It
-never opens a window, so headless cv2 is exactly right.
+**Interpreter: ``uv run python``, not the system one.** The board detector
+(:mod:`boarddetect`, next to this file) needs the workspace venv's numpy and
+headless cv2; this tool never opens a window, so headless cv2 is exactly right.
 """
 
 from __future__ import annotations
@@ -44,14 +43,9 @@ from statistics import median
 
 import cv2
 import numpy as np
+from boarddetect import LOW_ANGLE_ASPECT, detect_board_quad, quad_aspect
 from extract_frames import even_times, format_timestamp, probe_duration
 from streams import CropBox, StreamsError, stream_for_video
-
-from board_reader_core.boarddetect import (
-    LOW_ANGLE_ASPECT,
-    detect_board_quad,
-    quad_aspect,
-)
 
 # Above this the camera has enough elevation for per-square crops to contain
 # their own piece; see docs/operating-envelope.md and LOW_ANGLE_ASPECT.

@@ -49,14 +49,13 @@ that has what it needs — do not default to one for everything:
 |---|---|---|
 | `crop_selector.py` | system `python3` | opens a GUI window (`cv2.imshow`) |
 | `watch_cropped.py` | system `python3` | opens an mpv window |
-| `check_angle.py` | `uv run python` | needs `board_reader_core.boarddetect` |
+| `check_angle.py` | `uv run python` | its detector (`tools/video/boarddetect.py`) is tested in the workspace venv |
 | `extract_frames.py` | either | pure stdlib + `ffmpeg`/`ffprobe`; `uv run` for consistency |
 
 ```bash
 python3 tools/video/crop_selector.py ...            # correct — GUI script
-uv run python tools/video/check_angle.py ...         # correct — needs core
+uv run python tools/video/check_angle.py ...         # correct — the tested venv
 .venv/bin/python tools/video/crop_selector.py ...    # fails: no Qt cv2
-python3 tools/video/check_angle.py ...                # fails: no board_reader_core
 ```
 
 ## 1. Download
@@ -159,7 +158,7 @@ only ever audits it afterward.
 
 Recognition collapses when the camera is near board level. The metric is the
 **projected board aspect** — short axis over long axis of the board's corner
-quad, via `board_reader_core.boarddetect.quad_aspect` over quads from
+quad, via `quad_aspect` (`tools/video/boarddetect.py`) over quads from
 `detect_board_quad` — and `docs/operating-envelope.md` is the authority on the
 bands:
 

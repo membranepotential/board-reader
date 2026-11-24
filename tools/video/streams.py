@@ -96,7 +96,7 @@ class StreamStatus(Enum):
     """Whether a stream is usable as training/eval data.
 
     Rejection is a camera-angle verdict, not a download failure: below
-    ``board_reader_core.boarddetect.LOW_ANGLE_ASPECT`` the camera sits so close
+    ``boarddetect.LOW_ANGLE_ASPECT`` the camera sits so close
     to board level that pieces occlude whole ranks. ``check_angle.py`` produces
     the verdict.
     """

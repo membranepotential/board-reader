@@ -2,25 +2,17 @@
 
 Pulls frames from a :class:`~board_reader_edge.source.FrameSource` and emits them as
 wire envelopes ``(header, jpeg)`` for the inference gateway. This is the edge's
-assembly point: motion-driven forwarding (WP-C3) and the board's geometry are both
+assembly point: a static crop and motion-driven forwarding (WP-C3) are both
 optional stages here, and neither changes the wire shape.
 
-**Two ways to hand the board's geometry across the wire** (DESIGN §4.5), mutually
-exclusive:
+**The edge is a dumb camera** (DESIGN D10, 2026-11-24): it never looks for the
+board. What it sends is the part of the frame a static rectangle (``roi``, a
+:class:`~board_reader_core.control.CropRect` in fractions of the frame) selects,
+or the whole frame. Edge frames carry no ``corners``.
 
-* ``rectifier=`` — warp at the edge and forward a canonical top-down crop (WP-A).
-  The corners are consumed here and never leave the node.
-* ``wire_corners=`` — forward the **original** camera frame and attach the
-  operator's corners to every wire frame, so the inference node cuts its boxes on
-  the un-warped image (the photo path). At low camera angles a piece is much
-  better represented by a tall box on the original view than by anything visible
-  in the top-down crop, which is why this mode exists.
-
-**Stage order is cost-driven** (M2): the forwarder decides on the **raw** frame —
-it is one 32x32 resize, and the motion meter needs the full camera view *and* the
-undropped stream to difference against — and only the frames it forwards are then
-rectified. Detection is the expensive step (~90-100 ms), so a dropped frame must
-never pay for it.
+**Stage order:** the crop comes first, so the forwarder measures motion on the
+board's rectangle rather than on the whole camera view — a hand moving outside
+the rectangle must not open a burst.
 
 :class:`RecordingReplay` is the second envelope source in this module: it re-sends
 a recorded session instead of processing a live one. Both satisfy
@@ -36,12 +28,11 @@ from typing import Protocol, TypeVar, runtime_checkable
 
 import numpy as np
 
+from board_reader_core.control import CropRect
 from board_reader_core.recording import Recording
 from board_reader_core.wire import Frame
 
 from board_reader_edge.forwarder import AdaptiveForwarder
-from board_reader_edge.quadcheck import OperatorQuadError, check_quad_in_frame
-from board_reader_edge.rectify import Rectifier
 from board_reader_edge.source import FrameSource
 
 _T = TypeVar("_T")
@@ -57,6 +48,13 @@ class EnvelopeSource(Protocol):
 
     def envelopes(self) -> Iterator[tuple[dict, bytes]]:
         ...
+
+
+def crop_to(image: np.ndarray, roi: CropRect) -> np.ndarray:
+    """The part of ``image`` that ``roi`` selects, as its own contiguous array."""
+    height, width = image.shape[:2]
+    x0, y0, x1, y1 = roi.pixels(width, height)
+    return np.ascontiguousarray(image[y0:y1, x0:x1])
 
 
 def pace_by_capture_ts(
@@ -91,32 +89,18 @@ class FileEdgeAdapter:
     ----------
     source:
         The frame source to drain.
+    roi:
+        Optional static crop, in fractions of each source frame. When supplied,
+        every frame is cut to it before anything else looks at the frame. ``None``
+        forwards the whole frame.
     forwarder:
         Optional :class:`~board_reader_edge.forwarder.AdaptiveForwarder`. When
-        supplied, every source frame is scored and only the keepalive/burst frames
-        it selects go on (DESIGN D4); the forwarded frames carry ``stability`` and
-        ``burst_id``. When ``None`` every frame is forwarded (the M0/M1 default).
-    rectifier:
-        Optional :class:`~board_reader_edge.rectify.Rectifier`. When supplied, each
-        forwarded frame is rectified to a canonical top-down crop (WP-A); frames the
-        rectifier suppresses (recalibrating / needs_setup, DESIGN §4.4.1) are
-        **dropped**, not forwarded. The frame's ``capture_ts`` drives the
-        rectifier's re-detection cadence. Mutually exclusive with ``wire_corners``.
-    wire_corners:
-        Optional ``(4, 2)`` playing-surface quad in **source-image** pixels, in the
-        operator's semantic order ``a8, h8, h1, a1``. When supplied, frames are
-        forwarded **unwarped** with these corners attached to every wire frame
-        (DESIGN §4.5). The order is passed through *verbatim* — it is what tells the
-        inference node which physical corner is a1, so it must never be run through
-        :func:`~board_reader_edge.rectify.order_quad`, which normalises to TL-first
-        for the warp and throws that orientation away. Checked against the first
-        frame's resolution before anything is yielded
-        (:mod:`board_reader_edge.quadcheck`); the frame-free shape checks happen
-        earlier still, at the CLI boundary.
+        supplied, every (cropped) frame is scored and only the keepalive/burst
+        frames it selects go on (DESIGN D4); the forwarded frames carry
+        ``stability`` and ``burst_id``. When ``None`` every frame is forwarded.
     jpeg_quality:
-        JPEG quality of the encoded frame (1-100). A full camera frame on the
-        ``wire_corners`` path costs several times the bytes of a 384px crop, which
-        is what a real Pi's uplink pays for.
+        JPEG quality of the encoded frame (1-100), which is what a real Pi's
+        uplink pays for.
     throttle:
         If ``True``, pace the output to the stream's own **capture time** — a
         replayed clip then leaves the edge at the rate it was recorded at, and an
@@ -130,45 +114,20 @@ class FileEdgeAdapter:
         self,
         source: FrameSource,
         *,
+        roi: CropRect | None = None,
         forwarder: AdaptiveForwarder | None = None,
-        rectifier: Rectifier | None = None,
-        wire_corners: np.ndarray | None = None,
         jpeg_quality: int = DEFAULT_JPEG_QUALITY,
         throttle: bool = False,
         sleep: Callable[[float], None] = time.sleep,
         monotonic: Callable[[], float] = time.monotonic,
     ) -> None:
-        if rectifier is not None and wire_corners is not None:
-            raise ValueError(
-                "rectifier and wire_corners are exclusive: either the edge warps the "
-                "board away, or it forwards the original frame with the corners on it"
-            )
-        if wire_corners is not None:
-            quad = np.asarray(wire_corners, dtype=np.float32)
-            if quad.size != 8:
-                raise ValueError("wire_corners must be 4 (x, y) pairs: a8,h8,h1,a1")
-            # Own copy, frozen: the same array is stamped on every yielded frame,
-            # so a caller mutating its quad in place must not rewrite the corners
-            # of frames already handed out (or of frames yet to come).
-            wire_corners = quad.reshape(4, 2).copy()
-            wire_corners.setflags(write=False)
         self.source = source
+        self.roi = roi
         self.forwarder = forwarder
-        self.rectifier = rectifier
-        self.wire_corners = wire_corners
         self.jpeg_quality = jpeg_quality
         self.throttle = throttle
         self._sleep = sleep
         self._monotonic = monotonic
-        # The quad the operator declared by hand, if any — the one thing that still
-        # needs checking against the source's resolution (see :meth:`frames`). A
-        # rectifier holding corners this early can only be a manual one: auto mode
-        # has not seen a frame yet, so it has nothing cached.
-        self._operator_quad = (
-            self.wire_corners
-            if self.wire_corners is not None
-            else (rectifier.corners if rectifier is not None else None)
-        )
 
     def envelopes(self) -> Iterator[tuple[dict, bytes]]:
         """Yield ``(header, jpeg_bytes)`` per forwarded frame."""
@@ -183,46 +142,20 @@ class FileEdgeAdapter:
             yield frame.encode(self.jpeg_quality)
 
     def frames(self) -> Iterator[Frame]:
-        """Yield the :class:`Frame` objects to forward.
+        """Yield the :class:`Frame` objects to forward, cropped to ``roi``.
 
-        Frames the forwarder drops and frames the rectifier suppresses never
-        appear, so consumers only ever see crops the edge is confident in, at the
-        rate D4 asks for. Under ``wire_corners`` there is nothing to suppress: the
-        original frame goes out with the operator's quad attached.
-
-        Raises :class:`~board_reader_edge.quadcheck.OperatorQuadError` if the
-        operator's quad does not fit the frames this source produces — on the first
-        frame, so nothing is yielded and nothing reaches the wire.
+        Frames the forwarder drops never appear, so consumers only ever see the
+        rate D4 asks for.
         """
-        quad_checked = self._operator_quad is None
         for frame in self.source.frames():
-            if not quad_checked:
-                # First frame: the source's resolution is finally known (it is not
-                # at construction time — a clip, an image directory and a camera all
-                # only reveal it here), so the operator's corners can at last be
-                # checked against the picture they claim to describe.
-                height, width = frame.image.shape[:2]
-                defect = check_quad_in_frame(
-                    self._operator_quad, width=width, height=height
-                )
-                if defect is not None:
-                    raise OperatorQuadError(f"the board quad {defect.message}")
-                quad_checked = True
+            if self.roi is not None:
+                frame = dataclasses.replace(frame, image=crop_to(frame.image, self.roi))
             if self.forwarder is not None:
                 decided = self.forwarder.decide(frame)
                 if decided is None:
                     continue  # below the current keepalive/burst rate
                 frame = decided
-            if self.wire_corners is not None:
-                yield dataclasses.replace(frame, corners=self.wire_corners)
-                continue
-            if self.rectifier is None:
-                yield frame
-                continue
-            result = self.rectifier.process(frame.image, frame.capture_ts)
-            if not result.ok:
-                continue  # suppressed during a bump / awaiting setup
-            yield dataclasses.replace(frame, image=result.crop)
+            yield frame
 
 
 class RecordingReplay:
@@ -235,8 +168,8 @@ class RecordingReplay:
     is not a reproduction of the original one.
 
     Deliberately *not* a :class:`~board_reader_edge.source.FrameSource` feeding
-    :class:`FileEdgeAdapter`: a recording already holds the edge's output — motion
-    gating and rectification have happened — so re-running those stages over it
+    :class:`FileEdgeAdapter`: a recording already holds the edge's output — cropping
+    and motion gating have happened — so re-running those stages over it
     would produce a different stream and defeat the point. Use :meth:`frames` (or
     ``RecordingSource``) when reprocessing is what you actually want.
 
@@ -290,8 +223,8 @@ class RecordingReplay:
         """The same stream decoded to :class:`Frame` objects — for offline reruns.
 
         Lets a recording stand in as a :class:`~board_reader_edge.source.FrameSource`
-        when the point *is* to reprocess it (a different rectifier, a new motion
-        threshold) rather than to reproduce it.
+        when the point *is* to reprocess it (a new motion threshold) rather than
+        to reproduce it.
         """
         for rec in self.recording.frames(board_id=self.board_id):
             yield rec.frame()

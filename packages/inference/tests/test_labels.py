@@ -16,6 +16,7 @@ from board_reader_inference.labels import (
     UPLOAD_ID,
     best_rotation,
     load_labels,
+    parse_corners,
     rotate_placement,
     rotate_square,
     save_label,
@@ -356,3 +357,21 @@ def test_load_labels_skips_backups_in_hidden_directories(tmp_path):
     )
     [board] = load_labels([tmp_path])
     assert board.frame == "chess"
+
+
+# --------------------------------------------------------------- parse_corners
+
+
+def test_parse_corners_reads_eight_numbers_in_order():
+    quad = parse_corners("0,0,10,0,10,10,0,10")
+    assert quad.dtype == np.float32
+    assert quad.tolist() == [[0, 0], [10, 0], [10, 10], [0, 10]]
+    assert np.array_equal(quad, parse_corners("0;0;10;0;10;10;0;10"))
+
+
+@pytest.mark.parametrize("spec", ["0,0,10,0,10,10", "a,b,c,d,e,f,g,h", None])
+def test_parse_corners_refuses_malformed_input_as_a_value_error(spec):
+    """A sidecar predating the corners requirement carries a null there; the loader
+    catches the ValueError and skips the file rather than crashing."""
+    with pytest.raises(ValueError):
+        parse_corners(spec)

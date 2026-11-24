@@ -57,7 +57,7 @@ services:
     # The M2 demo: a synthetic recorded game, looped forever, forwarded
     # adaptively (keepalive at rest, burst through motion — DESIGN D4). Zero
     # external data, O(1) memory. Swap `--game` for `--video /data/clip.mp4`
-    # (with a volume, plus `--corners x0,y0,...` for the operator corner-tap)
+    # (with a volume, plus `--roi x,y,w,h` to send only the board's rectangle)
     # to replay real OTB footage.
     command:
       - board-reader-edge

@@ -6,15 +6,19 @@ One-off developer tooling that is **not** part of any deployable package.
 
 Downloads a chess broadcast, lets an operator drag a board crop, and extracts cropped
 still frames for training/eval. Absorbed from a scratch repo
-(`../otb_video_recognition`) that predates the workspace. Four scripts plus a committed
-registry:
+(`../otb_video_recognition`) that predates the workspace. Four scripts, the detector they
+share, and a committed registry:
 
 - `crop_selector.py` — opens a still frame in an OpenCV window; the operator drags a
   rectangle, records it to `crops.csv`. Never re-encodes the video — every other tool
   crops on the fly from that row.
-- `check_angle.py` — runs `board_reader_core.boarddetect.detect_board_quad` +
-  `quad_aspect` over a video or a frame directory and reports the median projected
-  board aspect, the same camera-elevation gate the server warns on.
+- `check_angle.py` — runs `detect_board_quad` + `quad_aspect` (from
+  `boarddetect.py`, next to it) over a video or a frame directory and reports the
+  median projected board aspect against the operating envelope's camera-elevation
+  bands.
+- `boarddetect.py` — the classic-CV board detector. It used to serve the live pipe
+  (the edge rectifier and the gateway's `/detect`); since the "dumb camera" design
+  (DESIGN D10) only `check_angle.py` uses it, so it lives here.
 - `extract_frames.py` — reads the crop from `crops.csv`, writes cropped PNGs at
   explicit or random timestamps.
 - `watch_cropped.py` — plays the video with the crop applied live; saves a frame on
@@ -30,11 +34,11 @@ registry:
 **Two interpreters, deliberately.** `crop_selector.py` and `watch_cropped.py` open an
 OpenCV/mpv window and need the **system** `python3` — the uv workspace ships
 `opencv-python-headless`, and `cv2.imshow` is a no-op there. `check_angle.py` needs
-`uv run` instead, because it imports `board_reader_core`. Reaching for the wrong
-interpreter fails loudly (`ModuleNotFoundError` either way), not silently.
+`uv run` instead, for the workspace's numpy and headless cv2. Reaching for the wrong
+interpreter fails loudly, not silently.
 
 **The angle gate rejects most broadcast footage.** Running `check_angle.py` over the six
-broadcasts collected so far, gating on the same threshold the server warns at
+broadcasts collected so far, gating on the operating envelope's floor
 (`quad_aspect >= 0.62`, [docs/operating-envelope.md](../docs/operating-envelope.md)),
 rejected 4 of 6 — table-level chess broadcasts are shot too shallow for a per-square CV
 pipeline, and the two survivors (`hexamind` 0.650, `ccbf-r5` 0.635) are both merely

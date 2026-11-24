@@ -1,10 +1,11 @@
-"""Automatic board detection on real photos (DESIGN.md WP-A1, D4).
+"""Automatic board detection on real photos (once DESIGN.md WP-A1).
 
 Locates the chess board's **playing surface** in an arbitrary photo and returns its
-outer quadrilateral. Per DESIGN D4 / decision 6, detection *runs on the edge* in the
-live pipe; the function lives in core so the inference node can also run it for the
-phone-snapshot ingress, where the "edge" is a phone browser that cannot run OpenCV
-cheaply. Core stays dependency-light: numpy + cv2 only.
+outer quadrilateral. It once ran in the live pipe (the edge's rectifier and the
+gateway's ``/detect``); since the "dumb camera" design (DESIGN D10) the live pipe
+never looks for the board, and its one remaining user is the camera-elevation gate
+:mod:`check_angle`, which measures :func:`quad_aspect` over detected quads. It
+therefore lives here, with that tool. numpy + cv2 only.
 
 Algorithm (classic CV, no ML, piece-occlusion tolerant):
 

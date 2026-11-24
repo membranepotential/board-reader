@@ -38,7 +38,7 @@ uv **workspace**; each `packages/*` member is independently deployable.
 | Package (`import`) | Role (DESIGN layer) | Depends on |
 |---|---|---|
 | `board-reader-core` (`board_reader_core`) | shared contract: L3 protocol §5, L1→L2 wire §4.5, sim helpers | numpy, opencv |
-| `board-reader-edge` (`board_reader_edge`) | the **edge** node ("Pi", L1): capture/forward; later detect+rectify | core only |
+| `board-reader-edge` (`board_reader_edge`) | the **edge** node ("Pi", L1): capture, static crop, forward | core only |
 | `board-reader-inference` (`board_reader_inference`) | the **inference** node (L2): stateless recognizer (ChessQ) + WS gateway | core only |
 | `board-reader-viewer` (`board_reader_viewer`) | serves the live-position web UI | none (static) |
 

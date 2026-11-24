@@ -1,17 +1,16 @@
 """L1 -> L2 frame envelope — the shared edge/inference wire format (DESIGN.md §4.5).
 
-The edge sends, per frame, a small JSON *header* plus a binary JPEG of the
-(eventually rectified) board crop. This module defines that envelope and the
-in-memory :class:`Frame` that both sides speak. Like :mod:`board_reader_core.protocol`
-it is shared, so it must not contain node-specific behaviour — only the wire shape
-and JPEG (de)serialisation.
+The edge sends, per frame, a small JSON *header* plus a binary JPEG of what its
+camera sees (cropped to the board's rectangle, DESIGN D10 "dumb camera"). This
+module defines that envelope and the in-memory :class:`Frame` that both sides
+speak. Like :mod:`board_reader_core.protocol` it is shared, so it must not contain
+node-specific behaviour — only the wire shape and JPEG (de)serialisation.
 
-A frame may carry the board's playing-surface ``corners``, in which case the JPEG
-is the ORIGINAL camera image rather than a rectified crop. Corners ride on **every**
-frame by design: there is no ``set_corners`` control message and no per-connection
-corner state on the inference node, so a reconnecting edge, a restarted gateway and
-a mid-stream recalibration all need zero handshake to agree. :data:`CONTROL` stays
-reserved.
+**``corners`` is a legacy field.** Older edges (the edge rectifier's
+``--forward-original`` path and the phone tracker) stamped the board's
+playing-surface quad on every frame, the JPEG then being the original camera
+image. No producer sets it any more, but it still parses, because old recordings
+carry it and replay through this class unchanged. :data:`CONTROL` stays reserved.
 """
 
 from __future__ import annotations
@@ -49,8 +48,8 @@ class Frame:
     Produced by the edge (camera/file), consumed by the inference estimator. Carries
     the edge capture timestamp and a per-board monotonic ``seq`` (DESIGN.md D5).
 
-    ``corners`` set means ``image`` is the original photo and the board is the quad;
-    unset means ``image`` is already the rectified board crop.
+    ``corners`` (legacy, see the module docstring) set means ``image`` is the
+    original photo and the board is the quad; no current edge sets it.
     """
 
     board_id: str

@@ -630,32 +630,6 @@ def create_app(
             headers={"Cache-Control": "public, max-age=3600"},
         )
 
-    @app.post("/detect")
-    async def detect(request: Request) -> JSONResponse:
-        """Locate the board in a photo -> proposed corners (geometric TL,TR,BR,BL).
-
-        Orientation (which physical corner is a8) is NOT knowable from geometry
-        (DESIGN decision #15) — the snapshot page lets the operator rotate the
-        labels. Detection logic lives in core so the edge (live pipe) and this
-        snapshot ingress share one implementation.
-        """
-        body = await request.body()
-        try:
-            image = decode_jpeg(body)
-        except ValueError as e:
-            return JSONResponse({"error": str(e)}, status_code=400)
-        try:
-            from board_reader_core.boarddetect import detect_board_quad
-        except ImportError:
-            return JSONResponse({"error": "detector unavailable"}, status_code=422)
-        # A miss (no board in frame) exhausts every coarse candidate and can run
-        # multiple seconds; run it off the event loop so /ingest acks and the
-        # /viewer hub keep flowing while this photo is searched.
-        quad = await asyncio.to_thread(detect_board_quad, image)
-        if quad is None:
-            return JSONResponse({"error": "no board found"}, status_code=422)
-        return JSONResponse({"corners": np.asarray(quad, dtype=float).tolist()})
-
     @app.websocket("/ingest")
     async def ingest(ws: WebSocket) -> None:
         """Edge -> inference frame ingress. Header (text) then JPEG (binary) per frame.

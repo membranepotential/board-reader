@@ -2,7 +2,7 @@
 
 The contract under test is *reproduction*: what a gateway once received is what it
 receives again. Anything that would quietly alter the stream — a JPEG re-encode, a
-motion gate, a rectifier — is either refused or absent.
+motion gate, a crop — is either refused or absent.
 """
 
 from __future__ import annotations
@@ -127,7 +127,7 @@ def test_replay_of_an_empty_directory_is_a_clear_error(tmp_path):
 
 @pytest.mark.parametrize(
     "flag",
-    ["--adaptive", "--rectify", "--forward-original", "--loop"],
+    ["--adaptive", "--loop"],
 )
 def test_cli_refuses_to_reprocess_a_recording(session, flag):
     """A recording already holds the edge's output. Re-running the edge stages over
@@ -140,14 +140,14 @@ def test_cli_refuses_to_reprocess_a_recording(session, flag):
     assert flag in str(e.value)
 
 
-def test_cli_refuses_a_recording_with_corners(session):
+def test_cli_refuses_a_recording_with_a_roi(session):
     root, _ = session
     args = build_parser().parse_args(
-        ["feed", "--recording", str(root), "--corners", "0,0,1,0,1,1,0,1"]
+        ["feed", "--recording", str(root), "--roi", "0,0,0.5,0.5"]
     )
     with pytest.raises(SystemExit) as e:
         cmd_feed(args)
-    assert "--corners" in str(e.value)
+    assert "--roi" in str(e.value)
 
 
 def test_cli_refuses_a_recording_with_jpeg_quality(session):

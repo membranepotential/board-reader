@@ -3,17 +3,17 @@
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 
 import cv2
 import numpy as np
 import pytest
 
-from board_reader_core.boarddetect import (
-    _alternation,
-    _validate,
-    detect_board_quad,
-)
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from boarddetect import _alternation, _validate, detect_board_quad
+
 from board_reader_core.sim import render_board, simulate_angled_view
 
 _REPO = Path(__file__).resolve().parents[3]
@@ -123,7 +123,7 @@ def test_one_square_shifted_quad_is_rejected_by_the_outside_ring() -> None:
     acceptance must reject that even though the shifted INSIDE still alternates
     (deterministic synthetic pin — the broadcast-frame regression test that
     also covers this skips on machines without the local footage)."""
-    from board_reader_core.boarddetect import _acceptance
+    from boarddetect import _acceptance
 
     sq = 48
     # A 12x12-square scene: a faintly checkered "table" (so a shifted quad's

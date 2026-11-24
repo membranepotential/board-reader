@@ -44,7 +44,6 @@ from typing import Literal, get_args
 
 import numpy as np
 
-from board_reader_core.corners import parse_corners
 from board_reader_core.protocol import encode_placement, parse_placement
 
 LABEL_SUFFIX = ".label.json"
@@ -64,6 +63,21 @@ BoardFrame = Literal["chess", "corners"]
 
 #: What a label file without a ``frame`` key means: it predates D10.
 LEGACY_FRAME: BoardFrame = "corners"
+
+
+def parse_corners(spec: str) -> np.ndarray:
+    """A label's ``corners`` string ``x0,y0,...,x3,y3`` (a8, h8, h1, a1) -> a 4x2 quad.
+
+    ``;`` is accepted as a separator too. Raises ``ValueError`` on anything
+    malformed, including a non-``str`` spec, so a loader can skip a bad sidecar
+    rather than crash on it.
+    """
+    if not isinstance(spec, str):
+        raise ValueError("corners must be a comma-separated string")
+    nums = [float(x) for x in spec.replace(";", ",").split(",") if x.strip()]
+    if len(nums) != 8:
+        raise ValueError("needs 8 numbers: x0,y0,...,x3,y3")
+    return np.array(nums, dtype=np.float32).reshape(4, 2)
 
 
 def parse_frame(raw: object) -> BoardFrame:

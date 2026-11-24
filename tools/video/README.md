@@ -27,8 +27,9 @@ python3    tools/video/watch_cropped.py  "…[VIDEOID].mp4" --start 01:42:46
 * the uv workspace has `opencv-python-headless`, where `cv2.imshow` silently
   does nothing — so the interactive selector cannot run there. Arch's
   `python-opencv` (pacman) is Qt-enabled and works;
-* the system interpreter has no `board_reader_core` — so the angle check, which
-  needs `detect_board_quad`, cannot run there.
+* the angle check (`check_angle.py` and the detector beside it,
+  `boarddetect.py`) is tested in the workspace venv's numpy + headless cv2, so
+  that is where it runs. It imports nothing from the workspace packages.
 
 Hence: the hand-operated tools must never import anything from the workspace,
 and `streams.py` stays **stdlib-only** so both halves can share it.
@@ -55,7 +56,7 @@ crop. Re-recording a crop appends a row; the last one for an id wins.
 ## Four of the five streams are rejected
 
 `status=rejected_low_angle` means the camera sits too close to board level: below
-`board_reader_core.boarddetect.LOW_ANGLE_ASPECT` (0.62) pieces occlude whole
+`boarddetect.LOW_ANGLE_ASPECT` (0.62) pieces occlude whole
 ranks and recognition collapses (see `docs/operating-envelope.md`). Only
 `hexamind` survives, and only just — 0.65, inside the degraded band, not the
 good one (≥ 0.73). `extract_frames.py` warns loudly rather than refusing, so a

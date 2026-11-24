@@ -44,11 +44,11 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from board_reader_core.corners import parse_corners
 from board_reader_core.protocol import CLASSES, parse_placement
 
 from board_reader_inference.labels import (
     LABEL_SUFFIX,
+    parse_corners,
     parse_frame,
     rotate_placement,
     rotate_square,
