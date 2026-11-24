@@ -235,7 +235,7 @@ def test_ingest_publishes_and_settles_a_chessq_read(gateway, drain_ingest):
     drain_ingest(client)
     snap = client.get("/boards/A1").json()
     assert snap["placement"] == RUY_LOPEZ
-    assert snap["settled"]["placement"] == RUY_LOPEZ
+    assert snap["pending"] == []  # the settled board is the read
 
 
 def test_the_session_prefers_cuda_and_keeps_the_cpu_fallback(tmp_path, monkeypatch):

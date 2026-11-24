@@ -211,7 +211,7 @@ def test_published_events_land_in_the_session_beside_their_frames(recorded):
     assert first["frame_seq"] in (0, 1)
     assert first["capture_ts"] >= 1000.0
     assert first["published_ts"] > 0
-    assert first["settled"]["placement"] == first["placement"]  # the debounce is recorded
+    assert first["pending"] == []  # one board per line: the settled one
     assert first["rules"] == "standard"  # the setting it settled under, for replay
 
 

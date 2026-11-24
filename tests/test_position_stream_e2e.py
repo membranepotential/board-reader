@@ -190,8 +190,10 @@ def test_a_frame_stream_becomes_a_capturable_position_stream(tmp_path):
     assert seqs == sorted(seqs) and len(set(seqs)) == len(seqs)
 
     # The positions track the board: every position the game passed through shows
-    # up in the captured stream, in the order the game played them.
-    captured = [e.placement for e in events]
+    # up in the captured stream, in the order the game played them. The reads, not
+    # the settled board: two frames a position is too short for the debounce
+    # window, and what is on trial is that every read travels.
+    captured = [e.raw_placement for e in events]
     assert captured[0] == START_PLACEMENT
     first_seen = [p for i, p in enumerate(captured) if i == 0 or captured[i - 1] != p]
     assert first_seen == list(PLACEMENTS), (

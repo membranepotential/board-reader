@@ -221,9 +221,10 @@ def test_app_shutdown_stops_the_ingest_workers():
     assert ingest._boards == {}  # lifespan shutdown cancelled and forgot the workers
 
 
-def test_settled_rides_the_stream_and_holds_through_a_one_read_flicker():
-    """Every streamed event carries ``settled``, and a single flickered read (a
-    hand over the board, a mid-move blur) never changes the settled placement.
+def test_the_settled_board_rides_the_stream_and_holds_through_a_one_read_flicker():
+    """Every streamed event's ``placement`` is the settled board, and a single
+    flickered read (a hand over the board, a mid-move blur) never changes it; the
+    read itself stays the argmax of ``square_dist``.
 
     The flicker is a possible board on purpose, so it is the debounce that
     holds it back, not the guard.
@@ -243,9 +244,12 @@ def test_settled_rides_the_stream_and_holds_through_a_one_read_flicker():
             ingest.submit(_frame(seq=seq))
             await asyncio.wait_for(ingest.drain(), timeout=2.0)
         await ingest.close()
-        assert [e.settled.placement for e in events] == [START_PLACEMENT] * 3
-        assert events[1].settled.pending == ("e4", "e2")  # board order: rank 8 first
-        assert events[2].settled.pending == ()
+        assert [e.placement for e in events] == [START_PLACEMENT] * 3
+        assert events[1].raw_placement == flicker
+        assert events[1].pending == ("e4", "e2")  # board order: rank 8 first
+        assert events[2].pending == ()
+        for event in events:
+            event.validate()
 
     asyncio.run(run())
 
@@ -264,7 +268,7 @@ def test_each_board_settles_under_its_own_rules_read_per_read():
             lambda frame: frame_reader(StubRecognizer(placements[frame.seq]))(frame),
             PositionHub(),
             on_event=lambda reading, frame, rules: seen[frame.board_id].append(
-                (reading.event.settled.placement, rules)
+                (reading.event.placement, rules)
             ),
             rules=setting.__getitem__,
         )
@@ -340,7 +344,7 @@ def test_each_board_settles_with_the_ingest_settle_config():
             ingest.submit(_frame(seq=seq))
             await asyncio.wait_for(ingest.drain(), timeout=5.0)
         await ingest.close()
-        return hub.latest("A1").settled.placement
+        return hub.latest("A1").placement
 
     assert asyncio.run(run(SettleConfig(seconds=0.0, min_reads=1))) == e4
     assert asyncio.run(run(SettleConfig())) == START_PLACEMENT

@@ -21,6 +21,7 @@ export function positionEvent(over: Record<string, unknown> = {}): Record<string
     orientation: 'a1_bottom_left',
     classes: [...CLASSES],
     placement: START_PLACEMENT,
+    pending: [],
     square_dist: QUIET_DIST,
     confidence: 0.9,
     stability: 0.95,

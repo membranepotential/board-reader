@@ -26,6 +26,7 @@ const validEvent = {
   orientation: 'a1_bottom_left',
   classes: [...CLASSES],
   placement: START_PLACEMENT,
+  pending: [],
   square_dist: distFor(),
   confidence: 0.87,
   stability: 0.42,
@@ -50,17 +51,11 @@ describe('a position event off the wire', () => {
     expect(parseEvent(JSON.stringify(validEvent)).ok).toBe(true);
   });
 
-  it('carries the settled board when the event has one', () => {
-    const bare = parseEvent(validEvent);
-    expect(bare.ok && bare.value.settled).toBeUndefined();
-
-    const parsed = parseEvent({
-      ...validEvent,
-      settled: { placement: '8/8/8/8/8/8/8/8', pending: ['e4', 'e2'] }
-    });
+  it('carries the squares where the read disagrees with the settled placement', () => {
+    const parsed = parseEvent({ ...validEvent, pending: ['e4', 'e2'] });
     expect(parsed.ok).toBe(true);
     if (!parsed.ok) return;
-    expect(parsed.value.settled?.pending).toEqual(['e4', 'e2']);
+    expect(parsed.value.pending).toEqual(['e4', 'e2']);
   });
 
   it.each(['board_id', 'seq', 'utc', 'placement', 'stability', 'status', 'square_dist'])(
@@ -84,10 +79,10 @@ describe('a position event off the wire', () => {
     ['a stability above 1', { ...validEvent, stability: 1.2 }],
     ['seven ranks of distribution', { ...validEvent, square_dist: distFor().slice(0, 7) }],
     ['a placement of seven ranks', { ...validEvent, placement: '8/8/8/8/8/8/8' }],
-    ['a settled board with no placement', { ...validEvent, settled: { pending: ['e4'] } }],
+    ['the settled block the node no longer sends', { ...validEvent, settled: { placement: START_PLACEMENT, pending: [] } }],
     [
       'a pending square that is not one',
-      { ...validEvent, settled: { placement: START_PLACEMENT, pending: ['z9'] } }
+      { ...validEvent, pending: ['z9'] }
     ],
     [
       'the prior block the node no longer sends',

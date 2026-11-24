@@ -7,12 +7,14 @@ per-square distribution. Kept dependency-light (numpy and pydantic) so the same
 contract runs on the Pi and the inference node; the browser gets it generated
 (:mod:`.schema`).
 
-Canonical output is the full 8x8x13 ``square_dist`` (decision #14); ``placement``
-(FEN field 1) and ``confidence`` are *derived* from it, never authored alongside.
+Canonical output is the full 8x8x13 ``square_dist`` (decision #14); ``confidence``
+and the read's own board are *derived* from it. ``placement`` is the board the node
+publishes (the settled one, on a stream), and ``pending`` is derived from both.
 """
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import datetime, timezone
 from typing import Annotated, Literal, get_args
 
@@ -37,7 +39,6 @@ from board_reader_core.wiremodel import (
     Natural,
     Unit,
     Wire,
-    absent,
     adapter,
     checked,
     message,
@@ -159,6 +160,18 @@ def placement_from_dist(square_dist: np.ndarray) -> str:
     idx = arr.argmax(axis=-1)
     grid = [[CLASSES[int(idx[r, c])] for c in range(GRID)] for r in range(GRID)]
     return encode_placement(grid)
+
+
+def pending_squares(square_dist: np.ndarray, placement: str) -> tuple[str, ...]:
+    """The squares, board order, where ``placement`` differs from the argmax read."""
+    read = parse_placement(placement_from_dist(square_dist))
+    board = parse_placement(placement)
+    return tuple(
+        square_name(r, c)
+        for r in range(GRID)
+        for c in range(GRID)
+        if read[r][c] != board[r][c]
+    )
 
 
 def dist_from_placement(placement: str, confidence: float = 0.95) -> np.ndarray:
@@ -325,34 +338,25 @@ class ClockState(Wire):
         return cls() if not raw else parse(cls, raw)
 
 
-@wire
-class SettledBoard(Wire):
-    """A temporally debounced board, served beside the raw read (never instead).
-
-    The producer is the inference node's ingest stabilizer: a square must hold the
-    same class for K consecutive *estimated* reads before the settled board adopts
-    it, so one-frame flicker (a hand crossing the board, a coin-flip repair) never
-    reaches a display that draws this block. ``pending`` names the squares
-    currently reading differently from the settled board — a move in flight looks
-    like its from/to squares going pending, then being adopted.
-
-    Advisory: ``placement``/``square_dist`` on the event stay exactly what the
-    estimator produced, and a consumer running its own smoothing ignores this
-    block entirely.
-    """
-
-    placement: Placement
-    pending: tuple[Square, ...] = ()  # board order
-
-
 @wire(frozen=False, kw_only=True)
 class PositionEvent(Wire):
-    """One L3 position event (DESIGN.md §5).
+    """One L3 position event (DESIGN.md §5): one read, and the board it settles on.
 
-    Construct via :meth:`from_square_dist` so ``placement`` and ``confidence`` stay
-    derived from the canonical ``square_dist`` and can never drift out of sync.
-    Every field is validated on construction and on assignment; :meth:`validate`
-    adds the checks that need the whole distribution.
+    ``placement`` is the board the node publishes. On a stream it is the settled
+    board, which a square joins only once this and the previous reads agree on it
+    (the inference node's stabilizer); for a one-shot read (``POST /estimate``) it
+    is the read itself. ``square_dist`` and ``confidence`` are *this read's* raw
+    evidence, exactly as the recognizer produced it, so the raw board is always
+    the argmax of ``square_dist`` (:attr:`raw_placement`) and nothing is lost by
+    publishing one placement. ``pending`` names, in board order, the squares
+    where that raw board disagrees with ``placement``: a move in flight, or a
+    misread still being debounced.
+
+    Construct via :meth:`from_square_dist` (and :meth:`with_placement` for a
+    settled board), so ``pending`` and ``confidence`` stay derived from
+    ``square_dist`` and can never drift out of sync with it. Every field is
+    validated on construction and on assignment; :meth:`validate` adds the checks
+    that need the whole distribution.
     """
 
     board_id: BoardId
@@ -361,15 +365,12 @@ class PositionEvent(Wire):
     orientation: Orientation = DEFAULT_ORIENTATION
     classes: Classes = CLASSES
     placement: Placement
+    pending: tuple[Square, ...] = ()
     square_dist: SquareDist
     confidence: Score
     stability: Score = 1.0
     clock: ClockState = Field(default_factory=ClockState)
     status: Status = "ok"
-    #: Optional debounced board, produced by the ingest stabilizer on streamed
-    #: frames only (a one-shot ``/estimate`` has no stream to settle over). A
-    #: display that must not flicker draws ``settled.placement``.
-    settled: SettledBoard | None = Field(default=None, exclude_if=absent)
 
     @classmethod
     def from_square_dist(
@@ -379,19 +380,23 @@ class PositionEvent(Wire):
         seq: int,
         utc: str,
         square_dist: np.ndarray,
+        placement: str | None = None,
         stability: float = 1.0,
         clock: ClockState | None = None,
         status: Status = "ok",
         orientation: Orientation = DEFAULT_ORIENTATION,
         confidence_reduce: str = "mean",
     ) -> PositionEvent:
+        """The event for one read. ``placement`` defaults to the read itself."""
         arr = _square_dist(np.asarray(square_dist, dtype=np.float32))
+        board = placement_from_dist(arr) if placement is None else placement
         return cls(
             board_id=board_id,
             seq=seq,
             utc=utc,
             square_dist=arr,
-            placement=placement_from_dist(arr),
+            placement=board,
+            pending=pending_squares(arr, board),
             confidence=position_confidence(arr, confidence_reduce),
             stability=stability,
             clock=clock or ClockState(),
@@ -399,18 +404,33 @@ class PositionEvent(Wire):
             orientation=orientation,
         )
 
+    def with_placement(self, placement: str) -> PositionEvent:
+        """This read published with ``placement`` (a settled board) instead.
+
+        ``pending`` is derived again, so the event stays self-consistent.
+        """
+        return replace(
+            self, placement=placement, pending=pending_squares(self.square_dist, placement)
+        )
+
+    @property
+    def raw_placement(self) -> str:
+        """This read's own board: the per-square argmax of ``square_dist``."""
+        return placement_from_dist(self.square_dist)
+
     def validate(self) -> PositionEvent:
         """The whole-distribution checks; raises ``ValueError``. Returns self.
 
-        Each square's distribution sums to 1 and ``placement`` is its argmax. Not
-        part of parsing, because a distribution rounded for the wire can tie two
-        classes the unrounded one did not.
+        Each square's distribution sums to 1, and ``pending`` names exactly the
+        squares where ``placement`` differs from the argmax. Not part of parsing,
+        because a distribution rounded for the wire can tie two classes the
+        unrounded one did not.
         """
         sums = self.square_dist.sum(axis=-1)
         if np.any(np.abs(sums - 1.0) > _SUM_TOL):
             raise ValueError("each square distribution must sum to 1")
-        if self.placement != placement_from_dist(self.square_dist):
-            raise ValueError("placement is not the argmax of square_dist")
+        if self.pending != pending_squares(self.square_dist, self.placement):
+            raise ValueError("pending is not where placement differs from the argmax")
         return self
 
     def to_dict(self, *, round_dist: int | None = ROUND_DIST) -> dict:

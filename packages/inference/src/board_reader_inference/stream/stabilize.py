@@ -34,11 +34,11 @@ ceiling is zero in practice; the guard is what keeps the 3 impossible boards per
 gate run that settle without it off the settled stream
 (docs/reports/2026-11-24-prior-backrank.md).
 
-The result travels as the advisory
-:class:`~board_reader_core.protocol.SettledBoard` block beside the raw read —
-estimation itself stays memoryless, the raw ``placement``/``square_dist`` stay
-byte-identical on the wire, and a consumer running its own smoothing ignores the
-block. This is a *display* debounce, not the downstream legality smoother
+The result is the event's ``placement`` (:meth:`~board_reader_core.protocol.PositionEvent.with_placement`):
+estimation itself stays memoryless, the read's ``square_dist`` stays byte-identical
+on the wire (its argmax is the raw board), and ``pending`` names the squares where
+the two differ, so a consumer running its own smoothing still has every read. This
+is a *display* debounce, not the downstream legality smoother
 (DESIGN D3): it consults no move model and holds whatever the reads converge to,
 right or wrong. The constraint check above is not legality either — it is the
 necessary condition on the pieces, applied to the board the debounce composes out
@@ -55,10 +55,8 @@ from dataclasses import dataclass
 from board_reader_core.control import DEFAULT_RULES, Rules
 from board_reader_core.protocol import (
     GRID,
-    SettledBoard,
     encode_placement,
     parse_placement,
-    square_name,
 )
 
 from board_reader_inference.stream.rules import excess
@@ -236,8 +234,11 @@ class BoardStabilizer:
 
     def observe(
         self, placement: str, ts: float, rules: Rules = DEFAULT_RULES
-    ) -> SettledBoard:
-        """Fold one read into the settled board and return the current settlement.
+    ) -> str:
+        """Fold one read into the settled board and return the settled placement.
+
+        The squares where the read still differs from it are the event's
+        ``pending`` (:func:`~board_reader_core.protocol.pending_squares`).
 
         ``rules`` is the board's setting at this read (:data:`~board_reader_core.control.Rules`):
         under ``free`` the guard counts nothing, so every ripe square commits. It
@@ -250,7 +251,7 @@ class BoardStabilizer:
         grid = parse_placement(placement)
         if self._settled is None:
             self._settled = [list(row) for row in grid]
-            return SettledBoard(placement=placement)
+            return placement
 
         contested: list[tuple[int, int]] = []
         ripe: list[tuple[int, int]] = []
@@ -282,14 +283,7 @@ class BoardStabilizer:
         for r, c in self._commit(grid, ripe, contested, ts, rules):
             self._settled[r][c] = grid[r][c]
             self._forget((r, c))
-        return SettledBoard(
-            placement=encode_placement(self._settled),
-            pending=tuple(
-                square_name(r, c)
-                for r, c in contested
-                if (r, c) in self._candidates  # survivors: not committed above
-            ),
-        )
+        return encode_placement(self._settled)
 
     # ----------------------------------------------------------------- commit
 

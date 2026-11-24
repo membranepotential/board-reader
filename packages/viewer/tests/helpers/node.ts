@@ -35,6 +35,7 @@ export interface EventOverrides {
   readonly board_id?: string;
   readonly seq?: number;
   readonly placement?: string;
+  readonly pending?: readonly string[];
   readonly status?: 'ok' | 'recalibrating' | 'needs_setup' | 'stale';
   readonly confidence?: number;
   readonly stability?: number;
@@ -53,6 +54,7 @@ export function positionEvent(overrides: EventOverrides = {}): Record<string, un
     orientation: 'a1_bottom_left',
     classes: [...CLASSES],
     placement: START_PLACEMENT,
+    pending: [],
     square_dist: squareDist(['empty']),
     confidence: 0.93,
     stability: 1,

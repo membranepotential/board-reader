@@ -154,7 +154,7 @@ def test_settles_on_recorded_time_not_wall_time(source):
     result = _run(source, "clock", read)
     elapsed = time.monotonic() - started
 
-    settled = [e["settled"]["placement"] for e in _events(result)]
+    settled = [e["placement"] for e in _events(result)]
     assert settled[0] == START_PLACEMENT
     # seq 1 is the first e4 read (t0 + 0.5s); the window closes at t0 + 3.0s,
     # which is seq 6 — SETTLE_SECONDS after the challenger first appeared.
@@ -689,7 +689,7 @@ def test_a_replay_settles_with_the_config_it_is_given(source):
     read = ScriptedRead(dict.fromkeys(range(1, 8), E4))
     fast = SettleConfig(seconds=0.0, min_reads=1)
     result = _run(source, "fast", read, settle=fast)
-    settled = [e["settled"]["placement"] for e in _events(result)]
+    settled = [e["placement"] for e in _events(result)]
     assert settled[:2] == [START_PLACEMENT, E4]
     block = json.loads((result.path / "manifest.json").read_text())["replay"]
     assert block["settle_seconds"] == 0.0
@@ -705,12 +705,12 @@ def test_a_replay_settles_under_the_rules_it_is_given_and_records_them(source):
     read = ScriptedRead(dict.fromkeys(range(1, 8), phantom))
     fast = SettleConfig(seconds=0.0, min_reads=1)
     standard = _run(source, "standard", read, settle=fast)
-    assert {e["settled"]["placement"] for e in _events(standard)} == {START_PLACEMENT}
+    assert {e["placement"] for e in _events(standard)} == {START_PLACEMENT}
     assert {e["rules"] for e in _events(standard)} == {"standard"}
 
     free = _run(source, "free", ScriptedRead(dict.fromkeys(range(1, 8), phantom)),
                 settle=fast, rules="free")
-    assert _events(free)[-1]["settled"]["placement"] == phantom
+    assert _events(free)[-1]["placement"] == phantom
     assert {e["rules"] for e in _events(free)} == {"free"}
     assert json.loads((free.path / "manifest.json").read_text())["replay"]["rules"] == "free"
 

@@ -216,6 +216,60 @@ export const MotionUpdate = z.strictObject({
 export type MotionUpdate = Immutable<z.infer<typeof MotionUpdate>>;
 
 /**
+ * One L3 position event (DESIGN.md §5): one read, and the board it settles on.
+ *
+ * `placement` is the board the node publishes. On a stream it is the settled
+ * board, which a square joins only once this and the previous reads agree on it
+ * (the inference node's stabilizer); for a one-shot read (`POST /estimate`) it
+ * is the read itself. `square_dist` and `confidence` are *this read's* raw
+ * evidence, exactly as the recognizer produced it, so the raw board is always
+ * the argmax of `square_dist` (`raw_placement`) and nothing is lost by
+ * publishing one placement. `pending` names, in board order, the squares
+ * where that raw board disagrees with `placement`: a move in flight, or a
+ * misread still being debounced.
+ *
+ * Construct via `from_square_dist` (and `with_placement` for a
+ * settled board), so `pending` and `confidence` stay derived from
+ * `square_dist` and can never drift out of sync with it. Every field is
+ * validated on construction and on assignment; `validate` adds the checks
+ * that need the whole distribution.
+ */
+export const PositionEvent = z.strictObject({
+  clock: ClockState,
+  board_id: z.string().min(1),
+  utc: z.string().regex(/^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]+)?Z$/),
+  seq: z.int().min(0).max(9007199254740991),
+  orientation: z.literal('a1_bottom_left'),
+  classes: z.tuple([
+    z.literal('empty'),
+    z.literal('P'),
+    z.literal('N'),
+    z.literal('B'),
+    z.literal('R'),
+    z.literal('Q'),
+    z.literal('K'),
+    z.literal('p'),
+    z.literal('n'),
+    z.literal('b'),
+    z.literal('r'),
+    z.literal('q'),
+    z.literal('k')
+  ]),
+  placement: z.string().refine(checks.isPlacement, { message: 'fails isPlacement' }),
+  pending: z.array(z.string().regex(/^[a-h][1-8]$/)),
+  square_dist: fixed(fixed(fixed(z.number().min(0).max(1), 13), 8), 8),
+  confidence: z.number().min(0).max(1),
+  stability: z.number().min(0).max(1),
+  status: z.enum([
+    'ok',
+    'recalibrating',
+    'needs_setup',
+    'stale'
+  ])
+});
+export type PositionEvent = Immutable<z.infer<typeof PositionEvent>>;
+
+/**
  * Node -> control page: the phone's latest whole-frame preview.
  */
 export const PreviewMessage = z.strictObject({
@@ -262,69 +316,6 @@ export const ReportMessage = z.strictObject({
   type: z.literal('report')
 });
 export type ReportMessage = Immutable<z.infer<typeof ReportMessage>>;
-
-/**
- * A temporally debounced board, served beside the raw read (never instead).
- *
- * The producer is the inference node's ingest stabilizer: a square must hold the
- * same class for K consecutive *estimated* reads before the settled board adopts
- * it, so one-frame flicker (a hand crossing the board, a coin-flip repair) never
- * reaches a display that draws this block. `pending` names the squares
- * currently reading differently from the settled board — a move in flight looks
- * like its from/to squares going pending, then being adopted.
- *
- * Advisory: `placement`/`square_dist` on the event stay exactly what the
- * estimator produced, and a consumer running its own smoothing ignores this
- * block entirely.
- */
-export const SettledBoard = z.strictObject({
-  placement: z.string().refine(checks.isPlacement, { message: 'fails isPlacement' }),
-  pending: z.array(z.string().regex(/^[a-h][1-8]$/))
-});
-export type SettledBoard = Immutable<z.infer<typeof SettledBoard>>;
-
-/**
- * One L3 position event (DESIGN.md §5).
- *
- * Construct via `from_square_dist` so `placement` and `confidence` stay
- * derived from the canonical `square_dist` and can never drift out of sync.
- * Every field is validated on construction and on assignment; `validate`
- * adds the checks that need the whole distribution.
- */
-export const PositionEvent = z.strictObject({
-  clock: ClockState,
-  settled: SettledBoard.nullable().optional(),
-  board_id: z.string().min(1),
-  utc: z.string().regex(/^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]+)?Z$/),
-  seq: z.int().min(0).max(9007199254740991),
-  orientation: z.literal('a1_bottom_left'),
-  classes: z.tuple([
-    z.literal('empty'),
-    z.literal('P'),
-    z.literal('N'),
-    z.literal('B'),
-    z.literal('R'),
-    z.literal('Q'),
-    z.literal('K'),
-    z.literal('p'),
-    z.literal('n'),
-    z.literal('b'),
-    z.literal('r'),
-    z.literal('q'),
-    z.literal('k')
-  ]),
-  placement: z.string().refine(checks.isPlacement, { message: 'fails isPlacement' }),
-  square_dist: fixed(fixed(fixed(z.number().min(0).max(1), 13), 8), 8),
-  confidence: z.number().min(0).max(1),
-  stability: z.number().min(0).max(1),
-  status: z.enum([
-    'ok',
-    'recalibrating',
-    'needs_setup',
-    'stale'
-  ])
-});
-export type PositionEvent = Immutable<z.infer<typeof PositionEvent>>;
 
 /**
  * Node -> control page: the board's camera as the node holds it.

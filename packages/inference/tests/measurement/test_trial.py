@@ -255,7 +255,8 @@ def test_read_events_skips_junk_and_keeps_order(tmp_path):
         fh.write("{truncated\n\n")
     events = read_events(recording)
     assert [e.frame_seq for e in events] == [0, 5]
-    assert events[0].settled_placement is None
+    assert events[0].settled is None
+    assert events[0].read == START_PLACEMENT
 
 
 def test_both_streams_score_differently_on_the_flipflop_session(tmp_path):
@@ -287,7 +288,23 @@ def test_per_segment_breakdown_splits_the_move(tmp_path):
     assert after.perfect == 2  # the two post-guard reads of the new board
 
 
+def test_a_one_placement_line_reads_the_settled_board_and_the_read_from_its_digest(tmp_path):
+    """Since 2026-11-24 a line carries one board, the settled one, with ``pending``;
+    the read is the top class of each square's evidence."""
+    line = _event(0, START_PLACEMENT, evidence=_digest(TWO_KINGS, d8=("q", 0.51, 0.47)))
+    line["pending"] = ["d8"]
+    (event,) = read_events(_session(tmp_path, [line]))
+    assert (event.read, event.settled) == (TWO_KINGS, START_PLACEMENT)
+
+    report = score_session(_session(tmp_path / "again", [line]), _truth())
+    assert report.settled_derived is False
+    assert report.stream(Stream.RAW).perfect == 0  # the read had two kings
+    assert report.stream(Stream.SETTLED).perfect == 1
+
+
 def test_recorded_settled_is_used_as_is(tmp_path):
+    """A line from before the flat event: ``placement`` is the read and the
+    settled board rides in its own block."""
     events = [
         _event(0, TWO_KINGS, settled=START_PLACEMENT),
         _event(10, TWO_KINGS, settled=SWAPPED),

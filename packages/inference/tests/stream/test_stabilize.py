@@ -6,8 +6,10 @@ import pytest
 
 from board_reader_core.protocol import (
     START_PLACEMENT,
+    dist_from_placement,
     encode_placement,
     parse_placement,
+    pending_squares,
 )
 
 from board_reader_inference.stream.rules import violation
@@ -29,6 +31,12 @@ D8_EMPTY = "rnb1kbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR"
 TWO_KINGS = "rnbkkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR"
 
 
+def _pending(read: str, settled: str) -> tuple[str, ...]:
+    """The squares, board order, where ``read`` differs from the settled board:
+    the event's ``pending`` (``protocol.pending_squares``) for that read."""
+    return pending_squares(dist_from_placement(read), settled)
+
+
 def is_possible(placement: str) -> bool:
     """Does this board break none of the guard's conditions? (the invariant)"""
     return violation(placement).total == 0
@@ -36,20 +44,20 @@ def is_possible(placement: str) -> bool:
 
 def test_first_read_is_adopted_wholesale():
     settled = BoardStabilizer().observe(START_PLACEMENT, 0.0)
-    assert settled.placement == START_PLACEMENT
-    assert settled.pending == ()
+    assert settled == START_PLACEMENT
+    assert _pending(START_PLACEMENT, settled) == ()
 
 
 def test_a_real_move_is_adopted_once_it_spans_the_window():
     stab = BoardStabilizer(SettleConfig(seconds=2.5))
     stab.observe(START_PLACEMENT, 0.0)
-    assert stab.observe(E4, 1.0).placement == START_PLACEMENT
+    assert stab.observe(E4, 1.0) == START_PLACEMENT
     held = stab.observe(E4, 2.0)  # consistent, but only 1.0s into the window
-    assert held.placement == START_PLACEMENT
-    assert held.pending == ("e4", "e2")  # board order: rank 8 first
+    assert held == START_PLACEMENT
+    assert _pending(E4, held) == ("e4", "e2")  # board order: rank 8 first
     done = stab.observe(E4, 3.6)  # 2.6s of unbroken E4: adopted
-    assert done.placement == E4
-    assert done.pending == ()
+    assert done == E4
+    assert _pending(E4, done) == ()
 
 
 def test_wall_clock_alone_is_not_evidence():
@@ -58,22 +66,22 @@ def test_wall_clock_alone_is_not_evidence():
     stab = BoardStabilizer(SettleConfig(seconds=2.5, min_reads=3))
     stab.observe(START_PLACEMENT, 0.0)
     stab.observe(E4, 10.0)
-    assert stab.observe(E4, 20.0).placement == START_PLACEMENT  # 2 reads < 3
-    assert stab.observe(E4, 20.5).placement == E4
+    assert stab.observe(E4, 20.0) == START_PLACEMENT  # 2 reads < 3
+    assert stab.observe(E4, 20.5) == E4
 
 
 def test_a_flicker_never_reaches_the_settled_board():
     stab = BoardStabilizer(SettleConfig(seconds=2.5))
     stab.observe(START_PLACEMENT, 0.0)
     flickered = stab.observe(GONE_B8, 1.0)
-    assert flickered.placement == START_PLACEMENT
-    assert flickered.pending == ("b8",)
+    assert flickered == START_PLACEMENT
+    assert _pending(GONE_B8, flickered) == ("b8",)
     recovered = stab.observe(START_PLACEMENT, 1.5)
-    assert recovered.placement == START_PLACEMENT
-    assert recovered.pending == ()
+    assert recovered == START_PLACEMENT
+    assert _pending(START_PLACEMENT, recovered) == ()
     # the run restarted: the flicker's clock does not carry over
     stab.observe(GONE_B8, 2.0)
-    assert stab.observe(GONE_B8, 4.0).placement == START_PLACEMENT
+    assert stab.observe(GONE_B8, 4.0) == START_PLACEMENT
 
 
 def test_alternating_reads_never_accumulate():
@@ -90,7 +98,7 @@ def test_alternating_reads_never_accumulate():
     stab = BoardStabilizer(SettleConfig(seconds=2.5))
     stab.observe(START_PLACEMENT, 0.0)
     for i in range(20):  # 10s of alternation, far beyond the window
-        assert stab.observe(SWAP if i % 2 else START_PLACEMENT, float(i)).placement == (
+        assert stab.observe(SWAP if i % 2 else START_PLACEMENT, float(i)) == (
             START_PLACEMENT
         )
 
@@ -100,15 +108,15 @@ def test_a_backwards_timestamp_restarts_the_run():
     stab.observe(START_PLACEMENT, 100.0)
     stab.observe(E4, 101.0)
     stab.observe(E4, 90.0)  # edge clock stepped back: evidence discarded
-    assert stab.observe(E4, 92.0).placement == START_PLACEMENT
-    assert stab.observe(E4, 93.0).placement == E4  # 3.0s from the 90.0 restart
+    assert stab.observe(E4, 92.0) == START_PLACEMENT
+    assert stab.observe(E4, 93.0) == E4  # 3.0s from the 90.0 restart
 
 
 def test_zero_window_still_needs_min_reads():
     stab = BoardStabilizer(SettleConfig(seconds=0.0))
     stab.observe(START_PLACEMENT, 0.0)
-    assert stab.observe(GONE_B8, 1.0).placement == START_PLACEMENT
-    assert stab.observe(GONE_B8, 2.0).placement == GONE_B8
+    assert stab.observe(GONE_B8, 1.0) == START_PLACEMENT
+    assert stab.observe(GONE_B8, 2.0) == GONE_B8
 
 
 def test_rejects_nonsensical_parameters():
@@ -163,7 +171,7 @@ def test_stale_windows_sets_how_long_a_blocked_square_waits():
         for i in range(1, 60):
             ts = i * 0.25
             board = partner[0] if i % 2 else two_kings
-            if stab.observe(board, ts).placement != START_PLACEMENT:
+            if stab.observe(board, ts) != START_PLACEMENT:
                 return ts
         return float("inf")
 
@@ -205,7 +213,7 @@ def test_a_swap_is_displaced_as_a_swap():
     no read ever claimed and no truth segment can equal.
     """
     stab = BoardStabilizer(SettleConfig(seconds=2.5))
-    settled = [s.placement for s in _swap_stream(stab, START_PLACEMENT)]
+    settled = _swap_stream(stab, START_PLACEMENT)
     assert settled[:3] == [SWAP, SWAP, SWAP]
     assert settled[3] == START_PLACEMENT  # both halves of the swap, together
     assert all(is_possible(board) for board in settled)
@@ -217,10 +225,10 @@ def test_a_sub_quorum_square_is_not_dragged_and_the_commit_is_held():
     landing on a board nobody read."""
     stab = BoardStabilizer(SettleConfig(seconds=2.5))
     boards = _swap_stream(stab, D8_EMPTY)  # d8's run restarts on the last read
-    assert [b.placement for b in boards] == [SWAP] * 4  # ripe, held, still possible
-    assert boards[-1].pending == ("d8", "e8")  # both in flux, evidence kept
+    assert boards == [SWAP] * 4  # ripe, held, still possible
+    assert _pending(D8_EMPTY, boards[-1]) == ("d8", "e8")  # both in flux, evidence kept
     # One more read gives d8 its quorum, and now the pair moves together.
-    assert stab.observe(D8_EMPTY, 3.7).placement == D8_EMPTY
+    assert stab.observe(D8_EMPTY, 3.7) == D8_EMPTY
 
 
 def test_the_settled_board_never_becomes_less_possible():
@@ -232,8 +240,8 @@ def test_the_settled_board_never_becomes_less_possible():
               D8_EMPTY, START_PLACEMENT, START_PLACEMENT, SWAP, SWAP, START_PLACEMENT]
     for i, board in enumerate(stream):
         settled = stab.observe(board, float(i) * 0.9)
-        assert settled.placement != TWO_KINGS
-        assert is_possible(settled.placement)
+        assert settled != TWO_KINGS
+        assert is_possible(settled)
 
 
 def test_an_impossible_read_is_never_adopted():
@@ -243,8 +251,8 @@ def test_an_impossible_read_is_never_adopted():
     stab.observe(START_PLACEMENT, 0.0)
     stab.observe(PHANTOM_B6, 1.0)
     settled = stab.observe(PHANTOM_B6, 5.0)
-    assert settled.placement == START_PLACEMENT
-    assert settled.pending == ("b6",)
+    assert settled == START_PLACEMENT
+    assert _pending(PHANTOM_B6, settled) == ("b6",)
 
 
 def test_free_rules_settle_an_impossible_read_like_any_other():
@@ -253,7 +261,7 @@ def test_free_rules_settle_an_impossible_read_like_any_other():
     stab = BoardStabilizer(SettleConfig(seconds=0.0))
     stab.observe(START_PLACEMENT, 0.0, "free")
     stab.observe(PHANTOM_B6, 1.0, "free")
-    assert stab.observe(PHANTOM_B6, 5.0, "free").placement == PHANTOM_B6
+    assert stab.observe(PHANTOM_B6, 5.0, "free") == PHANTOM_B6
 
 
 def test_the_guard_follows_the_setting_from_one_read_to_the_next():
@@ -262,16 +270,16 @@ def test_the_guard_follows_the_setting_from_one_read_to_the_next():
     stab = BoardStabilizer(SettleConfig(seconds=0.0))
     stab.observe(START_PLACEMENT, 0.0, "free")
     stab.observe(PHANTOM_B6, 1.0, "free")
-    assert stab.observe(PHANTOM_B6, 5.0, "standard").placement == START_PLACEMENT
+    assert stab.observe(PHANTOM_B6, 5.0, "standard") == START_PLACEMENT
 
 
 def test_an_impossible_first_board_is_still_escapable():
     """The first read is adopted wholesale even if it is impossible. The rule is
     *never less possible*, not *never commit*, so the stream still recovers."""
     stab = BoardStabilizer(SettleConfig(seconds=2.5))
-    assert stab.observe(TWO_KINGS, 0.0).placement == TWO_KINGS
+    assert stab.observe(TWO_KINGS, 0.0) == TWO_KINGS
     stab.observe(START_PLACEMENT, 1.0)
-    assert stab.observe(START_PLACEMENT, 3.6).placement == START_PLACEMENT
+    assert stab.observe(START_PLACEMENT, 3.6) == START_PLACEMENT
 
 
 def test_a_wrong_first_board_is_displaced_like_any_other():
@@ -280,15 +288,15 @@ def test_a_wrong_first_board_is_displaced_like_any_other():
     stab = BoardStabilizer(SettleConfig(seconds=2.5))
     stab.observe(SWAP, 0.0)
     stab.observe(START_PLACEMENT, 1.0)
-    assert stab.observe(START_PLACEMENT, 3.6).placement == START_PLACEMENT
+    assert stab.observe(START_PLACEMENT, 3.6) == START_PLACEMENT
 
 
 def test_pending_lists_every_square_reading_differently():
     stab = BoardStabilizer(SettleConfig(seconds=2.5))
     stab.observe(START_PLACEMENT, 0.0)
     settled = stab.observe(SWAP, 1.0)
-    assert settled.placement == START_PLACEMENT
-    assert settled.pending == ("d8", "e8")
+    assert settled == START_PLACEMENT
+    assert _pending(SWAP, settled) == ("d8", "e8")
 
 
 def test_two_identical_streams_settle_identically():
@@ -345,7 +353,7 @@ def _excess_rises(build) -> bool:
             stab = build(window)
             previous = None
             for placement, ts in _noisy_stream(rng, 60, classes="pqkPQK1", churn=3):
-                excess = _excess(parse_placement(stab.observe(placement, ts).placement), "standard")
+                excess = _excess(parse_placement(stab.observe(placement, ts)), "standard")
                 if previous is not None and excess > previous:
                     return True
                 previous = excess
@@ -426,7 +434,7 @@ def test_a_blocked_square_is_not_starved_forever():
     for i in range(200):
         ts = first_disagreement + i * 1.3
         settled = stab.observe(START_PLACEMENT if i % 2 else E8_EMPTY, ts)
-        if parse_placement(settled.placement)[0][3] == "q":  # d8
+        if parse_placement(settled)[0][3] == "q":  # d8
             landed = ts
             break
     assert landed is not None, "d8 never landed: the debounce starved"
@@ -441,8 +449,8 @@ def test_the_deadline_still_refuses_a_less_possible_read():
     stab.observe(START_PLACEMENT, 0.0)
     for i in range(30):
         settled = stab.observe(PHANTOM_B6, 1.0 + i)
-    assert settled.placement == START_PLACEMENT
-    assert settled.pending == ("b6",)
+    assert settled == START_PLACEMENT
+    assert _pending(PHANTOM_B6, settled) == ("b6",)
 
 
 def test_the_drag_takes_the_best_evidenced_partner():
@@ -465,7 +473,7 @@ def test_the_drag_takes_the_best_evidenced_partner():
     stab.observe(board("r", "p", "empty"), 2.5)  # g7: 2 reads
     stab.observe(board("r", "empty", "empty"), 3.0)  # g7: 3, b7 joins: 1
     settled = stab.observe(board("r", "empty", "empty"), 3.6)  # a6 ripe; g7 4, b7 2
-    grid = parse_placement(settled.placement)
+    grid = parse_placement(settled)
     assert grid[2][0] == "r"  # the blocked square landed
     assert grid[1][6] == "empty"  # dragged: g7, the better-evidenced partner
     assert grid[1][1] == "p"  # b7 was not touched, though it also would have done
@@ -490,7 +498,7 @@ def test_the_deadline_takes_only_what_it_needs():
         settled = stab.observe(
             board("k" if i % 2 == 0 else "q", "empty" if i == 8 else "P"), 1.0 + i
         )
-    grid = parse_placement(settled.placement)
+    grid = parse_placement(settled)
     assert grid[0][3] == "q"  # the blocked square landed, on the deadline
     assert grid[0][4] == "k"  # with the one partner that unblocked it
     assert grid[6][7] == "P"  # h2 was in flux on the same read, and left alone

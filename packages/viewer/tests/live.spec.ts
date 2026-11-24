@@ -134,10 +134,7 @@ test('a card shows pending squares as dashed rings and no confidence readouts', 
   await page.goto('/');
   // e2-e4 read once: the settled board still holds the start position, e2/e4 pending.
   const E4 = 'rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR';
-  socket.send({
-    ...positionEvent({ placement: E4 }),
-    settled: { placement: START_PLACEMENT, pending: ['e4', 'e2'] }
-  });
+  socket.send(positionEvent({ placement: START_PLACEMENT, pending: ['e4', 'e2'] }));
   const card = page.locator('.board-card');
   await expect(card.locator('piece')).toHaveCount(32);
   await expect(card.locator('cg-container svg [stroke-dasharray]')).toHaveCount(2);
@@ -147,10 +144,7 @@ test('a card shows pending squares as dashed rings and no confidence readouts', 
   await expect(card.locator('.legend')).not.toContainText('confidence');
 
   // Settled: the dashed rings go, the change rings take over.
-  socket.send({
-    ...positionEvent({ seq: 2, placement: E4 }),
-    settled: { placement: E4, pending: [] }
-  });
+  socket.send(positionEvent({ seq: 2, placement: E4, pending: [] }));
   await expect(card.locator('cg-container svg [stroke-dasharray]')).toHaveCount(0);
 });
 

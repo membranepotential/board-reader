@@ -101,7 +101,8 @@ def test_position_event_from_square_dist_derives_placement_and_confidence():
     ev = PositionEvent.from_square_dist(
         board_id="A1", seq=7, utc=iso_utc(0.0), square_dist=dist
     )
-    assert ev.placement == START_PLACEMENT
+    assert ev.placement == START_PLACEMENT == ev.raw_placement
+    assert ev.pending == ()  # a one-shot read publishes itself
     assert ev.confidence == pytest.approx(0.9, abs=1e-5)
     ev.validate()
 
@@ -132,7 +133,7 @@ def test_to_dict_has_protocol_shape():
     ).to_dict()
     for key in (
         "board_id", "utc", "seq", "orientation", "classes",
-        "placement", "square_dist", "confidence", "stability", "clock", "status",
+        "placement", "pending", "square_dist", "confidence", "stability", "clock", "status",
     ):
         assert key in d
     assert d["classes"] == list(CLASSES)
@@ -165,13 +166,13 @@ def test_validate_rejects_non_normalised_distribution():
         ev.validate()
 
 
-def test_validate_rejects_placement_not_matching_argmax():
+def test_validate_rejects_pending_that_does_not_match_the_argmax():
     dist = dist_from_placement(START_PLACEMENT)
     ev = PositionEvent.from_square_dist(
         board_id="A1", seq=0, utc=iso_utc(0.0), square_dist=dist
     )
-    ev.placement = "8/8/8/8/8/8/8/8"  # lie about the board
-    with pytest.raises(ValueError):
+    ev.placement = "8/8/8/8/8/8/8/8"  # a board with no pending squares to show for it
+    with pytest.raises(ValueError, match="pending"):
         ev.validate()
 
 
@@ -199,37 +200,40 @@ def test_from_dict_rejects_mismatched_classes():
         PositionEvent.from_dict(d)
 
 
-def test_settled_board_rides_the_event_and_round_trips():
-    """The optional ``settled`` block survives to_dict/from_dict byte-identically —
-    and its absence stays absence, not an empty stub a consumer must special-case."""
-    from board_reader_core.protocol import SettledBoard
-
-    dist = dist_from_placement(START_PLACEMENT)
-    bare = PositionEvent.from_square_dist(
-        board_id="A1", seq=0, utc=iso_utc(0.0), square_dist=dist
-    )
-    assert bare.settled is None
-    assert "settled" not in bare.to_dict()
-    assert PositionEvent.from_json(bare.to_json()).settled is None
-
-    bare.settled = SettledBoard(placement=START_PLACEMENT, pending=("e2", "e4"))
-    back = PositionEvent.from_json(bare.to_json())
-    assert back.settled == bare.settled
-    assert back.to_dict()["settled"] == {
-        "placement": START_PLACEMENT,
-        "pending": ["e2", "e4"],
-    }
-
-
-def test_a_malformed_settled_placement_is_refused():
-    from board_reader_core.protocol import SettledBoard
-
-    dist = dist_from_placement(START_PLACEMENT)
+def test_a_settled_board_is_the_placement_and_the_read_stays_in_the_dist():
+    """One placement on the wire: the settled board, with ``pending`` naming where
+    this read disagrees, and the read itself recoverable as the argmax."""
+    read = "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR"  # 1.e4, not settled yet
     ev = PositionEvent.from_square_dist(
-        board_id="A1", seq=0, utc=iso_utc(0.0), square_dist=dist
+        board_id="A1", seq=0, utc=iso_utc(0.0), square_dist=dist_from_placement(read)
+    ).with_placement(START_PLACEMENT)
+    assert ev.placement == START_PLACEMENT
+    assert ev.raw_placement == read
+    assert ev.pending == ("e4", "e2")  # board order: rank 8 first
+    ev.validate()
+
+    back = PositionEvent.from_json(ev.to_json())
+    assert back.to_dict()["pending"] == ["e4", "e2"]
+    assert back.placement == START_PLACEMENT
+    back.validate()
+
+    # The constructor takes the settled board too, and derives the same pending.
+    built = PositionEvent.from_square_dist(
+        board_id="A1", seq=0, utc=iso_utc(0.0), square_dist=dist_from_placement(read),
+        placement=START_PLACEMENT,
     )
-    with pytest.raises(ValueError, match="8 ranks"):
-        ev.settled = SettledBoard(placement="not/a/board")
+    assert built.pending == ev.pending
+
+
+def test_an_old_event_with_a_settled_block_is_refused():
+    """The wire refuses the block it no longer has; recordings are read apart."""
+    d = PositionEvent.from_square_dist(
+        board_id="A1", seq=0, utc=iso_utc(0.0),
+        square_dist=dist_from_placement(START_PLACEMENT),
+    ).to_dict()
+    d["settled"] = {"placement": START_PLACEMENT, "pending": []}
+    with pytest.raises(ValueError):
+        PositionEvent.from_dict(d)
 
 
 # --------------------------------------------------------------------------- #

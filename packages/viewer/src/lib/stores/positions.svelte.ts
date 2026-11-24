@@ -31,11 +31,12 @@ import { motionReadout, type MotionReadout, type MotionSample } from './position
 export type ConnectionState = 'connecting' | 'live' | 'disconnected';
 
 /**
- * The settled board's pending squares. The validator already refused any event
- * whose square is not one; the guard only narrows `string` to `SquareKey`.
+ * The squares where this read disagrees with the settled board. The validator
+ * already refused any event whose square is not one; the guard only narrows
+ * `string` to `SquareKey`.
  */
 function pendingSquares(event: PositionEvent): SquareKey[] {
-  return (event.settled?.pending ?? []).filter(isSquareKey);
+  return event.pending.filter(isSquareKey);
 }
 
 /** Everything one card knows about its board. Replaced wholesale on every event. */
@@ -43,14 +44,13 @@ export interface BoardState {
   readonly id: string;
   readonly event: PositionEvent;
   /**
-   * The sanitized 8×8 — what the board is drawn from, never the raw string.
-   * `settled.placement` when the event carries one (a debounced board, held
-   * still against flicker, and kept off impossible boards by the node's guard);
-   * else the raw placement itself.
+   * The sanitized 8×8 — what the board is drawn from, never the raw string:
+   * the event's `placement`, the node's settled board (held still against
+   * flicker, and kept off impossible boards by the node's guard).
    */
   readonly grid: BoardGrid;
   /** Squares the settled board hasn't adopted yet — a move in flight, or a
-   *  misread still being debounced. Empty when the event carries no `settled`. */
+   *  misread still being debounced (the event's `pending`). */
   readonly pending: readonly SquareKey[];
   /** Square → when it last changed, for the fading ring. The only history kept. */
   readonly changedAt: Readonly<Partial<Record<SquareKey, number>>>;
@@ -188,7 +188,7 @@ export class PositionStream {
     this.#now = now;
 
     const previous = this.#boards[event.board_id];
-    const grid = fenToGrid(event.settled?.placement ?? event.placement);
+    const grid = fenToGrid(event.placement);
     // Diffed against the previous GRID, which is this store's whole memory of the
     // past — see the module note on DESIGN D1.
     const changed = changedSquares(previous?.grid ?? null, grid);

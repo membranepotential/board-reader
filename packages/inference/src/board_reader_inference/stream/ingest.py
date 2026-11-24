@@ -64,7 +64,7 @@ import statistics
 import time
 from collections import deque
 from collections.abc import AsyncIterator, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from board_reader_core.control import DEFAULT_RULES, Rules
 from board_reader_core.protocol import MotionUpdate, PositionEvent, square_evidence
@@ -98,9 +98,10 @@ def event_line(
     cannot cheaply give back is *why* a square read the way it did, so the top-2
     digest (:func:`square_evidence`, ~1.8 kB) rides along instead: it is what
     turns "d8 read k" into "d8 read k at 0.51 over q at 0.49", and it is the
-    whole evidence base for the trial report's margin section. The digest is of
-    the estimator's own distribution, so it explains the raw and the settled
-    board alike.
+    whole evidence base for the trial report's margin section. Its first class
+    per square is the argmax, so the line holds both boards: ``placement`` is the
+    settled one, and the read's own board is the digest's top row
+    (:func:`~board_reader_inference.measurement.trial.read_events` derives it).
 
     The frame's own ``seq`` and ``capture_ts`` ride along too, so an event can be
     joined back to the exact recorded frame it was estimated from, and so does
@@ -299,8 +300,9 @@ def _read_and_settle(
     reaches the debounce, so a misread board cannot start settling.
 
     The raw read then feeds the board's :class:`.stabilize.BoardStabilizer`, and
-    the debounced board rides as :attr:`PositionEvent.settled` (raw ``placement``
-    and ``square_dist`` untouched) — safe here despite the worker thread because
+    the event is published with the debounced board as its ``placement``
+    (:meth:`PositionEvent.with_placement`; ``square_dist`` untouched, so the raw
+    board stays its argmax) — safe here despite the worker thread because
     each board's worker estimates strictly one frame at a time, in order, which
     is exactly the stream a debounce needs. The guard relies on the same
     one-at-a-time order. ``rules`` is the board's setting for this read.
@@ -310,8 +312,8 @@ def _read_and_settle(
     if dropped is not None:
         return dropped
     event = reading.event
-    event.settled = stabilizer.observe(event.placement, frame.capture_ts, rules)
-    return reading
+    settled = stabilizer.observe(event.placement, frame.capture_ts, rules)
+    return replace(reading, event=event.with_placement(settled))
 
 
 @dataclass(frozen=True, slots=True)
@@ -325,7 +327,7 @@ class _BoardWorker:
     inbox: asyncio.Queue[tuple[Frame, float]]
     idle: asyncio.Event  # set while the inbox is empty and nothing is in flight
     task: asyncio.Task[None]
-    #: The board's debounce state (:attr:`PositionEvent.settled`). Lives with the
+    #: The board's debounce state (the published ``placement``). Lives with the
     #: worker so a restarted board starts settling afresh rather than holding a
     #: board from before the gap.
     stabilizer: BoardStabilizer
@@ -592,11 +594,8 @@ class FrameIngest:
         news.
         """
 
-        def displayed(ev: PositionEvent) -> str:
-            return ev.settled.placement if ev.settled is not None else ev.placement
-
-        shown = displayed(event)
-        before = displayed(previous) if previous else None
+        shown = event.placement
+        before = previous.placement if previous else None
         log.log(
             logging.INFO if shown != before else logging.DEBUG,
             "read %s seq=%d conf=%.3f proc=%.2fs %s",

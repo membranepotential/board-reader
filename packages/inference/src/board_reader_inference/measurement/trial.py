@@ -25,8 +25,9 @@ scoring rather than counted as errors (12 seqs is ~1.5 s at the 08-13 trial's
 session is a measurement, not a detail.
 
 **Two streams, scored apart.** A published event carries two boards and they fail
-differently: the raw argmax (``placement``) and the temporal debounce
-(``settled.placement``, :mod:`.stabilize`). Scoring them side by side is the whole
+differently: the read's own board (the argmax of ``square_dist``, recorded as the
+top class of each square's ``evidence``) and the temporal debounce (``placement``,
+:mod:`.stabilize`). Scoring them side by side is the whole
 point — it is what says whether the debounce earns its keep on a real stream,
 which no single-photo eval can answer. Recordings made before the
 settled block existed get it **derived** here, by replaying the same
@@ -59,6 +60,7 @@ from statistics import median
 from board_reader_core.protocol import (
     EVIDENCE_TOP_K,
     GRID,
+    encode_placement,
     parse_placement,
     square_name,
 )
@@ -255,7 +257,7 @@ class Stream(StrEnum):
     """The two boards a published event carries, scored side by side."""
 
     RAW = "raw"  # placement — the estimator's per-square argmax
-    SETTLED = "settled"  # settled.placement — the K-consecutive debounce
+    SETTLED = "settled"  # placement — the time-window debounce
 
 
 @dataclass(frozen=True)
@@ -266,6 +268,10 @@ class RecordedEvent:
     the top-2-per-square digest (:func:`~board_reader_core.protocol.square_evidence`).
     Sessions recorded before that digest existed carry ``None`` there and are
     scored exactly as before — the boards alone.
+
+    ``read`` is the read's own board and ``settled`` the board the stream settled
+    on, or ``None`` for a recording made before the node settled. Three line
+    generations are read (:func:`_boards`).
     """
 
     board_id: str
@@ -274,8 +280,8 @@ class RecordedEvent:
     capture_ts: float
     published_ts: float
     confidence: float
-    placement: str
-    settled_placement: str | None
+    read: str
+    settled: str | None
     #: 64 squares in board order, each a tuple of (class, probability) pairs
     #: ordered most-likely first. ``None`` when the session recorded no digest.
     evidence: tuple[tuple[tuple[str, float], ...], ...] | None = None
@@ -305,6 +311,8 @@ def read_events(recording: Recording, *, board_id: str | None = None) -> list[Re
                 continue
             try:
                 d = json.loads(line)
+                evidence = _parse_evidence(d.get("evidence"))
+                read, settled = _boards(d, evidence)
                 event = RecordedEvent(
                     board_id=str(d["board_id"]),
                     seq=int(d["seq"]),
@@ -312,9 +320,9 @@ def read_events(recording: Recording, *, board_id: str | None = None) -> list[Re
                     capture_ts=float(d.get("capture_ts", 0.0)),
                     published_ts=float(d.get("published_ts", 0.0)),
                     confidence=float(d.get("confidence", 0.0)),
-                    placement=str(d["placement"]),
-                    settled_placement=_block_placement(d.get("settled")),
-                    evidence=_parse_evidence(d.get("evidence")),
+                    read=read,
+                    settled=settled,
+                    evidence=evidence,
                 )
             except (json.JSONDecodeError, KeyError, TypeError, ValueError):
                 continue
@@ -348,12 +356,30 @@ def _parse_evidence(block: object) -> tuple[tuple[tuple[str, float], ...], ...] 
     return tuple(squares)
 
 
-def _block_placement(block: object) -> str | None:
-    """The ``placement`` of the advisory ``settled`` block, if it has one."""
-    if not isinstance(block, dict):
-        return None
-    placement = block.get("placement")
-    return str(placement) if isinstance(placement, str) else None
+def _boards(
+    line: dict, evidence: tuple[tuple[tuple[str, float], ...], ...] | None
+) -> tuple[str, str | None]:
+    """``(read, settled)`` of one recorded line. Raises ``KeyError``/``ValueError``.
+
+    * Since 2026-11-24 an event carries one board: ``placement`` is the settled
+      board, ``pending`` is always there, and the read is the argmax of
+      ``square_dist``, which the line keeps as the top class of each square's
+      ``evidence``.
+    * Before that, ``placement`` was the read, and the settled board rode in a
+      ``settled`` block.
+    * Before the node settled at all, there is no ``settled`` block: the settled
+      row is then derived (:func:`derive_settled`).
+    """
+    placement = str(line["placement"])
+    if "pending" in line:
+        if evidence is None:
+            raise ValueError("a one-placement line without its evidence has no read")
+        top = [square[0][0] for square in evidence]
+        read = encode_placement([top[r * GRID : (r + 1) * GRID] for r in range(GRID)])
+        return read, placement
+    block = line.get("settled")
+    settled = block.get("placement") if isinstance(block, dict) else None
+    return placement, (str(settled) if isinstance(settled, str) else None)
 
 
 @dataclass(frozen=True)
@@ -373,12 +399,12 @@ def derive_settled(events: list[RecordedEvent]) -> list[str]:
     """Replay :class:`BoardStabilizer` over a board's events, in order.
 
     What the gateway does live, for recordings that predate it doing so. Fed the
-    raw placement, exactly as the live path feeds it (see :mod:`.stabilize`), and
+    read, exactly as the live path feeds it (see :mod:`.stabilize`), and
     fed **every** event including the ones scoring will exclude — the gateway saw
     those too, and a debounce that skipped them would settle differently.
     """
     stabilizer = BoardStabilizer()
-    return [stabilizer.observe(e.placement, e.capture_ts).placement for e in events]
+    return [stabilizer.observe(e.read, e.capture_ts) for e in events]
 
 
 # --------------------------------------------------------------------------- #
@@ -926,10 +952,8 @@ def score_session(recording: Recording, truth: SessionTruth) -> SessionReport:
 
     # Derived as one homogeneous stream or not at all: a settled row that is half
     # recorded and half replayed would not be a measurement of either.
-    settled_derived = any(e.settled_placement is None for e in mine)
-    settled = derive_settled(mine) if settled_derived else [
-        e.settled_placement or e.placement for e in mine
-    ]
+    settled_derived = any(e.settled is None for e in mine)
+    settled = derive_settled(mine) if settled_derived else [e.settled or e.read for e in mine]
 
     reads: list[ScoredRead] = []
     excluded_guard = excluded_untruthed = 0
@@ -945,7 +969,7 @@ def score_session(recording: Recording, truth: SessionTruth) -> SessionReport:
             ScoredRead(
                 event=event,
                 segment=index,
-                raw=event.placement,
+                raw=event.read,
                 settled=settled_placement,
             )
         )
