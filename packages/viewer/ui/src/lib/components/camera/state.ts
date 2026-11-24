@@ -34,9 +34,8 @@ export const SHARPNESS_LONG_SIDE = 400;
 /** The full-frame preview the control UI draws the crop on: small and rare. */
 export const PREVIEW_LONG_SIDE = 480;
 export const PREVIEW_QUALITY = 0.6;
+/** Sent only while a control page watches (the node's `previews` message). */
 export const PREVIEW_MS = 1500;
-/** The report poll, and so the longest a config change waits to be heard. */
-export const CONTROL_POLL_MS = 500;
 /** Status repaint period; the capture loop runs far faster and does not wait on it. */
 export const TICK_MS = 200;
 export const RATE_WINDOW_MS = 3000;

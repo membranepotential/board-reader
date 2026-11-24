@@ -280,9 +280,18 @@ held over a board is the worst place to set that up.
 - **The laptop configures it** from `/control`: the crop rectangle drawn on the phone's
   full-frame preview, the lens, the capture resolution, and streaming on or off.
 - **The config is pushed to the edge and applied there.** The inference node holds it
-  per board, in memory. The phone posts a report every 500 ms
-  (`POST /boards/{id}/camera/report`; the reply is the config) and a whole-frame
-  preview every 1.5 s. The contract is `board_reader_core.control`.
+  per board, in memory, and is its single source of truth. The contract is
+  `board_reader_core.control`.
+- **The channel is two WebSockets per board, and nothing polls** (2026-11-24).
+  `WS /boards/{id}/camera` is the phone's: the node pushes the config on connect and
+  on every change, and says `previews` on or off; the phone sends its report on
+  connect and whenever it changes, and a whole-frame preview JPEG (binary) every
+  1.5 s, only while previews are on. `WS /boards/{id}/control` is each control page's:
+  the node pushes the state (config, last report, phone connected) on connect and on
+  every change, the latest preview and received frame, and a health tick once a
+  second; the page sends `configure` with the whole config. Previews are on exactly
+  while at least one control page is connected. Each socket's outbox keeps only the
+  latest message of each type, so a slow client can make the node buffer nothing.
 - **The edge crops, meters and forwards.** It crops to the rectangle, measures motion
   (`stability`) and sharpness on the crop, and forwards adaptively (D4). The L1→L2
   wire (§4.5) is unchanged; frames arrive already cropped.
@@ -293,7 +302,15 @@ held over a board is the worst place to set that up.
 **Rejected.** Cropping on the node from whole frames: it changes the wire contract and
 takes motion measurement off the crop. An operator rectangle on the phone: the phone is
 the wrong place for setup. Sending the whole wide frame: ruled out by the framing
-measurement.
+measurement. HTTP polling, the first transport (the phone posted its report every
+500 ms and a preview every 1.5 s; `/control` fetched the state, `/healthz` and the
+preview every second): about eight requests a second, each logged twice (viewer and
+node), with up to half a second before a change was heard, and previews uploaded with
+nobody watching. Carrying the control messages on `/ingest`: `/ingest` is not
+board-bound (each header names its board), it is open only while streaming, its
+reader pairs every text header with the next binary JPEG, and recording and replay sit
+on it; a control message there would change the framing every edge and every
+recording relies on, for one socket fewer on the phone.
 
 ---
 
@@ -409,6 +426,10 @@ is parsed and ignored. The `control` message kind is reserved; nothing uses it.
 **Egress (WebSocket `/viewer`).** Position events as JSON (§5), the latest per board
 on connect.
 
+**Camera control (WebSockets `/boards/{id}/camera` and `/boards/{id}/control`).** The
+phone's and the control pages' sockets for one board's camera (D11); the messages are
+`board_reader_core.control`'s.
+
 **HTTP.**
 
 | Route | Purpose |
@@ -417,9 +438,6 @@ on connect.
 | `GET /boards/{id}` · `GET /boards/{id}/frame` | latest event · latest ingested frame |
 | `POST /estimate` | one photo (JPEG body) → its event, synchronously; also published to the hub. No `settled` block. |
 | `POST /labels/{upload}` · `GET /uploads` · `GET /uploads/{upload}/photo` | confirm a retained photo's position as ground truth; list and fetch retained photos (`BR_SAVE_UPLOADS`) |
-| `GET`/`PUT /boards/{id}/camera` | the camera control state and config (D11) |
-| `POST /boards/{id}/camera/report` | the phone's report; the reply is its config |
-| `POST`/`GET /boards/{id}/camera/preview` | the phone's whole-frame preview for `/control` |
 
 ---
 

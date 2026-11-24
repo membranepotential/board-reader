@@ -64,6 +64,9 @@ BoardFrame = Literal["chess", "corners"]
 #: What a label file without a ``frame`` key means: it predates D10.
 LEGACY_FRAME: BoardFrame = "corners"
 
+#: The frame every read is made in: every recognizer reads in the chess frame since D10.
+READ_FRAME: BoardFrame = "chess"
+
 
 def parse_corners(spec: str) -> np.ndarray:
     """A label's ``corners`` string ``x0,y0,...,x3,y3`` (a8, h8, h1, a1) -> a 4x2 quad.

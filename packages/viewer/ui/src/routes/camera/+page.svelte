@@ -1,19 +1,19 @@
 <script lang="ts">
   /**
-   * /camera — the phone as a DUMB CAMERA (DESIGN D10): it films, crops and streams,
+   * /camera — the phone as a DUMB CAMERA (DESIGN D11): it films, crops and streams,
    * and that is all. There is nothing to press. The control UI on the laptop
    * (`/control`) chooses the lens, the resolution, the crop rectangle and whether to
-   * stream; this page hears that config on its report poll and applies it.
-   *
-   * Three loops, all started once the page mounts:
+   * stream; the node pushes that config down this page's control socket
+   * (`CameraLink`) and the page applies it.
    *
    *  - the FRAME loop (`CAPTURE_FPS`): the stall watchdog, the motion meter on the
    *    configured crop, and — while streaming — the adaptive forwarder deciding which
    *    frames are cropped, encoded and sent on `/ws/ingest` (DESIGN D4).
-   *  - the REPORT poll (`CONTROL_POLL_MS`): tell the node what the camera is (lenses,
-   *    delivered frame, stream state); the reply is the config to apply.
+   *  - the REPORT: what the camera is (lenses, delivered frame, stream state), sent
+   *    on the control socket whenever it changes — an `$effect`, not a timer.
    *  - the PREVIEW (`PREVIEW_MS`): a small JPEG of the WHOLE frame, so the control UI
-   *    can show the field of view and draw the crop on it.
+   *    can show the field of view and draw the crop on it — sent only while a
+   *    control page watches (the node says `previews` on/off).
    *
    * Same-origin and relative throughout (`$lib/api`), relayed by the viewer:
    * `getUserMedia` needs a secure context, and one origin means one certificate.
@@ -23,7 +23,6 @@
    */
   import { onMount } from 'svelte';
 
-  import { reportCamera, sendPreview } from '$lib/api';
   import {
     AdaptiveForwarder,
     CAPTURE_FPS,
@@ -34,6 +33,7 @@
   } from '$lib/edge/motion';
   import type { ForwardDecision } from '$lib/edge/motion';
   import { IngestClient } from '$lib/edge/ingest';
+  import { CameraLink } from '$lib/edge/cameralink';
   import { tenengrad, toGray } from '$lib/edge/sharpness';
   import { TrialLog } from '$lib/edge/triallog';
   import { Heartbeat } from '$lib/edge/heartbeat';
@@ -41,12 +41,12 @@
     DEFAULT_CAMERA_CONFIG,
     type CameraConfig,
     type CameraDevice,
+    type CameraReport,
     type IngestState
   } from '$lib/protocol';
 
   import BlockedNotice from '$lib/components/camera/BlockedNotice.svelte';
   import {
-    CONTROL_POLL_MS,
     DEFAULT_BOARD_ID,
     JPEG_QUALITY,
     PREVIEW_LONG_SIDE,
@@ -76,7 +76,7 @@
   let lenses = $state.raw<readonly CameraDevice[]>([]);
   let lensLabel = $state<string | null>(null);
   let boardId = $state(DEFAULT_BOARD_ID);
-  /** Whether the last report poll got an answer — the phone's link to its config. */
+  /** Whether the control socket is open — the phone's link to its config. */
   let nodeReachable = $state<boolean | null>(null);
   let ingestState = $state<IngestState>('idle');
   let fps = $state(0);
@@ -133,8 +133,9 @@
   let wakeLock: WakeLockSentinel | null = null;
   let frameClock = freshFrameClock(0);
   let encoding = false;
-  let reporting = false;
   let previewing = false;
+  /** Created on mount: the board comes from `?board=`, which prerendering cannot read. */
+  let link: CameraLink | null = null;
   let stamps: number[] = [];
 
   // ---- derived ------------------------------------------------------------------
@@ -157,6 +158,20 @@
   );
   $effect(() => {
     trial.note('portrait', { portrait });
+  });
+  /** What the camera is now. */
+  const report = $derived<CameraReport>({
+    devices: lenses,
+    device: lensLabel,
+    frame,
+    ingest: ingestState
+  });
+  // Sent whenever any of it changes (the link drops repeats). `report` is read
+  // outside the call: `link?.report(...)` would skip reading it while `link` is
+  // null, and the effect would then track nothing and never run again.
+  $effect(() => {
+    const now = report;
+    link?.report(now);
   });
 
   function toBlob(canvas: HTMLCanvasElement, quality: number): Promise<Blob | null> {
@@ -257,34 +272,47 @@
 
   // ---- the control channel ------------------------------------------------------
 
-  async function pollControl(): Promise<void> {
-    if (reporting) return; // never two polls in flight; each is bounded (api.ts)
-    reporting = true;
-    try {
-      const result = await reportCamera(boardId, {
-        devices: lenses,
-        device: lensLabel,
-        frame,
-        ingest: ingestState
-      });
-      if (nodeReachable !== result.ok) trial.note('control-link', { up: result.ok });
-      nodeReachable = result.ok;
-      if (result.ok) applyConfig(result.value);
-    } finally {
-      reporting = false;
-    }
+  function connectControl(id: string): CameraLink {
+    return new CameraLink({
+      boardId: id,
+      onConfig: applyConfig,
+      onPreviews: (on) => {
+        trial.note('previews', { on });
+        if (on) void postPreview();
+      },
+      onLink: (up, detail) => {
+        if (nodeReachable !== up) trial.note('control-link', { up, detail });
+        nodeReachable = up;
+      },
+      onRefused: (reason) => {
+        trial.note('control-refused', { reason });
+        message = `the node refused a message: ${reason}`;
+      }
+    });
   }
 
+  /** The config the node pushed; kept as it is while the link is down. */
   function applyConfig(next: CameraConfig): void {
     if (JSON.stringify(next) !== JSON.stringify(config)) trial.note('config', { ...next });
     config = next;
     setStreaming(next.streaming);
-    if (camera.kind !== 'live') return; // bring-up first; the next poll applies the rest
-    const wanted = nextCapture(capture, next, lenses);
+    reconcileCapture();
+  }
+
+  /**
+   * Open the lens and resolution the config names, if the camera is not already on
+   * them. Called on every config, when the camera first goes live and whenever the
+   * lens list changes, because a config is pushed once: a lens label the phone could
+   * not resolve yet must be tried again once it can.
+   */
+  function reconcileCapture(): void {
+    if (camera.kind !== 'live') return;
+    const wanted = nextCapture(capture, config, lenses);
     if (wanted !== null) void switchCapture(wanted);
   }
 
   async function postPreview(): Promise<void> {
+    if (link === null || !link.previewsWanted) return;
     if (previewing || document.hidden || camera.kind !== 'live') return;
     if (previewCanvas === null || previewCtx === null || video === undefined) return;
     previewing = true;
@@ -294,7 +322,7 @@
       previewCanvas.height = h;
       previewCtx.drawImage(video, 0, 0, w, h);
       const jpeg = await toBlob(previewCanvas, PREVIEW_QUALITY);
-      if (jpeg !== null) await sendPreview(boardId, jpeg);
+      if (jpeg !== null) link.sendPreview(jpeg);
     } finally {
       previewing = false;
     }
@@ -389,6 +417,7 @@
       .map((device, i) => ({ id: device.deviceId, label: device.label || `camera ${i + 1}` }));
     const openId = stream?.getVideoTracks()[0]?.getSettings().deviceId;
     lensLabel = lenses.find((lens) => lens.id === openId)?.label ?? null;
+    reconcileCapture();
   }
 
   /** Recorded BEFORE the open, so a lens that refuses is not asked for again every poll. */
@@ -469,7 +498,10 @@
       return;
     }
     trial.note('camera-live', { frame: size });
+    const first = camera.kind !== 'live';
     camera = { kind: 'live', frame: size };
+    // A config that arrived during bring-up is applied now the camera is live.
+    if (first) reconcileCapture();
   }
 
   // ---- lifecycle ----------------------------------------------------------------
@@ -497,13 +529,16 @@
     const timers = [
       setInterval(frameTick, Math.round(1000 / CAPTURE_FPS)),
       setInterval(paintStatus, TICK_MS),
-      setInterval(() => void pollControl(), CONTROL_POLL_MS),
       setInterval(() => void postPreview(), PREVIEW_MS)
     ];
-    void pollControl();
+    link = connectControl(boardId);
+    link.report(report);
+    link.start();
 
     return () => {
       for (const timer of timers) clearInterval(timer);
+      link?.stop();
+      link = null;
       setStreaming(false);
       stopTracks();
       trial.stop();

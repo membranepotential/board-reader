@@ -1,14 +1,17 @@
 /**
  * The camera control page (`/control`) — the laptop side of the dumb-camera phone.
  *
- * What only a laid-out page can answer: that the preview and the crop rectangle are
- * drawn, that a pointer drag on the drawn picture becomes the right normalized rect in
- * the PUT body (the pixel -> fraction step lives in the component, not in the pure
- * `dragRect`), that the stream toggle round-trips, and that an upright phone is called
- * out. The rectangle maths and the parsing are Vitest's (`src/lib/control`).
+ * What only a laid-out page can answer: that the pushed preview and the crop
+ * rectangle are drawn, that a pointer drag on the drawn picture becomes the right
+ * normalized rect in the `configure` message (the pixel -> fraction step lives in
+ * the component, not in the pure `dragRect`), that the stream toggle round-trips,
+ * and that an upright phone is called out. The rectangle maths and the parsing are
+ * Vitest's (`src/lib/control`).
  *
- * The node is a stateful fake here: it answers GET with its config and takes a PUT as
- * the new config, the way `camera_control.CameraRegistry` does.
+ * The node is a stateful fake on the control socket: it pushes its state, a
+ * preview, a received frame and a health tick on connect, and takes a `configure`
+ * as the new config and pushes the new state back, the way
+ * `camera_control.CameraRegistry` does.
  */
 
 import { expect, test, type Page } from '@playwright/test';
@@ -35,13 +38,13 @@ interface FrameSize {
 
 class FakeControlNode {
   config: Config = { crop: { x: 0.2, y: 0.2, w: 0.5, h: 0.6 }, device: null, resolution: '1080p', streaming: false };
-  readonly puts: Config[] = [];
+  readonly configures: Config[] = [];
 
   constructor(readonly frame: FrameSize) {}
 
-  view(): Record<string, unknown> {
-    return {
-      board_id: 'phone',
+  state(): string {
+    return JSON.stringify({
+      type: 'state',
       config: this.config,
       report: {
         devices: [
@@ -52,35 +55,37 @@ class FakeControlNode {
         frame: this.frame,
         ingest: this.config.streaming ? 'streaming' : 'idle'
       },
-      seen_at: 99.6,
-      preview: { seq: 1, at: 99, width: 640, height: Math.round((640 * this.frame.height) / this.frame.width) },
-      frame: { seq: 12, received_at: 99.5, width: 960, height: 648 },
-      now: 100
-    };
+      phone_connected: true
+    });
   }
 
   static async install(page: Page, frame: FrameSize = { width: 1920, height: 1080 }): Promise<FakeControlNode> {
     const node = new FakeControlNode(frame);
-    const png = checkerboardPng(320, 180);
-    await page.route(/\/api\/boards\/phone\/camera$/, async (route) => {
-      if (route.request().method() === 'PUT') {
-        node.config = route.request().postDataJSON() as Config;
-        node.puts.push(node.config);
-      }
-      await route.fulfill({ json: node.view() });
+    // A PNG under a JPEG data URL still draws: browsers sniff the bytes.
+    const picture = checkerboardPng(320, 180).toString('base64');
+    await page.routeWebSocket('**/ws/boards/phone/control', (ws) => {
+      ws.onMessage((message) => {
+        const parsed = JSON.parse(message as string) as { type: string; config: Config };
+        if (parsed.type !== 'configure') return;
+        node.config = parsed.config;
+        node.configures.push(parsed.config);
+        ws.send(node.state());
+      });
+      ws.send(node.state());
+      ws.send(JSON.stringify({ type: 'preview', width: 640, height: Math.round((640 * frame.height) / frame.width), jpeg: picture }));
+      ws.send(JSON.stringify({ type: 'frame', seq: 12, width: 960, height: 648, jpeg: picture }));
+      ws.send(
+        JSON.stringify({
+          type: 'health',
+          recognizer: 'chessq',
+          fallback: null,
+          received: 12,
+          refused: 0,
+          frame_age_s: 0.5,
+          fps: 4.2
+        })
+      );
     });
-    await page.route(/\/api\/boards\/phone\/(camera\/preview|frame)\b/, (route) =>
-      route.fulfill({ body: png, contentType: 'image/png' })
-    );
-    await page.route(/\/api\/healthz$/, (route) =>
-      route.fulfill({
-        json: {
-          status: 'ok',
-          ingest: { received: 12, refused: 0 },
-          recognizer: { name: 'chessq', model: 'models/chessq.onnx' }
-        }
-      })
-    );
     return node;
   }
 }
@@ -93,6 +98,7 @@ test('the preview, the rectangle and the received frame are drawn', async ({ pag
   await expect(page.locator('.picture img')).toHaveJSProperty('complete', true);
   await expect(page.locator('img.received')).toBeVisible();
   await expect(page.getByText('chessq')).toBeVisible();
+  await expect(page.getByText('4.2')).toBeVisible(); // frames/s, measured on the node
 
   // The rectangle sits where the config puts it, in fractions of the drawn picture.
   const picture = await page.locator('.picture').boundingBox();
@@ -128,19 +134,19 @@ test('dragging and resizing the rectangle saves the normalized rect', async ({ p
   await page.mouse.up();
 
   await expect(page.getByText('unsaved')).toBeVisible();
-  // Nothing goes to the node before Save: a poll must not race the gesture.
-  expect(node.puts).toHaveLength(0);
+  // Nothing goes to the node before Save: a pushed state must not race the gesture.
+  expect(node.configures).toHaveLength(0);
   await page.getByRole('button', { name: 'Save crop' }).click();
 
-  await expect.poll(() => node.puts.length).toBe(1);
-  const crop = node.puts[0]?.crop;
+  await expect.poll(() => node.configures.length).toBe(1);
+  const crop = node.configures[0]?.crop;
   if (crop == null) throw new Error('saved without a crop');
   expect(crop.x).toBeCloseTo(0.3, 2);
   expect(crop.y).toBeCloseTo(0.25, 2);
   expect(crop.w).toBeCloseTo(0.4, 2);
   expect(crop.h).toBeCloseTo(0.6, 2);
-  // The rest of the config rides along unchanged: a PUT replaces the whole object.
-  expect(node.puts[0]).toMatchObject({ device: null, resolution: '1080p', streaming: false });
+  // The rest of the config rides along unchanged: a configure replaces the whole object.
+  expect(node.configures[0]).toMatchObject({ device: null, resolution: '1080p', streaming: false });
   await expect(page.getByText('unsaved')).toBeHidden();
 });
 
@@ -150,13 +156,13 @@ test('the stream toggle starts and stops the phone', async ({ page }) => {
 
   await page.getByRole('button', { name: 'Start streaming' }).click();
   await expect(page.getByRole('button', { name: 'Stop streaming' })).toBeVisible();
-  expect(node.puts.at(-1)?.streaming).toBe(true);
+  await expect.poll(() => node.configures.at(-1)?.streaming).toBe(true);
 
   await page.getByRole('button', { name: 'Stop streaming' }).click();
   await expect(page.getByRole('button', { name: 'Start streaming' })).toBeVisible();
-  expect(node.puts.at(-1)?.streaming).toBe(false);
+  await expect.poll(() => node.configures.at(-1)?.streaming).toBe(false);
   // The crop is not touched by a toggle.
-  expect(node.puts.at(-1)?.crop).toEqual({ x: 0.2, y: 0.2, w: 0.5, h: 0.6 });
+  expect(node.configures.at(-1)?.crop).toEqual({ x: 0.2, y: 0.2, w: 0.5, h: 0.6 });
 });
 
 test('an upright phone is called out', async ({ page }) => {

@@ -2,23 +2,14 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   API_PREFIX,
   apiPath,
-  CONTROL_TIMEOUT_MS,
   boardFrameUrl,
+  cameraSocket,
+  controlSocket,
   estimate,
   listUploads,
-  reportCamera,
-  sendPreview,
   uploadPhotoUrl,
   wsUrl
 } from './api';
-import { DEFAULT_CAMERA_CONFIG, type CameraReport } from './protocol';
-
-const REPORT: CameraReport = {
-  devices: [{ id: 'a', label: 'Back Camera' }],
-  device: 'Back Camera',
-  frame: { width: 1920, height: 1080 },
-  ingest: 'idle'
-};
 
 /** Everything a page could ask for must come back as a same-origin, relative URL. */
 function isRelative(url: string): boolean {
@@ -103,7 +94,7 @@ describe('failures carry the node own wording', () => {
 
   it('keeps a non-JSON body rather than inventing a reason', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => new Response('upstream exploded', { status: 502 })));
-    const result = await sendPreview('phone', new Blob(['x']));
+    const result = await listUploads();
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.error.message).toBe('upstream exploded');
@@ -139,42 +130,14 @@ describe('failures carry the node own wording', () => {
   });
 });
 
-describe('the camera control channel', () => {
-  it('posts the report as JSON and reads the reply as the config to apply', async () => {
-    const fetchSpy = vi.fn(async () => new Response(JSON.stringify(DEFAULT_CAMERA_CONFIG)));
-    vi.stubGlobal('fetch', fetchSpy);
-    const result = await reportCamera('left board', REPORT);
-    expect(result).toEqual({ ok: true, value: DEFAULT_CAMERA_CONFIG });
-    const [url, init] = fetchSpy.mock.calls[0] as unknown as [string, RequestInit];
-    expect(url).toBe('/api/boards/left%20board/camera/report');
-    expect(init.method).toBe('POST');
-    expect(JSON.parse(init.body as string)).toEqual(REPORT);
-  });
-
-  it('refuses a reply that is not a config, in words', async () => {
-    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ streaming: 'yes' }))));
-    const result = await reportCamera('phone', REPORT);
-    expect(result.ok).toBe(false);
-  });
-
-  it('takes a 204 for the preview as success', async () => {
-    vi.stubGlobal('fetch', vi.fn(async () => new Response(null, { status: 204 })));
-    expect(await sendPreview('phone', new Blob(['jpeg']))).toEqual({ ok: true, value: null });
+describe('the camera control sockets', () => {
+  it('are relative, under the socket relay, one per board', () => {
+    expect(cameraSocket('left board')).toBe('/ws/boards/left%20board/camera');
+    expect(controlSocket('phone')).toBe('/ws/boards/phone/control');
   });
 });
 
 describe('a request that never answers', () => {
-  it('bounds the poll, so a wedged node cannot stop the phone hearing its config', async () => {
-    // The phone never overlaps two polls: one fetch that hangs for ever would stop
-    // every later config change from reaching it.
-    const fetchSpy = vi.fn(async () => new Response(JSON.stringify(DEFAULT_CAMERA_CONFIG)));
-    vi.stubGlobal('fetch', fetchSpy);
-    await reportCamera('phone', REPORT);
-    const [, init] = fetchSpy.mock.calls[0] as unknown as [string, RequestInit];
-    expect(init.signal).toBeInstanceOf(AbortSignal);
-    expect(CONTROL_TIMEOUT_MS).toBeLessThanOrEqual(5000);
-  });
-
   it('reads as an answer that never came, not as an unreachable viewer', async () => {
     vi.stubGlobal(
       'fetch',
@@ -182,7 +145,7 @@ describe('a request that never answers', () => {
         throw new DOMException('signal timed out', 'TimeoutError');
       })
     );
-    const result = await reportCamera('phone', REPORT);
+    const result = await listUploads();
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.error.status).toBe(0);

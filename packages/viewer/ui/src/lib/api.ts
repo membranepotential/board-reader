@@ -2,7 +2,7 @@
  * The inference node's API, as this page may address it: **same-origin, always**.
  *
  * The viewer serves this UI and relays the node's whole HTTP API under `/api/…`
- * plus `/ws/viewer` and `/ws/ingest` (`board_reader_viewer.proxy`). That single
+ * and its sockets under `/ws/…` (`board_reader_viewer.proxy`). That single
  * origin is load-bearing, not a tidiness preference:
  *
  *  - `getUserMedia` needs a secure context, and a page served over https cannot
@@ -20,12 +20,9 @@
  */
 
 import {
-  parseCameraConfig,
   parseEstimateResponse,
   parseLabelResponse,
   parseUploadsResponse,
-  type CameraConfig,
-  type CameraReport,
   type EstimateResponse,
   type LabelResponse,
   type ParseResult,
@@ -90,15 +87,6 @@ export function wsUrl(path: string, pageHref?: string): string {
 
 const JPEG_HEADERS = { 'Content-Type': 'image/jpeg' } as const;
 
-/**
- * How long one control-channel request may take before the page stops waiting.
- *
- * The phone polls about twice a second and never overlaps two polls, so a `fetch`
- * that hangs for ever would stop the phone hearing any config change at all —
- * silently. Two seconds is far outside a LAN round trip and still recovers fast.
- */
-export const CONTROL_TIMEOUT_MS = 2_000;
-
 /** A `fetch` that gave up on its own clock, rather than one that failed. */
 function timedOut(cause: unknown): boolean {
   return (
@@ -146,11 +134,8 @@ async function send(url: string, init: RequestInit): Promise<ApiResult<Response>
   }
 }
 
-/**
- * One JSON request through the relay, parsed at the boundary. Exported so a page
- * with its own endpoints (the control client) states only its URLs and parsers.
- */
-export async function requestJson<T>(
+/** One JSON request through the relay, parsed at the boundary. */
+async function requestJson<T>(
   url: string,
   init: RequestInit,
   parse: (raw: unknown) => ParseResult<T>
@@ -167,13 +152,6 @@ export async function requestJson<T>(
   }
   const parsed = parse(body);
   return parsed.ok ? ok(parsed.value) : err({ status: response.status, message: parsed.error });
-}
-
-/** A request whose success carries no body worth reading (a 204). */
-async function requestEmpty(url: string, init: RequestInit): Promise<ApiResult<null>> {
-  const sent = await send(url, init);
-  if (!sent.ok) return sent;
-  return sent.value.ok ? ok(null) : err(await failureOf(sent.value));
 }
 
 // ---- endpoints ---------------------------------------------------------------
@@ -227,38 +205,12 @@ export function boardFrameUrl(boardId: string, bust: string | number): string {
 
 // ---- the camera control channel ----------------------------------------------
 
-const JSON_HEADERS = { 'Content-Type': 'application/json' } as const;
-
-function cameraPath(boardId: string, rest = ''): string {
-  return `/boards/${encodeURIComponent(boardId)}/camera${rest}`;
+/** The phone's socket for its board (`WS /boards/{id}/camera` on the node). */
+export function cameraSocket(boardId: string): string {
+  return `/ws/boards/${encodeURIComponent(boardId)}/camera`;
 }
 
-/**
- * The phone's poll: say what the camera is, hear what it should be. The reply is
- * the config the control UI set for this board (the defaults until it sets one).
- */
-export function reportCamera(
-  boardId: string,
-  report: CameraReport
-): Promise<ApiResult<CameraConfig>> {
-  return requestJson(
-    apiPath(cameraPath(boardId, '/report')),
-    {
-      method: 'POST',
-      body: JSON.stringify(report),
-      headers: JSON_HEADERS,
-      signal: AbortSignal.timeout(CONTROL_TIMEOUT_MS)
-    },
-    parseCameraConfig
-  );
-}
-
-/** The phone's low-rate, full-frame view, so the control UI can draw the crop on it. */
-export function sendPreview(boardId: string, jpeg: Blob): Promise<ApiResult<null>> {
-  return requestEmpty(apiPath(cameraPath(boardId, '/preview')), {
-    method: 'POST',
-    body: jpeg,
-    headers: JPEG_HEADERS,
-    signal: AbortSignal.timeout(CONTROL_TIMEOUT_MS)
-  });
+/** A control page's socket for its board (`WS /boards/{id}/control` on the node). */
+export function controlSocket(boardId: string): string {
+  return `/ws/boards/${encodeURIComponent(boardId)}/control`;
 }

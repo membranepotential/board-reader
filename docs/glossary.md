@@ -54,8 +54,9 @@ on the Python edge.
 
 **Camera config / report** — the control channel (DESIGN D11): the config is what
 `/control` chose for a board's camera (crop, lens, resolution, streaming); the report is
-what the phone says its camera is (lenses, frame size, stream state). The phone posts the
-report every 500 ms and applies the config in the reply.
+what the phone says its camera is (lenses, frame size, stream state). The node pushes the
+config down the phone's socket (`/boards/{id}/camera`) on connect and on every change; the
+phone sends the report when it changes.
 
 **Chess frame** — the convention every placement is in: rank 8 first, file a first, as FEN
 writes it, whatever way the board faces the camera. The recognizer resolves it per frame;

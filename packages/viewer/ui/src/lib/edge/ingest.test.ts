@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
-import { IngestClient, type WebSocketLike } from './ingest';
+import { IngestClient } from './ingest';
+import type { WebSocketLike } from '../socket';
 
 /** A `WebSocket` that records what was sent, in order and by frame kind. */
 class FakeSocket implements WebSocketLike {

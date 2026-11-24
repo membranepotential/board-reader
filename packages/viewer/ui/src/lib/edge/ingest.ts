@@ -17,31 +17,16 @@
 
 import { FRAME_TYPE, parseIngestReply, type IngestFrameHeader, type IngestState } from '../protocol';
 import { INGEST_SOCKET, wsUrl } from '../api';
-
-const OPEN = 1;
+import {
+  OPEN,
+  RECONNECT_MAX_MS,
+  RECONNECT_MIN_MS,
+  type SocketFactory,
+  type WebSocketLike
+} from '../socket';
 
 /** ~3 frames' worth: above this the link is behind and another frame only makes the reading staler. */
 export const MAX_BUFFERED = 192 * 1024;
-export const RECONNECT_MIN_MS = 500;
-export const RECONNECT_MAX_MS = 8000;
-
-/**
- * Just enough of a `WebSocket` for this client, so a test can be a plain object.
- * The DOM event types are used as-is: a real `WebSocket` must satisfy this without
- * a cast, because the point is that production runs the code the tests run.
- */
-export interface WebSocketLike {
-  readonly readyState: number;
-  readonly bufferedAmount: number;
-  send(data: string | Blob | ArrayBufferView | ArrayBufferLike): void;
-  close(code?: number, reason?: string): void;
-  onopen: ((event: Event) => void) | null;
-  onmessage: ((event: MessageEvent) => void) | null;
-  onerror: ((event: Event) => void) | null;
-  onclose: ((event: CloseEvent) => void) | null;
-}
-
-export type SocketFactory = (url: string) => WebSocketLike;
 
 /** What the operator is told about the link, in the words the page shows. */
 
@@ -84,8 +69,6 @@ export interface IngestClientOptions {
   readonly clearTimeoutFn?: (handle: number) => void;
 }
 
-const defaultSocketFactory: SocketFactory = (url) => new WebSocket(url);
-
 /**
  * One live ingest connection, its sequence numbers and its ack accounting.
  *
@@ -122,7 +105,7 @@ export class IngestClient {
   private readonly unschedule: (handle: number) => void;
 
   constructor(private readonly options: IngestClientOptions = {}) {
-    this.factory = options.socketFactory ?? defaultSocketFactory;
+    this.factory = options.socketFactory ?? ((url) => new WebSocket(url));
     this.maxBuffered = options.maxBuffered ?? MAX_BUFFERED;
     this.minReconnect = options.reconnectMinMs ?? RECONNECT_MIN_MS;
     this.maxReconnect = options.reconnectMaxMs ?? RECONNECT_MAX_MS;

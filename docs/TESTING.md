@@ -130,7 +130,7 @@ What's covered today — the main files (`git ls-files 'packages/*/tests/*.py'
 | Gateway | `packages/inference/tests/test_server.py` | ingest → viewer over WS (in-process) |
 | **Read scheduling** | `packages/inference/tests/test_schedule.py` | **burst detection matches the forwarder's hysteresis; the keepalive floor survives a dead, stuck, absent or NaN meter and a backwards clock; no config spelling switches it off; a new move cancels the last one's owed reads; spec strings round-trip** |
 | **Scheduling, live** | `packages/inference/tests/test_ingest_schedule.py` | **the policy is observed on every arriving frame and asked at the drain, so a burst-end read gets `prefer_frame`'s sharper contender; per-board isolation; a frozen `capture_ts` falls back to the node's own keepalive; `BR_SCHEDULE` reaches the socket and `every-frame` restores the old gateway** |
-| **Camera control** | `packages/core/tests/test_control.py`, `packages/inference/tests/test_camera_control.py` | **the config and report contract refuses malformed input; the node holds a config per board and answers the phone's report with it; the preview round-trips** |
+| **Camera control** | `packages/core/tests/test_control.py`, `packages/inference/tests/test_camera_control.py` | **the config, report and socket messages refuse malformed input; the registry pushes a config to every phone and every control page, previews are wanted exactly while a page watches, a reconnecting phone hears its config again; over the real sockets a config reaches the phone, a preview and the last streamed frame reach the page, a health tick arrives, and a bad message is refused without closing the socket** |
 | Viewer | `packages/viewer/tests/test_viewer_server.py`, `test_proxy.py` | the four prerendered pages served; `/api` and `/ws` reach the relay; no page names an absolute origin; the client log |
 | **Layer split** | `tests/test_layer_separation.py` | edge/inference never import each other |
 | **Deploy parity** | `tests/test_deploy_parity.py` | compose and `make dev` serve the same recognizer |
@@ -161,15 +161,21 @@ chromium` (a one-off on a fresh checkout — Playwright pins its own browser bui
 triplicate: FEN⇄grid conversion (`lib/board/fen.ts`), the wire protocol parser
 (`lib/protocol.ts`, including the camera config), the motion meter, focus score and
 `/ws/ingest` framing (`lib/edge/`), the phone's config-to-camera decisions
-(`components/camera/state.ts`) and the control page's crop editing, framing warnings
-and client (`lib/control/`) — all plain TypeScript, run in `node`, no DOM.
+(`components/camera/state.ts`), the control page's crop editing and framing warnings
+(`lib/control/`), and the camera control channel: its messages
+(`lib/control/messages.ts`), the reconnecting socket both clients share
+(`lib/socket.ts`, with the fake in `lib/fake-socket.ts`), the phone's link (a report
+only when it changed, previews only while wanted, the config kept across a lost link)
+and the control page's link — all plain TypeScript, run in `node`, no DOM.
 
-`camera.spec.ts` plays the node's half of the control channel: it answers the phone's
-report poll with a config of its choosing and decodes the JPEGs that reach
-`/ws/ingest`, so "the crop the config asked for is the crop sent" is measured in pixels.
+`camera.spec.ts` plays the node's half of the control channel: on the phone's
+`/ws/boards/{id}/camera` socket it pushes a config of its choosing and switches
+previews on and off, and it decodes the JPEGs that reach `/ws/ingest`, so "the crop
+the config asked for is the crop sent" is measured in pixels.
 It also sends a drawn hand across the board and checks that a burst reaches the wire,
 and that changing the crop alone does not open one.
-`control.spec.ts` drives `/control` against a simulated phone.
+`control.spec.ts` drives `/control` against a simulated node on its
+`/ws/boards/{id}/control` socket.
 
 `pnpm test:e2e` drives the pages in a real Chromium (`tests/*.spec.ts`), against
 the **built** app — `vite build` then `vite preview`, because the bundle is what the
@@ -442,8 +448,10 @@ Option P.
 Point a phone at a real board and stream it live. The phone is a **dumb camera**: it
 only films and streams, and it has nothing to press. You set everything — the crop
 rectangle, the lens, the resolution, start and stop — on the laptop's `/control` page.
-The phone hears each change within half a second (its report poll) and applies it;
-capture, crop, motion and adaptive forwarding all still happen in the phone's browser.
+The node pushes each change to the phone the moment you make it, over the phone's
+control socket, and the phone applies it; capture, crop, motion and adaptive
+forwarding all still happen in the phone's browser. Nothing polls: the server logs
+show one line per socket when it opens, not one per message.
 
 `make dev` sets all of this up — it starts inference plus **two** binds of the
 viewer, serves the **same recognizer `docker compose up` does** (it prints what it
@@ -498,9 +506,10 @@ uv run board-reader-viewer --host 0.0.0.0 --port 8443 --ssl
 5. On the laptop, open `http://localhost:8080/control` (or the **camera control** link on
    the live page). Expected: the chip reads `phone connected`, and within ~2 s the
    phone's whole view appears as a preview, with the phone's lenses in the **lens** list
-   and its size under **frame delivered** in the Status panel.
+   and its size under **frame delivered** in the Status panel. The phone sends previews
+   only while a `/control` page is open (or not hidden); close the tab and they stop.
 6. Drag a rectangle around the board on the preview, with a small margin, and press
-   **Save crop**. Expected: within ~1 s the phone shows the same rectangle as an outline
+   **Save crop**. Expected: at once the phone shows the same rectangle as an outline
    with the rest dimmed, and a warning on `/control` disappears or appears as the shape
    needs (whole frame sent, a rectangle taller than wide or more than twice as wide as
    tall, an upright phone).

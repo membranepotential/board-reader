@@ -41,9 +41,9 @@ flowchart LR
   edge -->|WS /ingest: JSON header + JPEG| gw[inference gateway]
   camphone[phone: /camera page<br/>the browser edge] -->|"WS /ws/ingest (relay)"| vw[viewer server]
   vw -->|WS /ingest| gw
-  laptop[laptop: /control page] -->|"PUT /api/boards/{id}/camera"| vw
-  camphone -.->|"POST /api/boards/{id}/camera/report<br/>reply = config"| vw
-  vw -.->|camera control| gw
+  laptop[laptop: /control page] <-.->|"WS /ws/boards/{id}/control<br/>configure up; state, preview, frame, health down"| vw
+  camphone <-.->|"WS /ws/boards/{id}/camera<br/>report + preview up; config down"| vw
+  vw <-.->|camera control sockets| gw
   phone[phone: /snapshot page] -->|"POST /api/estimate: photo (relay)"| vw
   vw -->|POST /estimate| gw
   gw --> rec["recognizer (ChessQ)"]
@@ -69,16 +69,26 @@ status line and **no controls at all**. Everything about what it films is set fr
 **control UI** on the laptop (`GET /control` on the viewer), held per board on the
 inference node, and pushed to the phone, which applies it:
 
-- **The control channel is a poll.** Every 500 ms the phone posts its
-  `CameraReport` — the lenses `enumerateDevices` lists, the label of the one open, the
-  frame size it delivers and the state of its stream — to
-  `POST /boards/{id}/camera/report`, and the reply is that board's `CameraConfig`: the
-  **crop rectangle** (fractions of the full frame, or none for the whole frame), the
+- **The control channel is pushed over two sockets per board; nothing polls.** The
+  phone holds `WS /boards/{id}/camera` open from the moment the page loads. It sends
+  its `CameraReport` — the lenses `enumerateDevices` lists, the label of the one open,
+  the frame size it delivers and the state of its stream — on connect and whenever it
+  changes. The node pushes that board's `CameraConfig` on connect and on every change:
+  the **crop rectangle** (fractions of the full frame, or none for the whole frame), the
   **lens** (by label), the **capture resolution** (720p, 1080p or 2160p, asked for as an
-  `ideal` constraint) and **streaming** on/off. A config change reaches the phone within
-  one poll; nothing has to stay connected while the camera is idle. The contract is
-  `board_reader_core.control`; the node keeps it in memory (`camera_control.py`), so a
-  restart forgets the config and the control UI sets it again.
+  `ideal` constraint) and **streaming** on/off. Each `/control` page holds
+  `WS /boards/{id}/control`: the node pushes the state (config, last report, whether
+  the phone is connected) on connect and on every change, plus a health tick once a
+  second (recognizer, ingest counters, last-frame age, frames per second, all on the
+  node's clock); the page sends `configure` with the whole config. Both clients
+  reconnect with backoff; a phone that loses the link keeps its last config and keeps
+  streaming on `/ws/ingest`. The contract — every message type and its direction — is
+  `board_reader_core.control`; the node keeps the state in memory
+  (`camera_control.CameraRegistry`, the single source of truth), so a restart forgets
+  the config and the control UI sets it again. Each socket's outbox keeps only the
+  latest message of each type, so a slow page cannot make the node buffer. The frames
+  stay on `/ws/ingest`, whose framing and recording are unchanged
+  ([DESIGN D11](DESIGN.md) says why the control messages did not join them).
 - **The phone still crops, so the wire is unchanged.** It measures motion and sharpness
   on the configured crop, throttles with a JS mirror of the edge's `MotionMeter` +
   `AdaptiveForwarder` (~1 fps at rest, ~12 fps through motion), and streams the crop
@@ -89,10 +99,13 @@ inference node, and pushed to the phone, which applies it:
   fill at least half of the image width
   ([[recognition-pipeline#Framing: the board must fill the frame]]) — which is why the
   control UI warns about a missing, too-wide or upright rectangle, and an upright phone.
-- **A full-frame preview** (480 px long side, every 1.5 s) goes to
-  `POST /boards/{id}/camera/preview`, so the control UI can show the camera's whole field
-  of view and the rectangle on it, beside the cropped frame the node actually receives
-  (`GET /boards/{id}/frame`).
+- **A full-frame preview** (480 px long side, every 1.5 s) goes up the phone's socket
+  as a binary message, **only while a `/control` page is connected** to that board: the
+  node says `previews` on when the first page connects and off when the last one
+  leaves. The node forwards it to every page, which draws the rectangle on the camera's
+  whole field of view, beside the cropped frame the node actually received (pushed on
+  the health tick whenever a new one arrived). Images reach the page as base64 inside
+  the JSON message, shown as a `data:` URL.
 - **Lenses are chosen by label.** iOS ≥16.3 exposes every rear lens through
   `enumerateDevices` (only once permission has populated the labels), but nothing
   identifies which is the ultra wide: deviceIds are per-session, labels are localised,
@@ -106,8 +119,9 @@ now streams anyway; it says so in its status line, and the control UI warns.
 
 Because
 `getUserMedia` demands a secure context and phones balk at a second self-signed origin,
-the page talks *only* to the viewer's own origin: the viewer relays `/ws/ingest`,
-`/ws/viewer` and the node's HTTP API under `/api/` to the inference node (pure network
+the page talks *only* to the viewer's own origin: the viewer relays the node's sockets
+under `/ws/` (`/ws/ingest`, `/ws/viewer`, `/ws/boards/{id}/camera`,
+`/ws/boards/{id}/control`) and its HTTP API under `/api/` to the inference node (pure network
 glue — it still imports no `board_reader_*` package), and `--ssl` serves the whole
 thing over a cached self-signed certificate.
 
@@ -158,9 +172,8 @@ See [[recognition-pipeline]].
 | `POST /labels/{upload}` · `GET /uploads` · `GET /uploads/{id}/photo` | ground-truth labels for retained photos (`BR_SAVE_UPLOADS`), in the chess frame |
 | `GET /boards/{id}` | latest retained event for a board |
 | `GET /boards/{id}/frame` | latest raw JPEG ingested for a board (video-like preview) |
-| `GET` · `PUT /boards/{id}/camera` | the board's camera config (crop, lens, resolution, streaming) plus the phone's last report, its age, and preview and last-frame metadata |
-| `POST /boards/{id}/camera/report` | the phone's poll: its report in, the config to apply out |
-| `POST` · `GET /boards/{id}/camera/preview` | the phone's low-rate full-frame JPEG, for the control UI |
+| `WS /boards/{id}/camera` | the phone's camera control socket: report and previews up, config and `previews` on/off down |
+| `WS /boards/{id}/control` | a control page's socket: `configure` up; state, preview, received frame and a 1 Hz health tick down |
 | `GET /healthz` | liveness (+ `ingest` counters, `recognizer`: name, model, `fallback` when the stub serves; `recording`: session path, frames, bytes) — see the warning in [[runbook#Verifying a restart]] |
 
 **Viewer node** (`:8080`)
@@ -171,7 +184,7 @@ See [[recognition-pipeline]].
 | `GET /snapshot` | the phone page: capture → read → repair → output (a photo → a position, correctable and labelable) |
 | `GET /camera` | the phone page: a dumb camera that streams what the control UI configured (the browser edge) |
 | `GET /control` | the laptop page: crop rectangle on the phone's full-frame preview, lens, resolution, start/stop, health |
-| `WS /ws/ingest` · `WS /ws/viewer` | same-origin relays to the inference node's sockets, for `/camera` |
+| `WS /ws/<path>` | same-origin relays to the inference node's sockets (`ingest`, `viewer`, `boards/{id}/camera`, `boards/{id}/control`) |
 | `/api/<path>` | same-origin relay of the inference node's whole HTTP API |
 
 The snapshot page's correction panel is where a wrong square gets fixed — the privileged
@@ -212,13 +225,14 @@ L1→L2 wire framing — and the differences between the copies were the bugs.
 | `lib/protocol.ts` | parses the wire — L3 position events off `/ws/viewer`, L1→L2 headers on `/ws/ingest`, the node's HTTP replies — the one place untrusted wire data becomes a typed value |
 | `lib/api.ts` | same-origin, always-relative URL construction (`/api/…`, `/ws/…`) — nothing here ever names an origin, which is what keeps the pages working unchanged on a LAN, over https, and behind a tunnel |
 | `lib/board/fen.ts` | FEN field 1 ⇄ 8×8 grid, clamped and re-emitted so a malformed placement can't shift the grid the diff and chessground both index into |
-| `lib/edge/{motion,ingest,sharpness}.ts` | the `/camera` page's browser edge: a JS mirror of `board_reader_edge`'s `MotionMeter`/`AdaptiveForwarder`, the two-message (JSON header + JPEG) `/ws/ingest` sender, and the focus score |
+| `lib/edge/{motion,ingest,sharpness,cameralink}.ts` | the `/camera` page's browser edge: a JS mirror of `board_reader_edge`'s `MotionMeter`/`AdaptiveForwarder`, the two-message (JSON header + JPEG) `/ws/ingest` sender, the focus score, and the phone's camera control socket |
+| `lib/control/{messages,link}.ts` · `lib/socket.ts` | the camera control channel's messages, parsed once (`board_reader_core.control`'s mirror), the control page's socket, and the reconnecting socket both clients share |
 | `lib/stores/{positions.svelte,liveness}.ts` | the live position stream as Svelte 5 state — deliberately not a state machine over positions (DESIGN D1): the only history kept is the previous grid, and only to diff a changed square |
 
 `src/routes/` holds the four pages (`+page.svelte` for `/`, `camera/+page.svelte`,
 `control/+page.svelte`,
 `snapshot/+page.svelte`) and the page-specific components each composes from
-`lib/components/{live,camera,control,snapshot}/` — UI, not shared logic. 262 Vitest cases
+`lib/components/{live,camera,control,snapshot}/` — UI, not shared logic. 273 Vitest cases
 cover `src/lib/**` today, and 21 Playwright tests drive the four built pages in a
 real Chromium; see [[TESTING#1. Automated tests]].
 

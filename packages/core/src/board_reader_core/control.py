@@ -1,30 +1,49 @@
 """The camera control channel — how the inference node configures an edge camera.
 
-DESIGN D10 "dumb camera" (2026-11-24): the phone only films and streams. What it
+DESIGN D11 "dumb camera" (2026-11-24): the phone only films and streams. What it
 films — which lens, at what resolution, which part of the frame is sent, and whether
 it streams at all — is set from the control UI on the laptop, held per board on the
 inference node, and **pushed to the edge, which applies it**. The edge still crops
 and measures motion on its own crop, so the L1->L2 wire (:mod:`board_reader_core.wire`)
 is unchanged: frames arrive already cropped, exactly as before.
 
-Three shapes cross this channel, each validated here once so neither node trusts
-the other's JSON:
+Three shapes make up the camera's state, each validated here once so neither end
+trusts the other's JSON:
 
-* :class:`CameraConfig` — node -> edge: what the control UI chose.
-* :class:`CameraReport` — edge -> node: what the camera actually is (its lenses,
-  the frame it delivers, the state of its stream), so the control UI can offer real
-  choices and say when the phone is held upright.
+* :class:`CameraConfig` — what the control UI chose.
+* :class:`CameraReport` — what the camera actually is (its lenses, the frame it
+  delivers, the state of its stream), so the control UI can offer real choices and
+  say when the phone is held upright.
 * :class:`CropRect` — the rectangle itself, in **fractions of the full camera
   frame**, so it survives a resolution change unchanged. Also the Python edge's
   static ``--roi``.
+
+They travel on two WebSockets, one per board and per kind of client. Every text
+message is a JSON object whose ``type`` names it:
+
+``WS /boards/{id}/camera`` — the phone.
+  * up: :class:`ReportMessage` (text), sent on connect and whenever the report
+    changes; a whole-frame preview JPEG (binary, the socket's only binary message),
+    sent only while the node has asked for previews.
+  * down: :class:`ConfigMessage` on connect and on every change;
+    :class:`PreviewsMessage` on connect and whenever the first /control page opens
+    or the last one closes; :class:`RefusedMessage` for a message the node refused.
+
+``WS /boards/{id}/control`` — a control page.
+  * up: :class:`ConfigureMessage`, the whole new config.
+  * down: :class:`StateMessage` on connect and on every change of config, report or
+    phone link; :class:`PreviewMessage` and :class:`FrameMessage` (images as
+    base64); :class:`HealthMessage` about once a second; :class:`RefusedMessage`.
 
 Like the rest of core this is contract only: no transport, no storage.
 """
 
 from __future__ import annotations
 
+import base64
+import json
 from dataclasses import dataclass
-from typing import Literal, cast, get_args
+from typing import ClassVar, Literal, cast, get_args
 
 #: Capture resolutions the control UI offers, by name. The edge asks for these as
 #: ``ideal`` constraints, so a camera that cannot deliver one gets the nearest it
@@ -216,7 +235,7 @@ def _text(raw: object, name: str) -> str:
 
 @dataclass(frozen=True, slots=True)
 class CameraReport:
-    """What the edge says about its camera, on every poll.
+    """What the edge says about its camera.
 
     ``device`` is the label of the lens actually open and ``frame`` the size it
     actually delivers — both ``None`` until the camera is live.
@@ -276,3 +295,201 @@ class CameraReport:
             ),
             "ingest": self.ingest,
         }
+
+
+# ---- messages on the two control sockets -------------------------------------
+
+
+def _message(text: str, kinds: dict[str, frozenset[str]]) -> tuple[str, dict[str, object]]:
+    """``text`` as a JSON object of one of ``kinds`` (type -> its other keys)."""
+    try:
+        raw = json.loads(text)
+    except ValueError as e:
+        raise ValueError(f"message is not JSON: {e}") from e
+    if not isinstance(raw, dict):
+        raise ValueError("message must be an object")
+    kind = raw.get("type")
+    if not isinstance(kind, str) or kind not in kinds:
+        raise ValueError(f"message type must be one of {', '.join(kinds)}, not {kind!r}")
+    data = _record(raw, f"{kind} message", kinds[kind] | {"type"})
+    missing = kinds[kind] - set(data)
+    if missing:
+        raise ValueError(f"{kind} message: missing field(s) {', '.join(sorted(missing))}")
+    return kind, data
+
+
+def _jpeg_text(jpeg: bytes) -> str:
+    # A page can show base64 as a data: URL as it stands; binary would need a
+    # second message to say which picture it is.
+    return base64.b64encode(jpeg).decode("ascii")
+
+
+@dataclass(frozen=True, slots=True)
+class ReportMessage:
+    """Phone -> node: what the camera is now."""
+
+    TYPE: ClassVar[str] = "report"
+    report: CameraReport
+
+
+def parse_phone_message(text: str) -> ReportMessage:
+    """One text message from the phone's socket; ``ValueError`` says why not."""
+    _, data = _message(text, {ReportMessage.TYPE: frozenset({"report"})})
+    return ReportMessage(report=CameraReport.from_dict(data["report"]))
+
+
+@dataclass(frozen=True, slots=True)
+class ConfigureMessage:
+    """Control page -> node: replace the board's config with this whole one."""
+
+    TYPE: ClassVar[str] = "configure"
+    config: CameraConfig
+
+
+def parse_control_message(text: str) -> ConfigureMessage:
+    """One text message from a control page's socket; ``ValueError`` says why not."""
+    _, data = _message(text, {ConfigureMessage.TYPE: frozenset({"config"})})
+    return ConfigureMessage(config=CameraConfig.from_dict(data["config"]))
+
+
+@dataclass(frozen=True, slots=True)
+class ConfigMessage:
+    """Node -> phone: the config to apply."""
+
+    TYPE: ClassVar[str] = "config"
+    config: CameraConfig
+
+    def to_json(self) -> str:
+        return json.dumps({"type": self.TYPE, "config": self.config.to_dict()})
+
+
+@dataclass(frozen=True, slots=True)
+class PreviewsMessage:
+    """Node -> phone: send whole-frame previews (``on``) or stop.
+
+    On exactly while at least one control page watches the board, so an
+    unwatched phone spends no uplink on pictures nobody sees.
+    """
+
+    TYPE: ClassVar[str] = "previews"
+    on: bool
+
+    def to_json(self) -> str:
+        return json.dumps({"type": self.TYPE, "on": self.on})
+
+
+@dataclass(frozen=True, slots=True)
+class RefusedMessage:
+    """Node -> either client: one message was refused; the socket stays open."""
+
+    TYPE: ClassVar[str] = "refused"
+    reason: str
+
+    def to_json(self) -> str:
+        return json.dumps({"type": self.TYPE, "reason": self.reason})
+
+
+@dataclass(frozen=True, slots=True)
+class StateMessage:
+    """Node -> control page: the board's camera as the node holds it.
+
+    ``report`` is the phone's last report (kept after it disconnects, so the lens
+    list survives a reload); ``phone_connected`` says whether its socket is open.
+    """
+
+    TYPE: ClassVar[str] = "state"
+    config: CameraConfig
+    report: CameraReport | None
+    phone_connected: bool
+
+    def to_json(self) -> str:
+        return json.dumps(
+            {
+                "type": self.TYPE,
+                "config": self.config.to_dict(),
+                "report": None if self.report is None else self.report.to_dict(),
+                "phone_connected": self.phone_connected,
+            }
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class PreviewMessage:
+    """Node -> control page: the phone's latest whole-frame preview."""
+
+    TYPE: ClassVar[str] = "preview"
+    jpeg: bytes
+    width: int
+    height: int
+
+    def to_json(self) -> str:
+        return json.dumps(
+            {
+                "type": self.TYPE,
+                "width": self.width,
+                "height": self.height,
+                "jpeg": _jpeg_text(self.jpeg),
+            }
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class FrameMessage:
+    """Node -> control page: the latest frame ``/ingest`` received for the board."""
+
+    TYPE: ClassVar[str] = "frame"
+    seq: int
+    jpeg: bytes
+    width: int
+    height: int
+
+    def to_json(self) -> str:
+        return json.dumps(
+            {
+                "type": self.TYPE,
+                "seq": self.seq,
+                "width": self.width,
+                "height": self.height,
+                "jpeg": _jpeg_text(self.jpeg),
+            }
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class HealthMessage:
+    """Node -> control page, about once a second: the recognizer and the stream.
+
+    Ages and rates are measured on the node's clock, so the page needs none: the
+    phone, the laptop and the node need not agree on the time.
+    """
+
+    TYPE: ClassVar[str] = "health"
+    recognizer: str
+    #: Why the stub serves instead of the model, when it does (DESIGN D2).
+    fallback: str | None
+    #: Node-wide ``/ingest`` counters, as ``/healthz`` has them.
+    received: int
+    refused: int
+    #: Seconds since the board's last frame arrived; ``None`` before the first.
+    frame_age_s: float | None
+    #: Frames per second received since the previous health message, if measurable.
+    fps: float | None
+
+    def to_json(self) -> str:
+        return json.dumps(
+            {
+                "type": self.TYPE,
+                "recognizer": self.recognizer,
+                "fallback": self.fallback,
+                "received": self.received,
+                "refused": self.refused,
+                "frame_age_s": self.frame_age_s,
+                "fps": self.fps,
+            }
+        )
+
+
+#: What the node sends the phone.
+PhoneDown = ConfigMessage | PreviewsMessage | RefusedMessage
+#: What the node sends a control page.
+ControlDown = StateMessage | PreviewMessage | FrameMessage | HealthMessage | RefusedMessage

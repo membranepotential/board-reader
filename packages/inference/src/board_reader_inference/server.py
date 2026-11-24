@@ -10,8 +10,9 @@ Runs on the inference node. Its surfaces:
   (retained latest per board first, then live updates).
 * ``GET /boards/{id}`` + ``GET /boards/{id}/frame`` + ``GET /healthz`` — latest
   position snapshot, latest raw ingested JPEG, and liveness.
-* ``/boards/{id}/camera`` — the camera control channel: the control UI's config
-  for each board's camera, which the edge pulls and applies
+* ``WS /boards/{id}/camera`` + ``WS /boards/{id}/control`` — the camera control
+  channel: the control UI's config for each board's camera, pushed to the phone,
+  and the phone's state, previews and the node's health pushed to the control UI
   (:mod:`board_reader_inference.camera_control`).
 
 The gateway holds the recognizer and the position hub. It never imports the
@@ -41,10 +42,15 @@ from board_reader_core.protocol import PositionEvent, square_evidence
 from board_reader_core.recording import FrameRecorder
 from board_reader_core.wire import Frame, decode_jpeg
 
-from board_reader_inference.camera_control import CameraRegistry, StreamedFrame
+from board_reader_inference.camera_control import (
+    CameraRegistry,
+    NodeStatus,
+    StreamedFrame,
+)
 from board_reader_inference.camera_control import router as camera_router
 from board_reader_inference.hub import PositionHub
 from board_reader_inference.ingest import FrameIngest
+from board_reader_inference.labels import READ_FRAME
 from board_reader_inference.recognizer import (
     Recognizer,
     StubRecognizer,
@@ -194,7 +200,6 @@ class _Retained:
     """The latest frame ``/ingest`` accepted for one board, kept for previews."""
 
     header: dict
-    jpeg: bytes
     streamed: StreamedFrame
 
 
@@ -282,6 +287,9 @@ def create_app(
         if not recorder.record(header, jpeg):
             print(f"frame recording stopped: {recorder.stopped_reason}")
 
+    # Why the stub serves instead of the model, when it does (D2: degrade loudly).
+    fallback = recognizer_.fallback if isinstance(recognizer_, StubRecognizer) else None
+
     @app.get("/healthz")
     async def healthz() -> dict:
         # The recording stats ride on liveness so an operator can confirm frames
@@ -313,9 +321,6 @@ def create_app(
             health["recording"] = recorder.stats()
         # Which recognizer reads, from which file — and, when the weights were
         # missing, that the stub is serving instead and why (D2: degrade loudly).
-        fallback = (
-            recognizer_.fallback if isinstance(recognizer_, StubRecognizer) else None
-        )
         health["recognizer"] = {
             "name": recognizer_.name,
             "model": recognizer_.model_path,
@@ -345,17 +350,25 @@ def create_app(
             "X-Capture-Ts": str(entry.header["capture_ts"]),
             "Cache-Control": "no-store",
         }
-        return Response(content=entry.jpeg, media_type="image/jpeg", headers=headers)
+        return Response(
+            content=entry.streamed.jpeg, media_type="image/jpeg", headers=headers
+        )
 
-    def _streamed(board_id: str) -> StreamedFrame | None:
+    def _node_status(board_id: str) -> NodeStatus:
         entry = latest_frames.get(board_id)
-        return None if entry is None else entry.streamed
+        return NodeStatus(
+            recognizer=recognizer_.name,
+            fallback=fallback,
+            received=ingest_.frames_received,
+            refused=ingest_.frames_refused,
+            frame=None if entry is None else entry.streamed,
+        )
 
-    # The camera control channel (DESIGN D10, "dumb camera"): the control UI sets
-    # each board's camera config here and the edge pulls it on its report poll.
+    # The camera control channel (DESIGN D11, "dumb camera"): the control UI sets
+    # each board's camera config here and the node pushes it to the phone.
     cameras = CameraRegistry()
     app.state.cameras = cameras
-    app.include_router(camera_router(cameras, _streamed))
+    app.include_router(camera_router(cameras, _node_status))
 
     # One-shot HTTP ingress for the phone snapshot page (viewer /snapshot): the
     # body is the photo as shot, and the recognizer finds the board in it.
@@ -423,7 +436,7 @@ def create_app(
         result = event.to_dict()
         _annotate_upload(
             sidecar,
-            frame=recognizer_.frame,
+            frame=READ_FRAME,
             placement=event.placement,
             prior_flips=[f.square for f in repair.flips],
         )
@@ -675,9 +688,12 @@ def create_app(
                 height, width = frame.image.shape[:2]
                 latest_frames[frame.board_id] = _Retained(
                     header=normalised,
-                    jpeg=jpeg,
                     streamed=StreamedFrame(
-                        seq=frame.seq, received_at=time.time(), width=width, height=height
+                        seq=frame.seq,
+                        received_at=time.time(),
+                        width=width,
+                        height=height,
+                        jpeg=jpeg,
                     ),
                 )
                 # Record what ARRIVED, before the latest-wins pre-filter has had a

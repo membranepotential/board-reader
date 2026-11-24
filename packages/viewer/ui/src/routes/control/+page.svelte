@@ -1,59 +1,51 @@
 <script lang="ts">
   /**
-   * board-reader · camera control — the laptop side of the "dumb camera" (DESIGN D10).
+   * board-reader · camera control — the laptop side of the "dumb camera" (DESIGN D11).
    *
    * The phone (/camera) only films and streams. This page chooses what it films: the
    * crop rectangle on its full-frame preview, the lens, the resolution, and whether it
-   * streams. The node holds that config per board (`PUT /boards/{id}/camera`) and the
-   * phone pulls it on its report poll.
+   * streams. The node holds that config per board and pushes it to the phone.
    *
-   * The crop is edited locally and only sent on Save, so a poll never yanks a
-   * rectangle out from under the pointer. The lens, resolution and stream toggle are
-   * sent the moment they change. Each PUT is the whole config, built from the last one
-   * the node answered with.
+   * One socket per board (`ControlLink`): the node pushes the camera state on connect
+   * and on every change, the phone's preview, the latest received frame and a health
+   * tick, so nothing here polls. The socket closes while the tab is hidden, which is
+   * also what tells the phone to stop sending previews nobody sees.
    *
-   * Polling runs once a second, and not at all while the tab is hidden.
+   * The crop is edited locally and only sent on Save, so a pushed state never yanks
+   * a rectangle out from under the pointer. The lens, resolution and stream toggle
+   * are sent the moment they change. Each `configure` is the whole config, built from
+   * the last one this page knows — applied here at once, so a second change made
+   * before the node's answer arrives builds on the first instead of undoing it.
    */
   import { onMount } from 'svelte';
   import { resolve } from '$app/paths';
-  import { boardFrameUrl } from '$lib/api';
   import { RESOLUTION_NAMES, type CameraConfig, type CropRect, type Resolution } from '$lib/protocol';
   import { DEFAULT_BOARD_ID, boardIdFrom } from '$lib/components/camera/state';
-  import {
-    getCamera,
-    getHealth,
-    previewUrl,
-    putCamera,
-    type CameraView,
-    type NodeHealth
-  } from '$lib/control/client';
+  import { ControlLink } from '$lib/control/link';
+  import type {
+    CameraState,
+    ControlDown,
+    NodeHealth,
+    Picture,
+    ReceivedFrame
+  } from '$lib/control/messages';
   import { WHOLE_FRAME } from '$lib/control/crop';
   import { FRAMING_COPY, framingWarnings } from '$lib/control/framing';
-  import { pollWhileVisible } from '$lib/control/poll';
-  import {
-    POLL_MS,
-    formatAge,
-    frameAge,
-    frameRate,
-    phoneConnected,
-    reportAge,
-    streamSample,
-    type StreamSample
-  } from '$lib/control/status';
+  import { formatAge } from '$lib/control/status';
   import CropEditor from '$lib/components/control/CropEditor.svelte';
 
   /** `null` until mounted: the board comes from `?board=`, which prerendering cannot read. */
   let boardId = $state<string | null>(null);
-  let view = $state<CameraView | null>(null);
-  let health = $state<NodeHealth | null>(null);
-  let rate = $state<number | null>(null);
+  let camera = $state.raw<CameraState | null>(null);
+  let preview = $state.raw<Picture | null>(null);
+  let received = $state.raw<ReceivedFrame | null>(null);
+  let health = $state.raw<NodeHealth | null>(null);
+  /** Whether this page's socket to the node is open. */
+  let up = $state(false);
   /** The rectangle being edited and not yet saved; `null` shows the node's. */
   let edit = $state<CropRect | null>(null);
   let failure = $state<string | null>(null);
-  let saving = $state(false);
-  let lastSample: StreamSample | null = null;
-  /** Bumped by every saved PUT, so a poll that started before it cannot undo it. */
-  let writes = 0;
+  let link: ControlLink | null = null;
 
   onMount(() => {
     boardId = boardIdFrom(location.search);
@@ -62,67 +54,90 @@
   $effect(() => {
     const id = boardId;
     if (id === null) return;
-    return pollWhileVisible(() => refresh(id), POLL_MS, document);
+    const next = new ControlLink({
+      boardId: id,
+      onMessage: receive,
+      onLink: (isUp, detail) => {
+        up = isUp;
+        failure = isUp ? null : `the node is not reachable (${detail}) — reconnecting…`;
+      }
+    });
+    link = next;
+    if (document.visibilityState === 'visible') next.start();
+    return () => {
+      next.stop();
+      if (link === next) link = null;
+      up = false;
+    };
   });
 
-  async function refresh(id: string): Promise<void> {
-    const before = writes;
-    const [camera, node] = await Promise.all([getCamera(id), getHealth()]);
-    // The operator switched boards while this was in flight: it answers for the old one.
-    if (id !== boardId) return;
-    // A config was saved while this was in flight: its view may predate the save.
-    if (camera.ok && writes === before) {
-      const sample = streamSample(camera.value);
-      rate = frameRate(lastSample, sample);
-      lastSample = sample;
-      view = camera.value;
-    }
-    if (node.ok) health = node.value;
-    failure = camera.ok ? (node.ok ? null : node.error.message) : camera.error.message;
+  function onVisibilityChange(): void {
+    if (document.visibilityState === 'visible') link?.start();
+    else link?.stop();
   }
 
-  async function send(patch: Partial<CameraConfig>): Promise<boolean> {
-    if (view === null || boardId === null) return false;
-    saving = true;
-    const result = await putCamera(boardId, { ...view.config, ...patch });
-    saving = false;
-    if (!result.ok) {
-      failure = `not saved: ${result.error.message}`;
+  function receive(message: ControlDown): void {
+    switch (message.type) {
+      case 'state':
+        camera = message.state;
+        break;
+      case 'preview':
+        preview = message.picture;
+        break;
+      case 'frame':
+        received = message.frame;
+        break;
+      case 'health':
+        health = message.health;
+        break;
+      case 'refused':
+        failure = `not saved: ${message.reason}`;
+        break;
+    }
+  }
+
+  function send(patch: Partial<CameraConfig>): boolean {
+    if (camera === null || link === null) return false;
+    const config = { ...camera.config, ...patch };
+    if (!link.configure(config)) {
+      failure = 'not saved: the node is not connected';
       return false;
     }
-    writes++;
-    view = result.value;
+    camera = { ...camera, config };
     failure = null;
     return true;
   }
 
-  async function saveCrop(crop: CropRect | null): Promise<void> {
-    if (await send({ crop })) edit = null;
+  function saveCrop(crop: CropRect | null): void {
+    if (send({ crop })) edit = null;
   }
 
   function chooseBoard(raw: string): void {
     const next = raw.trim() || DEFAULT_BOARD_ID;
     if (next === boardId) return;
     boardId = next;
-    view = null;
+    camera = null;
+    preview = null;
+    received = null;
     health = null;
-    rate = null;
     edit = null;
-    lastSample = null;
     const url = new URL(location.href);
     url.searchParams.set('board', next);
     history.replaceState(history.state, '', url);
   }
 
-  const config = $derived(view?.config ?? null);
-  const report = $derived(view?.report ?? null);
+  const config = $derived(camera?.config ?? null);
+  const report = $derived(camera?.report ?? null);
   /** The camera's frame: what the phone says it delivers, else the preview's size. */
-  const frame = $derived(report?.frame ?? view?.preview ?? null);
+  const frame = $derived(report?.frame ?? preview ?? null);
   const shownCrop = $derived(edit ?? config?.crop ?? null);
   const warnings = $derived(framingWarnings(shownCrop, frame));
-  const connected = $derived(view !== null && phoneConnected(view));
+  const connected = $derived(camera?.phone_connected ?? false);
   const portrait = $derived(frame !== null && frame.height > frame.width);
+  const locked = $derived(config === null || !up);
 </script>
+
+<svelte:document onvisibilitychange={onVisibilityChange} />
 
 <header>
   <h1>board-reader · camera control</h1>
@@ -135,7 +150,7 @@
     />
   </label>
   <span class="chip" class:up={connected}>
-    {view === null ? 'connecting…' : connected ? 'phone connected' : 'phone not reporting'}
+    {camera === null ? 'connecting…' : connected ? 'phone connected' : 'phone not connected'}
   </span>
   <span class="spacer"></span>
   <a href={resolve('/')}>live positions</a>
@@ -149,9 +164,9 @@
   <section class="views">
     <figure>
       <figcaption>The phone's whole view — drag the rectangle to choose what it sends</figcaption>
-      {#if view !== null && boardId !== null && frame !== null}
+      {#if camera !== null && frame !== null}
         <CropEditor
-          src={view.preview ? previewUrl(boardId, view.preview.seq) : null}
+          src={preview?.src ?? null}
           {frame}
           rect={shownCrop ?? WHOLE_FRAME}
           whole={shownCrop === null}
@@ -161,13 +176,13 @@
           <button
             type="button"
             class="primary"
-            disabled={edit === null || saving}
+            disabled={edit === null || !up}
             onclick={() => saveCrop(edit)}>Save crop</button
           >
           <button type="button" disabled={edit === null} onclick={() => (edit = null)}>Discard</button>
           <button
             type="button"
-            disabled={saving || (config?.crop === null && edit === null)}
+            disabled={!up || (config?.crop === null && edit === null)}
             onclick={() => saveCrop(null)}>Send whole frame</button
           >
           {#if edit !== null}<span class="dirty">unsaved</span>{/if}
@@ -186,10 +201,10 @@
 
     <figure>
       <figcaption>What the node receives</figcaption>
-      {#if view?.frame && boardId !== null}
+      {#if received !== null}
         <img
           class="received"
-          src={boardFrameUrl(boardId, view.frame.seq)}
+          src={received.src}
           alt="the latest frame the node received for board {boardId}"
         />
       {:else}
@@ -204,7 +219,7 @@
       lens
       <select
         value={config?.device ?? ''}
-        disabled={config === null || saving}
+        disabled={locked}
         onchange={(e) => send({ device: e.currentTarget.value || null })}
       >
         <option value="">phone's default rear camera</option>
@@ -220,7 +235,7 @@
       resolution
       <select
         value={config?.resolution}
-        disabled={config === null || saving}
+        disabled={locked}
         onchange={(e) => send({ resolution: e.currentTarget.value as Resolution })}
       >
         {#each RESOLUTION_NAMES as name (name)}
@@ -232,7 +247,7 @@
       type="button"
       class="stream"
       class:on={config?.streaming}
-      disabled={config === null || saving}
+      disabled={locked}
       onclick={() => send({ streaming: !config?.streaming })}
     >
       {config?.streaming ? 'Stop streaming' : 'Start streaming'}
@@ -240,8 +255,10 @@
 
     <h2>Status</h2>
     <dl>
-      <dt>phone last reported</dt>
-      <dd>{view === null ? '—' : formatAge(reportAge(view))}</dd>
+      <dt>phone link</dt>
+      <dd class:bad={camera !== null && !connected}>
+        {camera === null ? '—' : connected ? 'connected' : 'not connected'}
+      </dd>
       <dt>lens open</dt>
       <dd>{report?.device ?? '—'}</dd>
       <dt>frame delivered</dt>
@@ -252,9 +269,9 @@
       <dt>phone stream</dt>
       <dd>{report?.ingest ?? '—'}</dd>
       <dt>frames/s received</dt>
-      <dd>{rate === null ? '—' : rate.toFixed(1)}</dd>
+      <dd>{health?.fps == null ? '—' : health.fps.toFixed(1)}</dd>
       <dt>last frame</dt>
-      <dd>{view === null ? '—' : formatAge(frameAge(view))}</dd>
+      <dd>{health === null ? '—' : formatAge(health.frame_age_s)}</dd>
       <dt>recognizer</dt>
       <dd class:bad={health?.fallback}>
         {health?.recognizer ?? '—'}

@@ -1,15 +1,16 @@
 /**
- * The `/camera` page — the phone as a dumb camera (DESIGN D10).
+ * The `/camera` page — the phone as a dumb camera (DESIGN D11).
  *
  * It has no controls. What it films and whether it streams comes from the node's
- * camera config, which the phone hears on its report poll. So every spec here plays
- * the node: it answers `POST /boards/{id}/camera/report` with a config of its
- * choosing (`FakeControl`) and reads what reaches it — the reports, the full-frame
- * previews, and the frames on `/ws/ingest`, decoded down to their JPEG size, which
- * is the only honest proof that the crop the config asked for is the crop sent.
+ * camera config, which the node pushes down the phone's control socket. So every
+ * spec here plays the node on that socket (`FakeControl`): it pushes a config of its
+ * choosing, says whether previews are wanted, and reads what reaches it — the
+ * reports, the full-frame previews, and the frames on `/ws/ingest`, decoded down to
+ * their JPEG size, which is the only honest proof that the crop the config asked
+ * for is the crop sent.
  */
 
-import { expect, test, type Page } from '@playwright/test';
+import { expect, test, type Page, type WebSocketRoute } from '@playwright/test';
 import {
   FRAME,
   LANDSCAPE,
@@ -28,24 +29,31 @@ interface Config {
   streaming: boolean;
 }
 
-/** The node's half of the control channel, plus a counting `/ws/ingest`. */
+/** The node's half of the phone's control socket, plus a counting `/ws/ingest`. */
 class FakeControl {
   config: Config = { crop: null, device: null, resolution: '1080p', streaming: false };
+  watched = false;
   readonly reports: Record<string, unknown>[] = [];
   readonly previews: [number, number][] = [];
   readonly headers: Record<string, unknown>[] = [];
   readonly frames: [number, number][] = [];
+  private socket: WebSocketRoute | null = null;
 
   static async install(page: Page): Promise<FakeControl> {
     const node = new FakeControl();
-    await page.route('**/api/boards/*/camera/report', async (route) => {
-      node.reports.push(route.request().postDataJSON() as Record<string, unknown>);
-      await route.fulfill({ json: node.config });
-    });
-    await page.route('**/api/boards/*/camera/preview', async (route) => {
-      const body = route.request().postDataBuffer();
-      if (body !== null) node.previews.push(jpegSize(body));
-      await route.fulfill({ status: 204 });
+    await page.routeWebSocket('**/ws/boards/*/camera', (ws) => {
+      node.socket = ws;
+      ws.onMessage((message) => {
+        if (typeof message === 'string') {
+          const parsed = JSON.parse(message) as { type: string; report: Record<string, unknown> };
+          if (parsed.type === 'report') node.reports.push(parsed.report);
+        } else {
+          node.previews.push(jpegSize(message));
+        }
+      });
+      // What the node says to a phone that has just connected.
+      ws.send(JSON.stringify({ type: 'config', config: node.config }));
+      ws.send(JSON.stringify({ type: 'previews', on: node.watched }));
     });
     await page.route('**/api/client-log', (route) => route.fulfill({ status: 204 }));
     await page.routeWebSocket('**/ws/ingest', (ws) => {
@@ -55,6 +63,18 @@ class FakeControl {
       });
     });
     return node;
+  }
+
+  /** The control UI changed the config: the node pushes it at once. */
+  configure(patch: Partial<Config>): void {
+    this.config = { ...this.config, ...patch };
+    this.socket?.send(JSON.stringify({ type: 'config', config: this.config }));
+  }
+
+  /** A control page opened (or the last one closed). */
+  watch(on: boolean): void {
+    this.watched = on;
+    this.socket?.send(JSON.stringify({ type: 'previews', on }));
   }
 
   get lastReport(): Record<string, unknown> | undefined {
@@ -92,34 +112,49 @@ test.describe('a dumb camera', () => {
     });
     await expect(page.getByTestId('camera-status')).toContainText('node connected');
     expect(node.headers).toHaveLength(0);
+    // Sent when something changed, never on a timer.
+    const sent = node.reports.length;
+    await page.waitForTimeout(1500);
+    expect(node.reports.length).toBe(sent);
   });
 
   test('opens the lens and resolution the config names, once', async ({ page }) => {
     const node = await openCamera(page);
-    node.config = { ...node.config, device: 'Back Ultra Wide Camera', resolution: '2160p' };
+    node.configure({ device: 'Back Ultra Wide Camera', resolution: '2160p' });
     await expect
       .poll(async () => (await cameraRequests(page)).at(-1)?.video)
       .toEqual({ deviceId: { exact: 'lens-ultra' }, width: { ideal: 3840 }, height: { ideal: 2160 } });
-    // Polls keep answering with the same config; the camera is not reopened for each.
+    // The same config again (another field changed, a reconnect) does not reopen it.
     const opened = (await cameraRequests(page)).length;
+    node.configure({});
     await page.waitForTimeout(1500);
     expect((await cameraRequests(page)).length).toBe(opened);
   });
 
-  test('sends a small full-frame preview for the control UI', async ({ page }) => {
+  test('sends a small full-frame preview only while a control page watches', async ({ page }) => {
     const node = await openCamera(page);
+    node.configure({ crop: { x: 0.25, y: 0.25, w: 0.5, h: 0.5 } });
+    await page.waitForTimeout(2000);
+    expect(node.previews).toHaveLength(0); // nobody watches: no uplink spent
+
+    node.watch(true);
     // 1280x720 at a 480 px long side, whatever the crop: the control UI draws the
     // rectangle on the WHOLE field of view.
-    node.config = { ...node.config, crop: { x: 0.25, y: 0.25, w: 0.5, h: 0.5 } };
     await expect.poll(() => node.previews.length, { timeout: 8_000 }).toBeGreaterThan(1);
     expect(node.previews.at(-1)).toEqual([480, 270]);
+
+    node.watch(false);
+    await page.waitForTimeout(500); // one in the encoder may still land
+    const sent = node.previews.length;
+    await page.waitForTimeout(2000);
+    expect(node.previews.length).toBe(sent);
   });
 
   test('streams the configured crop when the config says stream, and stops when it says stop', async ({
     page
   }) => {
     const node = await openCamera(page);
-    node.config = { ...node.config, crop: { x: 0.25, y: 0.5, w: 0.5, h: 0.5 }, streaming: true };
+    node.configure({ crop: { x: 0.25, y: 0.5, w: 0.5, h: 0.5 }, streaming: true });
 
     await expect.poll(() => node.frames.length, { timeout: 8_000 }).toBeGreaterThan(1);
     // Half of 1280x720, under the 960 px send cap: exactly the rectangle.
@@ -139,7 +174,7 @@ test.describe('a dumb camera', () => {
     expect((box!.x - picture!.x) / picture!.width).toBeCloseTo(0.25, 1);
     expect((box!.y - picture!.y) / picture!.height).toBeCloseTo(0.5, 1);
 
-    node.config = { ...node.config, streaming: false };
+    node.configure({ streaming: false });
     await expect.poll(() => node.lastReport?.['ingest']).toBe('idle');
     const sent = node.frames.length;
     await page.waitForTimeout(1500);
@@ -152,12 +187,12 @@ test.describe('the motion meter', () => {
 
   test('a hand crossing the board opens a burst; moving the crop alone does not', async ({ page }) => {
     const node = await openCamera(page);
-    node.config = { ...node.config, crop: { x: 0.2, y: 0.1, w: 0.6, h: 0.8 }, streaming: true };
+    node.configure({ crop: { x: 0.2, y: 0.1, w: 0.6, h: 0.8 }, streaming: true });
     await expect.poll(() => node.headers.length, { timeout: 8_000 }).toBeGreaterThan(1);
 
     // A new crop is a new picture, not motion: the meter rebases instead of reading
     // the switch as one frame of whole-field change.
-    node.config = { ...node.config, crop: { x: 0.25, y: 0.15, w: 0.55, h: 0.75 } };
+    node.configure({ crop: { x: 0.25, y: 0.15, w: 0.55, h: 0.75 } });
     await expect.poll(() => node.frames.at(-1), { timeout: 8_000 }).toEqual([704, 540]);
     await page.waitForTimeout(1500);
     expect(node.headers.filter((header) => header['burst_id'] !== null)).toEqual([]);
@@ -177,13 +212,13 @@ test.describe('held upright', () => {
   test('says so, and still reports and streams', async ({ page }) => {
     const node = await FakeControl.install(page);
     await drawnBoardCamera(page, { width: 720, height: 1280 });
-    node.config = { ...node.config, streaming: true };
+    node.config = { ...node.config, streaming: true }; // set before the phone connects
     await page.goto('/camera');
     await liveViewfinder(page);
 
     await expect(page.getByTestId('camera-status')).toContainText('portrait');
     await expect.poll(() => node.frames.length, { timeout: 8_000 }).toBeGreaterThan(0);
-    // Polled: a frame can reach the node before the next report names the frame size.
+    // Polled: a frame can reach the node before the report naming the frame size.
     await expect.poll(() => node.lastReport?.['frame']).toEqual({ width: 720, height: 1280 });
   });
 });

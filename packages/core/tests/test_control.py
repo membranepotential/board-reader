@@ -2,13 +2,23 @@
 
 from __future__ import annotations
 
+import base64
+import json
+
 import pytest
 
 from board_reader_core.control import (
     CameraConfig,
     CameraReport,
+    ConfigMessage,
     CropRect,
     FrameSize,
+    HealthMessage,
+    PreviewMessage,
+    PreviewsMessage,
+    StateMessage,
+    parse_control_message,
+    parse_phone_message,
 )
 
 
@@ -99,3 +109,61 @@ def test_a_report_before_the_camera_opens_has_no_frame():
 def test_a_malformed_report_is_refused(raw):
     with pytest.raises(ValueError):
         CameraReport.from_dict(raw)
+
+
+# ---- the socket messages --------------------------------------------------------
+
+REPORT = {"devices": [{"id": "d1", "label": "Back Camera"}], "device": "Back Camera",
+          "frame": {"width": 1920, "height": 1080}, "ingest": "idle"}
+
+
+def test_the_phone_reports_with_a_typed_message():
+    message = parse_phone_message(json.dumps({"type": "report", "report": REPORT}))
+    assert message.report == CameraReport.from_dict(REPORT)
+
+
+def test_a_control_page_configures_with_a_typed_message():
+    config = {"crop": None, "device": None, "resolution": "720p", "streaming": True}
+    message = parse_control_message(json.dumps({"type": "configure", "config": config}))
+    assert message.config == CameraConfig.from_dict(config)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "streaming=1",  # not JSON
+        "[]",  # not an object
+        json.dumps({"report": REPORT}),  # no type
+        json.dumps({"type": "configure", "config": {}}),  # the other socket's message
+        json.dumps({"type": "report"}),  # its body missing
+        json.dumps({"type": "report", "report": REPORT, "extra": 1}),  # unknown key
+        json.dumps({"type": "report", "report": {"ingest": "flying"}}),  # bad body
+    ],
+)
+def test_the_phone_socket_refuses_what_is_not_a_report(text):
+    with pytest.raises(ValueError):
+        parse_phone_message(text)
+
+
+def test_a_control_page_cannot_configure_a_crop_outside_the_frame():
+    bad = {"type": "configure", "config": {"crop": {"x": 0.9, "y": 0, "w": 0.5, "h": 0.5}}}
+    with pytest.raises(ValueError, match="crop"):
+        parse_control_message(json.dumps(bad))
+
+
+def test_every_message_down_names_its_type():
+    config = CameraConfig(streaming=True)
+    assert json.loads(ConfigMessage(config).to_json()) == {"type": "config", "config": config.to_dict()}
+    assert json.loads(PreviewsMessage(on=True).to_json()) == {"type": "previews", "on": True}
+    state = json.loads(StateMessage(config, None, phone_connected=False).to_json())
+    assert state == {"type": "state", "config": config.to_dict(), "report": None,
+                     "phone_connected": False}
+    health = json.loads(HealthMessage("chessq", None, 3, 0, None, None).to_json())
+    assert health["type"] == "health"
+    assert (health["frame_age_s"], health["fps"]) == (None, None)
+
+
+def test_a_preview_carries_its_jpeg_as_base64():
+    sent = json.loads(PreviewMessage(jpeg=b"\xff\xd8jpeg", width=480, height=270).to_json())
+    assert (sent["type"], sent["width"], sent["height"]) == ("preview", 480, 270)
+    assert base64.b64decode(sent["jpeg"]) == b"\xff\xd8jpeg"
