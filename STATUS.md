@@ -43,7 +43,9 @@ confidences**. No moves, no legality, no PGN — those belong to the downstream 
 
 ## Next
 
-1. **Resting-hand re-test** (you) — after the energy gate lands: rest a hand on the board mid-game.
+1. **Latency round 3** (after the energy gate): read the first calm frame instead of holding 0.7 s; shorter
+   settle once obscured reads cannot commit; gate sweep, keep only no-loss settings (~2 s → ~0.5–0.8 s?).
+2. **Resting-hand re-test** (you) — after the energy gate lands: rest a hand on the board mid-game.
 3. **Record more varied games** — second set, second camera, other light. All gate takes are one
    set; the settle defaults are fitted to it.
 4. **Python edge on the control channel** (today: static `--roi`) — needed for a Pi/Jetson camera.
