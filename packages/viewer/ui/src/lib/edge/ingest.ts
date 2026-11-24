@@ -15,7 +15,7 @@
  * acknowledged frame for a fresher one (DESIGN D3/D4).
  */
 
-import { FRAME_TYPE, flattenQuad, parseIngestReply, type CornerQuad, type IngestFrameHeader } from '../protocol';
+import { FRAME_TYPE, parseIngestReply, type IngestFrameHeader, type IngestState } from '../protocol';
 import { INGEST_SOCKET, wsUrl } from '../api';
 
 const OPEN = 1;
@@ -44,7 +44,6 @@ export interface WebSocketLike {
 export type SocketFactory = (url: string) => WebSocketLike;
 
 /** What the operator is told about the link, in the words the page shows. */
-export type IngestStatus = 'idle' | 'connecting' | 'streaming' | 'reconnecting';
 
 export type SendOutcome =
   | 'sent'
@@ -58,18 +57,12 @@ export interface OutgoingFrame {
   readonly captureTs: number;
   readonly stability: number;
   /**
-   * Focus score of the tracked frame (tenengrad), unitless — the node compares it
+   * Focus score of the sent crop (tenengrad), unitless — the node compares it
    * only between neighbouring frames, to spend its ~1 s read on a crisp one.
-   * Omitted when the tracker is off (nothing measured it).
+   * Omitted by an edge that does not measure it.
    */
   readonly sharpness?: number;
   readonly burstId: string | null;
-  /**
-   * The quad **in the pixels of the JPEG being sent**. The node never sees the full
-   * camera frame, so corners in camera coordinates would point outside the image it
-   * holds. Omitted, the JPEG is taken to be an already-rectified crop.
-   */
-  readonly corners?: CornerQuad;
   readonly jpeg: Blob;
 }
 
@@ -83,9 +76,9 @@ export interface IngestClientOptions {
   readonly maxBuffered?: number;
   readonly reconnectMinMs?: number;
   readonly reconnectMaxMs?: number;
-  readonly onStatus?: (status: IngestStatus, detail: string) => void;
+  readonly onStatus?: (status: IngestState, detail: string) => void;
   readonly onAck?: (seq: number, boardId: string) => void;
-  /** The node refusing ONE frame (malformed corners, truncated JPEG) — not a disconnect. */
+  /** The node refusing ONE frame (a truncated JPEG, a malformed header) — not a disconnect. */
   readonly onFrameRefused?: (reason: string) => void;
   readonly setTimeoutFn?: (fn: () => void, ms: number) => number;
   readonly clearTimeoutFn?: (handle: number) => void;
@@ -234,8 +227,7 @@ export class IngestClient {
       capture_ts: frame.captureTs,
       stability: frame.stability,
       burst_id: frame.burstId,
-      ...(frame.sharpness === undefined ? {} : { sharpness: frame.sharpness }),
-      ...(frame.corners === undefined ? {} : { corners: flattenQuad(frame.corners) })
+      ...(frame.sharpness === undefined ? {} : { sharpness: frame.sharpness })
     };
     socket.send(JSON.stringify(header));
     socket.send(frame.jpeg);
@@ -243,7 +235,7 @@ export class IngestClient {
     return 'sent';
   }
 
-  private status(status: IngestStatus, detail: string): void {
+  private status(status: IngestState, detail: string): void {
     this.options.onStatus?.(status, detail);
   }
 

@@ -20,11 +20,12 @@
  */
 
 import {
-  parseDetectResponse,
+  parseCameraConfig,
   parseEstimateResponse,
   parseLabelResponse,
   parseUploadsResponse,
-  type DetectResponse,
+  type CameraConfig,
+  type CameraReport,
   type EstimateResponse,
   type LabelResponse,
   type ParseResult,
@@ -90,17 +91,13 @@ export function wsUrl(path: string, pageHref?: string): string {
 const JPEG_HEADERS = { 'Content-Type': 'image/jpeg' } as const;
 
 /**
- * How long `/detect` may take before the page stops waiting for it.
+ * How long one control-channel request may take before the page stops waiting.
  *
- * A request that never answers is worse than a refusal: the camera page hands the
- * camera and the quad to exactly one activity at a time, so a `fetch` that hangs
- * for ever leaves every idle-gated control — drag, detect, the automatic framing
- * and the drift check — disabled with nothing on screen to say why. Detection
- * costs ~0.1 s on a hit and 2-4 s on a miss (worst recorded 1.7 s), so 15 s is
- * far outside the working distribution and only ever fires on something
- * genuinely stuck.
+ * The phone polls about twice a second and never overlaps two polls, so a `fetch`
+ * that hangs for ever would stop the phone hearing any config change at all —
+ * silently. Two seconds is far outside a LAN round trip and still recovers fast.
  */
-export const DETECT_TIMEOUT_MS = 15_000;
+export const CONTROL_TIMEOUT_MS = 2_000;
 
 /** A `fetch` that gave up on its own clock, rather than one that failed. */
 function timedOut(cause: unknown): boolean {
@@ -135,14 +132,9 @@ async function failureOf(response: Response): Promise<ApiFailure> {
   return { status: response.status, message: body.trim() || fallback };
 }
 
-async function requestJson<T>(
-  url: string,
-  init: RequestInit,
-  parse: (raw: unknown) => ParseResult<T>
-): Promise<ApiResult<T>> {
-  let response: Response;
+async function send(url: string, init: RequestInit): Promise<ApiResult<Response>> {
   try {
-    response = await fetch(url, init);
+    return ok(await fetch(url, init));
   } catch (cause) {
     // A timeout is not an unreachable viewer — it is an answer that never came,
     // and saying so is the difference between "check the network" and "the node
@@ -152,6 +144,16 @@ async function requestJson<T>(
     // thrown fetch means this page could not reach its own viewer.
     return err({ status: 0, message: `${String(cause)} (is the viewer still reachable?)` });
   }
+}
+
+async function requestJson<T>(
+  url: string,
+  init: RequestInit,
+  parse: (raw: unknown) => ParseResult<T>
+): Promise<ApiResult<T>> {
+  const sent = await send(url, init);
+  if (!sent.ok) return sent;
+  const response = sent.value;
   if (!response.ok) return err(await failureOf(response));
   let body: unknown;
   try {
@@ -163,6 +165,13 @@ async function requestJson<T>(
   return parsed.ok ? ok(parsed.value) : err({ status: response.status, message: parsed.error });
 }
 
+/** A request whose success carries no body worth reading (a 204). */
+async function requestEmpty(url: string, init: RequestInit): Promise<ApiResult<null>> {
+  const sent = await send(url, init);
+  if (!sent.ok) return sent;
+  return sent.value.ok ? ok(null) : err(await failureOf(sent.value));
+}
+
 // ---- endpoints ---------------------------------------------------------------
 
 /**
@@ -172,28 +181,6 @@ async function requestJson<T>(
 export function estimate(photo: Blob, boardId: string): Promise<ApiResult<EstimateResponse>> {
   const url = apiPath('/estimate', { board_id: boardId });
   return requestJson(url, { method: 'POST', body: photo, headers: JPEG_HEADERS }, parseEstimateResponse);
-}
-
-/**
- * Locate the board → a proposed quad in GEOMETRIC TL,TR,BR,BL order.
- *
- * Which physical corner is a8 is not knowable from geometry (DESIGN decision #15),
- * so a detection replaces the quad and never the labelling.
- */
-export function detect(photo: Blob): Promise<ApiResult<DetectResponse>> {
-  return requestJson(
-    apiPath('/detect'),
-    {
-      method: 'POST',
-      body: photo,
-      headers: JPEG_HEADERS,
-      // Bounded here rather than at each caller: all three of them (look again,
-      // the automatic first framing, the periodic drift check) claim the page's
-      // single activity slot for the duration, so all three need the guarantee.
-      signal: AbortSignal.timeout(DETECT_TIMEOUT_MS)
-    },
-    parseDetectResponse
-  );
 }
 
 export function listUploads(limit = 100): Promise<ApiResult<UploadsResponse>> {
@@ -232,4 +219,42 @@ export function saveLabel(
  */
 export function boardFrameUrl(boardId: string, bust: string | number): string {
   return apiPath(`/boards/${encodeURIComponent(boardId)}/frame`, { seq: bust });
+}
+
+// ---- the camera control channel ----------------------------------------------
+
+const JSON_HEADERS = { 'Content-Type': 'application/json' } as const;
+
+function cameraPath(boardId: string, rest = ''): string {
+  return `/boards/${encodeURIComponent(boardId)}/camera${rest}`;
+}
+
+/**
+ * The phone's poll: say what the camera is, hear what it should be. The reply is
+ * the config the control UI set for this board (the defaults until it sets one).
+ */
+export function reportCamera(
+  boardId: string,
+  report: CameraReport
+): Promise<ApiResult<CameraConfig>> {
+  return requestJson(
+    apiPath(cameraPath(boardId, '/report')),
+    {
+      method: 'POST',
+      body: JSON.stringify(report),
+      headers: JSON_HEADERS,
+      signal: AbortSignal.timeout(CONTROL_TIMEOUT_MS)
+    },
+    parseCameraConfig
+  );
+}
+
+/** The phone's low-rate, full-frame view, so the control UI can draw the crop on it. */
+export function sendPreview(boardId: string, jpeg: Blob): Promise<ApiResult<null>> {
+  return requestEmpty(apiPath(cameraPath(boardId, '/preview')), {
+    method: 'POST',
+    body: jpeg,
+    headers: JPEG_HEADERS,
+    signal: AbortSignal.timeout(CONTROL_TIMEOUT_MS)
+  });
 }

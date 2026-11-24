@@ -3,12 +3,11 @@ import {
   CLASSES,
   NUM_CLASSES,
   START_PLACEMENT,
-  flattenQuad,
+  parseCameraConfig,
   parseEstimateResponse,
   parseIngestReply,
   parsePositionEvent,
-  parseUploadsResponse,
-  type CornerQuad
+  parseUploadsResponse
 } from './protocol';
 
 function distFor(placementPeak = 0.9): number[][][] {
@@ -155,16 +154,26 @@ describe('parsePositionEvent', () => {
   });
 });
 
-describe('the ingest header quad', () => {
-  const quad: CornerQuad = [
-    [536.4, 918.2],
-    [631, 336],
-    [1458, 320],
-    [1638, 896]
-  ];
+describe('parseCameraConfig', () => {
+  const config = {
+    crop: { x: 0.1, y: 0.2, w: 0.5, h: 0.6 },
+    device: 'Back Camera',
+    resolution: '2160p',
+    streaming: true
+  };
 
-  it('flattens in a8,h8,h1,a1 order', () => {
-    expect(flattenQuad(quad)).toEqual([536.4, 918.2, 631, 336, 1458, 320, 1638, 896]);
+  it('reads what board_reader_core.control writes', () => {
+    expect(parseCameraConfig(config)).toEqual({ ok: true, value: config });
+    expect(parseCameraConfig({ ...config, crop: null, device: null }).ok).toBe(true);
+  });
+
+  it.each([
+    ['an unknown resolution', { ...config, resolution: '4k' }],
+    ['a crop missing a side', { ...config, crop: { x: 0, y: 0, w: 1 } }],
+    ['a streaming flag that is not a boolean', { ...config, streaming: 'yes' }],
+    ['a device that is not a label', { ...config, device: 3 }]
+  ])('refuses %s', (_label, raw) => {
+    expect(parseCameraConfig(raw).ok).toBe(false);
   });
 });
 

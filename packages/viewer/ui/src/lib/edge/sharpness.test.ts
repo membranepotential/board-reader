@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { tenengrad, type GrayImage } from './sharpness';
+import { tenengrad, toGray, type GrayImage } from './sharpness';
 
 /** A synthetic board: `cell`-sized light and dark squares, i.e. nothing but edges. */
 function checkerboard(width: number, height: number, cell: number): GrayImage {
@@ -136,5 +136,15 @@ describe('tenengrad', () => {
     expect(tenengrad({ data: new Float32Array(0), width: 0, height: 0 })).toBe(0);
     // A truncated buffer is a caller bug, but it must not read past its own end.
     expect(tenengrad({ data: new Float32Array(10), width: 8, height: 8 })).toBe(0);
+  });
+});
+
+describe('toGray', () => {
+  it('turns RGBA bytes into luma in [0,1] with the BGR2GRAY weights', () => {
+    const rgba = [255, 255, 255, 255, 0, 0, 0, 255, 255, 0, 0, 255];
+    const gray = toGray(rgba, new Float32Array(3));
+    expect(gray[0]).toBeCloseTo(1, 5);
+    expect(gray[1]).toBe(0);
+    expect(gray[2]).toBeCloseTo(0.299, 5);
   });
 });

@@ -1,145 +1,126 @@
 /**
- * The camera the `/camera` specs drive, and the geometry they measure it against.
+ * A camera whose picture the `/camera` specs decide.
  *
- * Chromium's `--use-fake-device-for-media-stream` gives one rolling pattern and no
- * way to say what is in it — good enough for a viewfinder that only has to exist,
- * useless for anything the tracker or the detector has to agree with. So the specs
- * that need a BOARD swap `getUserMedia` for a canvas `captureStream` they draw
- * themselves: a known quad, at a known place.
- *
- * It lives here rather than in one spec file because two files need the same
- * board: `camera.spec.ts` measures the rotate warning a moved framing raises, and
- * `camera-auto.spec.ts` measures what the page does with it when nobody is touching
- * the phone.
+ * Chromium's `--use-fake-device-for-media-stream` gives one rolling pattern at a size
+ * the spec cannot choose. The specs that measure the crop, the preview or portrait
+ * framing swap `getUserMedia` for a canvas `captureStream` instead: a board drawn at
+ * a known place, in a frame of a known size.
  */
 
 import { expect, type Page } from '@playwright/test';
 
-/** The two stages a phone presents, and the ones every layout number here is for. */
+/** The stages a phone presents. */
 export const LANDSCAPE = { width: 844, height: 390 };
 export const PORTRAIT = { width: 390, height: 844 };
 
-// ---- a camera whose scene the specs decide ------------------------------------
-
 export const FRAME = { width: 1280, height: 720 };
-/** Where the board is drawn, and what `/detect` is stubbed to return. */
-export const BOARD = { x: 240, y: 150, w: 800, h: 448 };
 
-/** The drawn board's four corners in frame pixels, optionally displaced. */
-export function boardQuad(dx = 0, dy = 0): [number, number][] {
-  return [
-    [BOARD.x + dx, BOARD.y + dy],
-    [BOARD.x + BOARD.w + dx, BOARD.y + dy],
-    [BOARD.x + BOARD.w + dx, BOARD.y + BOARD.h + dy],
-    [BOARD.x + dx, BOARD.y + BOARD.h + dy]
-  ];
-}
+/** The lenses the drawn camera claims to have, as `enumerateDevices` lists them. */
+export const LENSES = [
+  { deviceId: 'lens-wide', label: 'Back Camera' },
+  { deviceId: 'lens-ultra', label: 'Back Ultra Wide Camera' }
+] as const;
 
-/** `cornerKey('phone')` — where the crop for the default board is remembered. */
-export const CORNERS_KEY = 'board-reader.camera.corners.phone';
-
-/**
- * Seed the crop a previous session saved for this board, as `serialiseFraming`
- * spells it: fractions of the frame plus the labelling, so a resolution change is
- * absorbed on the way back in.
- *
- * A page that opens on one of these does not go looking for the board — it VERIFIES
- * what it was given, with one detection, as soon as the scene is still.
- */
-export async function seedFraming(
+export async function drawnBoardCamera(
   page: Page,
-  quad: readonly (readonly [number, number])[],
-  rot: number
+  frame: { readonly width: number; readonly height: number } = FRAME
 ): Promise<void> {
   await page.addInitScript(
-    ({ key, pts, rot: turns }) => localStorage.setItem(key, JSON.stringify({ pts, rot: turns })),
-    {
-      key: CORNERS_KEY,
-      pts: quad.map(([x, y]) => [x / FRAME.width, y / FRAME.height]),
-      rot
-    }
-  );
-}
-
-export async function drawnBoardCamera(page: Page): Promise<void> {
-  await page.addInitScript(
-    ({ FRAME, BOARD }) => {
+    ({ frame, lenses }) => {
       const canvas = document.createElement('canvas');
-      canvas.width = FRAME.width;
-      canvas.height = FRAME.height;
+      canvas.width = frame.width;
+      canvas.height = frame.height;
       const ctx = canvas.getContext('2d');
       if (ctx === null) return;
-
-      // A bare checkerboard is periodic, and a translation of half a square is then
-      // indistinguishable from one of one and a half. These give the homography fit
-      // something unambiguous. Deterministic, so a failure is reproducible.
-      let seed = 7;
-      const rnd = () => ((seed = (seed * 1103515245 + 12345) % 2147483648) / 2147483648);
-      const marks = Array.from({ length: 24 }, () => ({ x: rnd(), y: rnd(), r: 4 + rnd() * 10 }));
+      const side = Math.min(frame.width, frame.height) * 0.6;
+      const bx = (frame.width - side) / 2;
+      const by = (frame.height - side) / 2;
+      let tick = 0;
 
       const draw = () => {
         ctx.fillStyle = 'rgb(128,128,128)';
         ctx.fillRect(0, 0, canvas.width, canvas.height);
-
-        const bx = BOARD.x;
-        const cw = BOARD.w / 8;
-        const ch = BOARD.h / 8;
+        const cell = side / 8;
         for (let r = 0; r < 8; r++) {
           for (let c = 0; c < 8; c++) {
             ctx.fillStyle = (r + c) % 2 === 0 ? 'rgb(51,51,51)' : 'rgb(204,204,204)';
-            ctx.fillRect(bx + c * cw, BOARD.y + r * ch, cw + 1, ch + 1);
+            ctx.fillRect(bx + c * cell, by + r * cell, cell + 1, cell + 1);
           }
         }
-        ctx.fillStyle = 'rgb(240,120,40)';
-        for (const mark of marks) {
-          ctx.beginPath();
-          ctx.arc(bx + mark.x * BOARD.w, BOARD.y + mark.y * BOARD.h, mark.r, 0, Math.PI * 2);
-          ctx.fill();
-        }
+        // One pixel that changes every frame: a canvas that never changes produces
+        // no new frames, and a video whose `currentTime` stands still is exactly
+        // what the camera-stall watchdog reopens the camera for.
+        ctx.fillStyle = `rgb(${tick++ % 256},0,0)`;
+        ctx.fillRect(0, 0, 1, 1);
       };
-
-      // Redrawn every animation frame, not once: a canvas that never changes
-      // produces no new frames, and a video whose `currentTime` stands still is
-      // exactly what the camera-stall watchdog reopens the camera for.
       const loop = () => {
         draw();
         requestAnimationFrame(loop);
       };
       loop();
 
-      const stream = canvas.captureStream(30);
+      const source = canvas.captureStream(30);
+      // A fresh clone per request: the page stops the outgoing tracks before every
+      // reopen (iOS hands out one camera at a time), and handing back the stopped
+      // stream would leave a lens switch with a dead picture.
+      const open = (): MediaStream => {
+        const stream = source.clone();
+        const track = stream.getVideoTracks()[0];
+        if (track !== undefined) {
+          // The page names the open lens from the track's deviceId.
+          const settings = track.getSettings.bind(track);
+          track.getSettings = () => ({ ...settings(), deviceId: lenses[0].deviceId });
+        }
+        return stream;
+      };
+      // Every request is kept, so a spec can read what the page asked the camera for.
+      const asked: MediaStreamConstraints[] = [];
+      Object.defineProperty(window, '__cameraRequests', { value: asked });
       Object.defineProperty(navigator.mediaDevices, 'getUserMedia', {
         configurable: true,
-        value: () => Promise.resolve(stream)
+        value: (constraints: MediaStreamConstraints) => {
+          asked.push(constraints);
+          return Promise.resolve(open());
+        }
       });
       Object.defineProperty(navigator.mediaDevices, 'enumerateDevices', {
         configurable: true,
-        value: () => Promise.resolve([])
+        value: () =>
+          Promise.resolve(
+            lenses.map((lens) => ({ ...lens, kind: 'videoinput', groupId: '', toJSON: () => lens }))
+          )
       });
     },
-    { FRAME, BOARD }
+    { frame, lenses: LENSES }
   );
 }
 
-/** The live quad's top-left x in VIDEO pixels — the polygon's viewBox is the frame. */
-export async function liveQuadX(page: Page): Promise<number> {
-  const points = (await page.locator('polygon.quad-line').getAttribute('points')) ?? '';
-  return Number(points.trim().split(/[\s,]+/)[0]);
-}
-
-
 /**
- * Wait for the fake camera to actually deliver a frame.
- *
- * `.picture` is sized from the video's own dimensions, so it has no box at all until
- * `loadedmetadata` has fired — measuring before that reads 0 and proves nothing.
+ * Wait for the fake camera to actually deliver a frame: the status line names the
+ * frame size only once `loadedmetadata` has fired.
  */
 export async function liveViewfinder(page: Page): Promise<void> {
-  await expect
-    .poll(async () => (await page.locator('.picture').boundingBox())?.width ?? 0, {
-      // Generous on purpose: several specs now drive a camera at once, and a
-      // contended machine can take a while to hand out the first frame.
-      timeout: 20_000
-    })
-    .toBeGreaterThan(0);
+  await expect(page.getByTestId('camera-status')).toContainText(/\d+×\d+/, { timeout: 20_000 });
+}
+
+/** `[width, height]` of a baseline or progressive JPEG, read from its SOF marker. */
+export function jpegSize(bytes: Buffer): [number, number] {
+  let i = 2;
+  while (i + 9 < bytes.length) {
+    if (bytes[i] !== 0xff) throw new Error('not a JPEG marker stream');
+    const marker = bytes[i + 1]!;
+    const length = bytes.readUInt16BE(i + 2);
+    if (marker === 0xc0 || marker === 0xc2) {
+      return [bytes.readUInt16BE(i + 7), bytes.readUInt16BE(i + 5)];
+    }
+    i += 2 + length;
+  }
+  throw new Error('no SOF marker');
+}
+
+/** Every `getUserMedia` request the page made of the drawn camera, oldest first. */
+export function cameraRequests(page: Page): Promise<MediaStreamConstraints[]> {
+  return page.evaluate(
+    () => (window as unknown as { __cameraRequests: MediaStreamConstraints[] }).__cameraRequests
+  );
 }

@@ -144,23 +144,6 @@ export interface PositionEvent {
   readonly settled: SettledBoard | null;
 }
 
-// ---- geometry on the wire ----------------------------------------------------
-
-export type Point = readonly [x: number, y: number];
-/** Four corners in canonical a8,h8,h1,a1 order — the order every endpoint takes. */
-export type CornerQuad = readonly [Point, Point, Point, Point];
-/** The same quad flattened, which is how `wire.Frame.header` carries it. */
-export type CornerCoords = readonly [
-  number, number, number, number, number, number, number, number
-];
-
-export function flattenQuad(quad: CornerQuad): CornerCoords {
-  return [
-    quad[0][0], quad[0][1], quad[1][0], quad[1][1],
-    quad[2][0], quad[2][1], quad[3][0], quad[3][1]
-  ];
-}
-
 // ---- L1 → L2 ingest framing --------------------------------------------------
 
 export const FRAME_TYPE = 'frame';
@@ -168,11 +151,9 @@ export const FRAME_TYPE = 'frame';
 /**
  * The JSON header of one ingest frame (`wire.Frame.header`).
  *
- * `corners` present means the JPEG is the ORIGINAL camera image and the board is
- * that quad *in the sent image's own pixels*; absent means the JPEG is already a
- * rectified crop. Corners ride on every frame by design — there is no
- * `set_corners` control message, so a reconnect or a mid-stream recalibration
- * needs no handshake.
+ * The JPEG is the crop the control UI configured (or the whole frame). The wire
+ * still PARSES a legacy `corners` field so old recordings replay, but nothing
+ * here sends one: the recognizer finds the board itself (DESIGN D10).
  */
 export interface IngestFrameHeader {
   readonly type: typeof FRAME_TYPE;
@@ -184,7 +165,6 @@ export interface IngestFrameHeader {
   /** Edge focus score (tenengrad) — comparable only between neighbouring frames. */
   readonly sharpness?: number;
   readonly burst_id: string | null;
-  readonly corners?: CornerCoords;
   readonly clock?: ClockRunning;
 }
 
@@ -203,12 +183,68 @@ export function parseIngestReply(raw: string): IngestReply | null {
   return null;
 }
 
-// ---- HTTP replies ------------------------------------------------------------
+// ---- the camera control channel (`board_reader_core.control`) ---------------
+// The phone is only a camera (DESIGN D10, "dumb camera"): the control UI sets what
+// it films, the node holds that per board, and the phone pulls and applies it.
 
-/** `POST /detect` — geometric TL,TR,BR,BL. Which corner is a8 is NOT knowable (decision #15). */
-export interface DetectResponse {
-  readonly corners: CornerQuad;
+/** Capture resolutions by name, asked for as `ideal` constraints. */
+export const RESOLUTIONS = {
+  '720p': { width: 1280, height: 720 },
+  '1080p': { width: 1920, height: 1080 },
+  '2160p': { width: 3840, height: 2160 }
+} as const satisfies Record<string, FrameSize>;
+export type Resolution = keyof typeof RESOLUTIONS;
+export const RESOLUTION_NAMES = Object.keys(RESOLUTIONS) as readonly Resolution[];
+export const DEFAULT_RESOLUTION: Resolution = '1080p';
+
+export interface FrameSize {
+  readonly width: number;
+  readonly height: number;
 }
+
+/** A rectangle in FRACTIONS of the full camera frame, wholly inside it. */
+export interface CropRect {
+  readonly x: number;
+  readonly y: number;
+  readonly w: number;
+  readonly h: number;
+}
+
+/** What the control UI chose; `crop: null` sends the whole frame. */
+export interface CameraConfig {
+  readonly crop: CropRect | null;
+  /** The lens by its LABEL — the one identity a browser keeps across reloads. */
+  readonly device: string | null;
+  readonly resolution: Resolution;
+  readonly streaming: boolean;
+}
+
+export const DEFAULT_CAMERA_CONFIG: CameraConfig = {
+  crop: null,
+  device: null,
+  resolution: DEFAULT_RESOLUTION,
+  streaming: false
+};
+
+export interface CameraDevice {
+  readonly id: string;
+  readonly label: string;
+}
+
+/** The phone's `/ws/ingest` connection, as it reports it. */
+export type IngestState = 'idle' | 'connecting' | 'streaming' | 'reconnecting';
+
+/** What the phone says about its camera on every poll. */
+export interface CameraReport {
+  readonly devices: readonly CameraDevice[];
+  /** The label of the lens actually open; `null` until the camera is live. */
+  readonly device: string | null;
+  /** The size actually delivered; `null` until the camera is live. */
+  readonly frame: FrameSize | null;
+  readonly ingest: IngestState;
+}
+
+// ---- HTTP replies ------------------------------------------------------------
 
 /** One relabelling the prior decoder applied (`prior.Flip`). */
 export interface PriorFlip {
@@ -334,6 +370,13 @@ function asMember<T extends string>(
     : fallback;
 }
 
+/** `value` if it is one of `members`, else `null` — for fields with no safe default. */
+function oneOf<T extends string>(value: unknown, members: readonly T[]): T | null {
+  return typeof value === 'string' && (members as readonly string[]).includes(value)
+    ? (value as T)
+    : null;
+}
+
 /** 8×8×13 finite numbers, or null. Anything else is "no distribution", never a partial one. */
 export function parseSquareDist(value: unknown): SquareDist | null {
   if (!Array.isArray(value) || value.length !== GRID) return null;
@@ -397,22 +440,6 @@ export function parsePositionEvent(raw: unknown): ParseResult<PositionEvent> {
 }
 
 // ---- HTTP replies ------------------------------------------------------------
-
-export function parseDetectResponse(raw: unknown): ParseResult<DetectResponse> {
-  if (!isRecord(raw)) return err('not a JSON object');
-  const corners = raw['corners'];
-  if (!Array.isArray(corners) || corners.length !== 4) return err('no usable quad');
-  const points: Point[] = [];
-  for (const p of corners) {
-    if (!Array.isArray(p) || p.length !== 2) return err('no usable quad');
-    const x = asFiniteNumber(p[0]);
-    const y = asFiniteNumber(p[1]);
-    if (x === null || y === null) return err('no usable quad');
-    points.push([x, y]);
-  }
-  // Exactly four finite (x, y) pairs, checked in the loop above.
-  return ok({ corners: points as unknown as CornerQuad });
-}
 
 function parsePrior(value: unknown): PriorDecode | null {
   if (!isRecord(value)) return null;
@@ -511,4 +538,27 @@ export function parseLabelResponse(raw: unknown): ParseResult<LabelResponse> {
     placement,
     corrections: asFiniteNumber(raw['corrections']) ?? 0
   });
+}
+
+// ---- the camera control channel ------------------------------------------------
+
+function parseCrop(value: unknown): CropRect | null | undefined {
+  if (value === null) return null;
+  if (!isRecord(value)) return undefined;
+  const [x, y, w, h] = ['x', 'y', 'w', 'h'].map((key) => asFiniteNumber(value[key]));
+  if (x == null || y == null || w == null || h == null) return undefined;
+  return { x, y, w, h };
+}
+
+/** The node validated it on the way in; this refuses anything that is not one. */
+export function parseCameraConfig(raw: unknown): ParseResult<CameraConfig> {
+  if (!isRecord(raw)) return err('not a camera config');
+  const crop = parseCrop(raw['crop']);
+  if (crop === undefined) return err('the camera config has no usable crop');
+  const resolution = oneOf(raw['resolution'], RESOLUTION_NAMES);
+  if (resolution === null) return err('the camera config has no known resolution');
+  const device = raw['device'];
+  if (device !== null && typeof device !== 'string') return err('the camera config has no usable device');
+  if (typeof raw['streaming'] !== 'boolean') return err('the camera config does not say whether to stream');
+  return ok({ crop, device, resolution, streaming: raw['streaming'] });
 }

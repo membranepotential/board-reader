@@ -1,13 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
 import { IngestClient, type WebSocketLike } from './ingest';
-import type { CornerQuad } from '../protocol';
-
-const QUAD: CornerQuad = [
-  [1, 2],
-  [3, 4],
-  [5, 6],
-  [7, 8]
-];
 
 /** A `WebSocket` that records what was sent, in order and by frame kind. */
 class FakeSocket implements WebSocketLike {
@@ -78,7 +70,7 @@ describe('the two-frame ingest wire', () => {
 
   it('writes the header shape board_reader_core.wire reads', () => {
     const { client, sockets } = connected();
-    client.sendFrame(frame({ burstId: 'phone:b0', corners: QUAD }));
+    client.sendFrame(frame({ burstId: 'phone:b0' }));
     const header = JSON.parse(sockets[0]!.frames[0]!.data as string) as Record<string, unknown>;
     expect(header).toEqual({
       type: 'frame',
@@ -86,12 +78,11 @@ describe('the two-frame ingest wire', () => {
       seq: 0,
       capture_ts: 1_754_560_800.5,
       stability: 0.9,
-      burst_id: 'phone:b0',
-      corners: [1, 2, 3, 4, 5, 6, 7, 8]
+      burst_id: 'phone:b0'
     });
   });
 
-  it('omits corners entirely when the JPEG is an already-rectified crop', () => {
+  it('never puts corners on the wire: the recognizer finds the board itself', () => {
     const { client, sockets } = connected();
     client.sendFrame(frame());
     const header = JSON.parse(sockets[0]!.frames[0]!.data as string) as Record<string, unknown>;

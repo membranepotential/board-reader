@@ -17,19 +17,27 @@
  * The scores are therefore comparable across a window in which exposure drifts, and
  * meaningless in absolute terms — only their ORDER is ever used.
  *
- * No DOM here, deliberately, like `motion.ts` and `tracker.ts` beside it: it takes a
+ * No DOM here, deliberately, like `motion.ts` beside it: it takes a
  * grayscale `Float32Array` and returns a number, so it is tested directly
  * (`sharpness.test.ts`).
  */
 
 /**
- * A grayscale image as every module in `$lib/edge` and `$lib/geometry` passes one:
+ * A grayscale image as every module in `$lib/edge` passes one:
  * row-major values in [0,1], `width * height` of them.
  */
 export interface GrayImage {
   readonly data: Float32Array;
   readonly width: number;
   readonly height: number;
+}
+
+/** RGBA bytes (a canvas readback) -> luma in [0,1], written into `out`. */
+export function toGray(rgba: ArrayLike<number>, out: Float32Array): Float32Array {
+  for (let i = 0, p = 0; i < out.length; i++, p += 4) {
+    out[i] = (0.299 * rgba[p]! + 0.587 * rgba[p + 1]! + 0.114 * rgba[p + 2]!) / 255;
+  }
+  return out;
 }
 
 /**
