@@ -1,7 +1,8 @@
-"""The four-take replay gate as one table: a baseline replay beside a candidate.
+"""The seven-take replay gate as one table: a baseline replay beside a candidate.
 
-Every model or pipeline change is gated on the same four recorded takes
-(docs/reports/2026-11-24-chessq-v6-replay-gate.md). Each replay leaves a scored
+Every model or pipeline change is gated on the same seven recorded takes: the four
+of docs/reports/2026-11-24-chessq-v6-replay-gate.md and the three held-out takes
+whose truth docs/reports/2026-11-24-heldout-truth-completion.md completed. Each replay leaves a scored
 ``recordings/<take>/replays/<name>/report.json`` (``replay --score``); this reads
 two of them per take and prints, as ``base→candidate``:
 
@@ -9,9 +10,9 @@ two of them per take and prints, as ``base→candidate``:
 
 with a total row (per-square pooled over every scored square, perfect boards
 summed). ``make gate`` replays the takes under a new name and prints this against
-``cq-v6``.
+the Makefile's ``GATE_BASE``.
 
-    uv run python tools/gate_table.py cq-v6 phaseA-s3
+    uv run python tools/gate_table.py sp03-settle05-7 my-candidate
     uv run python tools/gate_table.py --replay-args   # what `make gate` replays
 """
 
@@ -33,8 +34,9 @@ class GateTake:
     """One gate take and how it is replayed."""
 
     take: str
-    #: Recorded before the 2026-08-27 motion-meter fix, so its ``stability`` must
-    #: be re-metered (``replay --restamp-stability``).
+    #: Recorded with a broken motion meter (before the 2026-08-27 fix), so its
+    #: ``stability`` must be re-metered (``replay --restamp-stability``); without
+    #: it every schedule collapses to the keepalive.
     restamp_stability: bool = False
 
     @property
@@ -52,6 +54,10 @@ GATE_TAKES = (
     GateTake("20260827-175539"),
     GateTake("20260828-111421"),
     GateTake("20260827-181802"),
+    # The held-out takes, all three before the meter fix.
+    GateTake("20260827-163352", restamp_stability=True),
+    GateTake("20260827-170333", restamp_stability=True),
+    GateTake("20260827-172736", restamp_stability=True),
 )
 
 #: The three boards a published event carries, in report order.

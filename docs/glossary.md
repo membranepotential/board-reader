@@ -104,8 +104,9 @@ settle window, riding on stream events as `settled`.
 `BR_SCHEDULE`): by default three reads 0.3 s apart at the end of a motion burst, plus a
 keepalive read when 2 s of capture time passed without one.
 
-**Replay gate** — the four recorded takes with truth that every recognition, decode or
-settle change is measured on (`make gate`); the reference row is `sp03-settle05`.
+**Replay gate** — the seven recorded takes with truth that every recognition, decode or
+settle change is measured on (`make gate`); the reference row is `sp03-settle05-7`
+(341/361 raw, 315/361 settled perfect boards).
 
 **Zero-shot** — reading a chess set with no calibration for it. ChessQ is zero-shot on every
 set; there is no calibration round any more.

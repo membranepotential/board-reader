@@ -177,12 +177,18 @@ isolate the raw recognizer.
 `--temperature` adds the block described above. It is off by default because it costs
 a leave-one-out fit per board and, unlike the decoder, it does not serve.
 
-**The replay gate.** `make gate GATE_NAME=<new>` replays the four gate takes
+**The replay gate.** `make gate GATE_NAME=<new>` replays the seven gate takes
 through `BR_CHESSQ` with the schedule `serve` ships (`schedule.DEFAULT_POLICY_SPEC`),
-scores each, and prints `tools/gate_table.py`'s table against `sp03-settle05`: raw
+scores each, and prints `tools/gate_table.py`'s table against `sp03-settle05-7`: raw
 per-square and raw / prior / settled perfect boards per take, with a pooled total.
-The reference is 145/156 raw and 140/156 settled perfect boards
-([[2026-11-24-latency-round2]]). Until 2026-11-24 the gate replayed plain
+The seven takes are the four of [[2026-11-24-chessq-v6-replay-gate]] and the three
+held-out takes 20260827-163352, -170333 and -172736, whose truth
+[[2026-11-24-heldout-truth-completion]] completed. The held-out takes and 08-13 replay
+with `--restamp-stability`: they were recorded before the motion-meter fix, and without
+it every schedule collapses to the keepalive. The reference is 341/361 raw, 341/361
+prior and 315/361 settled perfect boards, .9982 raw per square (2026-11-24, the shipped
+stack; on the first four takes alone it is 145/156 raw and 140/156 settled, the old
+`sp03-settle05` row of [[2026-11-24-latency-round2]]). Until 2026-11-24 the gate replayed plain
 `burst-end` (one read per move), which `serve` never ran; `cq-v6` (92/101 raw,
 84/101 settled, [[2026-11-24-chessq-v6-replay-gate]]) is that older reference. A change that should not move the reader must
 print every cell once.

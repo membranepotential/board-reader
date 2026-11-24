@@ -828,7 +828,7 @@ BR_CHESSQ=models/chessq/cq-vit-s-644-v6-seed1-onnx-fp32.onnx \
 uv run board-reader-inference replay recordings/20260813-193308 --score
 ```
 
-`make gate GATE_NAME=<name>` runs this over the four gate takes and prints the table
+`make gate GATE_NAME=<name>` runs this over the seven gate takes and prints the table
 (Option P, step 4).
 
 **The debounce's knobs.** `--settle-seconds`, `--settle-min-reads` and
@@ -1005,10 +1005,10 @@ eval and replays are all in the chess frame.
    Expected: a `frame:` line, `21/21 raw reads agree with the truth unturned`
    (a `! WARNING ... turned 180°` line instead means the truth file is not in the
    chess frame).
-4. Run `make gate GATE_NAME=<new-name>` on an idle GPU. Expected: four
-   `replaying ...` lines (about a minute in all), then the gate table
-   `ka2-tuned → <new-name>` with a total row. An unchanged pipeline prints every
-   cell once (no `→`): 110/119 raw, 110/119 prior, 104/119 settled perfect.
+4. Run `make gate GATE_NAME=<new-name>` on an idle GPU. Expected: seven
+   `replaying ...` lines (about two minutes in all), then the gate table
+   `sp03-settle05-7 → <new-name>` with a total row. An unchanged pipeline prints every
+   cell once (no `→`): 341/361 raw, 341/361 prior, 315/361 settled perfect.
    `uv run python tools/gate_table.py tkr-shipped cq-v6` prints the adoption gate.
 
 Automated: `test_labels.py`, `test_server_labels.py`, `test_evaluate.py` and

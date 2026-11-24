@@ -1,4 +1,4 @@
-"""``tools/gate_table.py``: the four-take replay gate as one base→candidate table."""
+"""``tools/gate_table.py``: the seven-take replay gate as one base→candidate table."""
 
 from __future__ import annotations
 
@@ -64,7 +64,8 @@ def test_a_missing_replay_is_named(recordings):
         gate.table("base", "other", recordings=recordings, takes=TAKES)
 
 
-def test_the_gate_is_the_four_documented_takes_and_only_08_13_restamps(capsys):
+def test_the_gate_is_the_seven_documented_takes_and_the_pre_fix_ones_restamp(capsys):
+    """08-13 and the three held-out takes predate the motion-meter fix."""
     assert gate.main(["--replay-args"]) == 0
     served = "--policy burst-end:keepalive_s=2,burst_end_reads=3,spacing_s=0.3"  # serve's default
     assert capsys.readouterr().out.splitlines() == [
@@ -72,4 +73,7 @@ def test_the_gate_is_the_four_documented_takes_and_only_08_13_restamps(capsys):
         f"20260827-175539 {served}",
         f"20260828-111421 {served}",
         f"20260827-181802 {served}",
+        f"20260827-163352 {served} --restamp-stability",
+        f"20260827-170333 {served} --restamp-stability",
+        f"20260827-172736 {served} --restamp-stability",
     ]

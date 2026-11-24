@@ -65,12 +65,12 @@ ONNX served on a GPU, checks per-square argmax against the package's own predict
 descriptor through `descriptor.py` (stdlib only, tested by
 `tests/test_chessq_export.py`). See the [runbook](../docs/runbook.md#running-it).
 
-## `gate_table.py` — the four-take replay gate as one table
+## `gate_table.py` — the seven-take replay gate as one table
 
 Reads `recordings/<take>/replays/<name>/report.json` for two replay names on the
-four gate takes and prints `base→candidate` per take plus a pooled total. `make gate
-GATE_NAME=<new>` replays the takes through `BR_CHESSQ` with `serve`'s schedule and
-prints it against `cq-v6-tuned`. See [measuring accuracy](../docs/measuring-accuracy.md).
+seven gate takes and prints `base→candidate` per take plus a pooled total. It owns the
+take list and each take's replay flags. `make gate GATE_NAME=<new>` replays the takes
+through `BR_CHESSQ` with `serve`'s schedule and prints it against `sp03-settle05-7`. See [measuring accuracy](../docs/measuring-accuracy.md).
 
 ## `migrate_labels_to_chess_frame.py` — corner-frame labels → chess frame (D10)
 

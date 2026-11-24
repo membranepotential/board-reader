@@ -21,7 +21,7 @@ paths:
 
 ## What counts as evidence
 
-- Gate every recognition, decode or settle change on the four-take replay gate (`make gate GATE_NAME=<new>`), never on stills, the curated set or a single model's own eval, because rules that won on stills have scored zero in the gate, and gains of a single model did not carry over to the deployed stack. A stills win is the reason to run the gate, not to ship.
+- Gate every recognition, decode or settle change on the seven-take replay gate (`make gate GATE_NAME=<new>`), never on stills, the curated set or a single model's own eval, because rules that won on stills have scored zero in the gate, and gains of a single model did not carry over to the deployed stack. A stills win is the reason to run the gate, not to ship.
 - Accept a post-hoc rule only if it wins in every gate take on its own with zero broken squares, because with ~100 errors a pooled net gain is easy to produce by fitting; requiring the win in every take was the only check against overfitting that held.
 - Never quote a gate row for a candidate trained or fitted on frames from the gate takes (relevant to the optional LoRA, DESIGN M5), and keep every eval set disjoint from what a model was fitted on, because a candidate trained on the gate sessions once gained +20 settled-perfect boards while every uncontaminated signal stayed flat.
 - Compare a replay's settled row only with runs at the same read rate, and judge settle changes by the errors that are not settle lag, because the debounce depends on reads per second, and on a short take with a move every 5 s the lag alone puts settled below prior per square no matter how good the debounce is.
