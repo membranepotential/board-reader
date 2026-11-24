@@ -37,9 +37,14 @@ services:
       # Bind-mounted, or the recording would die with the container.
       BR_RECORD_DIR: /recordings
       BR_RECORD_MAX_MB: "4000"
+      # Each board's camera config (crop, lens, streaming) survives a node restart
+      # here. Bind-mounted, so it is the same host file `make dev` uses through
+      # serve's default (data/camera-config.json), and survives the container too.
+      BR_CAMERA_CONFIG: /data/camera-config.json
     volumes:
       - ./models:/models:ro
       - ./recordings:/recordings
+      - ./data:/data
     ports:
       - "8000:8000"
     healthcheck:

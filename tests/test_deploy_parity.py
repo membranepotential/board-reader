@@ -72,6 +72,11 @@ _ENVIRONMENT_SPECIFIC: dict[str, str] = {
         "it at a bind mount or the recording dies with the container."
     ),
     "BR_RECORD_MAX_MB": "compose only, for the same reason as BR_RECORD_DIR.",
+    "BR_CAMERA_CONFIG": (
+        "compose only. `serve` defaults it to data/camera-config.json, which in a "
+        "container would die with it; compose points it into the ./data bind mount, "
+        "the same host file make dev's default names."
+    ),
 }
 
 
