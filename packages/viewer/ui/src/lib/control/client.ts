@@ -13,7 +13,7 @@
  * Everything is parsed here once, so the page only ever holds well-formed values.
  */
 
-import { CONTROL_TIMEOUT_MS, apiPath, type ApiFailure, type ApiResult } from '$lib/api';
+import { CONTROL_TIMEOUT_MS, apiPath, requestJson, type ApiResult } from '$lib/api';
 import {
   isRecord,
   parseCameraConfig,
@@ -166,44 +166,9 @@ export function parseHealth(raw: unknown): ParseResult<NodeHealth> {
 
 // ---- requests ----------------------------------------------------------------
 
-/** The node's `{"error": "..."}` wording when it gave one, else the status line. */
-async function failureOf(response: Response): Promise<ApiFailure> {
-  const fallback = `${response.status} ${response.statusText}`.trim();
-  try {
-    const body: unknown = await response.json();
-    if (isRecord(body) && typeof body['error'] === 'string' && body['error'] !== '') {
-      return { status: response.status, message: body['error'] };
-    }
-  } catch {
-    /* not JSON: the status line is all there is */
-  }
-  return { status: response.status, message: fallback };
-}
-
-async function requestJson<T>(
-  url: string,
-  init: RequestInit,
-  parse: (raw: unknown) => ParseResult<T>
-): Promise<ApiResult<T>> {
-  let response: Response;
-  try {
-    response = await fetch(url, { ...init, signal: AbortSignal.timeout(CONTROL_TIMEOUT_MS) });
-  } catch (cause) {
-    const timedOut = cause instanceof DOMException && cause.name === 'TimeoutError';
-    return err({
-      status: 0,
-      message: timedOut ? 'the node did not answer in time' : `the viewer is unreachable: ${String(cause)}`
-    });
-  }
-  if (!response.ok) return err(await failureOf(response));
-  let body: unknown;
-  try {
-    body = await response.json();
-  } catch (cause) {
-    return err({ status: response.status, message: `unreadable reply: ${String(cause)}` });
-  }
-  const parsed = parse(body);
-  return parsed.ok ? ok(parsed.value) : err({ status: response.status, message: parsed.error });
+/** Every control request is bounded: the page polls, and a hung poll stops the next. */
+function bounded(): AbortSignal {
+  return AbortSignal.timeout(CONTROL_TIMEOUT_MS);
 }
 
 function cameraPath(boardId: string, rest = ''): string {
@@ -211,20 +176,25 @@ function cameraPath(boardId: string, rest = ''): string {
 }
 
 export function getCamera(boardId: string): Promise<ApiResult<CameraView>> {
-  return requestJson(apiPath(cameraPath(boardId)), { method: 'GET' }, parseCameraView);
+  return requestJson(apiPath(cameraPath(boardId)), { method: 'GET', signal: bounded() }, parseCameraView);
 }
 
 /** Replace the whole config; the reply is the view with it applied. */
 export function putCamera(boardId: string, config: CameraConfig): Promise<ApiResult<CameraView>> {
   return requestJson(
     apiPath(cameraPath(boardId)),
-    { method: 'PUT', body: JSON.stringify(config), headers: { 'Content-Type': 'application/json' } },
+    {
+      method: 'PUT',
+      body: JSON.stringify(config),
+      headers: { 'Content-Type': 'application/json' },
+      signal: bounded()
+    },
     parseCameraView
   );
 }
 
 export function getHealth(): Promise<ApiResult<NodeHealth>> {
-  return requestJson(apiPath('/healthz'), { method: 'GET' }, parseHealth);
+  return requestJson(apiPath('/healthz'), { method: 'GET', signal: bounded() }, parseHealth);
 }
 
 /** The phone's full-frame preview; `seq` makes each new preview a new URL. */

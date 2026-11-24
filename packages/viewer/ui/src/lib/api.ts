@@ -146,7 +146,11 @@ async function send(url: string, init: RequestInit): Promise<ApiResult<Response>
   }
 }
 
-async function requestJson<T>(
+/**
+ * One JSON request through the relay, parsed at the boundary. Exported so a page
+ * with its own endpoints (the control client) states only its URLs and parsers.
+ */
+export async function requestJson<T>(
   url: string,
   init: RequestInit,
   parse: (raw: unknown) => ParseResult<T>
