@@ -81,7 +81,7 @@ def fit_temperature(
 
     Golden-section search over ``log T``. NLL as a function of temperature is
     smooth and unimodal in practice, and a bounded 1-D search needs no optimiser
-    dependency — which keeps the inference package's runtime lean (DESIGN §4.6).
+    dependency — which keeps the inference package's runtime lean.
     """
     dists = np.asarray(dists, dtype=np.float64).reshape(-1, NUM_CLASSES)
     truths = np.asarray(truths).ravel()

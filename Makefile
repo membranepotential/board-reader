@@ -117,8 +117,9 @@ dev: ui
 	@test -f "$(BR_CHESSQ)" \
 	  && echo "  recognition ChessQ Lite V6 ($(BR_CHESSQ))" \
 	  || echo "!! $(BR_CHESSQ) missing — the node serves the STUB recognizer; run 'make models'"
-	@echo "  gpu        $(if $(CUDA_ENV),hidden — the same recognizer on CPU; nothing of ours can reach the display's card,visible — onnxruntime capped at $${BR_GPU_MEM_LIMIT_MB:-768} MiB/session so the display keeps its VRAM)"
+	@echo "  gpu        $(if $(CUDA_ENV),hidden — the same recognizer on CPU; nothing of ours can reach the display's card,visible — onnxruntime capped at $${BR_GPU_MEM_LIMIT_MB:-1024} MiB/session so the display keeps its VRAM)"
 	@echo "  camera     https://$(HOST):$(VIEWER_TLS_PORT)/camera   (accept the warning once)"
+	@echo "  control    http://$(HOST):$(VIEWER_PORT)/control   (crop, lens, start/stop for the phone)"
 	@echo "  snapshot   http://$(HOST):$(VIEWER_PORT)/snapshot"
 	@echo "  live       http://$(HOST):$(VIEWER_PORT)"
 	@echo "  inference  http://$(HOST):$(INFERENCE_PORT)"

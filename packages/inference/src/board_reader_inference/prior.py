@@ -34,7 +34,7 @@ guesser picks ``k=1``, and a correct pawn on ``a3`` dies at 3.70 nats.
 
 So ``quarter_turns`` defaults to ``None`` — *frame unknown*, constraint skipped.
 Pass an ``int`` only where the orientation is **established rather than inferred**
-(the snapshot operator confirms it; a calibrated board fixes it). Placement and
+(the snapshot operator confirms it). Placement and
 flips always come back in the frame that was passed in.
 
     decode(event.square_dist).placement                    # counts only

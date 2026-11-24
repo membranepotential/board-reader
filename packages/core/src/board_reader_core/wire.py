@@ -1,7 +1,7 @@
 """L1 -> L2 frame envelope — the shared edge/inference wire format (DESIGN.md §4.5).
 
 The edge sends, per frame, a small JSON *header* plus a binary JPEG of what its
-camera sees (cropped to the board's rectangle, DESIGN D10 "dumb camera"). This
+camera sees (cropped to the board's rectangle, DESIGN D11 "dumb camera"). This
 module defines that envelope and the in-memory :class:`Frame` that both sides
 speak. Like :mod:`board_reader_core.protocol` it is shared, so it must not contain
 node-specific behaviour — only the wire shape and JPEG (de)serialisation.
