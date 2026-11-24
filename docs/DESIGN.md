@@ -36,9 +36,12 @@ read, and neither is chess logic.
 
 ### Locked decisions
 
+The numbers are the original ones, because code and notes cite them (#14, #15).
+Where a decision changed, its text below is today's, and the old one is in
+[Superseded decisions](#superseded-decisions).
+
 1. **The CV layer streams positions only.** No moves, legality, game state or PGN.
-2. **The output is piece placement plus the full 64×13 per-square distribution**
-   (`square_dist`); `placement` and `confidence` are derived from it.
+2. **The output is piece placement plus confidences**, not a full FEN and not a move.
 3. **No setup position and no calibration.** The system works when dropped into any
    mid-game position. Adapting to a new set is an offline fine-tune that ships as a new
    ONNX file (D10), never a runtime calibration round.
@@ -51,19 +54,23 @@ read, and neither is chess logic.
    the board must fill at least about half of the sent image's width.
 7. **Recognition is ChessQ Lite V6** behind the `Recognizer` seam (D10). Its weights
    are PolyForm Noncommercial 1.0.0; the user accepted that licence.
-8. **The chess frame is the only convention.** The recognizer finds the board and its
-   orientation on every frame; events, labels, truth, eval, replay and the viewer all
-   use the chess frame (rank 8 first, file a first, as in FEN).
-9. **Clock in v1: which side is running**, streamed as sensor state (D7). Time OCR is
+8. **Clock in v1: which side is running**, streamed as sensor state (D7). Time OCR is
    deferred. Not built yet (M6).
+9. **Edges in the sim:** the phone browser page `/camera` (TypeScript, no OpenCV) and
+   the Python edge CLI. The edge interface stays small enough to port to a real Pi.
 10. **No Lichess in v1.** The project ships its own viewer; PGN or Lichess export is an
     optional later adapter.
 11. **Transport is WebSocket** for frames in and position events out.
 12. **The board is the logical unit;** one edge may host several boards. The POC runs
     one board.
 13. **The inference node is Python** (FastAPI, asyncio, ONNX Runtime).
-14. **Edges in the sim:** the phone browser page `/camera` (TypeScript, no OpenCV) and
-    the Python edge CLI. The edge interface stays small enough to port to a real Pi.
+14. **The canonical output is the full 64×13 per-square distribution** (`square_dist`);
+    `placement` and `confidence` are derived from it.
+15. **The chess frame is the only convention** (reversed 2026-11-24, D10). The
+    recognizer finds the board and its orientation on every frame; events, labels,
+    truth, eval, replay and the viewer all use the chess frame (rank 8 first, file a
+    first, as in FEN).
+16. *(Superseded: the DINOv2-S backbone. There is no in-house backbone; see #7.)*
 
 ---
 
@@ -176,6 +183,14 @@ the edge's adaptive forwarder and the node's read scheduler. The scheduler reads
 keepalive floor whatever the meter claims, because a stuck meter once read "moving" all
 day (the `board_reader_inference.schedule` module docstring).
 
+### D4 — Adaptive frame forwarding on the edge
+
+The edge forwards a low **keepalive** at rest (~1 fps) and a **burst** during motion
+(~12 fps, with hysteresis), so the consumer sees whole transitions without a full
+30 fps stream per board. This keeps the many-boards-per-node goal. Each frame carries
+its capture time and `seq` (D5). D4's other half, board detection and rectification on
+the edge, is superseded by D11 (see [Superseded decisions](#superseded-decisions)).
+
 ### D5 — Authoritative timestamp at capture; sync via chrony/NTP
 
 The edge stamps each frame with its capture time (`capture_ts`) and a per-board
@@ -232,7 +247,7 @@ settled perfect, with no crop of ours, no warp, no bank and no calibration
   (`board_reader_inference.chessq`) is the implementation `BR_CHESSQ` selects. A
   second model (ChessCam v2, the hedge for licence and Pi/Jetson latency) is one more
   file behind the same seam.
-- **The chess frame is the only convention** (locked decision 8).
+- **The chess frame is the only convention** (locked decision #15).
 - **No calibration, no banks, no in-house models, no training harness.** Adapting to a
   new set is an offline LoRA fine-tune that produces a new ONNX file.
 - **Licence accepted.** The weights are PolyForm Noncommercial 1.0.0. `make models`
@@ -269,9 +284,8 @@ held over a board is the worst place to set that up.
   (`POST /boards/{id}/camera/report`; the reply is the config) and a whole-frame
   preview every 1.5 s. The contract is `board_reader_core.control`.
 - **The edge crops, meters and forwards.** It crops to the rectangle, measures motion
-  (`stability`) and sharpness on the crop, and forwards adaptively: a ~1 fps keepalive
-  at rest, a ~12 fps burst during motion. The L1→L2 wire (§4.4) is unchanged; frames
-  arrive already cropped.
+  (`stability`) and sharpness on the crop, and forwards adaptively (D4). The L1→L2
+  wire (§4.5) is unchanged; frames arrive already cropped.
 - **Portrait is reported, not blocked.** `/control` warns.
 - **The Python edge** takes a static `--roi x,y,w,h` (the same `CropRect`). Wiring it
   to the control channel is open work (§8).
@@ -291,18 +305,18 @@ commit whose DESIGN.md carried every section with its dated amendments.
 
 | Was | Replaced by | Evidence | Full text |
 |---|---|---|---|
-| **D4 / locked #6 — the edge detects and rectifies the board** (Canny→Hough→RANSAC homography or a 4-corner tap; rectified crops; `/detect`; `core.boarddetect`; the edge rectifier with `--rectify/--corners/--forward-original`) | D11: the edge crops to a rectangle set on `/control`, `--roi` on the Python edge. The detector survives only as the offline QC tool `tools/video/boarddetect.py`. Adaptive forwarding, D4's other half, stays (D11). | [framing report](reports/2026-11-24-chessq-framing.md) | `git show 7f56f58:docs/DESIGN.md` (D4, §4.2, §4.5) |
-| **Locked #15 / §4.4.1 — fixed orientation set at setup; camera-movement handling** (bump vs reposition, the `/camera` plane tracker, re-detection after sustained loss, auto-orientation from printed coordinates, statuses `recalibrating`/`needs_setup`) | Locked decision 8: the recognizer resolves orientation per frame, chess frame everywhere. A moved camera needs only its rectangle redrawn on `/control`. The two statuses stay reserved in the protocol and are never emitted. | [V6 gate](reports/2026-11-24-chessq-v6-replay-gate.md); [framing report](reports/2026-11-24-chessq-framing.md) (zero rotation errors) | `git show 7f56f58:docs/DESIGN.md` (§4.4.1) |
+| **D4's detection half / old locked #6 — the edge detects and rectifies the board** (Canny→Hough→RANSAC homography or a 4-corner tap; rectified crops; `/detect`; `core.boarddetect`; the edge rectifier with `--rectify/--corners/--forward-original`) | D11: the edge crops to a rectangle set on `/control`, `--roi` on the Python edge. The detector survives only as the offline QC tool `tools/video/boarddetect.py`. Adaptive forwarding, D4's other half, stays (D4). | [framing report](reports/2026-11-24-chessq-framing.md) | `git show 7f56f58:docs/DESIGN.md` (D4, §4.2, §4.5) |
+| **Old locked #15 / §4.4.1 — fixed orientation set at setup; camera-movement handling** (bump vs reposition, the `/camera` plane tracker, re-detection after sustained loss, auto-orientation from printed coordinates, statuses `recalibrating`/`needs_setup`) | Locked decision #15 as rewritten: the recognizer resolves orientation per frame, chess frame everywhere. A moved camera needs only its rectangle redrawn on `/control`. The two statuses stay reserved in the protocol and are never emitted. | [V6 gate](reports/2026-11-24-chessq-v6-replay-gate.md); [framing report](reports/2026-11-24-chessq-framing.md) (zero rotation errors) | `git show 7f56f58:docs/DESIGN.md` (§4.4.1) |
 | **D6 / locked #7, #16 / §4.6 — DINOv2-S embeddings + an offline-trained head; DINOv2 over DINOv3 on licence** | D10: ChessQ Lite V6, end to end, behind the `Recognizer` seam. | [V6 gate](reports/2026-11-24-chessq-v6-replay-gate.md); [backbone ceiling and DINOv3 probe](reports/2026-08-31-dinov3-probe.md) | `git show 7f56f58:docs/DESIGN.md` (D6, §4.6) |
-| **Locked #3 / M5 / WP-E — optional calibration round** (exemplar bank, centroids, `/calibrate`, start-position auto-calibration, the occupancy bank, `BR_SESSION_BANK`/`BR_OCCUPANCY_BANK`/`BR_CENTROIDS`) | No calibration (locked decision 3); adaptation is an offline LoRA → new ONNX. Bank writes were measured non-monotone. | [calibrate before/after](reports/2026-08-31-calibrate-before-after.md); [bank rematch](reports/2026-08-29-bank-rematch.md) | `git show 7f56f58:docs/DESIGN.md` (§4.6), `git show 7f56f58:docs/calibration-and-the-bank.md` |
+| **Locked #3 / M5 / WP-E — optional calibration round** (exemplar bank, centroids, `/calibrate`, start-position auto-calibration, the occupancy bank, `BR_SESSION_BANK`/`BR_OCCUPANCY_BANK`/`BR_CENTROIDS`) | No calibration (locked decision #3); adaptation is an offline LoRA → new ONNX. Bank writes were measured non-monotone. | [calibrate before/after](reports/2026-08-31-calibrate-before-after.md); [bank rematch](reports/2026-08-29-bank-rematch.md) | `git show 7f56f58:docs/DESIGN.md` (§4.6), `git show 7f56f58:docs/calibration-and-the-bank.md` |
 | **The multi-style crop classifier and its composites** (`BR_MODEL`, `BR_MODEL_B` cascade, ensembles with the bank, `tools/train`, RunPod) | D10: no in-house models, no training harness (plan decision D7: deleted). | [retrain program](reports/2026-08-28-retrain-program.md); [V6 gate](reports/2026-11-24-chessq-v6-replay-gate.md) | `git show 7f56f58:docs/recognition-pipeline.md`, `git show 7f56f58:docs/training-and-data.md` |
 | **Square cropping and occlusion masking** (rectified tiles or perspective full-piece boxes with ~1.6 square-widths headroom; `BR_CROP_MASK=gray`) | The recognizer reads the whole sent image; nothing of ours crops squares. | [V6 gate](reports/2026-11-24-chessq-v6-replay-gate.md) | `git show 7f56f58:docs/recognition-pipeline.md` ("Cropping is where the accuracy is") |
 | **Black-bishop (attractor) demotion** (`demote_attractor`, `trial.AttractorGuard`) | ChessQ's softmax is served unchanged. | [evidence rerank](reports/2026-08-27-evidence-rerank.md) (why it existed) | `git show 7f56f58:docs/recognition-pipeline.md` ("The black-bishop demotion") |
-| **Autorotate by chess plausibility** (`?autorotate=1`: fewest pawns on ranks 1/8) | The recognizer resolves orientation (locked decision 8). | [V6 gate](reports/2026-11-24-chessq-v6-replay-gate.md) | `git show 7f56f58:docs/DESIGN.md` (§4.6) |
+| **Autorotate by chess plausibility** (`?autorotate=1`: fewest pawns on ranks 1/8) | The recognizer resolves orientation (locked decision #15). | [V6 gate](reports/2026-11-24-chessq-v6-replay-gate.md) | `git show 7f56f58:docs/DESIGN.md` (§4.6) |
 | **D8's "occluded squares get low confidence"; the optional burst voter** (§4.2, §4.4; the voter was never built) | D8 as rewritten: burst-end reads plus the `settled` debounce. | [settle tuning](reports/2026-11-24-settle-tuning.md) | `git show 7f56f58:docs/DESIGN.md` (D8, §4.4) |
 | **Corner-carrying frames** (`corners` on every wire frame; `POST /estimate?corners=`) | `corners` is a legacy wire field: still parsed so old recordings replay, never sent, ignored. `/estimate` takes the photo alone. | plan, Phase B–C | `git show 7f56f58:docs/DESIGN.md` (§4.5) |
 | **The ~2.5 s / 2-read settle window and the one-read `burst-end` schedule** | 1.0 s / 2 reads / 2 stale windows, with `burst-end:burst_end_reads=3,spacing_s=0.6`. | [settle tuning](reports/2026-11-24-settle-tuning.md) | `git show 53c1468:docs/DESIGN.md` (§5) |
-| **Old §7 milestones M1/M5 and §8 work packages WP-A, WP-B, WP-E as written for the DINOv2 pipeline** | §7 and §8 below. | — | `git show 7f56f58:docs/DESIGN.md` (§7, §8) |
+| **Old §7 milestones M1/M5 and §8 work packages WP-A, WP-B, WP-E as written for the DINOv2 pipeline** | §7 and §8 below, with a status per item. | — | `git show 7f56f58:docs/DESIGN.md` (§7, §8) |
 
 ---
 
@@ -339,7 +353,7 @@ commit whose DESIGN.md carried every section with its dated amendments.
 
 | Package | Role | Main modules |
 |---|---|---|
-| `board-reader-core` | the shared contract | `protocol` (L3 events, §5), `wire` (L1→L2 frames, §4.4), `control` (camera config and report), `recording` (session directories), `sim` (synthetic renders, §6) |
+| `board-reader-core` | the shared contract | `protocol` (L3 events, §5), `wire` (L1→L2 frames, §4.5), `control` (camera config and report), `recording` (session directories), `sim` (synthetic renders, §6) |
 | `board-reader-edge` | the Python edge ("Pi") | `source` (camera, video, images, synthetic game, recording), `motion` (stability), `forwarder` (adaptive rate), `client` (WebSocket), `adapter` (pacing), `cli` (`feed`) |
 | `board-reader-inference` | the inference node ("Jetson") | `server` (FastAPI gateway), `ingest` (inbox + workers), `schedule` (read policy), `recognizer` + `chessq` (the read), `prior` (repair), `stabilize` (debounce), `hub`, `camera_control`, `replay` / `evaluate` / `trial` (measurement), `labels`, `calibration` (temperature scaling for eval only) |
 | `board-reader-viewer` | serves the web UI and relays the node's API under `/api` and its sockets under `/ws` | `server`, `proxy`, `tls`; pages `/`, `/camera`, `/control`, `/snapshot` |
@@ -370,7 +384,21 @@ the wire. `core` imports neither. `tests/test_layer_separation.py` enforces it.
 
 There is deliberately **no** "find the legal move" or "commit a move" step.
 
-### 4.4 The node's interfaces
+### 4.4 Failure behavior
+
+- **Hand over the board.** Covered squares read as confident empties. The scheduler
+  skips the burst and reads at its end; `settled` holds the previous board until a
+  change holds for its window. The raw stream still carries every read.
+- **Camera moved.** Nothing on the edge follows the board. The operator redraws the
+  rectangle on `/control`; reads in between are whatever the recognizer sees.
+- **Edge offline.** The stream goes quiet; the viewer marks the board stale on its side.
+  The protocol's `stale` status is reserved, not emitted.
+- **Low confidence.** Emitted verbatim; the consumer decides.
+- **Missing weights.** The stub recognizer serves, loudly (D10).
+- **Impossible board** (two white kings, a pawn on rank 8). Reported as read, status
+  `ok`; `prior` carries the nearest possible board beside it.
+
+### 4.5 The inference node's interfaces (gateway, wire, hub)
 
 **Ingress (WebSocket `/ingest`).** One message per frame: a JSON header (`board_id`,
 `seq`, `capture_ts`, `stability`, optional `sharpness`, `clock`, `burst_id`) followed by
@@ -391,20 +419,6 @@ on connect.
 | `GET`/`PUT /boards/{id}/camera` | the camera control state and config (D11) |
 | `POST /boards/{id}/camera/report` | the phone's report; the reply is its config |
 | `POST`/`GET /boards/{id}/camera/preview` | the phone's whole-frame preview for `/control` |
-
-### 4.5 Failure behavior
-
-- **Hand over the board.** Covered squares read as confident empties. The scheduler
-  skips the burst and reads at its end; `settled` holds the previous board until a
-  change holds for its window. The raw stream still carries every read.
-- **Camera moved.** Nothing on the edge follows the board. The operator redraws the
-  rectangle on `/control`; reads in between are whatever the recognizer sees.
-- **Edge offline.** The stream goes quiet; the viewer marks the board stale on its side.
-  The protocol's `stale` status is reserved, not emitted.
-- **Low confidence.** Emitted verbatim; the consumer decides.
-- **Missing weights.** The stub recognizer serves, loudly (D10).
-- **Impossible board** (two white kings, a pawn on rank 8). Reported as read, status
-  `ok`; `prior` carries the nearest possible board beside it.
 
 ---
 
@@ -490,7 +504,14 @@ recognition. The tests read sim renders with a test-side template matcher
 model. Recognition is demoed and measured on real frames: the phone, recordings
 (`replay`, `make gate`) and labeled stills (`eval`).
 
-**Test data.** Own recordings are the source of truth (`recordings/<take>/` with a
+### 6.1 Bring-up and test data
+
+1. **File-based edge first.** `board-reader-edge feed` streams a video, an image
+   folder, a recording or the synthetic game, so the whole pipe runs without a camera.
+2. **Then a real board:** a phone on `/camera`, configured from `/control`, with the
+   laptop as the inference node.
+
+Own recordings are the source of truth (`recordings/<take>/` with a
 `truth.json`, scored by `eval-session`); [youtube-streams.md](youtube-streams.md) lists
 curated public streams for extra footage.
 
@@ -513,11 +534,34 @@ Build order (CLAUDE.md principle 3). Status as of 2026-11-24.
 
 ---
 
-## 8. Roadmap
+## 8. Work packages and roadmap
 
-The old work packages (WP-A…WP-I) were a decomposition of the DINOv2 pipeline; their
-done parts are in the code and their dead parts are in
-[Superseded decisions](#superseded-decisions). What is open now, in rough order:
+### 8.1 Work packages
+
+A decomposition by component, not a sequence (CLAUDE.md principle 3). The IDs are cited
+in code and tests, so they stay; the status is as of 2026-11-24.
+
+| WP | Package | Status |
+|---|---|---|
+| **A** Edge framing | A1–A3 (board detection, rectification, re-detection on drift) | **obsolete** (D11). The edge crops to a configured rectangle; the detector survives only in `tools/video/boarddetect.py`. |
+| **B** Recognition | B1 square cropping, B2 DINOv2 + head | **obsolete**, replaced by the `Recognizer` seam and ChessQ (D10) |
+| | B3 per-square + position confidence | done (`confidence`); "honest occlusion flags" obsolete (D8) |
+| | B4 burst voting; eval harness | burst voting never built (burst-end reads + `settled` instead); eval done (`eval`, `eval-session`, `make gate`) |
+| **C** Edge capture and forwarding | C1 capture (getUserMedia, video, images, recording), C2 motion → stability, C3 adaptive forwarder, C4 capture stamps + JPEG + publisher | done, in the Python edge and in `/camera` |
+| **D** Transport and stream | D1 WebSocket ingress with backpressure, D2 egress with retained latest, D3 event schema + validation | done (WebSocket only, no SSE; no schema versioning) |
+| | D4 time sync (chrony/NTP) | not started |
+| **E** Calibration | E1–E3 | **removed** (D10) |
+| **F** Clock | F1 clock region, F2 which side runs, F3 digit OCR (later) | not started (M6) |
+| **G** Node orchestration | G1 gateway + per-board inbox + pre-filter, G2 shared estimator worker, G3 Docker image | done (latest-wins inbox with sharpness preference and the read scheduler; one worker per board on one recognizer; amd64 image, CPU in compose) |
+| | G4 scaling tests (boards per node, latency budget) | not started (M4) |
+| **H** Consumers | H1 viewer, H2 recorder + replay | done |
+| | H3 reference move reconstructor + PGN/Lichess export (optional, application layer) | not built; `/snapshot` assembles Lichess links in the page |
+| **I** Cross-cutting | I1 sim harness, I3 metrics (`/healthz`, eval, gate), I4 docs and runbook | done, maintained |
+| | I2 datasets (own recordings with truth, [youtube-streams.md](youtube-streams.md)) | ongoing; the binding gap (§9) |
+
+### 8.2 Roadmap
+
+What is open now, in rough order:
 
 1. **The live take** with the dumb-camera phone, configured from `/control`
    ([TESTING.md](TESTING.md), Option J). It validates D11; replay cannot, because crop
@@ -561,9 +605,11 @@ done parts are in the code and their dead parts are in
 **Open questions**
 
 - **Confidence calibration.** Downstream smoothing wants calibrated per-square
-  probabilities. `calibration.py` fits a temperature for eval reports; whether a
-  calibrated distribution goes on the wire is undecided, and ChessQ's calibration is
-  not yet measured.
+  probabilities. On the 47 labeled stills ChessQ's per-square reliability is close
+  (ECE 0.002), but nearly every square claims ≥ 0.9, and the mean board confidence is
+  1.000 on perfect and imperfect boards alike, so confidence does not single out a bad
+  board. `calibration.py` fits a temperature for eval reports only; whether a
+  calibrated distribution goes on the wire is undecided.
 - **Does `stability` earn its keep for consumers?** Internally it drives the forwarder
   and the scheduler.
 - **The back-rank-pawn constraint.** The chess frame is now always known, so `prior`
