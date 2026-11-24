@@ -1,272 +1,55 @@
 # STATUS — board-reader
 
-_reconciled: 2026-08-28 @ `c0138f0`_ · decisions live in [docs/DESIGN.md](docs/DESIGN.md), detail in `git log` + `scratch/experiments/*/report.md`; this is state.
+_reconciled: 2026-11-24 @ `46e5ff7`_ · decisions: [docs/DESIGN.md](docs/DESIGN.md) · history: `git log`, [docs/reports/](docs/reports/)
 
 ## Goal
 
 A camera reads a live OTB board and streams timestamped **piece placements + per-square
-confidences**. No moves, no legality, no PGN — those are the downstream application layer's.
+confidences**. No moves, no legality, no PGN — those belong to the downstream application layer.
 
 ## Now
 
-- **chessq-v6-estimator — LANDED 2026-11-24, gate PASSED** (settled 35→71 perfect, raw .917→.968;
-  docs/reports/2026-11-24-chessq-v6-replay-gate.md). Opt-in `BR_CHESSQ`. Known issue: ChessQ reads
-  in the chess frame, the rest of the stack in the corner frame (labels/eval/debug) — resolved by the
-  simplification. User decided 2026-11-24: ChessQ becomes the core. Truth fixes DONE (`fe6b261`):
-  V6 now 92/101 raw, 84/101 settled perfect (shipped 5, 35).
-- **simplify-around-chessq** — plan written ([docs/plans/2026-11-24-simplify-around-chessq.md](docs/plans/2026-11-24-simplify-around-chessq.md),
-  18 commits in 4 phases) — D7 delete both, D11 accepted (user). **Phase A DONE** (`4d166bc`..`acfe00f`, replay
-  invariant exact; 26/27 upload labels migrated, 1 quarantined). **Phase B DONE** (`0d9590d`..`d5d3e3e`, ≈ −24.6k lines; gate identical after
-  s7/s8/s10; 858 tests, 342 vitest). fp32 switch DONE (`719daf8`), Phase D settle tuning DONE (`62a6854`, `7f97de5`:
-  settled 84/101 → 104/119, median lag 4.3 → 3.0 s, 0 hand leaks). **Phase C = dumb camera DONE** (`11269eb`..`904d6cf`; gate identical, 857 py / 262 vitest / e2e green;
-  smoke: /control crop → phone → node frames at crop size). **Next: user live take** (TESTING Option J).
-  Running: DESIGN/docs rewrite agent + learnings→rules agent.
-  Step 13 framing DONE (`332a32f`): board must fill ≥ ~50 % of width → D1 = plain rectangle crop (Phase C).
-- **chessq-fp16 — DONE, cut short** (`f6361e1`): serve V6 **fp32 ONNX on CUDA** (~205 ms vs ~600+ int8, same
-  reads; fp16 slower on the 1650). Next, after Phase B: export step in `make models` + switch + replay gate.
-- **chessq-lite-probe — RAN 2026-11-24: GO.** Cold, ChessQ Lite V6 reads gate takes at 99.2 %/sq
-  (shipped 88.5–96 %), held-out stills 11/11; ChessCam v2 98.3 % at 45 ms CPU. Next: estimator
-  + replay gate. Original note follows.
-  _(was: PAUSED 2026-10-09)_ (handoff:
-  [docs/plans/2026-10-09-chessqueries-handoff.md](docs/plans/2026-10-09-chessqueries-handoff.md)).
-  Lichess's new "From image" runs ChessQ Lite v4 (ChessQueries, arXiv
-  2608.30762): an end-to-end per-square recognizer on CPU that may answer all three
-  stall reasons (hardware, accuracy, data). Benchmark on our stills and gate takes
-  is written (`scratch/experiments/chessq-lite-probe/`) but **never run**, because
-  it was stopped to free the CPU. Next: run it (int8, CPU, ~10 min), then
-  go/no-go → Next 14.
-  2026-11-24: ChessCam's own MobileNetV4 ChessQ model (beats Lite V5 on real
-  video, outputs square positions) is a second candidate — see
-  [docs/plans/2026-11-24-chesscam-camerachess.md](docs/plans/2026-11-24-chesscam-camerachess.md).
+- **latency-fix** — phone motion meter stuck at stability 1.000 in live take 1 (no bursts → 3–6 s per
+  move); fix meter + evaluate keepalive ~1 s / settle 0.5 s on the gate — implementer-high running — next:
+  gate + held-out tables, then user re-test.
+- **docs-rewrite** — DESIGN.md as a current decision record (superseded decisions collapsed), every doc
+  audited against code, `docs/on-phone-app.md` — implementer-high running — next: review, commit check.
 
-- **The 08-27 night wave is COMPLETE** (see Done). Estimator, scheduler,
-  stabilizer, framing, recorder, harness all landed, reviewed, and
-  replay-verified; suite 1048 Python + 417 vitest + 50 e2e, all green.
-- ui-mockups — awaiting user review in `docs/mockups/` (user: redo later as
-  clickable simulations, not storyboards).
+## Done (2026-11-24 — the ChessQ rebuild; plan: [docs/plans/2026-11-24-simplify-around-chessq.md](docs/plans/2026-11-24-simplify-around-chessq.md))
 
-- **08-28/29 improvement cycle CLOSED** (see Done): masking shipped, cloud
-  pipeline live, bank rematch NO-GO — **the shipped stack stands**. RunPod:
-  volume destroyed by user 08-31 (no standing costs), balance $14.41, DC
-  re-pinned EU-RO-1→EUR-IS-1 after availability survey (`fd5e104`; US DCs
-  carry no 4090s — US-NE-1 is the recorded US fallback).
-
-- **08-31 new-style batch labeled + measured cold — DONE, nothing running**
-  (see Done). Follow-ups live in Next 11.
-
-- **08-31 experiment wave COMPLETE — all 5 tracks closed, nothing running**
-  (reports: docs/reports/2026-08-31-{two-kings-reopen,calibrate-before-after,dinov3-probe}.md,
-  docs/youtube-streams.md, docs/plans/2026-08-31-autolabel-engine.md; summary
-  in Done). Follow-ons all landed; nothing running:
-  - autolabel-stage0 — **CLOSED: NO-GO on the decoder**
-    (docs/reports/2026-08-31-autolabel-stage0.md). Corpus = 30 distinct
-    positions (not 73); hand-perfect labels move NO uncontaminated gate; the
-    naive +20-perfect gate win is memorization (100 % of gate boards within
-    5 frames of a trained image → Next 13). Decoder deferred until corpus
-    spread exists. Spend $0.43 total; volume `1heed8wd1u` staged+standing
-    ($1.40/mo). Curated eval set silently grew 5→10 boards (08-31 calibrate
-    five landed in ground_truth.json) — reconcile docs pins.
-  - kasparov-ingest — **DONE** (`43a2dbe`): i5kUm43nXcY in crops.csv at
-    924×712@720p, angle gate GOOD 0.894 (first good-band registry stream),
-    50 seed-0 frames in data/streams/frames/kasparov-karpov_i5kUm43nXcY/ —
-    next: user culls hand-occluded frames; PGN alignment waits for the engine
-  - **on the user now (the binding axis, per Stage 0):** record varied games —
-    mixed openings + mid-game positions, ideally a SECOND physical set and
-    SECOND camera; plus the varied-position iPhone batch (Next 11c)
-
-## Done (recent)
-
-- **08-31 (eve): the four-track experiment wave, all closed in one day.**
-  (1) Two-kings reopen: fresh challenger `p(K)−p(Q)` won stills, then
-  collapsed 08-13 22/31→0/31 in the replay gate — polarity inverts between
-  datasets, per-frame ceiling confirmed vs 14 rules; `_kings_flip` docstring
-  corrected (the cascade, not the bank, owns the d8 misread). (2)
-  Calibrate-before/after: decoded Q→K 4→0 on the fresh style, ECE
-  0.345→0.229, but settled perfects 35→25 while every per-square metric rose
-  — non-monotone bank writes confirmed with mechanism; gate on 4-take
-  settled-perfect rows; lean style-scoped banks. (3) DINOv3 probe: NO-GO as
-  frozen swap (~80→83 % n.s., central pooling is DINOv2-specific); banked as
-  fine-tune init, export tool generalized. (4) YouTube second search: ASMR
-  chess niche clears the 0.73 good band with multi-hour games — M2 low-angle
-  risk closable, idea B un-parks. (5) Auto-label engine plan + Viterbi
-  explainer landed. Plus: RunPod re-pinned EU-RO-1→EUR-IS-1 (US DCs carry no
-  4090s), `replay.CONFIG_ENV`/`BR_CROP_MASK` gap found (Next 12), 4 GPU
-  baseline replays banked (`tkr-shipped`), 4 learnings recorded.
-- **08-31: a new board style measured cold — it transfers; the queen does not**
-  (docs/reports/2026-08-31-new-style-batch.md). 17 iPhone photos of an unseen
-  style (vinyl roll-up, plastic Staunton, outdoor) in
-  `data/own/2026-08-31_iphone/`: 15 start positions + 2 Ruy Lopez
-  (`0763`/`0764`). Split **5 calibrate** (→ `ground_truth.json`) / **12 held
-  out** (`data/eval/heldout-20260831/*.label.json`) — the split matters because
-  `build_exemplar_bank.py` reads `ground_truth.json`. Truth oriented without the
-  model (back-rank luminance, 27–62 grey margin; `a1`-dark chirality check;
-  eye-verified). **No bank write**, so all 16 labeled boards are cold.
-  Held-out **680/704 = 96.6 % per-square, ABOVE the curated set's 95.3 %** —
-  cuts against the standing cross-style-piece-type prior. But perfect boards are
-  1/11, from **one** systematic defect: `Q->K` ×13 / `q->k` ×8 on `d1`/`d8`
-  (21 of 41 errors) — both back-rank kings read as kings, and the decoder demotes
-  the *true* king on `img_0756`/`0758`. Reproduces the two-kings question on 13
-  fresh boards vs the 7-board ceiling that closed it (`8c42b83`). ECE 0.345.
-  `0760` corner-detect FAILed (unlabeled).
-
-- **08-29 (night): the rematch cycle closed — every challenger NO-GO, three
-  mechanisms found** (docs/reports/2026-08-29-bank-rematch.md): masked bank
-  loses the 4-take gate 35→22 perfect (its curated +3 inverted — the baseline
-  bank's value is auto-calibrate exemplars grown from the sessions' own frames,
-  which uploads cannot contain); masked members + masked bank 35→17; run_i
-  full-data lifts holdout to 0.9283 but drops chesscog to 0.828. Also:
-  two-kings decode claim refuted (`8c42b83`, docs/reports/2026-08-28-two-kings-
-  decode.md — shipped rule Pareto-best, tie-break ceiling ~7 boards);
-  `make dev` unmasked-drift fixed (`4d6ce3e`); `rebuild-bank` landed review-
-  hardened (`6572b76` — guard shares live `verify_labels`, 10/54 uploads
-  genuinely bad); cloud Phase 2 closed (loader-bound, ~110 img/s/vCPU,
-  workers 8; README "Cloud perf"); lint backlog cleared. Suite 1147. Cloud
-  spend $3.30 total.
-
-- **08-28 retrain program E1–E7** (full numbers + narrative:
-  docs/reports/2026-08-28-retrain-program.md; details
-  scratch/experiments/e{2..7}_*/report.md): trials exported as crop styles;
-  fine-tunes measured clean (E2 leaked, E3 partial win); bleed measured (44 %
-  of residual); decode rule NO-GO; occlusion masking shipped (`BR_CROP_MASK`,
-  depth-fixed after review) and proven on the d8 lock; **run_g masked retrain
-  matches holdout, +3.2 pp chesscog**.
-  Mid-program RAM-overcommit freeze → serialize + systemd-run caps adopted.
-- **08-28 evening: program closed on RunPod + gates**
-  (docs/reports/2026-08-28-improvement-report.md): rp runner + S3 staging +
-  cache-backed style resolution landed (`684507d`..`c2f3c58`); parity PASS
-  (0.8995 vs 0.8983); run_h_cloud trained (0.8944). Gates: masked-retrained
-  pair NO-GO deployed (E6 d8 win = bank-lookup effect; members benched as OOD
-  assets, +4pp chesscog each); **shipped BR_CROP_MASK=gray in compose**
-  (`38c40ac`) — perfect boards ~20→35 on the 4-take gate, curated 305/320.
-  Total cloud spend $0.66. New defect: settled coherence demotes the correct
-  king on a raw two-kings read (see Next 6).
-- 08-28: **proof trial done and scored** (docs/reports/2026-08-28-proof-trial.md,
-  recording 20260828-111421). Zero-tap checklist passed: auto-calibrate fired
-  (bank 768→1024 mid-take), re-detector adopted real drift at 78 s with zero
-  false adoptions, 36 reads/243 frames, backstopped 0, latency p50 1.55 s, no
-  OOM. Settled 91.9 % per-square, 4/22 perfect; per-segment decline tracks the
-  drift; post-adoption residual is recognition, not framing. **Demotion A/B**
-  (replay-vs-replay): "0 broken" is dead — the rule trades eaten `b`s against
-  `empty->b` hallucinations, net +4 settled; keep it, revisit with the retrain.
-- 08-28: **curated baseline re-pinned** — the mid-trial calibrate invalidated
-  the morning's 768-bank number; baseline now pins its own bank snapshot
-  (`data/eval/bank-baseline-20260828.npz`): **304/320, 0/5 perfect**, ECE 0.34.
-- 08-28: **curated set pruned to 5 boards** (dead photos removed, survivors
-  moved into `data/eval/images/`; the only bank-held-out board was among the
-  dead). The 638/640 headline is historical.
-- 08-28: **repo pushed public** (pre-rewrite SHAs: `docs/commit-rewrite-*`,
-  `tools/check_commit_refs.py`); **own footage confirmed** (trial recordings are
-  the source; broadcast sourcing closed); **b-demotion display stays as-is**
-  (user: recognition is the ambition, confidence marking clutters the UI).
-- **08-27 night wave** (detail: `git log 866653f..9167dfd`,
-  docs/reports/2026-08-27-*): replay harness; GPU arena ratchet fixed;
-  b-demotion shipped (+2–10 pp perfect); framing re-detect (drift −58 %);
-  burst-end read scheduling (~5× fewer GPU reads); settled-stream coherence
-  (impossible boards 233→0); per-session recorder; zero-tap calibrate
-  root-caused + e2e-pinned; test cascade filled (1048 py / 417 vitest / 50
-  e2e). All takes scored; every non-trivial commit adversarially reviewed.
-- 08-27 (day): adaptive meter floor, label-rotation auto-absorb, portrait
-  block, sharpness-preferring inbox, latency batch fix. Earlier: `git log`.
+- **ChessQ is the core recognizer** (ChessQ Lite V6, fp32 ONNX on CUDA ~0.2 s/read; int8 on CPU).
+  Gate vs the old stack: settled perfect 35 → 104/119; reports in `docs/reports/2026-11-24-*`.
+- **Old stack deleted** (≈ −26k lines): DINOv2/bank/calibration/crop classifiers/routing, corner
+  detection + rectification, tools/train, RunPod, aspects.yaml. Labels + truth in the chess frame.
+- **Settle tuned** (1.0 s / 2 reads, burst-end 3 reads × 0.6 s): median move→settle 4.3 → 3.0 s on
+  replays, 0 hand leaks. Framing: board must fill ≥ ~50 % of the sent width.
+- **Dumb-camera phone** (DESIGN D11): `/camera` only films; laptop `/control` sets crop, lens,
+  resolution, start/stop. Live take 1 (`recordings/20261124-200631`): reads good, latency bad (see Now).
+- **Learnings → 14 path-scoped rules** in `.claude/rules/`; store frozen (13 verdicts left).
+- **Data hygiene:** truth fixed for 181802 + 111421; big datasets/videos/old models archived to the HDD
+  (`/run/media/felix/archive/board-reader/`, symlinked; mount it before using them).
 
 ## Next
 
-- **QUEUED (user, 2026-11-24): learnings → path-scoped rules**, as scribetech did (its 2026-10-09 rules promotion): promote
-  standing conventions from `.learnings.ndjson` (184 active, 41 on deleted paths) into `.claude/rules/<area>.md`
-  with `paths:` frontmatter; forget stale ones; freeze the store; rewrite CLAUDE.md's learnings section.
-  Starts after Phase C (agents still write learnings and CLAUDE.md).
-
-- **IDEA (user, 2026-11-24, parked): fully on-phone, portable app.** Run recognition in the phone's
-  browser instead of on the laptop. Feasible: ChessQ Lite int8 targets browser WASM (Lichess runs it
-  client-side), and ChessCam runs in-browser at ~100 ms/frame on a Pixel 7a CPU. Open: the **sink**
-  (where positions go — Lichess broadcast/PGN, a WS endpoint, a local file) and latency on a mid
-  phone. → move into docs/ideas.md once Phase C's doc work lands.
-
-1. **Bank provenance, then the session-fair rematch**: persist the source crop
-   (or masked+unmasked embedding pair) for every exemplar written — calibrate
-   AND auto-calibrate — so bank re-embeds become possible at all. A session-
-   fair rematch is runnable today by mining the auto-calibrate frames out of
-   `recordings/` (frames + settled placements are recorded); that is the
-   remaining way the masked-bank question gets a real answer
-   (docs/reports/2026-08-29-bank-rematch.md §residue). Cloud Phase 3.2–3.4
-   (unfreeze, architectures, resolution) remain open on the measured pipeline;
-   the fine-tune deploy story (E2/E3) feeds Next 5.
-2. **Estimator throughput / latency** — profile the cascade+ensemble read
-   (~1.3 GPU-s/read measured in the sweep) and attack the biggest term (bank
-   embed batching?). Faster reads shrink settle lag and the guard window both.
-   Burst-end scheduling made this cheaper to afford but reads are still the cost
-   unit.
-3. **Per-square motion masks** (deferred from the scheduler design): regional
-   motion feeding the stabilizer for hovering hands; only worth it if the proof
-   take shows hand-hover errors surviving the new stack.
-4. **Run M2 over `ccbf-r5`** with `--forward-original --corners` (the warp path
-   is unusable at this angle) and judge the stream at that angle.
-5. **Give a user's `tuned.onnx` a deploy story** — per-operator artifact, no
-   compose path today.
-6. **Attack the residual type confusions** — `p->b` leads trained-alone; a third
-   of the ensemble's residual is `empty->p`/`empty->P`, a different animal.
-   (The 08-28 "two-kings demotes the CORRECT king" claim was investigated and
-   refuted — see `8c42b83`: the decoder already prefers the lower-confidence
-   duplicate, the evidence genuinely crosses on 08-13, and the residual lever
-   is the bank lock on d8, not the tie-break.) Feeds item 1.
-7. **Decide whether calibrated confidences go on the wire** — a decision, not an
-   experiment: argmax is invariant, DESIGN §9 says the downstream smoother wants
-   them.
-8. **Crop attribution / occlusion** — the prism is a *bounding* volume: the c6
-   knight's lean hallucinated a b6 rook and corrupted b7 all trial.
-   Base-weighted attribution over bounding-prism membership. Plus detection
-   follow-ups (`73efd60`, non-blocking). The 08-28 demotion A/B pins both sides
-   of the `b` trade on this (c5's crop bleeding into b5).
-9. **Step-back reevaluation ideas parked in [docs/ideas.md](docs/ideas.md)**
-   (user 08-29, "work on it some other time"): recommended sequence is DINOv3
-   ceiling probe → legality-constrained auto-labeling of game video →
-   detection-first (RF-DETR) prototype; SAM 3 as labeling tooling.
-11. **Follow-ups from the 08-31 new-style batch**
-   (docs/reports/2026-08-31-new-style-batch.md): (a) **calibrate the five and
-   re-measure** — the direct test of whether user calibration kills `Q->K` on a
-   fresh set; gated on the un-gated non-monotone bank write below, so run it as a
-   before/after on this batch, now the cleanest regression probe we have.
-   (b) **Reopen the two-kings tie-break** — 13 fresh boards beat the 7-board
-   ceiling that closed it. (c) Ask the user for **varied positions, not more
-   start positions**: every calibrate candidate is the start position, so each
-   piece type is only seen on its home square. (d) `0760` needs hand-picked
-   corners (`tools/corner_picker.html`).
-13. **`gates.sh` contamination guard** — a candidate trained on a gate take's
-   frames can print a +20-perfect gate "win" that is pure memorization
-   (docs/reports/2026-08-31-autolabel-stage0.md). Detect training-style ∩
-   gate-session overlap (style `sources.json`) and refuse or label the row.
-12. **`replay.CONFIG_ENV` omits `BR_CROP_MASK`** — masked and unmasked replays
-   of a take share a `config_digest` (found in the 08-31 two-kings replay gate:
-   `e6-control` vs `e6-gray` both `cc530662`, scoring 0.9139 vs 0.9121). Add
-   the mask to the digest env; small, wants its own tests.
-10. **Client-side session video** (user proposal 08-28): `MediaRecorder` on the
-   camera track, chunked upload during the session, stored beside the recording
-   — edge/detector debugging plus trivial truth-authoring (~25–50 MB/take).
-14. **ChessQueries as estimator / data engine** (handoff:
-   docs/plans/2026-10-09-chessqueries-handoff.md). In order: Lite benchmark vs
-   the shipped stack (bar: held-out 96.6 %, gate raw 88.5–96.0 %) → if it wins
-   cold, prototype it behind the inference node and run the replay gate →
-   full ViT-L (needs the user's OK to run third-party code, or our own loader) →
-   10-frame LoRA as a `/calibrate` replacement → their SLCC PGN-alignment
-   producer as our auto-label engine (supersedes Next 9's auto-labeling step).
-   License is PolyForm Noncommercial: fine for us, no commercial use.
+1. **User re-test** after latency-fix lands (TESTING Option J), then score the take (build its truth).
+2. **Camera control over WebSockets, no polling** (user): config pushed down the phone's `/ingest`
+   socket, report on change, preview only while `/control` watches; `/control` gets one push socket.
+   Starts after latency-fix (same files).
+3. **Truth check for the 3 non-gate takes** (163352, 170333, 172736): moves read but missing from truth
+   (same pattern as the 111421 fix) — fix by sweep + eye check, then add them to the gate.
+4. **Record more varied games** — second physical set, second camera, mixed openings. The gate is still
+   4 takes on one set; settle defaults are fitted to it.
+5. **Python edge on the control channel** (today: static `--roi`) — needed for a Pi/Jetson camera.
+6. **ChessCam v2 as the fast/portable recognizer** (45 ms CPU, emits square centres) — candidate for the
+   Pi/Jetson and the on-phone idea; one more file behind the recognizer seam.
+7. **Idea, parked:** fully on-phone portable app — [docs/on-phone-app.md](docs/on-phone-app.md).
 
 ## Open questions
 
-- **Position stream has no consumer** — user decision 2026-08-28: deferred; the
-  position stream *is* the product output for now. (`stability` earns its keep
-  internally: forwarder + read scheduler run on it.)
-- **Confidence is not usable today** — under-confident ensemble, no board-level
-  signal. User 2026-08-28: calibrated confidences would be nice, **not a priority**.
-- **Bank writes are not monotone** — adding exemplars via `/calibrate` can regress
-  squares on *other* boards (2026-08-06: a confirmed 64/64 board re-scored 63/64
-  after two later writes; trained-alone still read it right, so the bank caused
-  it). **Measured at full strength 2026-08-31**
-  (docs/reports/2026-08-31-calibrate-before-after.md): a five-board calibrate
-  raised every per-square metric and dropped settled perfects 35→25 via
-  cross-style contamination of the king margin. The gate must be the 4-take
-  settled-perfect rows; still unbuilt. Design lean: style-scoped banks.
-- **`verify_labels` cannot reject an all-empty placement** (`agree < 0.6 × 0` never
-  fires) — a piece-filled photo labeled empty would embed piece pixels as `empty`
-  exemplars. Pre-existing in live `/calibrate`, found 08-28 writing the rebuild
-  guard tests; fixing changes live calibration semantics, wants its own review.
-  Related: 6 non-portrait guard rejects are probably repairable (~+20% corpus).
+- **Where do positions go?** No downstream consumer yet (deferred 2026-08-28); the on-phone idea makes
+  the "sink" question concrete (Lichess broadcast/PGN, a WebSocket endpoint, local file).
+- **Target hardware latency** — ChessQ fp32 needs a GPU for ~0.2 s; Jetson/Pi unmeasured.
+- **Confidence is not a hand signal** — ChessQ reads squares under a hand as empty at p ≥ 0.96; only
+  burst-end scheduling + the debounce absorb it. Enough on more varied takes?
+- **Licence** — ChessQ weights are PolyForm Noncommercial (accepted 2026-11-24); a commercial use
+  would need another model.
