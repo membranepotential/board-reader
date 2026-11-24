@@ -29,7 +29,7 @@ dev = [
     # CPU-bound and independent per test, so this roughly halves wall clock.
     "pytest-xdist>=3",
     "httpx>=0.27",
-    # compose.yaml and aspects.yaml are both parsed by guardrail tests
+    # compose.yaml is parsed by a guardrail test
     # (tests/test_deploy_parity.py). Already in the lock as a transitive dep, so
     # declaring it resolves to the same pinned version — no new surface.
     "pyyaml>=6",

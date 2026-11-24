@@ -69,7 +69,6 @@ packages/
 docker/        one parametrised image; compose.yaml wires the three services
 tools/         offline tooling: model fetch, replay gate table, label migration, video capture
 docs/          DESIGN.md (decisions) + an Obsidian-linked doc set (index.md)
-aspects.yaml   which parts must stay in sync with which, and why
 ```
 
 The **edge** and **inference** nodes never share code — they meet only on the wire.

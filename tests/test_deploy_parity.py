@@ -17,9 +17,7 @@ pairing, so "different file" can only ever mean "different hardware".
 They drifted once, silently. The confidence-gated cascade landed in compose.yaml
 alone (``2b64ada``); ``make dev`` went on serving ``BR_MODEL`` by itself, so
 every live phone test ran a measurably weaker reader than the demo it was
-supposed to be rehearsing, and nothing failed. These tests are the guard, and
-``aspects.yaml`` carries the Makefile inside the ``deploy`` aspect so ``/drift``
-reasons about it too.
+supposed to be rehearsing, and nothing failed. These tests are the guard.
 
 Both files are read as *text and dry-run output* — never by starting a server —
 so the whole module is fast and works on a fresh clone with no ``models/``.
@@ -286,19 +284,3 @@ def test_dev_cpu_differs_from_dev_only_in_the_hardware_choice() -> None:
     assert {k: v for k, v in cpu.items() if k != "BR_CHESSQ"} == {
         k: v for k, v in gpu.items() if k != "BR_CHESSQ"
     }
-
-
-@pytest.mark.parametrize("path", [_COMPOSE, _MAKEFILE])
-def test_both_entry_points_are_registered_in_the_deploy_aspect(path: Path) -> None:
-    """`/drift` can only reason about files aspects.yaml claims.
-
-    The Makefile was missing from the ``deploy`` aspect, which is why the cascade
-    drift went unreported: the aspect described "how the system is actually run"
-    but listed only the container half of it.
-    """
-    spec = yaml.safe_load((_ROOT / "aspects.yaml").read_text(encoding="utf-8"))
-    files = spec["aspects"]["deploy"]["files"]
-    assert path.name in files, (
-        f"{path.name} is an entry point that starts a real node, but the deploy "
-        f"aspect only claims {files}"
-    )

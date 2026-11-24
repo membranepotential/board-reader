@@ -55,7 +55,7 @@ HOST := $(shell ip route get 1.1.1.1 2>/dev/null | grep -oP 'src \K[\d.]+' || ec
 # The recognizer, so the dev path reads boards the same way the canonical
 # `docker compose up` demo does. The two entry points drifted once already (the
 # cascade landed in compose.yaml alone, 2b64ada); tests/test_deploy_parity.py is
-# the guard, and aspects.yaml carries the Makefile as part of `deploy`.
+# the guard.
 #
 # One release, two files, chosen by hardware (docs/reports/2026-11-24-chessq-gpu-formats.md):
 #   GPU  our fp32 export — ~205 ms/read on the GTX 1650. The author's int8 runs
