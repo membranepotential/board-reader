@@ -83,7 +83,7 @@ make lint                     # ruff, pinned in the dev group
 uv run pytest <path>[::<test>] -q   # one file/test while iterating — no `-n`, it costs more
 uv run pytest packages/core   # one package's tests
 uv run pytest                 # the whole suite SERIALLY (~23s) — prefer `make test`
-make gate GATE_NAME=<new>     # replay the four gate takes; table against cq-v6-tuned (needs the GPU)
+make gate GATE_NAME=<new>     # replay the four gate takes; table against ka2-tuned (needs the GPU)
 
 # Run locally (one terminal): inference + viewer on http :8080 (live, /snapshot)
 # and a second viewer bind on https :8443, whose secure origin /camera needs.

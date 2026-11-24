@@ -96,7 +96,7 @@ settle window, riding on stream events as `settled`.
 keepalive read when 2 s of capture time passed without one.
 
 **Replay gate** — the four recorded takes with truth that every recognition, decode or
-settle change is measured on (`make gate`); the reference row is `cq-v6-tuned`.
+settle change is measured on (`make gate`); the reference row is `ka2-tuned`.
 
 **Zero-shot** — reading a chess set with no calibration for it. ChessQ is zero-shot on every
 set; there is no calibration round any more.

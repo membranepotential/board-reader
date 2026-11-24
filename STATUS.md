@@ -9,9 +9,8 @@ confidences**. No moves, no legality, no PGN — those belong to the downstream 
 
 ## Now
 
-- **latency-fix** — phone motion meter stuck at stability 1.000 in live take 1 (no bursts → 3–6 s per
-  move); fix meter + evaluate keepalive ~1 s / settle 0.5 s on the gate — implementer-high running — next:
-  gate + held-out tables, then user re-test.
+- **ws-control** — camera control over WebSockets, no polling (user) — implementer-high running — next:
+  review, then user re-test.
 
 ## Done (2026-11-24 — the ChessQ rebuild; plan: [docs/plans/2026-11-24-simplify-around-chessq.md](docs/plans/2026-11-24-simplify-around-chessq.md))
 
@@ -23,6 +22,9 @@ confidences**. No moves, no legality, no PGN — those belong to the downstream 
   replays, 0 hand leaks. Framing: board must fill ≥ ~50 % of the sent width.
 - **Dumb-camera phone** (DESIGN D11): `/camera` only films; laptop `/control` sets crop, lens,
   resolution, start/stop. Live take 1 (`recordings/20261124-200631`): reads good, latency bad (see Now).
+- **Live latency fixed** (`bf23c2a`, `3cf765b`): phone motion thumbnail point-sampled sensor noise →
+  no bursts; now area-averaged. Keepalive 3 → 2 s. Gate settled 104/119 → 138/154, 0 hand leaks;
+  live-take median move→settle 3.1 → 2.1 s (replayed). Gate base is now `ka2-tuned`.
 - **Docs rewritten:** DESIGN.md 1,103 → 618 lines (superseded decisions in one table), all notes
   audited, mockups deleted, `docs/on-phone-app.md`.
 - **Learnings → 14 path-scoped rules** in `.claude/rules/`; store frozen (13 verdicts left).
@@ -31,20 +33,18 @@ confidences**. No moves, no legality, no PGN — those belong to the downstream 
 
 ## Next
 
-1. **User re-test** after latency-fix lands (TESTING Option J), then score the take (build its truth).
-2. **Camera control over WebSockets, no polling** (user): config pushed down the phone's `/ingest`
-   socket, report on change, preview only while `/control` watches; `/control` gets one push socket.
-   Starts after latency-fix (same files).
-3. **Truth check for the 3 non-gate takes** (163352, 170333, 172736): moves read but missing from truth
+1. **User re-test** (TESTING Option J): verify bursts open on the iPhone (expect ~2 s from the hand
+   leaving), then score the take (build its truth).
+2. **Truth check for the 3 non-gate takes** (163352, 170333, 172736): moves read but missing from truth
    (same pattern as the 111421 fix) — fix by sweep + eye check, then add them to the gate.
-4. **Record more varied games** — second physical set, second camera, mixed openings. The gate is still
+3. **Record more varied games** — second physical set, second camera, mixed openings. The gate is still
    4 takes on one set; settle defaults are fitted to it.
-5. **Python edge on the control channel** (today: static `--roi`) — needed for a Pi/Jetson camera.
-6. **ChessCam v2 as the fast/portable recognizer** (45 ms CPU, emits square centres) — candidate for the
+4. **Python edge on the control channel** (today: static `--roi`) — needed for a Pi/Jetson camera.
+5. **ChessCam v2 as the fast/portable recognizer** (45 ms CPU, emits square centres) — candidate for the
    Pi/Jetson and the on-phone idea; one more file behind the recognizer seam.
-7. **Turn on the prior's back-rank constraint** — `prior.decode` is never given the frame, though the
+6. **Turn on the prior's back-rank constraint** — `prior.decode` is never given the frame, though the
    chess frame is now always known; pass `quarter_turns=0` and gate it.
-8. **Idea, parked:** fully on-phone portable app — [docs/on-phone-app.md](docs/on-phone-app.md).
+7. **Idea, parked:** fully on-phone portable app — [docs/on-phone-app.md](docs/on-phone-app.md).
 
 ## Open questions
 

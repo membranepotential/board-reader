@@ -979,7 +979,7 @@ eval and replays are all in the chess frame.
    chess frame).
 4. Run `make gate GATE_NAME=<new-name>` on an idle GPU. Expected: four
    `replaying ...` lines (about a minute in all), then the gate table
-   `cq-v6-tuned → <new-name>` with a total row. An unchanged pipeline prints every
+   `ka2-tuned → <new-name>` with a total row. An unchanged pipeline prints every
    cell once (no `→`): 110/119 raw, 110/119 prior, 104/119 settled perfect.
    `uv run python tools/gate_table.py tkr-shipped cq-v6` prints the adoption gate.
 

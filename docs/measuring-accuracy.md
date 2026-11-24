@@ -179,7 +179,7 @@ a leave-one-out fit per board and, unlike the decoder, it does not serve.
 
 **The replay gate.** `make gate GATE_NAME=<new>` replays the four gate takes
 through `BR_CHESSQ` with the schedule `serve` ships (`schedule.DEFAULT_POLICY_SPEC`),
-scores each, and prints `tools/gate_table.py`'s table against `cq-v6-tuned`: raw
+scores each, and prints `tools/gate_table.py`'s table against `ka2-tuned`: raw
 per-square and raw / prior / settled perfect boards per take, with a pooled total.
 The reference is 110/119 raw and 104/119 settled perfect boards
 ([[2026-11-24-settle-tuning]]). Until 2026-11-24 the gate replayed plain
