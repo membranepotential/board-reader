@@ -130,7 +130,7 @@ What's covered today — the main files (`git ls-files 'packages/*/tests/*.py'
 | Gateway | `packages/inference/tests/test_server.py` | ingest → viewer over WS (in-process) |
 | **Read scheduling** | `packages/inference/tests/test_schedule.py` | **burst detection matches the forwarder's hysteresis; the keepalive floor survives a dead, stuck, absent or NaN meter and a backwards clock; no config spelling switches it off; a new move cancels the last one's owed reads; spec strings round-trip** |
 | **Scheduling, live** | `packages/inference/tests/test_ingest_schedule.py` | **the policy is observed on every arriving frame and asked at the drain, so a burst-end read gets `prefer_frame`'s sharper contender; per-board isolation; a frozen `capture_ts` falls back to the node's own keepalive; `BR_SCHEDULE` reaches the socket and `every-frame` restores the old gateway** |
-| **Camera control** | `packages/core/tests/test_control.py`, `packages/inference/tests/test_camera_control.py` | **the config, report and socket messages refuse malformed input; the registry pushes a config to every phone and every control page, previews are wanted exactly while a page watches, a reconnecting phone hears its config again; over the real sockets a config reaches the phone, a preview and the last streamed frame reach the page, a health tick arrives, and a bad message is refused without closing the socket** |
+| **Camera control** | `packages/core/tests/test_control.py`, `packages/inference/tests/test_camera_control.py` | **the config, report and socket messages refuse malformed input; the registry pushes a config to every phone and every control page, previews are wanted exactly while a page watches, a reconnecting phone hears its config again; with `BR_CAMERA_CONFIG` set the configs survive a restart (written atomically), a corrupt file is ignored with a warning, unset writes nothing, and `serve` sets the default; the board direction is the median of the latest reads, names the nearest side, flags a moved camera once the angle settled and resets on a new crop, lens or resolution; over the real sockets a config reaches the phone, a preview and the last streamed frame reach the page, a health tick arrives with the direction, and a bad message is refused without closing the socket** |
 | Viewer | `packages/viewer/tests/test_viewer_server.py`, `test_proxy.py` | the four prerendered pages served; `/api` and `/ws` reach the relay; no page names an absolute origin; the client log |
 | **Layer split** | `tests/test_layer_separation.py` | edge/inference never import each other |
 | **Deploy parity** | `tests/test_deploy_parity.py` | compose and `make dev` serve the same recognizer |
@@ -175,7 +175,8 @@ the config asked for is the crop sent" is measured in pixels.
 It also sends a drawn hand across the board and checks that a burst reaches the wire,
 and that changing the crop alone does not open one.
 `control.spec.ts` drives `/control` against a simulated node on its
-`/ws/boards/{id}/control` socket.
+`/ws/boards/{id}/control` socket, including the side White sits on and the
+camera-moved warning, both from the health tick.
 
 `pnpm test:e2e` drives the pages in a real Chromium (`tests/*.spec.ts`), against
 the **built** app — `vite build` then `vite preview`, because the bundle is what the
@@ -237,13 +238,17 @@ You should see:
   **green**, fading pale and gone within a second,
 - the rhythm of a **scheduled** stream (DESIGN §4.3): about one event every 2 s at
   rest (the node's keepalive read), none while the synthetic hand is over the board,
-  then three events ~0.6 s apart once it leaves (the burst-end reads). The edge still
+  then three events ~0.3 s apart once it leaves (the burst-end reads). The edge still
   forwards ~12 fps through the hand; `curl -s localhost:8000/healthz | jq .ingest`
   shows `unscheduled` climbing while `estimated` crawls. `BR_SCHEDULE=every-frame`
-  on the `inference` service restores one event per frame and the pulsing
-  **“moving”** chip,
-- squares under the confidence threshold, if any, ringed **yellow**; the legend under
-  the board names both rings,
+  on the `inference` service restores one event per frame,
+- squares the settled board has not caught up with yet ringed **dashed amber**; the
+  legend under the board calls them “not settled yet”. The card shows no confidence
+  bar and no stability bar: ChessQ reports about 1.0 on its wrong squares too,
+- the **motion chip** on the card, once the node sends motion messages on `/viewer`:
+  **“moving”** while a hand is over the board, **“still”** at rest, and **“motion ?”**
+  when the last motion message is more than 3 s old (stop the edge to see it). A node
+  that sends no motion messages shows no chip at all,
 - the **preview** tab on the board's left sliding open onto the **latest frame the
   node ingested**, refreshing as events arrive — it reads “no frame yet” until one
   has been forwarded, and closing it stops fetching,
@@ -521,10 +526,13 @@ uv run board-reader-viewer --host 0.0.0.0 --port 8443 --ssl
    green, `streaming ~1.0 fps` at rest, and `/control` shows the cropped frame under
    **What the node receives**, with **frames/s received** and **last frame** filled in
    the Status panel and the **recognizer** named (`chessq`, or `stub` with the reason).
+   Once the node has read the board, **board direction** in the Status panel names the
+   side White sits on as the preview shows it, e.g. `White sits on the left (89°)`.
+   (The stub reads no direction, so the line stays `—` without the ChessQ weights.)
 9. Open the live page `http://localhost:8080` and move a piece. Expected: a burst on the
    phone (fps rises to ~12 while the hand moves) and the new position on the live page
-   about three seconds after the hand leaves (three burst-end reads, then the 1 s settle;
-   the gate's median move-to-settle time is 3.0 s).
+   about two seconds after the hand leaves (three burst-end reads 0.3 s apart, then the
+   0.5 s settle; in the offline sweep the mean from hand leaving to settled was 1.7 s).
 10. Press **Stop streaming** on `/control`. Expected: the phone's status line reads
     `not streaming` within ~1 s, and no new frames reach the node.
 
@@ -537,9 +545,20 @@ What to check beyond the steps:
   behind, the node's inbox keeps the *sharpest* frame of the last second
   (`ingest.prefer_frame`). Verifiable in a recording: `frames.ndjson` headers carry
   `sharpness`, `events.ndjson` carries the chosen `frame_seq`.
-- Restart the inference node mid-session: the phone's status line says
-  `node unreachable`, then `node connected` again; the config is in memory only, so draw
-  the rectangle and press **Start streaming** again on `/control`.
+- Restart the inference node mid-session (stop `make dev` with Ctrl-C, run it again).
+  Expected: the phone's status line says `node unreachable`, then `node connected`, and
+  the phone resumes streaming with the same crop, lens and resolution, with nothing
+  pressed on `/control`. `serve` keeps each board's config in
+  `data/camera-config.json` (`BR_CAMERA_CONFIG`; set it empty to keep the config in
+  memory only, and then a restart comes back with streaming off). A corrupt file is
+  ignored with a WARNING in the node's log, and the node starts with streaming off.
+- Move the camera while streaming: turn the phone holder by a quarter turn, so the
+  board lies a different way in the preview. Expected: after a few reads the
+  **board direction** line names the new side and turns red, and a red
+  `The camera moved…` warning appears under the preview. Redraw the crop around the
+  board and press **Save crop**. Expected: the warning disappears, and the direction
+  settles again on the new angle (a new lens or resolution does the same; starting or
+  stopping the stream does not).
 - Two boards: open `/camera?board=left` on one phone and `/control?board=left` on the
   laptop (or type the id into the **board** field). Each board keeps its own config.
 
@@ -731,8 +750,8 @@ label is only as good as the estimator that produced it):
 > [!important] Live event streams are SPARSE — pick `guard_seqs` for the schedule,
 > not for the camera
 > Since the move-trigger milestone the node does **not** publish one event per
-> frame. `BR_SCHEDULE` defaults to `burst-end:burst_end_reads=3,spacing_s=0.6`:
-> three reads 0.6 s apart when a move finishes, then roughly one every 3 s while the board
+> frame. `BR_SCHEDULE` defaults to `burst-end:keepalive_s=2,burst_end_reads=3,spacing_s=0.3`:
+> three reads 0.3 s apart when a move finishes, then one every 2 s while the board
 > rests — far fewer events than the frames that arrived
 > ([the 08-27 sweep](reports/2026-08-27-move-trigger-sweep.md), [the settle tuning](reports/2026-11-24-settle-tuning.md)). `frames.ndjson` is
 > unchanged — every arriving frame is still recorded, because recording happens in

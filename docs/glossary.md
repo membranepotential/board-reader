@@ -56,7 +56,15 @@ on the Python edge.
 `/control` chose for a board's camera (crop, lens, resolution, streaming); the report is
 what the phone says its camera is (lenses, frame size, stream state). The node pushes the
 config down the phone's socket (`/boards/{id}/camera`) on connect and on every change; the
-phone sends the report when it changes.
+phone sends the report when it changes. `serve` keeps the configs in
+`data/camera-config.json` (`BR_CAMERA_CONFIG`), so a restarted node resumes the stream.
+
+**Board direction** — which way the board lies in the camera's image
+(`board_reader_core.control.BoardDirection`): the angle of the e1→e8 axis from ChessQ's
+`direction` output (0° White at the bottom, 90° White on the left, 180° at the top, −90°
+on the right), the side White sits on, and `camera_moved` when the angle drifted more
+than 15° from where it settled after the last crop, lens or resolution change. On
+`/control` from the health tick.
 
 **Chess frame** — the convention every placement is in: rank 8 first, file a first, as FEN
 writes it, whatever way the board faces the camera. The recognizer resolves it per frame;
@@ -93,11 +101,11 @@ read, riding beside it as `prior`; the read itself is never rewritten.
 settle window, riding on stream events as `settled`.
 
 **Read scheduler** — the node's choice of which arriving frames to read (`schedule.py`,
-`BR_SCHEDULE`): by default three reads 0.6 s apart at the end of a motion burst, plus a
+`BR_SCHEDULE`): by default three reads 0.3 s apart at the end of a motion burst, plus a
 keepalive read when 2 s of capture time passed without one.
 
 **Replay gate** — the four recorded takes with truth that every recognition, decode or
-settle change is measured on (`make gate`); the reference row is `ka2-tuned`.
+settle change is measured on (`make gate`); the reference row is `sp03-settle05`.
 
 **Zero-shot** — reading a chess set with no calibration for it. ChessQ is zero-shot on every
 set; there is no calibration round any more.
