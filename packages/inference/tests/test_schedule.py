@@ -468,11 +468,11 @@ def test_a_name_survives_the_values_display_formatting_would_have_mangled():
 
 def test_the_shipped_default_is_the_policy_the_sweep_recommended():
     """``BR_SCHEDULE``'s default is a spec string like any other, so it is checked
-    like one: it must name exactly the constants the settle sweep chose
-    (``docs/reports/2026-11-24-settle-tuning.md``), with the 2 s keepalive the
+    like one: it must name exactly the constants the round-2 latency sweep chose
+    (three reads 0.3 s apart, with the forwarder's tail) and the 2 s keepalive the
     2026-11-24 live take asked for (see ``DEFAULT_POLICY_SPEC``)."""
     assert parse_policy(DEFAULT_POLICY_SPEC) == BurstTriggered(
-        keepalive_s=2.0, burst_end_reads=3, spacing_s=0.6
+        keepalive_s=2.0, burst_end_reads=3, spacing_s=0.3
     )
     # ...and it is canonical, so a manifest and the env var read the same.
     assert parse_policy(DEFAULT_POLICY_SPEC).name == DEFAULT_POLICY_SPEC

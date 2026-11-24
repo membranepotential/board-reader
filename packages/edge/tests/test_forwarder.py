@@ -115,7 +115,8 @@ def test_a_brief_calm_does_not_end_a_burst():
 
 def test_sustained_calm_ends_the_burst():
     forwarder = AdaptiveForwarder()
-    out = list(forwarder.forward(stream(motion(15) + rest(60))))
+    # 3.5 s of rest: the calm hold, the tail, then two keepalive slots.
+    out = list(forwarder.forward(stream(motion(15) + rest(105))))
     assert any(f.burst_id is not None for f in out)  # it did burst
     assert not forwarder.bursting
     assert forwarder.burst_id is None
@@ -124,6 +125,41 @@ def test_sustained_calm_ends_the_burst():
     # ...and once at rest it is back to the keepalive rate: the last two forwarded
     # frames are ~1s apart, not ~0.08s.
     assert out[-1].capture_ts - out[-2].capture_ts == pytest.approx(1.0, abs=0.05)
+
+
+def test_the_burst_rate_holds_for_the_tail_after_a_burst_ends():
+    config = ForwarderConfig()
+    forwarder = AdaptiveForwarder(config)
+    frames = stream(motion(15) + rest(150))
+    sent = []
+    end_ts = None
+    for frame in frames:
+        was_bursting = forwarder.bursting
+        out = forwarder.decide(frame)
+        if was_bursting and not forwarder.bursting:
+            end_ts = frame.capture_ts
+        if out is not None and end_ts is not None:
+            sent.append(out)
+    assert end_ts is not None
+    tail = [f.capture_ts for f in sent if f.capture_ts < end_ts + config.tail_s]
+    gaps = [b - a for a, b in itertools.pairwise([end_ts, *tail])]
+    # Dense to the end of the tail, and every tail frame is a rest frame.
+    assert max(gaps) <= 1 / config.burst_fps + 1 / CAPTURE_FPS
+    assert tail[-1] > end_ts + config.tail_s - 1 / config.burst_fps - 1 / CAPTURE_FPS
+    assert all(f.burst_id is None for f in sent)
+    # ...then the keepalive again.
+    after = [f.capture_ts for f in sent if f.capture_ts >= end_ts + config.tail_s]
+    assert all(b - a == pytest.approx(1.0, abs=0.05) for a, b in itertools.pairwise(after))
+
+
+def test_a_zero_tail_drops_to_the_keepalive_at_the_burst_end():
+    forwarder = AdaptiveForwarder(ForwarderConfig(tail_s=0.0))
+    out = list(forwarder.forward(stream(motion(15) + rest(60))))
+    rest_frames = [f for f in out if f.burst_id is None][1:]  # past the first frame
+    assert all(
+        b.capture_ts - a.capture_ts == pytest.approx(1.0, abs=0.05)
+        for a, b in itertools.pairwise(rest_frames)
+    )
 
 
 def test_a_second_burst_gets_a_new_id():
@@ -185,6 +221,8 @@ def test_the_forwarder_never_reads_a_wall_clock():
         {"burst_fps": -1.0},
         {"enter_burst": 0.9, "exit_burst": 0.5},  # inverted hysteresis
         {"exit_hold_s": -0.1},
+        {"tail_s": -0.5},
+        {"tail_s": float("nan")},
     ],
 )
 def test_config_rejects_nonsensical_settings(kwargs):

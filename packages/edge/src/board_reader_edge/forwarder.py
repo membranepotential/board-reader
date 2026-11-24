@@ -13,6 +13,14 @@ at-rest <-> burst transition is hysteretic: entry is eager (one dip below
 ``exit_hold_s``). A single noisy frame therefore cannot flap the state, and the
 pause between two strides of the same move does not split one burst into two.
 
+**The tail.** A burst's end is the moment the node reads the new position — its
+burst-end policy reads the first calm frames after a move, several of them, a
+fraction of a second apart. Dropping to the keepalive at that very moment starves
+it: on the 2026-11-24 live take every burst-end read waited ~1 s for the next
+keepalive frame. So the forwarder keeps the burst rate for ``tail_s`` after a
+burst ends (with ``burst_id`` already ``None``: the move is over, the frames are
+rest frames sent densely).
+
 **Time base.** Every rate decision is made against ``frame.capture_ts`` (DESIGN D5),
 never a wall clock: replaying a recorded clip flat out must forward exactly the
 frames the live edge would have. There is deliberately no ``time`` import here.
@@ -21,6 +29,7 @@ frames the live edge would have. There is deliberately no ``time`` import here.
 from __future__ import annotations
 
 import dataclasses
+import math
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
 
@@ -43,6 +52,7 @@ class ForwarderConfig:
     enter_burst: float = 0.7  # stability below this -> enter burst
     exit_burst: float = 0.85  # stability above this...
     exit_hold_s: float = 0.7  # ...for this long (capture-time) -> back to at rest
+    tail_s: float = 1.0  # burst rate kept this long after a burst ends (the tail)
 
     def __post_init__(self) -> None:
         if self.keepalive_fps <= 0 or self.burst_fps <= 0:
@@ -51,6 +61,8 @@ class ForwarderConfig:
             raise ValueError("enter_burst must not exceed exit_burst (hysteresis)")
         if self.exit_hold_s < 0:
             raise ValueError("exit_hold_s must be non-negative")
+        if not (math.isfinite(self.tail_s) and self.tail_s >= 0):
+            raise ValueError("tail_s must be finite and non-negative")
 
 
 class AdaptiveForwarder:
@@ -76,6 +88,8 @@ class AdaptiveForwarder:
         self._burst_id: str | None = None
         self._calm_since: float | None = None  # capture_ts calm began, in a burst
         self._last_forward_ts: float | None = None
+        #: capture_ts until which the burst rate still applies after a burst ended.
+        self._tail_until: float | None = None
 
     @property
     def bursting(self) -> bool:
@@ -95,6 +109,7 @@ class AdaptiveForwarder:
                 # carries that id.
                 self._burst_id = f"{frame.board_id}:{frame.seq}"
                 self._calm_since = None
+                self._tail_until = None
             return
 
         if stability <= self.config.exit_burst:
@@ -104,19 +119,23 @@ class AdaptiveForwarder:
         elif frame.capture_ts - self._calm_since >= self.config.exit_hold_s - _DUE_EPS:
             self._burst_id = None
             self._calm_since = None
+            self._tail_until = frame.capture_ts + self.config.tail_s
 
     def _due(self, capture_ts: float) -> bool:
         """Has the current forward period elapsed since the last forwarded frame?
 
         The period is read at decision time, so entering a burst raises the rate
         immediately instead of waiting out the keepalive interval already pending.
+        The burst rate also holds through the tail after a burst.
         """
         if self._last_forward_ts is None:
             return True  # the first frame ever is always forwarded
         elapsed = capture_ts - self._last_forward_ts
         if elapsed < 0:
             return True  # clock stepped backwards (D5): re-anchor rather than stall
-        fps = self.config.burst_fps if self.bursting else self.config.keepalive_fps
+        in_tail = self._tail_until is not None and capture_ts < self._tail_until
+        fast = self.bursting or in_tail
+        fps = self.config.burst_fps if fast else self.config.keepalive_fps
         return elapsed >= 1.0 / fps - _DUE_EPS
 
     def decide(self, frame: Frame) -> Frame | None:

@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   AdaptiveForwarder,
   BURST_FPS,
+  CAPTURE_FPS,
   ENTER_BURST,
   EXIT_BURST,
   EXIT_HOLD_S,
@@ -10,6 +11,7 @@ import {
   MOTION_OVERSAMPLE,
   MotionMeter,
   sampleThumbnail,
+  TAIL_S,
   type RgbaImage
 } from './motion';
 
@@ -354,6 +356,59 @@ describe('AdaptiveForwarder', () => {
       expect(forwarder.bursting).toBe(false);
     }
     expect(new Set(ids).size).toBe(3);
+  });
+
+  /** A burst that ends at the returned capture time: motion at 0.1 s, then calm. */
+  function endBurst(meter: FixedMeter, forwarder: AdaptiveForwarder): number {
+    forwarder.decide(thumb, { boardId: 'b', captureTs: 0 });
+    meter.set(0.2);
+    forwarder.decide(thumb, { boardId: 'b', captureTs: 0.1 });
+    meter.set(1);
+    forwarder.decide(thumb, { boardId: 'b', captureTs: 0.2 });
+    const end = 0.2 + EXIT_HOLD_S;
+    forwarder.decide(thumb, { boardId: 'b', captureTs: end });
+    expect(forwarder.bursting).toBe(false);
+    return end;
+  }
+
+  it('keeps the burst rate for TAIL_S after a burst ends, as rest frames', () => {
+    const meter = new FixedMeter(1);
+    const forwarder = new AdaptiveForwarder(meter);
+    const end = endBurst(meter, forwarder);
+    const sent: { ts: number; burstId: string | null }[] = [];
+    for (let i = 1; i <= 2 * CAPTURE_FPS; i++) {
+      const ts = end + i / CAPTURE_FPS; // 2 s of sampling
+      const decision = forwarder.decide(thumb, { boardId: 'b', captureTs: ts });
+      if (decision !== null) sent.push({ ts, burstId: decision.burstId });
+    }
+    const inTail = [end, ...sent.filter((f) => f.ts < end + TAIL_S).map((f) => f.ts)];
+    // The tail runs at the burst rate (quantised to the sampling grid) to its end,
+    // and none of its frames claims the burst.
+    const gaps = inTail.slice(1).map((ts, i) => ts - inTail[i]!);
+    expect(Math.max(...gaps)).toBeLessThanOrEqual(1 / BURST_FPS + 1 / CAPTURE_FPS + 1e-9);
+    expect(inTail.at(-1)!).toBeGreaterThan(end + TAIL_S - 1 / BURST_FPS - 1 / CAPTURE_FPS);
+    expect(sent.every((f) => f.burstId === null)).toBe(true);
+    // After the tail, the keepalive again: one frame in the second after it.
+    const after = sent.filter((f) => f.ts >= end + TAIL_S);
+    expect(after.length).toBeLessThanOrEqual(KEEPALIVE_FPS);
+  });
+
+  it('a new burst during the tail is a new burst', () => {
+    const meter = new FixedMeter(1);
+    const forwarder = new AdaptiveForwarder(meter);
+    const end = endBurst(meter, forwarder);
+    meter.set(0.2);
+    const again = forwarder.decide(thumb, { boardId: 'b', captureTs: end + 0.1 });
+    expect(again?.burstId).toBe('b:b1');
+  });
+
+  it('a reset forgets the tail', () => {
+    const meter = new FixedMeter(1);
+    const forwarder = new AdaptiveForwarder(meter);
+    const end = endBurst(meter, forwarder);
+    forwarder.reset();
+    forwarder.decide(thumb, { boardId: 'b', captureTs: end + 0.1 });
+    expect(forwarder.due(end + 0.1 + 1 / BURST_FPS)).toBe(false);
   });
 
   it('re-anchors rather than stalling when the clock steps backwards', () => {

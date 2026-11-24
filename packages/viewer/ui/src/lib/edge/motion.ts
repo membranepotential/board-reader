@@ -28,6 +28,13 @@ export const ENTER_BURST = 0.7;
 /** Stability must stay above this, for `EXIT_HOLD_S`, to end one — hysteresis. */
 export const EXIT_BURST = 0.85;
 export const EXIT_HOLD_S = 0.7;
+/**
+ * The burst rate is kept this long after a burst ends (the tail), with `burstId`
+ * already null. The node reads a move at its burst end, several reads a fraction of
+ * a second apart; dropping to the keepalive at that moment made every one of those
+ * reads wait ~1 s for a frame on the 2026-11-24 live take.
+ */
+export const TAIL_S = 1.0;
 /** Float slack so a rate due "exactly now" is not missed by a rounding bit. */
 const DUE_EPS = 1e-6;
 
@@ -221,6 +228,8 @@ export class AdaptiveForwarder {
   private burstCount = 0;
   private calmSince: number | null = null;
   private lastForwardTs: number | null = null;
+  /** Capture time until which the burst rate still applies after a burst ended. */
+  private tailUntil: number | null = null;
 
   constructor(readonly meter: MotionMeter) {}
 
@@ -242,6 +251,7 @@ export class AdaptiveForwarder {
       if (stability < ENTER_BURST) {
         this.burstId = `${boardId}:b${this.burstCount++}`;
         this.calmSince = null;
+        this.tailUntil = null;
       }
       return;
     }
@@ -252,6 +262,7 @@ export class AdaptiveForwarder {
     else if (captureTs - this.calmSince >= EXIT_HOLD_S - DUE_EPS) {
       this.burstId = null;
       this.calmSince = null;
+      this.tailUntil = captureTs + TAIL_S;
     }
   }
 
@@ -261,8 +272,9 @@ export class AdaptiveForwarder {
     const elapsed = captureTs - this.lastForwardTs;
     if (elapsed < 0) return true; // clock stepped backwards: re-anchor, never stall
     // Read at decision time, so entering a burst raises the rate immediately instead
-    // of waiting out the keepalive interval already pending.
-    const fps = this.bursting ? BURST_FPS : KEEPALIVE_FPS;
+    // of waiting out the keepalive interval already pending. The tail keeps it up.
+    const inTail = this.tailUntil !== null && captureTs < this.tailUntil;
+    const fps = this.bursting || inTail ? BURST_FPS : KEEPALIVE_FPS;
     return elapsed >= 1 / fps - DUE_EPS;
   }
 
@@ -286,5 +298,6 @@ export class AdaptiveForwarder {
     this.burstId = null;
     this.calmSince = null;
     this.lastForwardTs = null;
+    this.tailUntil = null;
   }
 }

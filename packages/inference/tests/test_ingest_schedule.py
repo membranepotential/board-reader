@@ -124,7 +124,7 @@ def test_a_completed_move_buys_three_spaced_reads_and_nothing_during_the_hand():
     """The whole point of the shipped policy, end to end through the worker.
 
     The move runs from frame 5 to 10; the burst ends ``EXIT_HOLD_S`` of calm later
-    at frame 18, which owes three reads ``spacing_s=0.6`` apart — 1.2 s of span,
+    at frame 18, which owes three reads ``spacing_s=0.3`` apart — 0.6 s of span,
     which is what :data:`~board_reader_inference.stabilize.SETTLE_SECONDS` needs
     before a completed move can settle on its own evidence.
     """
@@ -133,10 +133,10 @@ def test_a_completed_move_buys_three_spaced_reads_and_nothing_during_the_hand():
         seen, ingest = await _drive(SHIPPED, _one_move())
         # frame 0 (the stream's first), the move-complete frame, its two follow-ups
         # a beat apart, then the 2 s keepalive. 6.0 s of capture time, five reads.
-        assert seen == [0, 18, 24, 30, 50]
+        assert seen == [0, 18, 21, 24, 44]
         assert not [s for s in seen if 5 <= s <= 18 - 1], "nothing read inside the hand"
         gaps = np.diff([s * DT for s in seen[1:]])
-        assert gaps.min() >= 0.6 - DT
+        assert gaps.min() >= 0.3 - DT
         assert seen[-1] * DT - seen[1] * DT >= SETTLE_SECONDS, "the run spans a settle window"
         # 60 frames arrived; 55 of them cost nothing beyond the decode.
         assert ingest.frames_received == 60
@@ -201,7 +201,7 @@ def test_boards_schedule_independently():
         return est
 
     est = asyncio.run(run())
-    assert est.seqs("BUSY") == [0, 18, 24, 30, 50]  # its own move, its own quorum
+    assert est.seqs("BUSY") == [0, 18, 21, 24, 44]  # its own move, its own quorum
     assert est.seqs("QUIET") == [0, 20, 40]  # 6.0 s of rest: the floor, three times
 
 

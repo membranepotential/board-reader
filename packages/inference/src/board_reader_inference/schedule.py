@@ -57,8 +57,8 @@ reads spanning :data:`~board_reader_inference.stabilize.SETTLE_SECONDS` — a
 scheduler that reads once per move therefore never settles anything: one read is
 not a quorum however long you wait. Hence ``burst_end_reads``/``spacing_s``: a
 burst end can be worth two or three reads a beat apart, which hands the debounce
-its quorum in ~2.6 s instead of never. Sparsity and settling pull against each
-other and the pair of knobs is where the trade is made.
+its quorum 0.6 s after the burst end instead of never. Sparsity and settling pull
+against each other and the pair of knobs is where the trade is made.
 
 The client-side burst thresholds are mirrored here value for value (see
 :data:`ENTER_BURST`), because a policy that segments bursts differently from the
@@ -345,9 +345,11 @@ class BurstTriggered:
         :class:`~board_reader_inference.stabilize.BoardStabilizer` wants
         ``SETTLE_MIN_READS`` reads spanning ``SETTLE_SECONDS``, so a single read
         per move leaves the debounce holding the previous position until the
-        keepalive slowly catches up. The shipped three reads 0.6 s apart span
-        1.2 s and hand it the quorum at the third, about a second after the move
-        (:data:`DEFAULT_POLICY_SPEC`).
+        keepalive slowly catches up. The shipped three reads 0.3 s apart span
+        0.6 s and hand it the quorum at the third, 0.6 s after the burst end
+        (:data:`DEFAULT_POLICY_SPEC`). That needs the edge to keep sending densely
+        after its burst ends (the forwarder's tail), or the run waits on keepalive
+        frames instead.
 
     ``enter`` / ``exit`` / ``exit_hold_s``
         The burst hysteresis, defaulted to the client's own constants. Tune only
@@ -543,18 +545,24 @@ POLICIES: Mapping[str, type] = {
 }
 
 #: What the live gateway schedules with unless ``BR_SCHEDULE`` says otherwise —
-#: ``BurstTriggered(keepalive_s=2.0, burst_end_reads=3, spacing_s=0.6)``. Only the
+#: ``BurstTriggered(keepalive_s=2.0, burst_end_reads=3, spacing_s=0.3)``. Only the
 #: non-default parameters appear, because a spec states what was *asked for* (see
 #: :func:`_spec`); the class defaults (:data:`DEFAULT_KEEPALIVE_S` among them) stay
 #: put so every recorded spec string still rebuilds the run it names.
 #:
-#: Three reads 0.6 s apart span 1.2 s, just over ``SETTLE_SECONDS=1.0``, so a
-#: completed move settles on the burst end's own evidence without waiting on the
-#: keepalive. Swept 2026-11-24 with the settle window
-#: (docs/reports/2026-11-24-settle-tuning.md); before that it was
-#: ``burst_end_reads=3`` at 1.3 s spacing against a 2.5 s window
-#: (docs/reports/2026-08-27-move-trigger-sweep.md §8). ``BR_SCHEDULE=every-frame``
-#: is the way back to reading everything.
+#: Three reads 0.3 s apart span 0.6 s, just over ``SETTLE_SECONDS=0.5``, so a
+#: completed move settles on the burst end's own evidence 0.6 s after the burst
+#: ends — provided the frames are there: the edge forwarder keeps its burst rate
+#: for ``tail_s`` (1 s) after a burst, because at the keepalive's 1 fps each of
+#: these reads waited ~1 s for a frame (2026-11-24 live take 2).
+#: Swept 2026-11-24 (round 2: spacing 0.2-0.6 s x 2-4 reads x settle 0.3-1.0 s,
+#: on cached reads with the tail simulated): with the tail, the gate settles 11 of
+#: 27 reached boundaries within 1 s of the hand leaving instead of 8, the real
+#: gate (no tail) holds 140/156 settled perfect against 138/154, and no hand
+#: settles on the gate. Before that: ``spacing_s=0.6`` against a 1.0 s window
+#: (docs/reports/2026-11-24-settle-tuning.md), and ``burst_end_reads=3`` at
+#: 1.3 s spacing against 2.5 s (docs/reports/2026-08-27-move-trigger-sweep.md §8).
+#: ``BR_SCHEDULE=every-frame`` is the way back to reading everything.
 #:
 #: The keepalive is 2 s, not 3 s, since the 2026-11-24 live take: its phone's
 #: meter never opened a burst, so every move waited on the keepalive and took
@@ -564,7 +572,7 @@ POLICIES: Mapping[str, type] = {
 #: had the same medians at +48 % reads; 1.0 s let a hand settle on two gate takes
 #: (a lifted b8 knight, a c8 bishop under the hand). The keepalive is the floor
 #: when the meter is blind, so it is sized for that case.
-DEFAULT_POLICY_SPEC = "burst-end:keepalive_s=2,burst_end_reads=3,spacing_s=0.6"
+DEFAULT_POLICY_SPEC = "burst-end:keepalive_s=2,burst_end_reads=3,spacing_s=0.3"
 
 
 def parse_policy(spec: str) -> FramePolicy:

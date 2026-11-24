@@ -64,14 +64,17 @@ from board_reader_core.protocol import (
 from .prior import tally, violation
 
 #: How long a square must read as the same new class before the settled board
-#: adopts it. About the length of a hand crossing the board (~1 s), so a hand
-#: still needs agreeing reads across that long to land; short enough that the
-#: shipped schedule's burst-end run (three reads 0.6 s apart, spanning 1.2 s)
-#: settles a move on its own evidence. Swept 2026-11-24 over 0-2.5 s on the four
-#: gate takes and three held-out takes (docs/reports/2026-11-24-settle-tuning.md):
-#: 2.5 s, sized for the old crop stack's noisy reads, mostly bought lag
-#: (84 -> 104 settled-perfect boards at 1.0 s with that schedule, no hand settled).
-SETTLE_SECONDS = 1.0
+#: adopts it. With the shipped schedule's burst-end run (three reads 0.3 s apart,
+#: spanning 0.6 s) that is a three-read quorum, so a move settles 0.6 s after its
+#: burst ends. Swept 2026-11-24 twice: over 0-2.5 s (docs/reports/2026-11-24-settle-tuning.md;
+#: 2.5 s, sized for the old crop stack's noisy reads, mostly bought lag), then
+#: 0.3-1.0 s against the 0.2-0.6 s spacings the forwarder's tail makes possible.
+#: 0.5 s settled no hand on the gate takes with or without the tail; a window at
+#: or below the spacing (two reads) is the knife edge where hands began to settle.
+#: Shorter than one hand crossing (~1 s) on purpose: a hand the motion meter sees
+#: is never read (the schedule skips bursts), and a hand resting still on the
+#: board for seconds reads as rest at ANY window up to the 2 s keepalive.
+SETTLE_SECONDS = 0.5
 
 #: And never on fewer than this many consistent reads, however slow the stream —
 #: at one read per window the debounce would otherwise be a pass-through. It is
