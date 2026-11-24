@@ -1,12 +1,13 @@
-"""ChessQ Lite estimator (``BR_CHESSQ``): preprocessing, output mapping, serving.
+"""ChessQ Lite recognizer (``BR_CHESSQ``): preprocessing, output mapping, serving.
 
-Everything except the last test drives the estimator with a fake logits callable,
+Everything except the last test drives the recognizer with a fake logits callable,
 so the suite needs no weights. The last one runs the real release on one held-out
 still and is ``gpu``-marked (a real ONNX session), like the other real-model tests.
 """
 
 from __future__ import annotations
 
+import ast
 import json
 from pathlib import Path
 
@@ -25,15 +26,15 @@ from board_reader_core.wire import Frame, encode_jpeg
 
 from board_reader_inference import chessq as chessq_mod
 from board_reader_inference import replay
-from board_reader_inference import server as srv
 from board_reader_inference.chessq import (
     CHESSQ_CLASSES,
     INPUT_PX,
-    ChessQEstimator,
+    ChessQRecognizer,
     preprocess_frame,
     square_dist_from_logits,
 )
 from board_reader_inference.hub import PositionHub
+from board_reader_inference.recognizer import RecognizerEstimator, build_from_env
 from board_reader_inference.routing import PhotoRead, route_for
 from board_reader_inference.server import create_app
 from board_reader_inference.session import CalibrationRefused, EstimatorSession
@@ -57,6 +58,11 @@ def test_class_order_is_the_published_contract() -> None:
     """Pinned to the release descriptor's ``output.class_symbols`` (V6 r1), written
     out here rather than derived, so a wrong ``CHESSQ_CLASSES`` cannot test itself."""
     assert CHESSQ_CLASSES == "".join([".", "P", "N", "B", "R", "Q", "K", "p", "n", "b", "r", "q", "k"])
+
+
+def _served(model) -> RecognizerEstimator:
+    """ChessQ over ``model`` as the gateway serves it."""
+    return RecognizerEstimator(ChessQRecognizer(model))
 
 
 def _fake_model(placement: str):
@@ -107,9 +113,31 @@ def test_logits_of_the_wrong_shape_are_refused():
         square_dist_from_logits(np.zeros((64, 13), dtype=np.float32))
 
 
+def test_recognizer_reads_in_the_chess_frame():
+    recognizer = ChessQRecognizer(_fake_model(RUY_LOPEZ))
+    assert (recognizer.name, recognizer.frame, recognizer.model_path) == ("chessq", "chess", None)
+    dist = recognizer.read(render_board(RUY_LOPEZ))
+    np.testing.assert_array_equal(
+        np.array(CLASSES)[dist.argmax(-1)], np.array(parse_placement(RUY_LOPEZ))
+    )
+
+
+def test_module_is_self_contained():
+    """The core recognizer borrows nothing from the crop-classifier stack, so
+    Phase B can delete that stack without touching it."""
+    tree = ast.parse(Path(chessq_mod.__file__).read_text(encoding="utf-8"))
+    imported = {
+        node.module
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom) and node.module
+    }
+    ours = {m for m in imported if m.startswith("board_reader_inference")}
+    assert ours == {"board_reader_inference.onnxrt"}
+
+
 def test_estimate_reads_the_whole_frame_and_ignores_corners():
     model = _fake_model(RUY_LOPEZ)
-    est = ChessQEstimator(model)
+    est = _served(model)
     frame = _frame(RUY_LOPEZ)
     event = est.estimate(frame)
     assert event.placement == RUY_LOPEZ
@@ -130,7 +158,7 @@ def test_black_bishop_demotion_is_not_applied():
     logits[0, c8] = -10.0
     logits[0, c8, CHESSQ_CLASSES.index("b")] = np.log(0.55)
     logits[0, c8, CHESSQ_CLASSES.index("p")] = np.log(0.45)
-    event = ChessQEstimator(lambda batch: logits).estimate(_frame())
+    event = _served(lambda batch: logits).estimate(_frame())
     assert event.placement == START_PLACEMENT
     assert event.square_dist[0, 2].argmax() == CLASS_INDEX["b"]
 
@@ -138,7 +166,7 @@ def test_black_bishop_demotion_is_not_applied():
 def test_routes_through_photo_path_with_original_pixels():
     # With corners on the frame, a non-photo estimator would be handed a server-side
     # warp (RectifiedRead). ChessQ must get the frame as shot.
-    est = ChessQEstimator(_fake_model(START_PLACEMENT))
+    est = _served(_fake_model(START_PLACEMENT))
     frame = _frame(corners=full_frame_corners(render_board()) * 0.5)
     route = route_for(est, frame)
     assert isinstance(route, PhotoRead)
@@ -165,15 +193,16 @@ def chessq_env(tmp_path, monkeypatch):
 
 
 def test_br_chessq_outranks_every_other_estimator_setting(chessq_env):
-    est = srv._default_estimator(None)
-    assert isinstance(est, ChessQEstimator)
-    assert est.model_path == str(chessq_env)
+    est = build_from_env(None)
+    assert isinstance(est, RecognizerEstimator)
+    assert isinstance(est.recognizer, ChessQRecognizer)
+    assert est.recognizer.model_path == str(chessq_env)
 
 
 def test_br_chessq_missing_file_fails_loudly(tmp_path, monkeypatch):
     monkeypatch.setenv("BR_CHESSQ", str(tmp_path / "absent.onnx"))
     with pytest.raises(FileNotFoundError, match="BR_CHESSQ"):
-        srv._default_estimator(None)
+        build_from_env(None)
 
 
 def test_calibrate_is_refused_and_keeps_chessq(chessq_env):
@@ -183,7 +212,7 @@ def test_calibrate_is_refused_and_keeps_chessq(chessq_env):
     r = client.post(f"/calibrate?corners={corners}", content=encode_jpeg(photo))
     assert r.status_code == 409
     assert "BR_CHESSQ" in r.json()["error"]
-    assert isinstance(client.app.state.estimator, ChessQEstimator)
+    assert isinstance(client.app.state.estimator, RecognizerEstimator)
     assert not Path("bank.npz").exists()
     assert client.get("/healthz").json()["chessq"] == {"model": str(chessq_env)}
 
@@ -197,20 +226,20 @@ def test_start_position_reads_do_not_bootstrap_a_bank(chessq_env):
     body = client.post(f"/estimate?corners={corners}", content=encode_jpeg(photo)).json()
     assert body["placement"] == START_PLACEMENT
     assert "autocalibrated" not in body and "bank_refreshed" not in body
-    assert isinstance(client.app.state.estimator, ChessQEstimator)
+    assert isinstance(client.app.state.estimator, RecognizerEstimator)
 
 
 def test_session_never_swaps_chessq_out():
-    session = EstimatorSession(ChessQEstimator(_fake_model(START_PLACEMENT)))
+    session = EstimatorSession(_served(_fake_model(START_PLACEMENT)))
     photo = render_board(START_PLACEMENT)
     outcome = session.calibrate_from(photo, full_frame_corners(photo), START_PLACEMENT)
-    assert outcome == CalibrationRefused(model=None)
+    assert outcome == CalibrationRefused(recognizer="chessq")
     with pytest.raises(RuntimeError, match="never swapped"):
-        session._swap(ChessQEstimator(_fake_model(START_PLACEMENT)))
+        session._swap(_served(_fake_model(START_PLACEMENT)))
 
 
 def test_ingest_publishes_chessq_read_with_prior(gateway, drain_ingest):
-    client = gateway(create_app(ChessQEstimator(_fake_model(RUY_LOPEZ)), PositionHub()))
+    client = gateway(create_app(_served(_fake_model(RUY_LOPEZ)), PositionHub()))
     frame = _frame(RUY_LOPEZ, corners=full_frame_corners(render_board()))
     header, jpeg = frame.encode()
     with client.websocket_connect("/ingest") as ws:
@@ -247,7 +276,5 @@ def test_real_v6_reads_a_held_out_midgame_still():
 
     label = json.loads(_STILL.read_text())
     image = cv2.imread(str(_STILL.parent / label["photo"]))
-    event = ChessQEstimator(_V6).estimate(
-        Frame(board_id="still", seq=0, capture_ts=0.0, image=image)
-    )
+    event = _served(_V6).estimate(Frame(board_id="still", seq=0, capture_ts=0.0, image=image))
     assert event.placement == label["placement"]

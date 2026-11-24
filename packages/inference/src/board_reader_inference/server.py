@@ -44,30 +44,26 @@ from board_reader_core.protocol import (
 from board_reader_core.recording import FrameRecorder
 from board_reader_core.wire import Frame, decode_jpeg
 
-from board_reader_inference.chessq import ChessQEstimator
-from board_reader_inference.estimator import CentroidEstimator, Estimator, StubEstimator
+from board_reader_inference.chessq import ChessQRecognizer
+from board_reader_inference.estimator import CentroidEstimator, Estimator
 from board_reader_inference.hub import PositionHub
 from board_reader_inference.ingest import FrameIngest
+from board_reader_inference.legacy import estimator_from_bank
+from board_reader_inference.recognizer import RecognizerEstimator, build_from_env
 from board_reader_inference.routing import PhotoRead, ReadView, Uncalibrated
 from board_reader_inference.schedule import EveryFrame, FramePolicy, parse_policy
 from board_reader_inference.session import (
     CalibrationRefused,
     CalibrationRejected,
     EstimatorSession,
-    booster_weight,
-    session_bank_path,
 )
 from board_reader_inference.squares import (
-    BboxGeometry,
     crop_squares_photo,
     square_boxes,
 )
 from board_reader_inference.trained import (
-    DEFAULT_CASCADE_TAU,
     AveragedEstimator,
     CascadeEstimator,
-    TrainedEstimator,
-    TrainedReader,
 )
 
 log = logging.getLogger(__name__)
@@ -161,32 +157,6 @@ def _prior_decode(event):
     return decode(np.asarray(event.square_dist))
 
 
-def _estimator_from_bank(
-    path: str, *, share_from: Estimator | None = None
-) -> CentroidEstimator:
-    """Build a :class:`CentroidEstimator` from a saved calibration file.
-
-    Rebuilds the same backbone and box geometry the bank was calibrated with
-    (dims must match; photo boxes must be cut identically). If ``share_from`` is
-    an estimator on the same backbone, its embedder is reused — one ONNX session
-    instead of two, which matters on a 4GB GPU.
-    """
-    from board_reader_inference.centroid import load_classifier
-    from board_reader_inference.embed import make_embedder
-
-    classifier = load_classifier(path)
-    shared = getattr(share_from, "embedder", None)
-    shared_backbone = getattr(getattr(share_from, "classifier", None), "backbone", None)
-    embedder = shared if shared is not None and shared_backbone == classifier.backbone else None
-    return CentroidEstimator(
-        embedder if embedder is not None else make_embedder(classifier.backbone),
-        classifier,
-        geometry=BboxGeometry(
-            headroom=classifier.box_headroom, side_pad=classifier.box_side_pad
-        ),
-    )
-
-
 def _frame_policy() -> Callable[[], FramePolicy]:
     """``BR_SCHEDULE`` -> a factory for each board's read scheduler.
 
@@ -212,168 +182,6 @@ def _frame_policy() -> Callable[[], FramePolicy]:
     policy = parse_policy(spec)  # a typo fails at startup, not on the first frame
     print(f"scheduling reads with {policy.name}")
     return lambda: parse_policy(spec)
-
-
-def _cascade_tau() -> float:
-    """``BR_CASCADE_TAU`` -> the cascade's confidence gate (default 0.95)."""
-    raw = os.environ.get("BR_CASCADE_TAU")
-    if not raw:
-        return DEFAULT_CASCADE_TAU
-    try:
-        return float(raw)
-    except ValueError as e:
-        raise ValueError(f"BR_CASCADE_TAU={raw!r} is not a number") from e
-
-
-def _trained_component(model: str) -> TrainedReader | None:
-    """The zero-shot trained member named by the environment, or ``None``.
-
-    ``BR_MODEL`` alone is one :class:`TrainedEstimator`, unchanged. Exactly one
-    companion may join it, and the choice is between *measured* configurations:
-
-    * ``BR_MODEL_B`` — a second, differently-cropped classifier; the pair becomes
-      a :class:`CascadeEstimator` (``BR_CASCADE_TAU`` moves the gate). Measured
-      0.956 on user_photos, zero-shot on any board.
-    * ``BR_MODEL_TUNED`` — a calibration fine-tune of ``BR_MODEL`` produced by
-      ``tools/train/calibrate_finetune.py``; the pair becomes an
-      :class:`AveragedEstimator`. Measured 0.969 — but only on the board it was
-      calibrated for.
-
-    Either way the result is *the trained component*: a session bank still wraps
-    it in an ``EnsembleEstimator`` on top, with the same arithmetic.
-
-    A broken ``BR_MODEL`` degrades to the next tier so ``docker compose up`` works
-    on a fresh clone without ``models/`` — and with the cascade in compose.yaml
-    that courtesy has one more shape: **both** model files absent is the fresh
-    clone again, so it degrades too. Any *partial* pair (one file present, or a
-    file that exists but will not load) is a misconfiguration and fails hard:
-    quietly serving one model instead of the requested two would show up only as
-    "the ensemble didn't help" months later. ``BR_MODEL_TUNED`` gets no
-    fresh-clone courtesy at all — a tuned model only exists because somebody ran
-    the tool, so setting it is always deliberate, and the tuned model *alone*
-    hallucinates pieces onto empty squares (it is the base's vote in the average
-    that suppresses them).
-    """
-    model_b = os.environ.get("BR_MODEL_B")
-    tuned = os.environ.get("BR_MODEL_TUNED")
-    if model_b and tuned:
-        # Neither the cascade-of-three nor "which pair wins" has been measured,
-        # and the two configurations answer different questions (zero-shot
-        # breadth vs one calibrated board). Guessing here would silently ship an
-        # unmeasured model.
-        raise RuntimeError(
-            "BR_MODEL_B and BR_MODEL_TUNED are both set; stacking them is an "
-            "UNMEASURED configuration. Pick one: BR_MODEL_B is the zero-shot "
-            "cascade (measured 0.956 on user_photos, any board), BR_MODEL_TUNED "
-            "is the calibration average (measured 0.969, but only on the board "
-            "its frames came from)."
-        )
-    try:
-        trained = TrainedEstimator(model)
-    except Exception as e:
-        if tuned:
-            raise RuntimeError(
-                f"BR_MODEL_TUNED={tuned!r} requests the calibration average, but "
-                f"its base BR_MODEL={model!r} is not usable ({e}). The average "
-                "needs both members — the fine-tuned model alone was measured to "
-                "hallucinate pieces onto empty squares."
-            ) from e
-        if model_b:
-            if not Path(model).exists() and not Path(model_b).exists():
-                print(
-                    f"BR_MODEL={model!r} and BR_MODEL_B={model_b!r} both absent "
-                    "(fresh clone?); serving without the trained component"
-                )
-                return None
-            raise RuntimeError(
-                f"BR_MODEL_B={model_b!r} requests the cascade, but its first member "
-                f"BR_MODEL={model!r} is not usable ({e})"
-            ) from e
-        print(f"BR_MODEL={model!r} not usable ({e}); serving without it")
-        return None
-    if tuned:
-        return AveragedEstimator(trained, TrainedEstimator(tuned))
-    if not model_b:
-        return trained
-    return CascadeEstimator(trained, TrainedEstimator(model_b), tau=_cascade_tau())
-
-
-#: The estimator settings ``BR_CHESSQ`` outranks, named at startup when also set.
-_CHESSQ_OUTRANKS = ("BR_MODEL", "BR_MODEL_B", "BR_MODEL_TUNED", "BR_CENTROIDS", "BR_SESSION_BANK")
-
-
-def _chessq_estimator(path: str) -> ChessQEstimator:
-    """``BR_CHESSQ=<path>`` -> ChessQ Lite, or a hard error when the file is missing.
-
-    No fresh-clone courtesy (unlike ``BR_MODEL``): the weights are never in the
-    repo, so setting the variable is always deliberate, and quietly serving the
-    cascade instead would be read as ChessQ's accuracy.
-    """
-    if not Path(path).is_file():
-        raise FileNotFoundError(f"BR_CHESSQ={path!r} does not name a model file")
-    outranked = [n for n in _CHESSQ_OUTRANKS if os.environ.get(n)]
-    note = f"; ignoring {', '.join(outranked)}" if outranked else ""
-    print(f"serving ChessQ from BR_CHESSQ={path!r} (calibration disabled{note})")
-    return ChessQEstimator(path)
-
-
-def _default_estimator(occupancy_est: CentroidEstimator | None = None) -> Estimator:
-    """Pick the style (piece-type) estimator from the environment.
-
-    ``BR_CHESSQ=<path>`` -> ChessQ Lite (opt-in, :mod:`.chessq`), ahead of every
-    other setting: it reads the whole frame on its own, so a model, bank or
-    calibration beside it would not be part of the read (and calibration is
-    refused while it serves, :class:`~.session.CalibrationRefused`).
-    ``BR_CENTROIDS=<path>`` -> that calibration. Unset but auto-calibration
-    enabled (an occupancy estimator exists) -> restore the persisted session bank
-    if a previous run calibrated one. Otherwise the M0 :class:`StubEstimator`.
-    Resolved at import time so the uvicorn string-imported ``app`` honours it
-    without a code change.
-    """
-    chessq = os.environ.get("BR_CHESSQ")
-    if chessq:
-        return _chessq_estimator(chessq)
-    path = os.environ.get("BR_CENTROIDS")
-    if path:
-        return _estimator_from_bank(path, share_from=occupancy_est)
-    # The multi-style-trained crop classifier: the zero-shot default
-    # (2026-07-18 campaign). Explicit BR_CENTROIDS still outranks it. A persisted
-    # session bank does NOT replace it — it boosts it: the 50/50 distribution
-    # blend beats either member alone (439 vs 415/430 of 448 on the labeled
-    # eval), because the bank is near-perfect in conditions it has seen and the
-    # trained model degrades gracefully in ones it hasn't.
-    model = os.environ.get("BR_MODEL")
-    if not model and os.environ.get("BR_MODEL_TUNED"):
-        # The average needs its base. Falling through to the stub here would
-        # serve a fixed placement while the operator believes a calibrated model
-        # is running (see _trained_component on why the tuned model has no solo
-        # mode at all).
-        raise RuntimeError(
-            f"BR_MODEL_TUNED={os.environ['BR_MODEL_TUNED']!r} is set but BR_MODEL "
-            "is not. The calibration average is the tuned model 50/50 with the "
-            "base it was fine-tuned from; set BR_MODEL to that base."
-        )
-    if model:
-        from board_reader_inference.estimator import EnsembleEstimator
-
-        trained = _trained_component(model)
-        if trained is not None:
-            bank = session_bank_path()
-            if bank and Path(bank).exists():
-                try:
-                    bank_est = _estimator_from_bank(bank, share_from=occupancy_est)
-                    return EnsembleEstimator(
-                        trained,
-                        bank_est,
-                        weight=booster_weight(bank_est.classifier.exemplars.shape[0]),
-                    )
-                except (OSError, ValueError, KeyError):
-                    pass  # unreadable/stale bank: zero-shot still works without it
-            return trained
-    bank = session_bank_path()
-    if occupancy_est is not None and bank and Path(bank).exists():
-        return _estimator_from_bank(bank, share_from=occupancy_est)
-    return StubEstimator()
 
 
 def event_line(
@@ -427,8 +235,8 @@ def create_app(
     """
     occ_est: CentroidEstimator | None = occupancy_estimator
     if occ_est is None and os.environ.get("BR_OCCUPANCY_BANK"):
-        occ_est = _estimator_from_bank(os.environ["BR_OCCUPANCY_BANK"])
-    est: Estimator = estimator if estimator is not None else _default_estimator(occ_est)
+        occ_est = estimator_from_bank(os.environ["BR_OCCUPANCY_BANK"])
+    est: Estimator = estimator if estimator is not None else build_from_env(occ_est)
     hub_: PositionHub = hub if hub is not None else PositionHub()
     # Every swap of the active estimator goes through the session, which mirrors
     # the new one onto ``app.state`` (bound just below — a swap can only happen
@@ -560,8 +368,11 @@ def create_app(
             }
         # ChessQ is opt-in and outranks the whole default stack, so an operator
         # needs to see it is the one reading before trusting a number.
-        if isinstance(session.estimator, ChessQEstimator):
-            health["chessq"] = {"model": session.estimator.model_path}
+        active = session.estimator
+        if isinstance(active, RecognizerEstimator) and isinstance(
+            active.recognizer, ChessQRecognizer
+        ):
+            health["chessq"] = {"model": active.recognizer.model_path}
         return health
 
     @app.get("/boards/{board_id}")
@@ -939,8 +750,8 @@ def create_app(
             return JSONResponse(
                 {
                     "error": (
-                        "calibration is off while ChessQ serves "
-                        f"(BR_CHESSQ={outcome.model!r}): it reads every piece set "
+                        f"calibration is off while the {outcome.recognizer!r} "
+                        "recognizer serves (BR_CHESSQ): it reads every piece set "
                         "as shipped, and a calibration bank would replace it rather "
                         "than add to it. Unset BR_CHESSQ to calibrate."
                     )

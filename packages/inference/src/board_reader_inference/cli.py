@@ -33,7 +33,7 @@ def cmd_serve(args: argparse.Namespace) -> int:
     from board_reader_inference.schedule import DEFAULT_POLICY_SPEC
 
     if args.centroids:
-        # Picked up by server._default_estimator() when the app is built.
+        # Picked up by recognizer.build_from_env() when the app is built.
         os.environ["BR_CENTROIDS"] = args.centroids
 
     # Every served run records its ingress by default (WP-H2), so a session can

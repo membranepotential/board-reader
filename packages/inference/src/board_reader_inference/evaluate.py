@@ -8,7 +8,7 @@ is not a position. Whole-board correctness is the number that decides whether a
 photo can be read, so it is the headline here and per-square is a diagnostic.
 
 **What actually serves.** ``tools/train/evaluate.py`` scores the trained model
-alone, in the training venv. This runs the estimator :func:`server._default_estimator`
+alone, in the training venv. This runs the estimator :func:`recognizer.build_from_env`
 builds from the environment — ensemble, bank blend and all — so the number
 belongs to the thing the snapshot page talks to. The configuration is printed
 above every report, because an accuracy figure without its estimator is a rumour.
@@ -864,9 +864,9 @@ def run(
     candidates = [p for p in (paths or DEFAULT_PATHS) if Path(p).exists()]
     boards = load_labels(candidates)
     if estimator is None:
-        from board_reader_inference.server import _default_estimator
+        from board_reader_inference.recognizer import build_from_env
 
-        estimator = _default_estimator()
+        estimator = build_from_env()
     report = evaluate(
         estimator, boards, autorotate=autorotate, prior=prior, temperature=temperature
     )

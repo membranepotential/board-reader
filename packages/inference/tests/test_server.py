@@ -13,6 +13,7 @@ from board_reader_core.wire import Frame
 
 from board_reader_inference.estimator import StubEstimator
 from board_reader_inference.hub import PositionHub
+from board_reader_inference.recognizer import build_from_env
 from board_reader_inference.server import create_app
 from board_reader_inference.squares import BboxGeometry
 
@@ -1022,7 +1023,6 @@ def test_default_estimator_builds_ensemble_from_session_bank(tmp_path, monkeypat
     """BR_MODEL + a persisted session bank -> startup ensemble, not bare model."""
     import numpy as np
 
-    from board_reader_inference import server as srv
     from board_reader_inference import trained as trained_mod
     from board_reader_inference.estimator import EnsembleEstimator
 
@@ -1036,14 +1036,14 @@ def test_default_estimator_builds_ensemble_from_session_bank(tmp_path, monkeypat
         "_onnx_logits_fn",
         lambda path: (lambda b: np.zeros((b.shape[0], 13), dtype=np.float32)),
     )
-    est = srv._default_estimator(None)
+    est = build_from_env(None)
     assert isinstance(est, EnsembleEstimator)
 
     # Without a persisted bank the model runs bare.
     monkeypatch.setenv("BR_SESSION_BANK", str(tmp_path / "missing.npz"))
     from board_reader_inference.trained import TrainedEstimator
 
-    assert isinstance(srv._default_estimator(None), TrainedEstimator)
+    assert isinstance(build_from_env(None), TrainedEstimator)
 
 
 def test_default_estimator_degrades_when_model_unloadable(tmp_path, monkeypatch):
@@ -1052,10 +1052,9 @@ def test_default_estimator_degrades_when_model_unloadable(tmp_path, monkeypatch)
     monkeypatch.setenv("BR_MODEL", str(tmp_path / "nonexistent.onnx"))
     monkeypatch.delenv("BR_CENTROIDS", raising=False)
     monkeypatch.delenv("BR_SESSION_BANK", raising=False)
-    from board_reader_inference import server as srv
     from board_reader_inference.estimator import StubEstimator
 
-    assert isinstance(srv._default_estimator(None), StubEstimator)
+    assert isinstance(build_from_env(None), StubEstimator)
 
 
 def _two_models(tmp_path, monkeypatch, *, sidecars: bool = True) -> tuple[str, str]:
@@ -1103,7 +1102,6 @@ def _two_models(tmp_path, monkeypatch, *, sidecars: bool = True) -> tuple[str, s
 def test_br_model_b_builds_the_cascade(tmp_path, monkeypatch):
     """BR_MODEL alone is unchanged; BR_MODEL_B turns the pair into the cascade,
     each member on its own sidecar geometry, with BR_CASCADE_TAU moving the gate."""
-    from board_reader_inference import server as srv
     from board_reader_inference.squares import BboxGeometry, PoseGeometry
     from board_reader_inference.trained import (
         DEFAULT_CASCADE_TAU,
@@ -1117,10 +1115,10 @@ def test_br_model_b_builds_the_cascade(tmp_path, monkeypatch):
     monkeypatch.delenv("BR_CASCADE_TAU", raising=False)
     monkeypatch.setenv("BR_MODEL", model_a)
 
-    assert isinstance(srv._default_estimator(None), TrainedEstimator)
+    assert isinstance(build_from_env(None), TrainedEstimator)
 
     monkeypatch.setenv("BR_MODEL_B", model_b)
-    est = srv._default_estimator(None)
+    est = build_from_env(None)
     assert isinstance(est, CascadeEstimator)
     assert est.tau == DEFAULT_CASCADE_TAU
     assert est.primary.geometry == BboxGeometry(1.6, 0.15)
@@ -1130,13 +1128,12 @@ def test_br_model_b_builds_the_cascade(tmp_path, monkeypatch):
     assert est.crop_mode == "photo" and est.geometry == est.primary.geometry
 
     monkeypatch.setenv("BR_CASCADE_TAU", "0.8")
-    assert srv._default_estimator(None).tau == 0.8
+    assert build_from_env(None).tau == 0.8
 
 
 def test_cascade_still_gets_boosted_by_the_session_bank(tmp_path, monkeypatch):
     """The cascade replaces the trained *component*, not the bank arithmetic: a
     persisted bank still wraps it in the same EnsembleEstimator blend."""
-    from board_reader_inference import server as srv
     from board_reader_inference.estimator import EnsembleEstimator
     from board_reader_inference.trained import CascadeEstimator
 
@@ -1148,7 +1145,7 @@ def test_cascade_still_gets_boosted_by_the_session_bank(tmp_path, monkeypatch):
     monkeypatch.setenv("BR_MODEL_B", model_b)
     monkeypatch.setenv("BR_SESSION_BANK", str(bank_path))
 
-    est = srv._default_estimator(None)
+    est = build_from_env(None)
     assert isinstance(est, EnsembleEstimator)
     assert isinstance(est.primary, CascadeEstimator)
     # ...and the session still finds the trained member inside both wrappers, so
@@ -1162,7 +1159,6 @@ def test_broken_second_model_is_fatal_not_silent(tmp_path, monkeypatch):
     """Unlike BR_MODEL, BR_MODEL_B has no fresh-clone excuse: setting it is
     deliberate, and quietly serving one model would surface months later as
     'the ensemble didn't help'."""
-    from board_reader_inference import server as srv
 
     model_a, model_b = _two_models(tmp_path, monkeypatch)
     monkeypatch.delenv("BR_CENTROIDS", raising=False)
@@ -1174,13 +1170,13 @@ def test_broken_second_model_is_fatal_not_silent(tmp_path, monkeypatch):
     bare.write_bytes(b"stub")
     monkeypatch.setenv("BR_MODEL_B", str(bare))
     with pytest.raises(ValueError, match="sidecar"):
-        srv._default_estimator(None)
+        build_from_env(None)
 
     # A first model that cannot load is fatal too once a cascade was requested.
     monkeypatch.setenv("BR_MODEL_B", model_b)
     monkeypatch.setenv("BR_MODEL", str(tmp_path / "nonexistent.onnx"))
     with pytest.raises(RuntimeError, match="BR_MODEL_B"):
-        srv._default_estimator(None)
+        build_from_env(None)
 
 
 def test_cascade_with_both_models_absent_degrades_like_fresh_clone(tmp_path, monkeypatch):
@@ -1195,7 +1191,7 @@ def test_cascade_with_both_models_absent_degrades_like_fresh_clone(tmp_path, mon
     monkeypatch.delenv("BR_SESSION_BANK", raising=False)
     monkeypatch.setenv("BR_MODEL", str(tmp_path / "models/run_e/model.onnx"))
     monkeypatch.setenv("BR_MODEL_B", str(tmp_path / "models/run_f/model.onnx"))
-    est = srv._default_estimator(None)
+    est = build_from_env(None)
     session = srv.EstimatorSession(est)
     assert not isinstance(session.base_trained(), (TrainedEstimator, CascadeEstimator))
 
@@ -1240,10 +1236,10 @@ def test_br_model_tuned_builds_the_calibration_average(tmp_path, monkeypatch):
     monkeypatch.delenv("BR_MODEL_B", raising=False)
     monkeypatch.setenv("BR_MODEL", base)
 
-    assert isinstance(srv._default_estimator(None), TrainedEstimator)
+    assert isinstance(build_from_env(None), TrainedEstimator)
 
     monkeypatch.setenv("BR_MODEL_TUNED", tuned)
-    est = srv._default_estimator(None)
+    est = build_from_env(None)
     assert isinstance(est, AveragedEstimator)
     assert est.model_path == base and est.tuned_path == tuned
     # It IS the trained component: geometry and photo-mode read off it exactly as
@@ -1255,7 +1251,6 @@ def test_br_model_tuned_builds_the_calibration_average(tmp_path, monkeypatch):
 def test_tuned_and_model_b_together_are_refused_as_unmeasured(tmp_path, monkeypatch):
     """Two validated configurations, no validated stack of them. Guessing which
     one wins would ship a model nobody measured."""
-    from board_reader_inference import server as srv
 
     base, tuned = _base_and_tuned(tmp_path, monkeypatch)
     monkeypatch.delenv("BR_CENTROIDS", raising=False)
@@ -1265,13 +1260,12 @@ def test_tuned_and_model_b_together_are_refused_as_unmeasured(tmp_path, monkeypa
     monkeypatch.setenv("BR_MODEL_B", tuned)
 
     with pytest.raises(RuntimeError, match="UNMEASURED"):
-        srv._default_estimator(None)
+        build_from_env(None)
 
 
 def test_tuned_without_a_usable_base_is_fatal(tmp_path, monkeypatch):
     """No fresh-clone grace for BR_MODEL_TUNED: a tuned model only exists because
     somebody ran the tool, and alone it hallucinates pieces onto empty squares."""
-    from board_reader_inference import server as srv
 
     base, tuned = _base_and_tuned(tmp_path, monkeypatch)
     monkeypatch.delenv("BR_CENTROIDS", raising=False)
@@ -1282,13 +1276,13 @@ def test_tuned_without_a_usable_base_is_fatal(tmp_path, monkeypatch):
     # Base named but absent — the graceful degrade BR_MODEL alone would get.
     monkeypatch.setenv("BR_MODEL", str(tmp_path / "models/run_e/model.onnx"))
     with pytest.raises(RuntimeError, match="BR_MODEL_TUNED"):
-        srv._default_estimator(None)
+        build_from_env(None)
 
     # Base not named at all: the same error, not a silent fall-through to the stub
     # (which would serve a fixed placement under a "calibrated" banner).
     monkeypatch.delenv("BR_MODEL")
     with pytest.raises(RuntimeError, match="BR_MODEL_TUNED"):
-        srv._default_estimator(None)
+        build_from_env(None)
 
 
 def test_tuned_average_still_gets_boosted_by_the_session_bank(tmp_path, monkeypatch):
@@ -1307,7 +1301,7 @@ def test_tuned_average_still_gets_boosted_by_the_session_bank(tmp_path, monkeypa
     monkeypatch.setenv("BR_MODEL_TUNED", tuned)
     monkeypatch.setenv("BR_SESSION_BANK", str(bank_path))
 
-    est = srv._default_estimator(None)
+    est = build_from_env(None)
     assert isinstance(est, EnsembleEstimator)
     assert isinstance(est.primary, AveragedEstimator)
     assert isinstance(srv.EstimatorSession(est).base_trained(), AveragedEstimator)
@@ -1329,7 +1323,7 @@ def test_healthz_names_both_members_of_the_average(tmp_path, monkeypatch):
     monkeypatch.setenv("BR_MODEL_TUNED", tuned)
     monkeypatch.chdir(tmp_path)
 
-    client = TestClient(srv.create_app(srv._default_estimator(None), PositionHub()))
+    client = TestClient(srv.create_app(build_from_env(None), PositionHub()))
     health = client.get("/healthz").json()
     assert health["tuned"] == {"model": base, "model_tuned": tuned, "weight": 0.5}
     assert "cascade" not in health

@@ -118,7 +118,7 @@ plus `estimate_photo(frame, corners)` for the photo-box path.
 | `CascadeEstimator` | two trained models on *different* crop geometries; the second is consulted only on squares the first was unsure about, and averaged in there | the same places a single trained model serves, more accurately |
 | `AveragedEstimator` | a trained model fine-tuned on one board's calibrate frames, averaged 50/50 with the base it came from on every square — they share a geometry, so one crop pass feeds both | the one physical board and set the fine-tune was calibrated for |
 | `EnsembleEstimator` | distribution-level blend of a trained member and a bank member | everywhere — it tracks the better member square by square |
-| `ChessQEstimator` **(opt-in)** | Lichess's ChessQ Lite (ViT-S, int8 ONNX): the whole frame squashed to 644×644 → 64×13 logits. No crops, no warp, no bank; it finds the board and its orientation itself | the replay-gate candidate, [[2026-11-24-chessq-v6-replay-gate]] |
+| `ChessQRecognizer` **(opt-in, behind `RecognizerEstimator`)** | Lichess's ChessQ Lite (ViT-S, int8 ONNX): the whole frame squashed to 644×644 → 64×13 logits. No crops, no warp, no bank; it finds the board and its orientation itself | the replay-gate candidate, [[2026-11-24-chessq-v6-replay-gate]] |
 
 ### Selection at startup
 
@@ -198,7 +198,7 @@ Where it applies is the whole trick:
   and the ensemble on top of one. A *bare* exemplar bank is left alone — 0.20 is an absolute
   margin fitted to the trained stack's distribution, and a kNN bank's is flatter (on the test
   fixture its own **correct** bishops read at margins 0.105 and 0.116, i.e. inside the band).
-  The opt-in `ChessQEstimator` is left alone for the same reason: it is a different model.
+  The opt-in `ChessQRecognizer` is left alone for the same reason: it is a different model.
 
 What makes 0.20 safe is a **gap**, not a mean: the lowest margin at which a top-1 `b` was
 actually right is 0.210. If a future set closes that gap the rule starts eating correct

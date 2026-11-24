@@ -20,13 +20,13 @@ from four handlers and read from six, so every rule about *when* an estimator ma
 be replaced could only be exercised by driving HTTP. Here they are ordinary
 methods over ordinary state, and the gateway is left with routing and JSON.
 
-**One estimator is never swapped:** ChessQ (``BR_CHESSQ``,
-:class:`~board_reader_inference.chessq.ChessQEstimator`). It is not a trained
-member a bank could boost, so any swap would *replace* it with a bare exemplar
-bank — the operator asked for ChessQ and would silently get something else.
+**A recognizer is never swapped** (:class:`~board_reader_inference.recognizer.RecognizerEstimator`,
+e.g. ChessQ via ``BR_CHESSQ``, DESIGN D10). It is not a trained member a bank could
+boost, so any swap would *replace* it with a bare exemplar bank — the operator
+asked for the recognizer and would silently get something else.
 :meth:`EstimatorSession.calibrate_from` refuses up front
 (:class:`CalibrationRefused`); the other three never fire (no trained member, no
-bank member, and ChessQ's photo path keeps routing out of ``Uncalibrated``), and
+bank member, and the recognizer's photo path keeps routing out of ``Uncalibrated``), and
 :meth:`_swap` enforces it regardless.
 
 Session-bank persistence is OPT-IN via ``BR_SESSION_BANK=<path>``: every swap above
@@ -60,12 +60,12 @@ from board_reader_inference.centroid import (
     ExemplarClassifier,
     build_exemplars,
 )
-from board_reader_inference.chessq import ChessQEstimator
 from board_reader_inference.estimator import (
     CentroidEstimator,
     EnsembleEstimator,
     Estimator,
 )
+from board_reader_inference.recognizer import RecognizerEstimator
 from board_reader_inference.routing import (
     OccupancyRead,
     PhotoEstimate,
@@ -186,13 +186,13 @@ class CalibrationRejected:
 
 @dataclass(frozen=True, slots=True)
 class CalibrationRefused:
-    """The active estimator is not calibratable: ChessQ (``BR_CHESSQ``) is serving.
+    """The active estimator is not calibratable: a recognizer is serving (D10).
 
-    A bank built now could only replace ChessQ, not boost it (see the module
+    A bank built now could only replace it, not boost it (see the module
     docstring), so nothing is read, built or saved.
     """
 
-    model: str | None  # the ChessQ model path, for the operator's error message
+    recognizer: str  # the serving recognizer's name, for the operator's message
 
 
 CalibrateOutcome = Calibration | CalibrationRejected | CalibrationRefused
@@ -427,10 +427,10 @@ class EstimatorSession:
         calibration photo only grows the bank. Raises ``ValueError`` on an
         unusable placement/photo pair; returns :class:`CalibrationRejected` when
         the photo does not show the claimed position at all, and
-        :class:`CalibrationRefused` while ChessQ serves (before any work).
+        :class:`CalibrationRefused` while a recognizer serves (before any work).
         """
-        if isinstance(self._estimator, ChessQEstimator):
-            return CalibrationRefused(model=self._estimator.model_path)
+        if isinstance(self._estimator, RecognizerEstimator):
+            return CalibrationRefused(recognizer=self._estimator.recognizer.name)
         guard = self._resolve_label_rotation(image, corners, placement)
         if isinstance(guard, CalibrationRejected):
             return guard
@@ -514,10 +514,10 @@ class EstimatorSession:
 
     def _swap(self, estimator: Estimator) -> None:
         """Make ``estimator`` the active one, announcing it. The only mutation here."""
-        if isinstance(self._estimator, ChessQEstimator):
+        if isinstance(self._estimator, RecognizerEstimator):
             # Every swap path is gated before this (module docstring); reaching it
-            # means a gate changed, and replacing ChessQ silently is the bug.
-            raise RuntimeError("the ChessQ estimator (BR_CHESSQ) is never swapped out")
+            # means a gate changed, and replacing the recognizer silently is the bug.
+            raise RuntimeError("a recognizer (BR_CHESSQ) is never swapped out")
         self._estimator = estimator
         if self._on_swap is not None:
             self._on_swap(estimator)

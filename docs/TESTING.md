@@ -1235,7 +1235,7 @@ weights are not in the repo; the V6 release goes to
    `BR_CHESSQ=models/chessq/cq-vit-s-644-v6-seed1-onnx-int8-r1.onnx uv run
    board-reader-inference replay recordings/20260828-111421 --policy burst-end
    --name cq-v6 --score`. Expected: the manifest's `estimator` is
-   `ChessQEstimator` and its `env` lists `BR_CHESSQ`.
+   `ChessQRecognizer` and its `env` lists `BR_CHESSQ`.
 
 Automated: `packages/inference/tests/test_chessq.py` (fake model; the one
 real-weights test is `gpu`-marked and runs under `make test-gpu`, skipping when the

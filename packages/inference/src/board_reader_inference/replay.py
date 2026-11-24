@@ -154,6 +154,8 @@ from board_reader_core.recording import (
 from board_reader_core.wire import decode_jpeg
 
 from board_reader_inference.ingest import _read_with_prior
+from board_reader_inference.legacy import estimator_from_bank
+from board_reader_inference.recognizer import RecognizerEstimator, build_from_env
 from board_reader_inference.routing import Uncalibrated
 from board_reader_inference.schedule import (
     EveryFrame,
@@ -455,18 +457,17 @@ class ReplayResult:
 def build_session() -> EstimatorSession:
     """The estimator stack the environment asks for — the gateway's own builder.
 
-    Deliberately calls into :mod:`.server` rather than growing a second way to
+    Deliberately calls the gateway's builder (:func:`.recognizer.build_from_env`)
+    rather than growing a second way to
     read ``BR_MODEL``/``BR_SESSION_BANK``/…: a replay whose estimator is assembled
     differently from the served one benchmarks something nobody runs. No
     ``on_swap`` and no hot-swap path, because nothing offline calibrates —
     ``/calibrate`` is an HTTP endpoint and there is no HTTP here.
     """
-    from board_reader_inference import server
-
     occupancy = None
     if os.environ.get("BR_OCCUPANCY_BANK"):
-        occupancy = server._estimator_from_bank(os.environ["BR_OCCUPANCY_BANK"])
-    return EstimatorSession(server._default_estimator(occupancy), occupancy=occupancy)
+        occupancy = estimator_from_bank(os.environ["BR_OCCUPANCY_BANK"])
+    return EstimatorSession(build_from_env(occupancy), occupancy=occupancy)
 
 
 def replay(
@@ -625,7 +626,9 @@ def replay(
         restamp=restamp,
     )
     _link_source(out, recording)
-    _write_manifest(result, recording, policy, type(session.estimator).__name__)
+    active = session.estimator
+    reader = active.recognizer if isinstance(active, RecognizerEstimator) else active
+    _write_manifest(result, recording, policy, type(reader).__name__)
     return result
 
 

@@ -157,7 +157,7 @@ def test_every_inference_env_var_is_shared_or_justified() -> None:
 def test_dev_withholds_the_cascade_when_a_member_is_missing() -> None:
     """A partial pair is a hard startup error; `make dev` must not trip it.
 
-    Mirrors ``server._trained_component``: BR_MODEL_B present with an unusable
+    Mirrors ``legacy._trained_component``: BR_MODEL_B present with an unusable
     BR_MODEL (or vice versa) raises rather than quietly serving one model. Running
     `make dev` on a half-populated models/ dir should degrade, not crash.
     """

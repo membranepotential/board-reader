@@ -34,9 +34,10 @@ ALLOWED_CONSTRUCTORS = {
     # an absolute margin fitted to the trained stack, and a kNN bank's own
     # CORRECT bishops read inside the band (0.105 / 0.116 on the fixture).
     ("estimator.py", "CentroidEstimator._event"),
-    # ChessQ (BR_CHESSQ) is a different model entirely: the 0.20 margin was fitted
-    # on the trained stack's distribution and was never measured on its output.
-    ("chessq.py", "ChessQEstimator.estimate"),
+    # The recognizer seam (DESIGN D10): ChessQ and any later recognizer are
+    # different models entirely, and the 0.20 margin was fitted on the trained
+    # stack's distribution, never measured on theirs.
+    ("recognizer.py", "event_from_dist"),
     # /estimate's autorotate rebuilds an event from an already-read (and already
     # calibrated) distribution rotated by k*90. A rotation is a permutation of
     # squares, so it commutes with the demotion — re-applying would be a no-op

@@ -142,7 +142,7 @@ def read_event(
     The three estimators that do NOT end here are the ones the calibration was not
     measured on: :class:`StubEstimator` (an authored placement, no model output),
     a bare :class:`CentroidEstimator` (see :meth:`CentroidEstimator._event`), and
-    :class:`~board_reader_inference.chessq.ChessQEstimator` (a different model
+    a recognizer (:func:`board_reader_inference.recognizer.event_from_dist`, a different model
     whose distribution the 0.20 margin was never fitted on).
     """
     return PositionEvent.from_square_dist(
