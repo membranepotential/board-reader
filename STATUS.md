@@ -11,7 +11,8 @@ confidences**. No moves, no legality, no PGN — those belong to the downstream 
 
 - **hand-signal probe** — is a square occluded? ChessQ intermediate outputs vs simple CV (edges,
   long-term median) on the gate takes + live take 2 — running (read-only on src) — report in docs/reports.
-- **prior back-rank** — pass `quarter_turns=0` (chess frame known), gate it, keep only if better — running.
+- **prior value** — back-rank constraint dropped (user: ChessQ needs none); gate with the prior off to see
+  whether `stream/prior.py` can go — running (measurement only).
 
 ## Done (2026-11-24 — the ChessQ rebuild; plan: [docs/plans/2026-11-24-simplify-around-chessq.md](docs/plans/2026-11-24-simplify-around-chessq.md))
 
