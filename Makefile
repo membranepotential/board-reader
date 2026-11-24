@@ -109,7 +109,7 @@ VIEWER_TLS_PORT ?= 8443
 # packages/viewer/build/, which server/main.ts serves. `--frozen-lockfile` matches
 # `uv sync --frozen`'s discipline on the Python side: this installs exactly
 # pnpm-lock.yaml, never a resolution that drifts from what is committed.
-ui:
+ui: protocol
 	cd packages/viewer && pnpm install --frozen-lockfile && pnpm build
 
 dev: ui
@@ -183,12 +183,12 @@ test:
 #   test-e2e  Playwright: the pages driven in a real Chromium against a stubbed
 #             inference node — no GPU, no model. It runs `vite build` first and serves
 #             the result with the real viewer server, so what is driven is what ships.
-test-ui:
+test-ui: protocol
 	cd packages/viewer && pnpm install --frozen-lockfile && pnpm test
 
 # `playwright install` is a one-off on a fresh checkout: Playwright pins its own
 # Chromium build and refuses to run against another.
-test-e2e:
+test-e2e: protocol
 	cd packages/viewer && pnpm install --frozen-lockfile && \
 	  pnpm exec playwright install chromium && pnpm test:e2e
 
@@ -245,8 +245,10 @@ gate:
 # each selected/ignored rule live in pyproject.toml's [tool.ruff.lint].
 # The viewer's wire types and zod validators (packages/viewer/src/lib/protocol/
 # generated.ts) are generated from the pydantic models in packages/core, the one
-# source of truth for every message both ends speak. Run this after changing a
-# model; tests/test_protocol_ts.py fails in `make test` until you do.
+# source of truth for every message both ends speak. Every build here runs it
+# first (`ui`, so `dev`/`dev-cpu`, and `test-ui`/`test-e2e`). The Docker viewer
+# image cannot (it builds from packages/viewer alone, with no Python), so it builds
+# the committed file, which tests/test_protocol_ts.py keeps current in `make test`.
 protocol:
 	uv run python tools/gen_protocol.py
 

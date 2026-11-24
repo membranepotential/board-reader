@@ -80,6 +80,7 @@ make test-gpu                 # the real-ONNX-session test (ChessQ V6 on a still
 make test-all                 # everything, GPU included
 make test-front               # the frontend: Vitest + Playwright (not covered by `make test`)
 make lint                     # ruff, pinned in the dev group
+make protocol                 # regenerate the viewer's wire types from core's pydantic models (ui/dev/test-front run it)
 uv run pytest <path>[::<test>] -q   # one file/test while iterating — no `-n`, it costs more
 uv run pytest packages/core   # one package's tests
 uv run pytest                 # the whole suite SERIALLY (~23s) — prefer `make test`

@@ -321,7 +321,13 @@ def generate() -> str:
 
 
 def main() -> None:
-    OUT.write_text(generate())
+    text = generate()
+    # Write only on a change: every build runs this, and rewriting an unchanged file
+    # would reload a running `vite dev` for nothing.
+    if OUT.exists() and OUT.read_text() == text:
+        print(f"{OUT.relative_to(ROOT)} is up to date")
+        return
+    OUT.write_text(text)
     print(f"wrote {OUT.relative_to(ROOT)}")
 
 
