@@ -116,8 +116,7 @@ What's covered today — the main files (`git ls-files 'packages/*/tests/*.py'
 | Wire format | `packages/core/tests/test_wire.py` | JPEG + header frame roundtrip; legacy `corners` still parse |
 | Sim renderer + warp | `packages/core/tests/test_sim.py` | board images render; perspective warp + ground-truth quad |
 | Frame sources | `packages/edge/tests/test_source.py` | video/dir/synthetic/repeat sources |
-| Edge adapter | `packages/edge/tests/test_adapter.py` | frames → wire envelopes, throttle, **rectify + suppress** |
-| **Rectification** | `packages/edge/tests/test_rectify.py` | **detect angled board, un-warp round-trip, manual corners, bump→recalibrating, blank→needs_setup** |
+| Edge adapter | `packages/edge/tests/test_adapter.py` | frames → wire envelopes, throttle, **static `--roi` crop, motion measured inside it, no `corners` sent** |
 | **Recognizer seam** | `packages/inference/tests/test_recognizer.py` | **the stub, the event a distribution becomes, the one frame read, the environment builder and its loud fallback** |
 | **ChessQ** | `packages/inference/tests/test_chessq.py` | **preprocessing and output mapping on a fake model; one `gpu` test reads a held-out still with the real V6** |
 | **Repair + settle** | `packages/inference/tests/test_prior.py`, `test_stabilize.py` | **an impossible board is repaired at its weakest square and a possible one is left byte-for-byte; the per-square debounce behind `settled`** |
@@ -281,50 +280,26 @@ uv run board-reader-edge feed --video path/to/clip.mp4 --throttle --adaptive
 uv run board-reader-edge feed --images path/to/frames/
 ```
 
-For an angled clip, add rectification — `--corners x0,y0,x1,y1,x2,y2,x3,y3`
-(the operator corner-tap: a8,h8,h1,a1 in pixels, declares geometry *and*
-orientation) or `--rectify` for auto-detection (re-detects on a ~1 s cadence,
-crops intervening frames against the cached homography).
+To send only the board's part of a wide shot, add `--roi x,y,w,h` (Option D).
 
-> Note: the node reads the whole frame with ChessQ and ignores any `corners` on the
-> wire, so `--corners` and `--rectify` only change what the edge sends (a rectified
-> crop instead of the whole frame). Real footage needs the weights (`make models`);
-> without them the node serves the stub.
+> Note: the node reads the whole frame it receives with ChessQ. Real footage needs
+> the weights (`make models`); without them the node serves the stub.
 
-### Option D — See board detection + rectification (M1, WP-A)
+### Option D — Send only the board's rectangle (`--roi`)
 
-The edge now detects the board and un-warps the angled view to a canonical top-down
-crop before forwarding. Two ways to see it:
+The edge never looks for the board (DESIGN D10, "dumb camera"). It sends the whole
+frame, or the static rectangle `--roi x,y,w,h` selects, in fractions of the frame
+(top-left corner, width, height). Motion for `--adaptive` is measured inside the
+rectangle too.
 
-**One-shot (most observable).** Make an angled board image and rectify it to a file
-you can open:
-
-```bash
-# write an angled synthetic board to /tmp/angled.png
-uv run python -c "import cv2; from board_reader_core.sim import render_board, simulate_angled_view; cv2.imwrite('/tmp/angled.png', simulate_angled_view(render_board())[0])"
-
-# detect + un-warp -> /tmp/rect.png (open it: a clean top-down board)
-uv run board-reader-edge rectify /tmp/angled.png -o /tmp/rect.png
-```
-
-`rectify` prints the detected corners (TL,TR,BR,BL = a8,h8,h1,a1). On a cluttered
-real photo where auto-detection fails, supply the operator corner-tap directly:
-
-```bash
-uv run board-reader-edge rectify photo.jpg -o crop.png \
-  --corners x0,y0,x1,y1,x2,y2,x3,y3      # a8,h8,h1,a1
-```
-
-**In the live pipe.** Feed a *simulated angled* synthetic board and have the edge
-rectify each frame before forwarding:
-
-```bash
-uv run board-reader-edge feed --angled --rectify --throttle --fps 2
-```
-
-With `--rectify`, the edge forwards canonical crops, and frames it can't localise (a
-bump, or no board) are **suppressed** rather than streamed as confidently-wrong
-geometry (DESIGN §4.4.1).
+1. Start the node: `uv run board-reader-inference serve`.
+2. Feed an angled synthetic board, cropped to its middle:
+   `uv run board-reader-edge feed --angled --roi 0.2,0.2,0.6,0.6 --throttle --fps 2`.
+3. Save the last frame the node received:
+   `curl -s localhost:8000/boards/A1/frame -o /tmp/roi.jpg`, and open it. Expected:
+   only the middle of the angled board, 60 % of the full view in each direction.
+4. Pass a rectangle that leaves the frame, e.g. `--roi 0.6,0,0.5,1`. Expected: the
+   CLI exits with a one-line `--roi` error and dials nothing.
 
 > [!note] Options E, G and H are gone
 > They demoed the earlier recognition stack — centroid few-shot calibration (E), the
@@ -635,7 +610,7 @@ re-fed is a run you can bisect a recognition regression against.
 > more and reproduces an easier run than the recorded one. Recording happens
 > **before** the pre-filter, so the recording itself is complete either way.
 >
-> `--adaptive`, `--rectify`, `--corners`, `--forward-original` and `--loop` are
+> `--adaptive`, `--roi`, `--loop` and `--jpeg-quality` are
 > refused with `--recording`: a recording already holds the edge's *output*, and
 > re-running those stages over it would put something else on the wire.
 

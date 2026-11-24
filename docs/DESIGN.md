@@ -332,7 +332,7 @@ note pointing here.
 | #15, §4.4.1, §5 `orientation`, §9 | chess frame, resolved per frame by the recognizer | Phase A (now) |
 | D8, §4.4 | hands: burst-end scheduling + debounce, not confidence | Phase A (now) |
 | WP-B, §4.2, §4.3 | recognition = one whole-frame read, no square crops | Phase A–B (steps 2, 8–10) |
-| #6, D4, §4.2, §4.5 `corners` and `/detect`, WP-A | edge sends the frame or an ROI box; no detection, no rectification | **pending the framing measurement** (plan step 13, decision D1 in the plan) |
+| #6, D4, §4.2, §4.5 `corners` and `/detect`, WP-A | edge sends the frame or an ROI box; no detection, no rectification | Python side done 2026-11-24 (`--roi`; `/detect`, rectifier, `core.boarddetect` removed); /camera in Phase C |
 | §5 `settled` window | settle values retuned for a reader whose raw stream is right | Phase D (plan steps 16–18) |
 
 ---
@@ -596,7 +596,10 @@ Note there is **no move-resolver / game-state module** — by design.
 **Amended 2026-11-24 (D10).** `/calibrate` goes in Phase B (no calibration round).
 `corners` on the wire becomes legacy: still parsed so old recordings replay, never
 sent, ignored by the recognizer. `/detect` goes with the edge detection, pending the
-framing measurement (Phase C).
+framing measurement (Phase C). **Done 2026-11-24** (dumb camera): `/detect`, the
+edge rectifier and `board_reader_core.boarddetect` are removed; the edge sends the
+frame or a static `--roi` crop. The detector survives only as an offline QC tool,
+`tools/video/boarddetect.py`, for `check_angle.py`.
 
 ### 4.6 Recognition model (DINOv2, calibration optional)
 
