@@ -27,11 +27,12 @@ interface Config {
   device: string | null;
   resolution: '720p' | '1080p' | '2160p';
   streaming: boolean;
+  rules: 'standard' | 'free';
 }
 
 /** The node's half of the phone's control socket, plus a counting `/ws/ingest`. */
 class FakeControl {
-  config: Config = { crop: null, device: null, resolution: '1080p', streaming: false };
+  config: Config = { crop: null, device: null, resolution: '1080p', streaming: false, rules: 'standard' };
   watched = false;
   readonly reports: Record<string, unknown>[] = [];
   readonly previews: [number, number][] = [];

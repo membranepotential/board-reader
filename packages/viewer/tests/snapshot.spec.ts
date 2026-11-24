@@ -45,7 +45,7 @@ test('the three pipeline stages all render, in order, and start idle', async ({ 
   const steps = page.locator('.step');
   await expect(steps).toHaveCount(STAGE_TITLES.length);
   await expect(steps.locator('summary > .name')).toHaveText(STAGE_TITLES);
-  await expect(steps.locator('summary > .idx')).toHaveText(['1', '2', '3', '4']);
+  await expect(steps.locator('summary > .idx')).toHaveText(['1', '2', '3']);
   await expect(steps.locator('summary > .chip')).toHaveText(
     Array(STAGE_TITLES.length).fill('idle')
   );
