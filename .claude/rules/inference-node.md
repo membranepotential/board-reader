@@ -1,0 +1,15 @@
+---
+paths:
+  - 'packages/inference/src/board_reader_inference/**'
+---
+
+# The inference node
+
+- Never create an app at module level; serve with `uvicorn.run("module:create_app", factory=True)` after the CLI has set its env, because `board_reader_inference/__init__.py` imports `server`, so a module-level `app = create_app()` runs at package import, before `cmd_serve` sets `BR_RECORD_DIR`, and every bare `serve` run once recorded nothing while compose (env set before the process) recorded fine.
+- Keep every disk write in `create_app()` opt-in (`BR_RECORD_DIR`, `BR_SAVE_UPLOADS` unset means nothing is written) and switch it on in `cli.cmd_serve` or the Makefile; never default a write to a cwd-relative path, because a test run from the repo root once overwrote the operator's real state through such a default. Copy this pattern for any new persistence.
+- Set product defaults that change behaviour (`BR_SCHEDULE`, `BR_RECORD_DIR`) in `cli.cmd_serve` with `os.environ.setdefault`, never in `create_app`, because compose and `make dev` both run `serve`, while `create_app()` with no env must keep reading every frame so the gateway tests that stream N frames and assert N reads keep their meaning.
+- Count every path that refuses an `/ingest` frame in `/healthz`'s ingest counters (`frames_refused`) and log it at WARNING, because a refusal happens before `FrameIngest.submit` and before recording, so otherwise "every frame refused" and "never sent" look the same from the node. When a phone take leaves an empty recording, check in order: the stream never connected (`client-logs/`), every frame was refused (the counter), recording itself broke.
+- Keep wall-clock calls out of the read path: recognizers stamp `capture_ts`, `BoardStabilizer.observe` takes the frame's `ts`, and only `published_ts` in the events writer reads the clock, because that is what makes two replays of one recording byte-identical; a new `time.time()` in the read path silently breaks replay determinism.
+- Request ChessQ's output by name (`sess.run(["logits"], ...)`), never `outputs[0]`, because the release has two outputs (`logits`, `direction`).
+- Pass `create_app` a `Recognizer` (pixels in, an (8,8,13) chess-frame distribution out) and give `FrameIngest` and `replay.replay` a `FrameRead` built by `recognizer.frame_reader(recognizer)`, because a test fake that must answer per seq or board (scripted reads, delays, failures) can only be a `FrameRead`; a `Recognizer` never sees the frame header.
+- When the weights are missing, degrade to `StubRecognizer` with a stderr banner and `/healthz` `recognizer.fallback` (DESIGN D2), never raise, because a fresh clone must still run `make dev` and the demo.

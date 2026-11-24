@@ -58,6 +58,13 @@ verified — a fix landed with its tests, a feature demoed green, a subagent's w
 validated — commit it right then (conventional message, one concern per commit).
 Never let several finished workstreams pile up uncommitted in the tree.
 
+**Never pre-stage in a checkout another session shares.** A `git add` or `git rm`
+sits in the shared index, and the other session's bare `git commit` takes it (a docs
+commit once swept in another session's staged deletions). Delete with plain `rm`,
+then commit with `git commit -F msg -- <paths>`: a pathspec commit records worktree
+deletions of tracked files and ignores the rest of the index. A brand-new file still
+needs `git add`, so run it in the same command as the commit.
+
 **Testing costs ~20 s. If it is costing you more, read
 [docs/TESTING.md §0](docs/TESTING.md#0-read-this-first-the-60-second-version)** —
 it is the 60-second agent briefing: which command to run when, the four habits that

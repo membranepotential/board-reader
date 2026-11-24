@@ -1,0 +1,17 @@
+---
+paths:
+  - 'packages/viewer/ui/**'
+---
+
+# The viewer frontend (SvelteKit, packages/viewer/ui)
+
+- When pnpm rejects a version with `ERR_PNPM_NO_MATURE_MATCHING_VERSION`, pin a version older than the seven-day cutoff or exclude that one package deliberately (`minimumReleaseAgeExclude`); never lower `minimumReleaseAge`, because the rejection is the supply-chain gate working.
+- Import chessground as `@lichess-org/chessground` (CSS at `@lichess-org/chessground/assets/*.css`), never the unscoped `chessground`, because lichess deprecated the unscoped package at v10.
+- Make a `$effect` that creates a long-lived third-party instance (chessground) depend on its element only and read the initial config inside `untrack()`, because reading a prop such as `placement` there rebuilds the instance on every change, leaks one ResizeObserver per rebuild (`api.destroy()` does not disconnect the one on the host), and drops the piece animation, while every content assertion stays green. Test it by node identity: tag the live `<cg-board>`, push a new placement, assert the tag survives.
+- Wrap a one-time read of a prop inside a `$state()` initializer in `untrack()`, because svelte-check otherwise reports `state_referenced_locally` even when the read is correct.
+- Give chessground's element a real size before construction and let its own ResizeObserver follow later resizes; never call `cg.redrawAll()` for a resize, because it rebuilds the board DOM and binds another ResizeObserver without removing the old one. Hide a board with `visibility: hidden`, never `display: none` (a 0x0 box makes chessground write `NaNpx`), and resize a board along one axis only (write the width, let `aspect-ratio: 1` set the height), because chessground derives the height from the wrap's own aspect ratio.
+- Turn a board by 90-degree steps with a CSS `transform: rotate()` on the square `.board-wrap` that hosts it, never through chessground's `orientation`, because `orientation` only flips white/black through the centre and cannot produce a quarter turn.
+- Use `ev.composedPath()` in a bubbled document-level click handler, never `el.contains(ev.target)`, because an inner handler may have rebuilt the subtree, so the clicked node is already detached when the event bubbles.
+- When two layers spell the same domain value differently (`$lib/board/fen` uses `''` for an empty square, `protocol.CLASSES` uses `'empty'`), make the shared predicate take neither vocabulary (for example `boolean[][]` occupancy) and convert once at the caller, because two `string` types type-check together and a feature was unreachable in the browser for its whole life while its unit test passed.
+- Persist per-component UI state with a small per-key `localStorage` helper wrapped in try/catch (as `rotation.ts` does), because private browsing throws; the codebase repeats this tiny helper per component on purpose rather than sharing a storage util.
+- Bound every `fetch` at the `api.ts` endpoint with `AbortSignal.timeout`, because fetch has no default timeout and one hung request can wedge a page silently; `requestJson` maps a `TimeoutError` to status 0 ("the node did not answer in time"). Give any background poll a failure budget with backoff and reset it on any answer at all.
