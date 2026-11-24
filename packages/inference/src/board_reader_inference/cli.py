@@ -34,8 +34,14 @@ def cmd_serve(args: argparse.Namespace) -> int:
     # page, whose frames reach the same /ingest socket through the viewer's proxy.
     # The default lives here rather than in ``create_app`` on purpose: a real
     # server always records, a test app never writes unless it asks to.
-    if args.record_dir:
+    # Precedence: the flag, then BR_RECORD_DIR from the environment, then the
+    # default. `--no-record` (record_dir == "") clears an inherited BR_RECORD_DIR.
+    if args.record_dir == "":
+        os.environ.pop("BR_RECORD_DIR", None)
+    elif args.record_dir is not None:
         os.environ["BR_RECORD_DIR"] = args.record_dir
+    else:
+        os.environ.setdefault("BR_RECORD_DIR", DEFAULT_RECORD_DIR)
 
     # Every served run keeps each board's camera config (crop, lens, resolution,
     # streaming) on disk, so a node restarted mid-game resumes the stream instead
@@ -249,12 +255,13 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--host", default="127.0.0.1")
     s.add_argument("--port", type=int, default=8000)
     s.add_argument(
-        "--record-dir", dest="record_dir", default=DEFAULT_RECORD_DIR,
-        help=f"record every ingested frame under here (default {DEFAULT_RECORD_DIR}/); "
+        "--record-dir", dest="record_dir", default=None,
+        help=f"record every ingested frame under here (default $BR_RECORD_DIR, "
+             f"else {DEFAULT_RECORD_DIR}/); "
              "replay with `board-reader-edge feed --recording <dir>`",
     )
     s.add_argument(
-        "--no-record", dest="record_dir", action="store_const", const=None,
+        "--no-record", dest="record_dir", action="store_const", const="",
         help="do not record ingested frames (runs are then not reproducible)",
     )
     s.add_argument(
