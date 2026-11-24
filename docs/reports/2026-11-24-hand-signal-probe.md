@@ -219,6 +219,32 @@ measurement rules, the shipped number must come from the gate. The no-commit gat
 does not win on *every* take (2 takes lose 1–2 boards to lag). It is a safety change
 traded for lag, not a pure accuracy win.
 
+## Shipped: the gate through the changed node (2026-11-25)
+
+The no-commit `energy_f` gate shipped at the fixed default −12.4 (DESIGN D16). The
+gate was replayed through the changed node (`make gate GATE_NAME=energy`); take 2
+was replayed twice on the same code, with the gate on (`energy`) and off
+(`energy-off`, `--obscured-energy off`).
+
+| measure | base | gated (real) | simulated above |
+|---|---|---|---|
+| gate settled perfect | 314/361 (`guard-only`) | **312/361** | 311/361 |
+| gate raw perfect | 341/361 | 341/361 | — |
+| lost boards, by take | — | 111421 −1, 181802 −1 | 111421 −1, 172736 −2 |
+| gate reads flagged obscured | — | 53 of 446 | — |
+| mean settle lag (boundary → first settled-perfect event) | 2.82 s | 2.90 s | 2.72 → 2.78 s |
+| 221950 resting-hand stretch (seq 452–596, one-segment truth) | 13/22, 9 wrong boards | **22/22, 0 wrong** | 22/22, 0 |
+| 221950 whole take, `truth.json` | 80/94 settled perfect | **88/94** | — |
+
+- **Why the lost boards differ by take.** The simulation gated each take at its own
+  leave-one-take-out threshold (−12.93 on 172736); the node gates every take at −12.4.
+- **No new wrong boards.** The not-lag settled errors (`hand_leaks.py energy`) are the
+  base's 14, plus one: 181802 seq 110, where the settled board is two moves behind instead
+  of one. That is lag the classifier counts as "other", not a hand leak.
+- The lag here uses a different denominator from the simulation's (every truth boundary
+  of the replay's frame index), so compare the deltas (+0.08 s against +0.06 s), not the
+  absolute values.
+
 ## Reproduce
 
 ```bash

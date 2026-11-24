@@ -571,6 +571,30 @@ chess* and remove the queen: the board settles as usual. A node restart keeps ea
 board's setting (`data/camera-config.json`), and every `events.ndjson` line records
 the setting its read settled under (`jq -r .rules`).
 
+**A resting hand and the obscured-read gate** (DESIGN D16). A hand that rests still
+on the board makes no motion, so the node reads it, and ChessQ reads the covered
+squares as empty with high confidence. Such a read is *obscured* (its frame energy
+is above `BR_OBSCURED_ENERGY`): it may start settling a change but never completes one.
+
+1. Mid-game, with the live page open and the board settled, lay a hand flat over a
+   few occupied squares and hold it still for about ten seconds.
+   Expected: the board card shows a **hand?** chip beside the motion chip within a
+   read or two (the keepalive reads every 2 s). The shown board does not lose the
+   covered pieces; the covered squares may ring amber as pending.
+2. Lift the hand away without moving a piece.
+   Expected: the **hand?** chip disappears on the next read and the pending rings
+   clear; the board never changed.
+3. Make a normal move with a hand that leaves the board quickly.
+   Expected: the move settles as usual, about a second after the hand leaves.
+4. Optional: restart with `BR_OBSCURED_ENERGY=off make dev` and repeat step 1.
+   Expected: no **hand?** chip, and the board may settle the covered squares as
+   empty (the failure the gate exists for). `jq -c '[.frame_seq, .obscured]'` on the
+   session's `events.ndjson` shows the flag per read.
+
+Automated: `test_stabilize.py` (obscured reads never commit, the stale path
+included), `test_chessq.py` (the frame energy), `test_ingest_stream.py` (the flag
+reaches the event), `tests/live.spec.ts` (the chip).
+
 ### Option K — Reproduce a run from its recording (WP-H2)
 
 Every frame that reaches `WS /ingest` is written to disk, so **any** of the runs

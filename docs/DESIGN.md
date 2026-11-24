@@ -439,6 +439,45 @@ the older lines that carry `settled`.
 **Rejected.** Keeping both boards on the wire: two placements invite a consumer to
 pick the wrong one, and the raw one is redundant with `square_dist`.
 
+### D16 — An obscured read is evidence, never a commit (2026-11-25)
+
+**Status:** accepted (user, 2026-11-25).
+
+**Context.** A hand that rests still on the board makes no motion, so the burst-end
+schedule reads it, and ChessQ reads the covered squares as empty at p ≥ 0.96: a
+square's confidence cannot tell. On the live take 20261124-221950 the stack settled
+9 wrong boards under a resting hand. The frame energy separates such frames from clear
+ones (frame ROC-AUC 0.970) and needs no model change
+([probe](reports/2026-11-24-hand-signal-probe.md)).
+
+**Decision.**
+- **The frame energy** (`chessq.frame_energy`): per square minus the logsumexp of its 13
+  logits, per frame the mean of the 4 highest squares. `Recognition` and `FrameReading`
+  carry it; the fp32 and int8 files both report it; the stub reports none.
+- **A read above `BR_OBSCURED_ENERGY` is obscured** (`SettleConfig.obscured_energy`,
+  default −12.4 for ChessQ V6, `off` disables). It still starts and extends a square's
+  challenger, but no square ripens on it, so it commits nothing, the stale fall-through
+  included. The first clear read then confirms or resets each challenger. The first read
+  of a stream is still adopted wholesale.
+- **The event says so:** `PositionEvent.obscured` (default false, so older recordings
+  parse), and the live card shows a "hand?" chip while the latest read is obscured.
+- **Re-fit the threshold for every model release.** The energy lives on the model's
+  logit scale, like a temperature. `replay --obscured-energy` replays under another
+  value; a non-default one joins the replay name, manifest and digest.
+
+**Evidence.** Gate (`energy` against `guard-only`): settled perfect 314 → 312 of 361
+(the simulation predicted 311), raw reads unchanged, mean settle lag 2.82 → 2.90 s.
+Both lost boards are settle lag (111421, 181802), not a wrong board. On take 2 the
+resting-hand stretch goes from 13/22 to 22/22 settled perfect and from 9 wrong boards to 0,
+and the whole take from 80/94 to 88/94.
+
+**Rejected.** Dropping obscured reads (15 gate boards lost: a mid-move read with the
+hand on the piece says something true, so dropping it delays every move by a read);
+holding single high-energy squares (half-adopted moves, 20 not-lag wrong boards);
+Mahalanobis distance of the query embeddings (its threshold needs calibration per
+setup and blocked the recovery reads on the dark live take); plain-CV hand signals
+(they fire on every move and on auto-exposure, and wood is skin-coloured).
+
 ---
 
 ## Superseded decisions
@@ -640,6 +679,10 @@ every message in this section is `board_reader_core.schema`'s). One event per re
 - `clock.running` — `white|black|none`; always `none` until M6.
 - `status` — `ok|recalibrating|needs_setup|stale`. Only `ok` is emitted; the other three
   are reserved. There is **no `illegal`**: an illegal-looking board is `ok`.
+- `obscured` — `true` when the node judged this read obscured (its frame energy is above
+  `BR_OBSCURED_ENERGY`, D16): a hand most likely covers part of the board, so the read
+  started or extended challengers but committed no square. `false` on `/estimate`; a
+  recorded line without the key parses as `false`.
 - Every field above is always sent; `square_dist` entries lie in [0, 1], and
   `confidence` and `stability` too. Unknown keys are refused. That each square sums
   to 1 and that `pending` is exactly where `placement` differs from the argmax is
