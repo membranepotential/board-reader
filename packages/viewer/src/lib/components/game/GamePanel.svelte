@@ -55,6 +55,10 @@
   /** The PGN last copied: the button says "Copied" until the game moves on. */
   let copied: string | null = $state(null);
   let copyFailed = $state(false);
+  /** Whether the PGN expander is open: the user's toggle, opened for them when the
+   *  clipboard refuses. Bound, never `open={...}`: a one-way attribute is set again on
+   *  every update and closed the expander on each new read. */
+  let pgnOpen = $state(false);
 
   /** The page may be plain http on the LAN, where `navigator.clipboard` is missing;
    *  `execCommand('copy')` on a selected textarea still works there. */
@@ -86,6 +90,7 @@
     }
     copied = ok ? text : null;
     copyFailed = !ok;
+    if (!ok) pgnOpen = true;
   }
 </script>
 
@@ -132,7 +137,7 @@
     <p class="note">The browser refused the clipboard. Select the PGN below and copy it.</p>
   {/if}
 
-  <details open={copyFailed}>
+  <details bind:open={pgnOpen}>
     <summary>PGN</summary>
     <pre class="pgn">{pgn}</pre>
   </details>
