@@ -291,7 +291,7 @@ The L3 egress has two consumers today, and both are deliberately memoryless.
 
 | Consumer | What it is |
 |---|---|
-| the **viewer** (`GET /`) | draws the latest event per board — a screen, not a record: the `settled` board, its `pending` squares as dashed amber rings, and a motion chip driven by the motion updates; no confidence or stability bars |
+| the **viewer** (`GET /`) | draws the latest event per board — a screen, not a record: the event's `placement` (the settled board), its `pending` squares as dashed amber rings, and a motion chip driven by the motion updates; no confidence or stability bars |
 | `board-reader-inference positions` | a headless tail of `WS /viewer`: each event on stdout in readable form, and with `--out` each event as one line of the exact §5 JSON the socket carried; it skips motion updates |
 
 Until the tail landed, the only consumer of that socket was a browser page, so a run's
@@ -338,16 +338,16 @@ identically. It smooths nothing — a piece flickering between two classes on al
 frames yields a transition on *every single frame*. That is the honest picture of what a
 stateless estimator emits, and precisely the argument for the layer above it.
 
-One narrow exception ships since 08-13: the gateway attaches an advisory `settled` block
-to *streamed* events (DESIGN §5) — a per-square display debounce (an unbroken 0.5 s of
+One narrow exception ships since 08-13: on *streamed* events the gateway publishes a
+settled board as `placement` (DESIGN §5, D15) — a per-square display debounce (an unbroken 0.5 s of
 consistent reads, at least two, `board_reader_inference.stream.stabilize`, never composing a board *less*
 possible than the one it already holds unless the board's `rules` are `free`, and never
 stale by more than ~3 settle windows) over the raw placements, born from the first
 phone trial where a hand mid-move and a coin-flip two-kings read made the live board
 flicker at burst rate. It is a debounce, not the missing layer: no move model, no
 legality, no use of `stability`, and it holds whatever the reads converge to — the trial's
-persistent d8/e8 misread settles *wrong*, just stably. The raw fields stay untouched
-beside it.
+persistent d8/e8 misread settles *wrong*, just stably. Each read stays untouched
+as the event's `square_dist`, with `pending` naming where it disagrees.
 
 The seam is `WS /viewer`, or an `.ndjson` capture of it — the same bytes either way.
 Anything cleverer than a debounce lives on the far side of that seam and wants its own

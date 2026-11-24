@@ -101,7 +101,9 @@ material or a variant. Until 2026-11-24 a per-read **prior** decoder (`prior.py`
 repaired impossible reads; it is gone (DESIGN D14).
 
 **Settled** — the debounced board (`stabilize.py`): the last placement that held for the
-settle window, riding on stream events as `settled`.
+settle window. Since 2026-11-24 it is a streamed event's `placement`, with `pending` naming
+the squares where the read (the argmax of `square_dist`) disagrees; before, it rode beside
+the read as a `settled` block (DESIGN D15).
 
 **Read scheduler** — the node's choice of which arriving frames to read (`schedule.py`,
 `BR_SCHEDULE`): by default three reads 0.3 s apart at the end of a motion burst, plus a

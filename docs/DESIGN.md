@@ -30,9 +30,10 @@ and how sure am I?"* It keeps no game state. Specifically, the CV layer:
   application layer can decide when a position is at rest and reconstruct the move
   sequence itself, including two pieces in motion at once.
 
-One advisory block rides beside the raw read: `settled`, a display debounce (§5),
-guarded so that it never becomes more impossible than it is (D14). It does not
-replace the raw read, and it is not legality.
+Each event carries one board, `placement`: the settled board, a display debounce over
+the reads (§5), guarded so that it never becomes more impossible than it is (D14). The
+read itself stays on the event as its distribution, so the raw board is always
+recoverable (D15). The debounce is not legality.
 
 ### Locked decisions
 
@@ -138,7 +139,8 @@ downstream application can use to reconstruct moves, legality, PGN or broadcasts
   bursts during motion), and the node reads only what is worth reading (burst ends plus
   a keepalive floor), so compute scales to many boards.
 - **Honest output.** We never block on a clean frame; we stream what we read. Raw reads
-  stay byte-identical on the wire beside the advisory `settled` block.
+  stay byte-identical on the wire as each event's `square_dist`, beside the settled
+  `placement`.
 - **Accurate timestamps.** Stamp at **capture time on the edge**, not at server
   receive. Target: tens of ms.
 - **No hardware purchase yet.** A local simulation: a phone as the camera and edge, the
@@ -162,8 +164,9 @@ Frame in → 8×8 placement + per-square distribution + advisory stability out. 
 state, no legality, no move tracking. This is the load-bearing decision.
 
 One piece of node state exists and is allowed because it never changes the read:
-the `settled` debounce (state over *published* reads, served beside them). `square_dist` and `placement` on every event
-are exactly what the recognizer produced.
+the settle debounce (state over *published* reads). It decides the event's
+`placement`; `square_dist` and `confidence` on every event are exactly what the
+recognizer produced, so the read's own board is the argmax of `square_dist` (D15).
 
 ### D2 — Output is piece placement plus a full per-square distribution
 
@@ -214,8 +217,8 @@ Temporal differencing of two clock regions over ~1.5–2 s gives `running ∈
 The target is a tripod view at ~45–60°, so back-rank occlusion is expected. ChessQ
 reads a square under a hand or arm as a **confident** empty (p ≥ 0.96), so confidence
 cannot flag occlusion. Hands are handled in time instead: the node reads at the end of
-a motion burst, when the hand is gone (§4.3), and `settled` adopts a change only after
-it held across a window (§5). Evidence:
+a motion burst, when the hand is gone (§4.3), and the settled `placement` adopts a
+change only after it held across a window (§5). Evidence:
 [reports/2026-11-24-settle-tuning.md](reports/2026-11-24-settle-tuning.md) (no hand
 frame settles on the gate).
 
@@ -410,6 +413,29 @@ recognizer did not read, and the snapshot page's own material table already flag
 impossible count. `chess.Board.status()` alone for the counts: its `TOO_MANY_KINGS`
 lets two white kings pass and it has no promotion budget.
 
+### D15 — An event carries one board: the settled `placement` (2026-11-24)
+
+**Status:** accepted (user, 2026-11-24).
+
+**Context.** An event carried the read as `placement` and the debounced board in an
+advisory `settled` block beside it, so every consumer had to choose a board and the
+viewer drew `settled.placement ?? placement`. The read is already on the event as its
+distribution.
+
+**Decision.** `placement` is the settled board; the `settled` block and its model
+(`SettledBoard`) are gone. A top-level `pending` names the squares where this read's
+argmax disagrees with it. `square_dist` and `confidence` stay this read's raw
+evidence, so the raw board is `argmax(square_dist)` (`PositionEvent.raw_placement`)
+and nothing is lost. `PositionEvent.from_square_dist` takes the settled board as an
+optional `placement` and `with_placement` swaps one in; both derive `pending`, and
+`validate()` checks it, so `placement`, `pending` and `square_dist` cannot drift.
+`/estimate` publishes the read itself with no pending squares. `events.ndjson` keeps
+the read as the top row of each square's `evidence`, and `eval-session` still reads
+the older lines that carry `settled`.
+
+**Rejected.** Keeping both boards on the wire: two placements invite a consumer to
+pick the wrong one, and the raw one is redundant with `square_dist`.
+
 ---
 
 ## Superseded decisions
@@ -428,7 +454,7 @@ commit whose DESIGN.md carried every section with its dated amendments.
 | **Square cropping and occlusion masking** (rectified tiles or perspective full-piece boxes with ~1.6 square-widths headroom; `BR_CROP_MASK=gray`) | The recognizer reads the whole sent image; nothing of ours crops squares. | [V6 gate](reports/2026-11-24-chessq-v6-replay-gate.md) | `git show 7f56f58:docs/recognition-pipeline.md` ("Cropping is where the accuracy is") |
 | **Black-bishop (attractor) demotion** (`demote_attractor`, `trial.AttractorGuard`) | ChessQ's softmax is served unchanged. | [evidence rerank](reports/2026-08-27-evidence-rerank.md) (why it existed) | `git show 7f56f58:docs/recognition-pipeline.md` ("The black-bishop demotion") |
 | **Autorotate by chess plausibility** (`?autorotate=1`: fewest pawns on ranks 1/8) | The recognizer resolves orientation (locked decision #15). | [V6 gate](reports/2026-11-24-chessq-v6-replay-gate.md) | `git show 7f56f58:docs/DESIGN.md` (§4.6) |
-| **D8's "occluded squares get low confidence"; the optional burst voter** (§4.2, §4.4; the voter was never built) | D8 as rewritten: burst-end reads plus the `settled` debounce. | [settle tuning](reports/2026-11-24-settle-tuning.md) | `git show 7f56f58:docs/DESIGN.md` (D8, §4.4) |
+| **D8's "occluded squares get low confidence"; the optional burst voter** (§4.2, §4.4; the voter was never built) | D8 as rewritten: burst-end reads plus the settle debounce. | [settle tuning](reports/2026-11-24-settle-tuning.md) | `git show 7f56f58:docs/DESIGN.md` (D8, §4.4) |
 | **Corner-carrying frames** (`corners` on every wire frame; `POST /estimate?corners=`) | `corners` is a legacy wire field: still parsed so old recordings replay, never sent, ignored. `/estimate` takes the photo alone. | plan, Phase B–C | `git show 7f56f58:docs/DESIGN.md` (§4.5) |
 | **The ~2.5 s / 2-read settle window and the one-read `burst-end` schedule; then 1.0 s with three reads 0.6 s apart** | 0.5 s / 2 reads / 2 stale windows, with `burst-end:keepalive_s=2,burst_end_reads=3,spacing_s=0.3` and the forwarder tail (D4). | [settle tuning](reports/2026-11-24-settle-tuning.md); [live latency](reports/2026-11-24-live-latency.md); [latency round 2](reports/2026-11-24-latency-round2.md) | `git show 53c1468:docs/DESIGN.md` (§5) |
 | **The hard-constraint prior decoder** (`stream/prior.py`, `PositionEvent.prior`, `/estimate`'s repair, `eval --no-prior`, the trial's `prior` stream) | D14: the settle guard alone, with a per-board `rules` switch. | [prior report](reports/2026-11-24-prior-backrank.md) | `git show f5cc37e:packages/inference/src/board_reader_inference/stream/prior.py` |
@@ -497,8 +523,9 @@ the wire. `core` imports neither. `tests/test_layer_separation.py` enforces it.
 5. A due frame goes to `Recognizer.read` in a worker thread, giving a chess-frame
    `square_dist` and the board's direction, then a `PositionEvent`.
 6. The orientation guard drops the read if the board points more than 45° from its
-   recent reads (D10). Otherwise `BoardStabilizer` attaches the debounced board
-   (`settled`), under the board's `rules` setting (D14).
+   recent reads (D10). Otherwise `BoardStabilizer` settles the read, under the board's
+   `rules` setting (D14), and the event goes out with the settled board as its
+   `placement` (`PositionEvent.with_placement`, which derives `pending`).
 7. The hub publishes the event to `/viewer` subscribers and keeps the latest per board;
    the recorder writes every ingested frame to a session directory for replay, and the
    read's direction goes to the camera registry (D11).
@@ -508,8 +535,8 @@ There is deliberately **no** "find the legal move" or "commit a move" step.
 ### 4.4 Failure behavior
 
 - **Hand over the board.** Covered squares read as confident empties. The scheduler
-  skips the burst and reads at its end; `settled` holds the previous board until a
-  change holds for its window. The raw stream still carries every read.
+  skips the burst and reads at its end; `placement` holds the previous board until a
+  change holds for its window. Every event still carries its read in `square_dist`.
 - **Camera moved.** Nothing on the edge follows the board. The operator redraws the
   rectangle on `/control`; reads in between are whatever the recognizer sees.
 - **Edge offline.** The stream goes quiet; the viewer marks the board stale on its side.
@@ -517,7 +544,7 @@ There is deliberately **no** "find the legal move" or "commit a move" step.
 - **Low confidence.** Emitted verbatim; the consumer decides.
 - **Missing weights.** The stub recognizer serves, loudly (D10).
 - **Impossible board** (two white kings, a pawn on rank 8). Reported as read, status
-  `ok`; under `standard` rules the `settled` board does not adopt it (D14).
+  `ok`; under `standard` rules the settled `placement` does not adopt it (D14).
 
 ### 4.5 The inference node's interfaces (gateway, wire, hub)
 
@@ -546,7 +573,7 @@ socket's direction is one discriminated union in the JSON Schema (`ReportMessage
 |---|---|
 | `GET /healthz` | liveness, ingest counters, settle values, recording stats, the serving recognizer (and `fallback` when the stub serves) |
 | `GET /boards/{id}` · `GET /boards/{id}/frame` | latest event · latest ingested frame |
-| `POST /estimate` | one photo (JPEG body) → its event, synchronously; also published to the hub. No `settled` block. |
+| `POST /estimate` | one photo (JPEG body) → its event, synchronously; also published to the hub. Nothing to settle over: `placement` is the read, `pending` empty. |
 | `POST /labels/{upload}` · `GET /uploads` · `GET /uploads/{upload}/photo` | confirm a retained photo's position as ground truth; list and fetch retained photos (`BR_SAVE_UPLOADS`) |
 
 ---
@@ -564,12 +591,12 @@ every message in this section is `board_reader_core.schema`'s). One event per re
   "orientation": "a1_bottom_left",
   "classes": ["empty","P","N","B","R","Q","K","p","n","b","r","q","k"],
   "placement": "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR",
+  "pending": [],
   "square_dist": [[[0.01,0,0,0,0.99,0,0,0,0,0,0,0,0], "…8 squares a8..h8…"], "…8 rows…"],
   "confidence": 0.93,
   "stability": 0.12,
   "clock": { "running": "none" },
-  "status": "ok",
-  "settled": { "placement": "…", "pending": [] }
+  "status": "ok"
 }
 ```
 
@@ -579,21 +606,26 @@ every message in this section is `board_reader_core.schema`'s). One event per re
   frame (rank 8 first, file a first, as in FEN), resolved per frame by the recognizer.
 - `classes` — the 13-class index order of every per-square vector; uppercase = White,
   `empty` is index 0.
-- `square_dist` — **canonical output**: 8×8 13-vectors, rank 8 → rank 1, file a → h.
-  Everything else is derived from it.
-- `placement` — FEN field 1, the per-square argmax: eight ranks of eight squares, a
-  digit being a run of 1 to 8 empty squares (the `isPlacement` check).
-- `confidence` — the mean per-square maximum probability.
+- `square_dist` — **canonical output**: this read's 8×8 13-vectors, rank 8 → rank 1,
+  file a → h. The read's own board is its per-square argmax.
+- `placement` — FEN field 1 (eight ranks of eight squares, a digit being a run of 1
+  to 8 empty squares: the `isPlacement` check): the **settled board** on a stream, the
+  read itself on a one-shot `/estimate`. See the settle rules below.
+- `pending` — the squares, board order, where this read's argmax differs from
+  `placement`: a move in flight, or a misread still being debounced. Empty when they
+  agree, and always on `/estimate`.
+- `confidence` — the mean per-square maximum probability of this read.
 - `stability` — `[0,1]`, 1 = at rest; advisory.
 - `clock.running` — `white|black|none`; always `none` until M6.
 - `status` — `ok|recalibrating|needs_setup|stale`. Only `ok` is emitted; the other three
   are reserved. There is **no `illegal`**: an illegal-looking board is `ok`.
 - Every field above is always sent; `square_dist` entries lie in [0, 1], and
   `confidence` and `stability` too. Unknown keys are refused. That each square sums
-  to 1 and that `placement` is the argmax is checked by `PositionEvent.validate()`,
-  not by parsing: a distribution rounded to four decimals can tie two classes.
-- `settled` (optional, left out when absent; streamed frames only) — a display debounce of the raw reads:
-  `{placement, pending: [squares reading differently, not yet adopted]}`. A square
+  to 1 and that `pending` is exactly where `placement` differs from the argmax is
+  checked by `PositionEvent.validate()`, not by parsing: a distribution rounded to
+  four decimals can tie two classes.
+- **The settle rules** (streamed frames only) — the settled `placement` is a display
+  debounce of the reads. A square
   changes only after it held the same class on every read across **0.5 s** and **≥2
   reads**. Under the board's `rules: standard` (D14) a settlement is committed only if
   it does not make the board less possible than it already is (≤1 king per colour,
@@ -608,10 +640,12 @@ every message in this section is `board_reader_core.schema`'s). One event per re
   settled, [latency round 2](reports/2026-11-24-latency-round2.md)). The window must
   stay strictly between the burst-end spacing and the run's span (0.3 < 0.5 ≤ 0.6):
   in the sweep a window that two reads span let a hand settle in 19 of 30 configs.
-  This is not the downstream smoother (D3): it uses no move model and no legality. The
-  live viewer draws `settled.placement`, and `placement` where there is no
-  `settled`; it marks `pending` squares with dashed amber rings and shows no
-  confidence or stability bars.
+  This is not the downstream smoother (D3): it uses no move model and no legality; a
+  consumer running its own smoother takes the reads from `square_dist`. The live
+  viewer draws `placement`; it marks `pending` squares with dashed amber rings and
+  shows no confidence or stability bars. Recordings made before 2026-11-24 carry the
+  older shape (`placement` the read, a `settled` block beside it); `eval-session`
+  reads both (`trial.read_events`).
 
 **Motion updates (display only).** Between the sparse position events, `/viewer` also
 carries one message per ingested frame, at most 5 a second per board but always when

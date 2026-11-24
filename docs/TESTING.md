@@ -119,7 +119,7 @@ What's covered today — the main files (`git ls-files 'packages/*/tests/*.py'
 | Edge adapter | `packages/edge/tests/test_adapter.py` | frames → wire envelopes, throttle, **static `--roi` crop, motion measured inside it, no `corners` sent** |
 | **Recognizer seam** | `packages/inference/tests/recognition/test_recognizer.py` | **the stub, the event a distribution becomes, the one frame read, the environment builder and its loud fallback** |
 | **ChessQ** | `packages/inference/tests/recognition/test_chessq.py` | **preprocessing and output mapping on a fake model; one `gpu` test reads a held-out still with the real V6** |
-| **Settle + guard** | `packages/inference/tests/stream/test_stabilize.py`, `test_rules.py` | **the per-square debounce behind `settled`; under `standard` rules a settle never makes the board more impossible (≤1 king per colour, ≤16 pieces, the promotion budget), under `free` it settles whatever the reads agree on** |
+| **Settle + guard** | `packages/inference/tests/stream/test_stabilize.py`, `test_rules.py` | **the per-square debounce behind a streamed event's `placement`; under `standard` rules a settle never makes the board more impossible (≤1 king per colour, ≤16 pieces, the promotion budget), under `free` it settles whatever the reads agree on** |
 | **Recording format** | `packages/core/tests/test_recording.py` | **byte-exact round trip, corners survive, truncated session still replays, size cap** |
 | **Ingress recording** | `packages/inference/tests/test_recording_ingest.py` | **every `/ingest` frame lands on disk (incl. pre-filter drops); off unless asked; a write failure never breaks the stream** |
 | **Replay (edge)** | `packages/edge/tests/test_recording_replay.py` | **replays the recorded bytes without re-encoding, paces by capture time, refuses to reprocess** |
@@ -622,7 +622,7 @@ one compact line each (`square_dist` stripped; `frame_seq`/`capture_ts`/
 board's settle setting):
 
 ```bash
-tail -f recordings/*/events.ndjson | jq -c '{seq, placement, settled: .settled.placement, rules}'
+tail -f recordings/*/events.ndjson | jq -c '{seq, placement, pending, rules}'
 ```
 
 Each line also carries `evidence`: the **top-2 digest**, 64 squares in board
@@ -783,10 +783,11 @@ a run that left no artifact, and neither number could be reproduced afterwards.
 
 What to check:
 
-- the two streams are scored apart — raw `placement` and the debounce
-  (`settled.placement`). Two streams can tie per square with a *different*
+- the two streams are scored apart — the read (the top row of each square's
+  `evidence`) and the debounce (`placement`; in recordings made before 2026-11-24,
+  `settled.placement`). Two streams can tie per square with a *different*
   perfect-board rate, which is the whole reason they are not summed;
-- `settled: DERIVED` in the header means the recording predates the settled block
+- `settled: DERIVED` in the header means the recording predates the settled board
   and that row was replayed offline through today's `BoardStabilizer` — a
   prediction, not a measurement;
 - excluded counts are on the `events:` line. `guard_seqs` drops the events within

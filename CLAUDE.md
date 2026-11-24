@@ -24,9 +24,9 @@ pipeline, measuring accuracy, operating envelope, runbook).
 3. **Milestones are the build order; work packages are not.** Implement in
    **M0→M7** order (DESIGN §7). The **WP-A…WP-I** packages (DESIGN §8) are a
    decomposition by component, *not* a sequence — pull from them per milestone.
-4. **The CV layer is a stateless per-frame estimator.** It streams positions, never
-   moves/legality/PGN/game-state (DESIGN D1, §1). An illegal-looking board is
-   reported as `ok`.
+4. **The CV layer estimates per frame and debounces the board over time.** It
+   streams positions, never moves/legality/PGN/game state (DESIGN D1, §1). An
+   illegal-looking board is reported as `ok`.
 5. **Edge and inference meet only on the wire.** See architecture below — this is
    enforced by tests and by packaging.
 
