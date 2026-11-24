@@ -232,11 +232,11 @@ L1→L2 wire framing — and the differences between the copies were the bugs.
 
 | Module | Owns |
 |---|---|
-| `lib/protocol.ts` | parses the wire — L3 position events off `/ws/viewer`, L1→L2 headers on `/ws/ingest`, the node's HTTP replies — the one place untrusted wire data becomes a typed value |
+| `lib/protocol/` | the wire contract. `generated.ts` holds a zod validator and a readonly type per message (L3 position events and motion on `/ws/viewer`, L1→L2 headers on `/ws/ingest`, the camera control messages), generated from the pydantic models by `make protocol` (`tools/gen_protocol.py`) and checked for drift by `tests/test_protocol_ts.py`; `checks.ts` holds the TS twins of the schema's `x-check` rules; `index.ts` holds `parseWire` (the one place untrusted wire data becomes a typed value), the class vocabulary and board frame, and the node's HTTP replies and `/ingest` acks, which core does not model |
 | `lib/api.ts` | same-origin, always-relative URL construction (`/api/…`, `/ws/…`) — nothing here ever names an origin, which is what keeps the pages working unchanged on a LAN, over https, and behind a tunnel |
 | `lib/board/fen.ts` | FEN field 1 ⇄ 8×8 grid, clamped and re-emitted so a malformed placement can't shift the grid the diff and chessground both index into |
 | `lib/edge/{motion,ingest,sharpness,cameralink}.ts` | the `/camera` page's browser edge: a JS mirror of `board_reader_edge`'s `MotionMeter`/`AdaptiveForwarder`, the two-message (JSON header + JPEG) `/ws/ingest` sender, the focus score, and the phone's camera control socket |
-| `lib/control/{messages,link}.ts` · `lib/socket.ts` | the camera control channel's messages, parsed once (`board_reader_core.control`'s mirror), the control page's socket, and the reconnecting socket both clients share |
+| `lib/control/{messages,link}.ts` · `lib/socket.ts` | the camera control channel's upward messages (built on the generated types), the control page's socket, and the reconnecting socket both clients share |
 | `lib/stores/{positions.svelte,liveness}.ts` | the live position stream as Svelte 5 state — deliberately not a state machine over positions (DESIGN D1): the only history kept is the previous grid, and only to diff a changed square |
 
 `src/routes/` holds the four pages (`+page.svelte` for `/`, `camera/+page.svelte`,
