@@ -1,11 +1,7 @@
 """Tests for the one routing decision (:mod:`board_reader_inference.routing`).
 
 The point of the module under test is that the snapshot ingress (``POST /estimate``)
-and the live ingress (``WS /ingest``) cannot read a frame differently. The parity
-test below is the one that would have caught the incident that produced it: the
-stream's private copy of the decision was written with three branches, missed the
-§4.6 uncalibrated one, and published the M0 stub's fixed start placement at 0.95
-confidence at stream rate — a fabricated position on the hub.
+and the live ingress (``WS /ingest``) cannot read a frame differently.
 """
 
 from __future__ import annotations
@@ -20,25 +16,16 @@ from board_reader_core.protocol import START_PLACEMENT, PositionEvent
 from board_reader_core.sim import render_board
 from board_reader_core.wire import Frame, encode_jpeg
 
-from board_reader_inference.centroid import build_exemplars
-from board_reader_inference.embed import LiteEmbedder
-from board_reader_inference.estimator import CentroidEstimator, StubEstimator
+from board_reader_inference.estimator import StubEstimator
 from board_reader_inference.hub import PositionHub
 from board_reader_inference.routing import (
-    OccupancyRead,
     PhotoRead,
     RectifiedRead,
-    Uncalibrated,
     WholeFrameRead,
     route_for,
 )
 from board_reader_inference.server import create_app
-from board_reader_inference.session import EstimatorSession
-from board_reader_inference.squares import (
-    BboxGeometry,
-    crop_squares_photo,
-    full_frame_corners,
-)
+from board_reader_inference.squares import BboxGeometry, full_frame_corners
 
 MIDGAME = "r1bqkb1r/pppp1ppp/2n2n2/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R"
 FLAT = BboxGeometry(0.0, 0.0)
@@ -66,22 +53,6 @@ class PhotoSpy(Spy):
     def estimate_photo(self, frame: Frame, corners: np.ndarray) -> PositionEvent:
         self.calls.append(("estimate_photo", tuple(np.asarray(corners).ravel().tolist())))
         return self._stub.estimate(frame)
-
-
-def _occupancy_bank() -> CentroidEstimator:
-    """Lite-backbone stand-in for the ChessReD occupancy bank, over flat renders."""
-    photo = render_board(START_PLACEMENT, square_px=24)
-    quad = full_frame_corners(photo)
-    emb = LiteEmbedder()
-    bank = build_exemplars(
-        emb,
-        crop_squares_photo(photo, quad, geometry=FLAT, size=64),
-        START_PLACEMENT,
-        backbone="lite",
-        box_headroom=0.0,
-        box_side_pad=0.0,
-    )
-    return CentroidEstimator(emb, bank, square_size=64, geometry=FLAT)
 
 
 def _frame(image: np.ndarray, corners: np.ndarray | None = None) -> Frame:
@@ -125,20 +96,6 @@ def test_no_corners_and_no_photo_path_leaves_the_frame_alone():
     assert route.view().image is image
 
 
-def test_the_uncalibrated_branch_outranks_the_rest_and_yields_no_position():
-    """§4.6: with an occupancy bank loaded and no piece-type calibration, there is
-    nothing that could honestly produce a position — whatever the corners say."""
-    image = render_board(MIDGAME, square_px=24)
-    session = EstimatorSession(
-        StubEstimator(START_PLACEMENT), occupancy=_occupancy_bank()
-    )
-
-    for corners in (None, full_frame_corners(image)):
-        route = session.route(_frame(image, corners))
-        assert isinstance(route, Uncalibrated)
-        assert isinstance(route.read(), OccupancyRead)  # occupancy, not a position
-
-
 # --- the two ingresses route identically -------------------------------------
 
 
@@ -167,10 +124,6 @@ def _stream_calls(app_state, image, corners, gateway, drain_ingest) -> list:
         ws.send_text(json.dumps(header))
         ws.send_bytes(jpeg)
         ws.receive_json()  # ack — the estimate is still in flight
-    # Wait for the worker to FINISH the frame, not for the spy to be called: on the
-    # uncalibrated branch the spy is never called by design, so waiting on
-    # `spy.calls` would assert the same thing while burning a whole deadline.
-    # Draining covers every branch, including the one whose answer is "nothing".
     drain_ingest(client)
     return spy.calls
 
@@ -185,13 +138,6 @@ def _rectified_gateway():
     return spy, create_app(spy, PositionHub())
 
 
-def _uncalibrated_gateway():
-    # The style estimator is present but unusable for this piece set (§4.6): the
-    # occupancy bank is what decides, and it must keep the spy out of it entirely.
-    spy = Spy()
-    return spy, create_app(spy, PositionHub(), occupancy_estimator=_occupancy_bank())
-
-
 # The parameter is `build_gateway`, not `gateway`: `gateway` is the conftest
 # fixture that builds the client, and a parametrize id would shadow it.
 @pytest.mark.parametrize(
@@ -200,7 +146,6 @@ def _uncalibrated_gateway():
         (_photo_gateway, True),  # branch 1: photo mode + corners
         (_rectified_gateway, True),  # branch 2: corners -> server-side warp
         (_rectified_gateway, False),  # branch 3: no corners, the JPEG is the board
-        (_uncalibrated_gateway, True),  # branch 4: §4.6 — no position, either way
     ],
 )
 def test_the_posted_and_the_streamed_frame_take_the_same_branch(
@@ -214,26 +159,3 @@ def test_the_posted_and_the_streamed_frame_take_the_same_branch(
     assert _http_calls(build_gateway, image, corners) == _stream_calls(
         build_gateway, image, corners, gateway, drain_ingest
     )
-
-
-def test_the_uncalibrated_stream_publishes_nothing_and_counts_the_frame(
-    gateway, drain_ingest
-):
-    """A stream has no response to answer with, so it skips — it must never fall
-    back to the stub's fixed start placement (the incident)."""
-    image = render_board(MIDGAME, square_px=24)
-    spy, app = _uncalibrated_gateway()
-    client = gateway(app)
-
-    with client.websocket_connect("/ingest") as ws:
-        header, jpeg = _frame(image, full_frame_corners(image)).encode()
-        ws.send_text(json.dumps(header))
-        ws.send_bytes(jpeg)
-        ws.receive_json()
-
-    drain_ingest(client)
-    ingest = client.app.state.ingest
-    assert ingest.frames_skipped == 1
-    assert ingest.frames_estimated == 0
-    assert spy.calls == []
-    assert client.get("/boards/A1").status_code == 404  # nothing published

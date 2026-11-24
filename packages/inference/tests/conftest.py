@@ -34,7 +34,7 @@ workers' own idle events. It is deterministic: no ``sleep``-polling, no deadline
 to tune, and it returns the moment the work is genuinely done.
 
 Rule of thumb for a new test: if it asserts on anything the *estimator* produced
-(``/boards/{id}``, a ``/viewer`` event, ``frames_estimated``/``frames_skipped``),
+(``/boards/{id}``, a ``/viewer`` event, ``frames_estimated``),
 build the client with ``gateway`` and call ``drain_ingest`` after the last ack.
 If it only asserts on what the handler wrote *before* acking — the raw-frame
 retention behind ``/boards/{id}/frame``, or the ingress recording — a plain

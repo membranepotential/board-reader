@@ -55,7 +55,7 @@ from board_reader_core.wire import Frame
 
 from board_reader_inference.hub import PositionHub
 from board_reader_inference.prior import decode
-from board_reader_inference.routing import Route, Uncalibrated
+from board_reader_inference.routing import Route
 from board_reader_inference.schedule import DUE_EPS, EveryFrame, FramePolicy, stability_of
 from board_reader_inference.stabilize import BoardStabilizer
 
@@ -167,16 +167,8 @@ class _BoardWorker:
 class FrameIngest:
     """Latest-wins frame ingress: :meth:`submit` never blocks on the model.
 
-    The route is resolved *per frame* through a callable rather than captured,
-    because ``POST /calibrate`` hot-swaps the gateway's estimator (§4.6) and a live
-    stream must pick the new one up mid-flight. The route may come back
-    :class:`~board_reader_inference.routing.Uncalibrated` — "nothing here can read a
-    position yet" (the §4.6 state where ``POST /estimate`` answers occupancy-only
-    and publishes nothing). A stream has no HTTP response to answer with, so its
-    frames are counted and *skipped*: the hub carries positions someone actually
-    estimated, never a placeholder. Calibrating (the camera page's button, or a
-    snapshot of the start position) hot-swaps a real estimator in and the same
-    stream comes alive mid-flight.
+    The route is resolved *per frame* through a callable: the frame decides the
+    branch (:func:`~board_reader_inference.routing.route_for`).
     """
 
     def __init__(
@@ -200,13 +192,11 @@ class FrameIngest:
         #: was estimated from — the gateway hangs its trial log off this.
         self._on_event = on_event
         self._boards: dict[str, _BoardWorker] = {}
-        self._warned_unready = False
         self._warned_backstop: set[str] = set()
         self.frames_received = 0
         self.frames_estimated = 0
         self.frames_dropped = 0
         self.frames_failed = 0
-        self.frames_skipped = 0  # arrived while no estimator was ready
         #: Reached a worker but were not worth an estimate (the scheduler declined
         #: them). At the shipped policy this is the *majority* of a live stream and
         #: is the whole point: ~12x fewer reads than every-frame on the swept takes.
@@ -318,19 +308,6 @@ class FrameIngest:
                 frame, received = await inbox.get()
                 try:
                     route = self._route(frame)
-                    if isinstance(route, Uncalibrated):
-                        # Ahead of the policy deliberately: a frame nothing could
-                        # have read must not spend the board's read budget, or a
-                        # stream that calibrates mid-flight starts a keepalive
-                        # behind.
-                        self.frames_skipped += 1
-                        if not self._warned_unready:
-                            self._warned_unready = True
-                            log.info(
-                                "frames arriving with no estimator ready (board %s):"
-                                " skipping until a calibration lands", board_id,
-                            )
-                        continue
                     now = time.monotonic()
                     if not policy.due(*_schedule_signal(frame)):
                         if now - last_read < backstop_s - DUE_EPS:

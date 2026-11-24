@@ -22,7 +22,7 @@ from board_reader_core.protocol import (
     parse_placement,
 )
 from board_reader_core.sim import render_board
-from board_reader_core.wire import Frame, encode_jpeg
+from board_reader_core.wire import Frame
 
 from board_reader_inference import chessq as chessq_mod
 from board_reader_inference import replay
@@ -41,7 +41,6 @@ from board_reader_inference.recognizer import (
 )
 from board_reader_inference.routing import PhotoRead, route_for
 from board_reader_inference.server import create_app
-from board_reader_inference.session import CalibrationRefused, EstimatorSession
 from board_reader_inference.squares import full_frame_corners
 
 # Not left-right or top-bottom symmetric, so a transposed or flipped square order
@@ -178,7 +177,7 @@ def test_routes_through_photo_path_with_original_pixels():
 
 
 # --------------------------------------------------------------------------- #
-# Integration: selection, calibration, serving
+# Integration: selection and serving
 # --------------------------------------------------------------------------- #
 
 
@@ -190,14 +189,11 @@ def chessq_env(tmp_path, monkeypatch):
     monkeypatch.setattr(chessq_mod, "_onnx_logits_fn", lambda path: _fake_model(START_PLACEMENT))
     monkeypatch.setenv("BR_CHESSQ", str(model))
     monkeypatch.setenv("BR_MODEL", str(tmp_path / "run_e.onnx"))
-    monkeypatch.setenv("BR_CENTROIDS", str(tmp_path / "centroids.npz"))
-    monkeypatch.setenv("BR_SESSION_BANK", str(tmp_path / "bank.npz"))
-    monkeypatch.chdir(tmp_path)  # nothing a calibration might write escapes
     return model
 
 
 def test_br_chessq_outranks_every_other_estimator_setting(chessq_env):
-    est = build_from_env(None)
+    est = build_from_env()
     assert isinstance(est, RecognizerEstimator)
     assert isinstance(est.recognizer, ChessQRecognizer)
     assert est.recognizer.model_path == str(chessq_env)
@@ -207,7 +203,7 @@ def test_missing_weights_degrade_to_the_stub_loudly(tmp_path, monkeypatch, capsy
     """A fresh clone has no weights (plan decision D2): the node still starts, on
     the stub, says so at startup, and ``/healthz`` carries the reason."""
     monkeypatch.setenv("BR_CHESSQ", str(tmp_path / "absent.onnx"))
-    est = build_from_env(None)
+    est = build_from_env()
     assert isinstance(est, RecognizerEstimator)
     assert isinstance(est.recognizer, StubRecognizer)
     assert "make models" in (est.fallback or "")
@@ -215,42 +211,6 @@ def test_missing_weights_degrade_to_the_stub_loudly(tmp_path, monkeypatch, capsy
     health = TestClient(create_app(est, PositionHub())).get("/healthz").json()
     assert health["recognizer"]["name"] == "stub"
     assert "absent.onnx" in health["recognizer"]["fallback"]
-
-
-def test_calibrate_is_refused_and_keeps_chessq(chessq_env):
-    client = TestClient(create_app(hub=PositionHub()))
-    photo = render_board(START_PLACEMENT)
-    corners = ",".join(f"{x:.1f},{y:.1f}" for x, y in full_frame_corners(photo))
-    r = client.post(f"/calibrate?corners={corners}", content=encode_jpeg(photo))
-    assert r.status_code == 409
-    assert "BR_CHESSQ" in r.json()["error"]
-    assert isinstance(client.app.state.estimator, RecognizerEstimator)
-    assert not Path("bank.npz").exists()
-    assert client.get("/healthz").json()["recognizer"] == {
-        "name": "chessq",
-        "model": str(chessq_env),
-    }
-
-
-def test_start_position_reads_do_not_bootstrap_a_bank(chessq_env):
-    # The fake model reads the start position — exactly what makes the trained
-    # stack build its first bank and swap to an ensemble on POST /estimate.
-    client = TestClient(create_app(hub=PositionHub()))
-    photo = render_board(START_PLACEMENT)
-    corners = ",".join(f"{x:.1f},{y:.1f}" for x, y in full_frame_corners(photo))
-    body = client.post(f"/estimate?corners={corners}", content=encode_jpeg(photo)).json()
-    assert body["placement"] == START_PLACEMENT
-    assert "autocalibrated" not in body and "bank_refreshed" not in body
-    assert isinstance(client.app.state.estimator, RecognizerEstimator)
-
-
-def test_session_never_swaps_chessq_out():
-    session = EstimatorSession(_served(_fake_model(START_PLACEMENT)))
-    photo = render_board(START_PLACEMENT)
-    outcome = session.calibrate_from(photo, full_frame_corners(photo), START_PLACEMENT)
-    assert outcome == CalibrationRefused(recognizer="chessq")
-    with pytest.raises(RuntimeError, match="never swapped"):
-        session._swap(_served(_fake_model(START_PLACEMENT)))
 
 
 def test_ingest_publishes_chessq_read_with_prior(gateway, drain_ingest):

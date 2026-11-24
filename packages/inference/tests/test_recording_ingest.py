@@ -147,8 +147,8 @@ def test_recording_is_off_unless_asked_for(tmp_path, monkeypatch):
     """Opt-in by default: a test app must never write to the filesystem.
 
     The counterpart, ``serve --record-dir``, opts a real run in — so every served
-    run is reproducible while the suite stays clean (see the BR_SESSION_BANK
-    clobber incidents for why the default is this way round).
+    run is reproducible while the suite stays clean (cwd-relative writes on by
+    default have clobbered real user state before).
     """
     monkeypatch.delenv("BR_RECORD_DIR", raising=False)
     monkeypatch.chdir(tmp_path)

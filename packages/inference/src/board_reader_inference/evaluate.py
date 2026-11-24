@@ -18,8 +18,7 @@ Truth comes from :mod:`.labels` (operator-confirmed labels and the curated
 whole photo, resolves the orientation itself and is scored only on chess-frame
 labels; a corner-frame label cannot say which way its board really faces, so it
 is skipped and counted. The pre-D10 estimators read through the label's corners
-and are scored in that frame, with orientation held fixed; ``--autorotate`` folds
-their orientation guess back in for an end-to-end figure.
+and are scored in that frame, with orientation held fixed.
 
 **Frame diagnostic.** Every board also records the quarter-turn under which its
 read agrees best with its truth (:func:`.labels.best_rotation`). A non-zero turn
@@ -715,10 +714,10 @@ def scorable(estimator: object, board: LabeledBoard) -> bool:
     return board.corners is not None
 
 
-def read_board(estimator: object, board: LabeledBoard, *, autorotate: bool = False) -> np.ndarray:
+def read_board(estimator: object, board: LabeledBoard) -> np.ndarray:
     """Run the estimator over one labeled photo -> its (8, 8, 13) distribution.
 
-    A recognizer reads the whole photo (no corners, never autorotated).
+    A recognizer reads the whole photo (no corners).
     """
     import cv2
 
@@ -734,7 +733,7 @@ def read_board(estimator: object, board: LabeledBoard, *, autorotate: bool = Fal
         raise ValueError(
             f"{type(estimator).__name__} has no photo path; evaluation needs an "
             "estimator that reads original photos with corners (set BR_MODEL "
-            "and/or BR_CENTROIDS)"
+            ")"
         )
     image = cv2.imread(str(board.image), cv2.IMREAD_COLOR)
     if image is None:
@@ -743,12 +742,7 @@ def read_board(estimator: object, board: LabeledBoard, *, autorotate: bool = Fal
         Frame(board_id=board.board_id, seq=0, capture_ts=0.0, image=image),
         board.corners,
     )
-    dist = np.asarray(event.square_dist, dtype=np.float32).reshape(GRID, GRID, NUM_CLASSES)
-    if autorotate:
-        from board_reader_inference.autocalib import resolve_rotation
-
-        _, dist = resolve_rotation(dist)
-    return dist
+    return np.asarray(event.square_dist, dtype=np.float32).reshape(GRID, GRID, NUM_CLASSES)
 
 
 def score_board(board: LabeledBoard, dist: np.ndarray) -> BoardResult:
@@ -781,10 +775,9 @@ def score_prior(board: LabeledBoard, dist: np.ndarray) -> PriorBoardResult:
 
     Truth here lives in the frame the photo's *corners* define, which is not a
     chess frame — 16 of 21 confirmed boards were shot a quarter- or half-turn off —
-    and nothing in the eval *establishes* the true one. Resolving it with
-    :func:`.autocalib.resolve_rotation` would be circular, since that function
-    picks the rotation minimising back-rank pawns, so the frame is reported as
-    unknown and :attr:`Constraint.BACK_RANK_PAWNS` sits out. What is measured here
+    and nothing in the eval *establishes* the true one. Resolving it by the
+    rotation that minimises back-rank pawns would be circular, so the frame is
+    reported as unknown and :attr:`Constraint.BACK_RANK_PAWNS` sits out. What is measured here
     is therefore the three rotation-invariant count constraints.
     """
     result = decode(dist, quarter_turns=None)
@@ -849,7 +842,6 @@ def evaluate(
     estimator: object,
     boards: list[LabeledBoard],
     *,
-    autorotate: bool = False,
     prior: bool = True,
     temperature: bool = False,
 ) -> Report:
@@ -871,7 +863,7 @@ def evaluate(
     truth_indices: list[np.ndarray] = []
     skipped = [b.board_id for b in boards if not scorable(estimator, b)]
     for board in (b for b in boards if scorable(estimator, b)):
-        dist = read_board(estimator, board, autorotate=autorotate)
+        dist = read_board(estimator, board)
         result = score_board(board, dist)
         results.append(result)
         if prior:
@@ -923,7 +915,6 @@ def run(
     paths: list[str] | None = None,
     *,
     estimator: object | None = None,
-    autorotate: bool = False,
     prior: bool = True,
     temperature: bool = False,
     json_out: str | None = None,
@@ -937,9 +928,7 @@ def run(
         from board_reader_inference.recognizer import build_from_env
 
         estimator = build_from_env()
-    report = evaluate(
-        estimator, boards, autorotate=autorotate, prior=prior, temperature=temperature
-    )
+    report = evaluate(estimator, boards, prior=prior, temperature=temperature)
     if json_out:
         Path(json_out).write_text(json.dumps(report.to_dict(), indent=2))
     return report

@@ -36,7 +36,7 @@ _MAKEFILE = _ROOT / "Makefile"
 # disagree about what the system is, which is exactly the bug this module
 # exists to catch.
 _RECOGNITION_KEYS = frozenset(
-    {"BR_MODEL", "BR_MODEL_B", "BR_MODEL_TUNED", "BR_CASCADE_TAU", "BR_CENTROIDS", "BR_CHESSQ"}
+    {"BR_MODEL", "BR_MODEL_B", "BR_MODEL_TUNED", "BR_CASCADE_TAU", "BR_CHESSQ"}
 )
 
 # The pre-D10 stack's settings. The default config of either entry point sets none
@@ -48,10 +48,7 @@ _LEGACY_KEYS = frozenset(
         "BR_MODEL_B",
         "BR_MODEL_TUNED",
         "BR_CASCADE_TAU",
-        "BR_CENTROIDS",
         "BR_CROP_MASK",
-        "BR_SESSION_BANK",
-        "BR_OCCUPANCY_BANK",
     }
 )
 

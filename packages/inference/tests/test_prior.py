@@ -312,27 +312,13 @@ def test_an_unknown_frame_costs_no_pawn_on_a_quarter_turned_board():
 
 def test_a_known_frame_re_enables_the_back_rank_constraint():
     # ``quarter_turns`` is the turn to APPLY to reach upright, so a board rotated
-    # by +1 is described by -1 — the same convention ``resolve_rotation`` returns.
+    # by +1 is described by -1.
     sideways = _rot(START_PLACEMENT, 1)
     assert decode(_dist(sideways), quarter_turns=-1).flips == ()  # correct frame: clean
     # A frame that is genuinely a1-bottom-left, with a genuinely promoted pawn.
     result = decode(_dist(MIDGAME, {"h1": ("P", 0.7)}), quarter_turns=0)
     assert [str(f) for f in result.flips] == ["h1 P->empty"]
     assert result.flips[0].constraint is Constraint.BACK_RANK_PAWNS
-
-
-def test_an_inferred_rotation_is_never_what_the_eval_hands_the_decoder():
-    """``resolve_rotation`` minimises exactly what BACK_RANK_PAWNS measures, so
-    feeding it in is circular: it fires only where the guess was wrong."""
-    from board_reader_inference.autocalib import resolve_rotation
-
-    sideways = _dist(_rot(START_PLACEMENT, 1))
-    guess, upright = resolve_rotation(sideways)
-    # The guesser gets this one right (undoing a +1 turn takes 3), and in doing so
-    # has already driven the constraint to zero — there is nothing left for it to say.
-    assert guess == 3
-    assert violation(tally(upright.argmax(axis=-1))).satisfied
-    assert decode(sideways, quarter_turns=guess).flips == ()
 
 
 @pytest.mark.parametrize("turns", [0, 1, 2, 3])

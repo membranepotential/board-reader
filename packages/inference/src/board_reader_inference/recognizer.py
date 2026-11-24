@@ -42,7 +42,7 @@ from board_reader_core.protocol import (
 from board_reader_core.wire import Frame
 
 from board_reader_inference.chessq import ChessQRecognizer
-from board_reader_inference.estimator import CentroidEstimator, Estimator
+from board_reader_inference.estimator import Estimator
 from board_reader_inference.labels import BoardFrame
 from board_reader_inference.routing import RECTIFIED_GEOMETRY
 from board_reader_inference.squares import CropGeometry
@@ -141,7 +141,7 @@ def read_frame(estimator: Estimator) -> BoardFrame:
 
 
 #: The estimator settings ``BR_CHESSQ`` outranks, named at startup when also set.
-_CHESSQ_OUTRANKS = ("BR_MODEL", "BR_MODEL_B", "BR_MODEL_TUNED", "BR_CENTROIDS", "BR_SESSION_BANK")
+_CHESSQ_OUTRANKS = ("BR_MODEL", "BR_MODEL_B", "BR_MODEL_TUNED")
 
 
 def _chessq(path: str) -> RecognizerEstimator:
@@ -156,22 +156,22 @@ def _chessq(path: str) -> RecognizerEstimator:
         return RecognizerEstimator(StubRecognizer(), fallback=reason)
     outranked = [n for n in _CHESSQ_OUTRANKS if os.environ.get(n)]
     note = f"; ignoring {', '.join(outranked)}" if outranked else ""
-    print(f"serving ChessQ from BR_CHESSQ={path!r} (calibration disabled{note})")
+    print(f"serving ChessQ from BR_CHESSQ={path!r}{note}")
     return RecognizerEstimator(ChessQRecognizer(path))
 
 
-def build_from_env(occupancy: CentroidEstimator | None = None) -> Estimator:
+def build_from_env() -> Estimator:
     """The estimator the environment asks for.
 
     ``BR_CHESSQ=<path>`` -> ChessQ Lite through :class:`RecognizerEstimator`, ahead
     of every other setting, or the stub recognizer when the file is missing
-    (module docstring). Otherwise the old tiers (:func:`.legacy.legacy_estimator`,
-    which ``occupancy`` feeds), unchanged until Phase B removes them.
+    (module docstring). Otherwise the old tiers (:func:`.legacy.legacy_estimator`),
+    until Phase B removes them.
     """
     path = os.environ.get("BR_CHESSQ")
     if path:
         return _chessq(path)
-    # Imported here: the old tiers import the session, which imports this module.
+    # Imported here: the old tiers import the estimator module, which imports this one.
     from board_reader_inference.legacy import legacy_estimator
 
-    return legacy_estimator(occupancy)
+    return legacy_estimator()

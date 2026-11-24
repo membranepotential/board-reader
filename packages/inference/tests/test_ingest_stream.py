@@ -17,12 +17,10 @@ from starlette.testclient import TestClient
 from board_reader_core.protocol import START_PLACEMENT, PositionEvent
 from board_reader_core.wire import Frame
 
-from board_reader_inference.centroid import build_exemplars
-from board_reader_inference.embed import LiteEmbedder
-from board_reader_inference.estimator import CentroidEstimator, StubEstimator
+from board_reader_inference.estimator import StubEstimator
 from board_reader_inference.hub import PositionHub
 from board_reader_inference.ingest import SHARPNESS_WINDOW_S, FrameIngest, prefer_frame
-from board_reader_inference.routing import Route, Uncalibrated, WholeFrameRead, route_for
+from board_reader_inference.routing import WholeFrameRead, route_for
 from board_reader_inference.server import create_app
 
 
@@ -75,17 +73,6 @@ class FakePhotoEstimator:
 
 
 QUAD = np.array([[4.0, 6.0], [96.0, 8.0], [98.0, 94.0], [2.0, 92.0]], dtype=np.float32)
-
-
-def _occupancy_bank() -> CentroidEstimator:
-    """The smallest possible occupancy-bank estimator.
-
-    Only its existence matters here: it is what makes the §4.6 uncalibrated route
-    constructible. Nothing in this module ever reads a position through it.
-    """
-    emb = LiteEmbedder()
-    crops = [np.zeros((8, 8, 3), dtype=np.uint8) for _ in range(64)]
-    return CentroidEstimator(emb, build_exemplars(emb, crops, START_PLACEMENT))
 
 
 def _frame(board_id: str = "A1", seq: int = 0, corners=None) -> Frame:
@@ -340,35 +327,6 @@ def test_settled_rides_the_stream_and_holds_through_a_one_read_flicker():
         assert [e.settled.placement for e in events] == [START_PLACEMENT] * 3
         assert events[1].settled.pending == ("e4", "e2")  # board order: rank 8 first
         assert events[2].settled.pending == ()
-
-    asyncio.run(run())
-
-
-def test_an_uncalibrated_route_skips_frames_and_the_stream_wakes_on_hot_swap():
-    """§4.6 uncalibrated state: the router answers ``Uncalibrated`` and the stream
-    publishes NOTHING (the hub carries estimated positions, never a placeholder) —
-    then a calibration hot-swap brings the very same stream alive mid-flight."""
-
-    async def run():
-        stub = StubEstimator(START_PLACEMENT)
-        routes: dict[str, Route] = {
-            "current": Uncalibrated(_occupancy_bank(), _frame(), QUAD)
-        }
-        hub = PositionHub()
-        ingest = FrameIngest(lambda frame: routes["current"], hub)
-
-        ingest.submit(_frame(seq=1))
-        await asyncio.wait_for(ingest.drain(), timeout=2.0)
-        assert hub.latest("A1") is None
-        assert ingest.frames_skipped == 1
-        assert ingest.frames_estimated == 0
-
-        routes["current"] = WholeFrameRead(stub, _frame(seq=2))
-        ingest.submit(_frame(seq=2))
-        await asyncio.wait_for(ingest.drain(), timeout=2.0)
-        assert hub.latest("A1").seq == 2
-        assert ingest.frames_skipped == 1
-        await ingest.close()
 
     asyncio.run(run())
 

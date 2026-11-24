@@ -39,13 +39,13 @@ from board_reader_inference.hub import PositionHub
 from board_reader_inference.ingest import FrameIngest
 from board_reader_inference.replay import (
     ReplayResult,
-    build_session,
+    build_estimator,
     check_name,
     default_name,
     find_sessions,
     replay,
 )
-from board_reader_inference.routing import Uncalibrated
+from board_reader_inference.routing import route_for
 from board_reader_inference.schedule import (
     ENTER_BURST,
     EXIT_BURST,
@@ -55,7 +55,6 @@ from board_reader_inference.schedule import (
     parse_policy,
 )
 from board_reader_inference.server import event_line
-from board_reader_inference.session import EstimatorSession
 from board_reader_inference.stabilize import SETTLE_SECONDS
 from board_reader_inference.trial import REPORT_NAME, TRUTH_NAME
 
@@ -128,7 +127,7 @@ def _run(source: Recording, name: str, estimator=None, **kwargs) -> ReplayResult
     return replay(
         source,
         source.path / "replays" / name,
-        session=EstimatorSession(estimator or ScriptedEstimator({})),
+        estimator=estimator or ScriptedEstimator({}),
         log=None,
         **kwargs,
     )
@@ -261,7 +260,7 @@ def test_a_replay_must_sit_two_levels_under_its_recording(source):
         replay(
             source,
             source.path / "shallow",
-            session=EstimatorSession(ScriptedEstimator({})),
+            estimator=ScriptedEstimator({}),
             log=None,
         )
 
@@ -447,7 +446,7 @@ def _ingest_event_lines(frames: list[Frame], estimator) -> list[dict]:
     async def _drive() -> list[dict]:
         lines: list[dict] = []
         ingest = FrameIngest(
-            EstimatorSession(estimator).route,
+            lambda frame: route_for(estimator, frame),
             PositionHub(),
             on_event=lambda event, frame: lines.append(
                 event_line(event, frame, published_ts=None)
@@ -466,7 +465,7 @@ def test_replay_publishes_exactly_what_the_live_worker_would(source):
     """The fidelity claim, pinned: same frames, same estimator, same event lines.
 
     Replay and :meth:`FrameIngest._run` are two hand-written orderings of the
-    same three steps — route, skip if Uncalibrated, estimate-repair-debounce —
+    same two steps — route, estimate-repair-debounce —
     and the whole value of the harness is that they cannot drift. If someone adds
     a step to the live worker (another guard, a rewrite of the event before it is
     published) and not to the replay loop, this fails; without it, the replay
@@ -487,29 +486,6 @@ def test_replay_publishes_exactly_what_the_live_worker_would(source):
     ]
 
 
-def test_parity_holds_through_the_uncalibrated_skip(source, monkeypatch):
-    """Both paths must also agree on the frames they publish NOTHING for (§4.6).
-
-    The uncalibrated branch is the one that has already shipped a bug: the stream
-    path was written with three branches and published the stub's fabricated
-    start position at stream rate. A replay that skipped it differently would
-    benchmark a board nobody was shown.
-    """
-    monkeypatch.setattr(
-        EstimatorSession, "route", lambda self, frame: Uncalibrated(None, frame, None)
-    )
-    result = _run(source, "unready", ScriptedEstimator({}))
-    live = _ingest_event_lines([r.frame() for r in source.frames()], ScriptedEstimator({}))
-
-    assert _events(result) == live == []
-    assert result.stats.frames_skipped_unready == 8
-    assert result.stats.frames_estimated == 0
-
-# --------------------------------------------------------------------------- #
-# The CLI, end to end on the stub estimator
-# --------------------------------------------------------------------------- #
-
-
 def test_cli_replay_and_score(tmp_path, monkeypatch, capsys):
     """``replay --score`` on the walking-skeleton estimator: no model, no GPU.
 
@@ -517,12 +493,10 @@ def test_cli_replay_and_score(tmp_path, monkeypatch, capsys):
     up in scripts: 0 scored, 2 for a recording with no truth to score against.
     """
     for name in (
-        "BR_MODEL", "BR_MODEL_B", "BR_MODEL_TUNED", "BR_CENTROIDS",
-        "BR_SESSION_BANK", "BR_OCCUPANCY_BANK",
+        "BR_MODEL", "BR_MODEL_B", "BR_MODEL_TUNED", "BR_CHESSQ",
     ):
         monkeypatch.delenv(name, raising=False)
-    # Cwd-relative writes have cost real user state before (BR_SESSION_BANK);
-    # nothing here should write outside tmp_path, and this makes that true.
+    # Cwd-relative writes have cost real user state before; nothing here should write outside tmp_path, and this makes that true.
     monkeypatch.chdir(tmp_path)
     _write_recording(tmp_path / "recordings", frames=4)
     recording = tmp_path / "recordings" / "src"
@@ -534,7 +508,7 @@ def test_cli_replay_and_score(tmp_path, monkeypatch, capsys):
     replayed = recording / "replays" / "cli"
     # The environment names no model, so the stack the harness builds is the
     # walking skeleton — the same one `serve` would run with this environment.
-    assert type(build_session().estimator).__name__ == "StubEstimator"
+    assert type(build_estimator()).__name__ == "StubEstimator"
     assert (replayed / EVENTS_NAME).read_text().count("\n") == 4
 
     # No truth in the source: --score says so and exits 2 rather than pretending.
@@ -693,8 +667,7 @@ def test_the_manifest_records_the_policy_as_the_argument_that_rebuilds_it(metere
 
 def test_cli_policy_and_restamp_flags(tmp_path, monkeypatch, capsys):
     for name in (
-        "BR_MODEL", "BR_MODEL_B", "BR_MODEL_TUNED", "BR_CENTROIDS",
-        "BR_SESSION_BANK", "BR_OCCUPANCY_BANK",
+        "BR_MODEL", "BR_MODEL_B", "BR_MODEL_TUNED", "BR_CHESSQ",
     ):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.chdir(tmp_path)
@@ -841,8 +814,7 @@ def test_cli_reports_a_damaged_recording_instead_of_replaying_it(
     tmp_path, monkeypatch, capsys
 ):
     for name in (
-        "BR_MODEL", "BR_MODEL_B", "BR_MODEL_TUNED", "BR_CENTROIDS",
-        "BR_SESSION_BANK", "BR_OCCUPANCY_BANK",
+        "BR_MODEL", "BR_MODEL_B", "BR_MODEL_TUNED", "BR_CHESSQ",
     ):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.chdir(tmp_path)

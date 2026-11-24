@@ -11,8 +11,8 @@ through today's estimator and writes fresh events. That is this module.
     board-reader-inference replay recordings/20260813-193308 --score
 
 **It replays the live path, not a copy of it.** The frames go through the same
-:class:`~board_reader_inference.session.EstimatorSession` route decision the
-``/ingest`` worker takes, the same
+:func:`~board_reader_inference.routing.route_for` decision the ``/ingest`` worker
+takes, the same
 :func:`~board_reader_inference.ingest._read_with_prior` (estimate -> prior repair
 -> :class:`~board_reader_inference.stabilize.BoardStabilizer`), and the same
 :func:`~board_reader_inference.server.event_line` writer. A replayed event is
@@ -53,18 +53,6 @@ different read rate. The debounce is time-windowed rather than count-based
 precisely so that stays as comparable as it can be (see :mod:`.stabilize`) — but
 "as comparable as it can be" is not "the same measurement".
 
-**What replay does NOT reproduce, 2: the live estimator is not frozen.** During a
-served run ``POST /calibrate`` (and the §4.6 auto-calibration on ``POST /estimate``)
-hot-swaps the session's active estimator, and the stream picks the new one up on
-its very next frame — a take where the operator calibrated ten seconds in was
-read by *two different estimators*, and its early frames by one that had never
-seen this chess set. Replay resolves the environment once and freezes that
-estimator and that bank for the whole take, because nothing offline calibrates
-(there is no HTTP here). So early-take frames are replayed against knowledge the
-live run did not have yet, which flatters the replay exactly where the live run
-was still learning the board. Another reason the honest comparison is replay vs
-replay.
-
 **Output layout.** A replay is written as a *recording-shaped* directory so
 ``eval-session`` scores it unchanged::
 
@@ -103,11 +91,9 @@ JPEG is never even read off disk.
 
 A policy decides from the header alone, so "estimate this one" is a *request*,
 not a guarantee: the frame it picked may still turn out to have no JPEG behind it
-(a half-copied recording) or route to
-:class:`~board_reader_inference.routing.Uncalibrated` (§4.6, nothing can read
-piece types yet). Those land in their own counters rather than being charged to
-the policy — a scheduler is judged on the frames it declined, not on the ones the
-disk or the estimator could not honour.
+(a half-copied recording). Those land in their own counter rather than being
+charged to the policy — a scheduler is judged on the frames it declined, not on
+the ones the disk could not honour.
 
 **``--restamp-stability``, and why a scheduling sweep needs it.** Those policies
 read the header's ``stability``, and on every take recorded before 2026-08-27
@@ -153,10 +139,10 @@ from board_reader_core.recording import (
 )
 from board_reader_core.wire import decode_jpeg
 
+from board_reader_inference.estimator import Estimator
 from board_reader_inference.ingest import _read_with_prior
-from board_reader_inference.legacy import estimator_from_bank
 from board_reader_inference.recognizer import RecognizerEstimator, build_from_env
-from board_reader_inference.routing import Uncalibrated
+from board_reader_inference.routing import route_for
 from board_reader_inference.schedule import (
     EveryFrame,
     FramePolicy,
@@ -166,7 +152,6 @@ from board_reader_inference.schedule import (
     restamped,
 )
 from board_reader_inference.server import event_line
-from board_reader_inference.session import EstimatorSession
 from board_reader_inference.stabilize import (
     SETTLE_MIN_READS,
     SETTLE_SECONDS,
@@ -185,9 +170,6 @@ CONFIG_ENV = (
     "BR_MODEL",
     "BR_MODEL_B",
     "BR_MODEL_TUNED",
-    "BR_CENTROIDS",
-    "BR_SESSION_BANK",
-    "BR_OCCUPANCY_BANK",
     "BR_CASCADE_TAU",
     "BR_CHESSQ",
 )
@@ -301,7 +283,7 @@ def config_env() -> dict[str, dict]:
 
     The values decide *which* estimator gets built; the stat says which bytes it
     was built from, which is the question asked six weeks later when a replay
-    does not reproduce ("was the session bank the same file?"). Both feed
+    does not reproduce ("was the model the same file?"). Both feed
     :func:`config_digest`, deliberately: models are retrained **in place** here
     (``models/run_e/model.onnx`` is a path, not a version), and a digest over the
     paths alone would let a retrain silently overwrite its predecessor's score
@@ -411,7 +393,6 @@ class ReplayStats:
     #: ``--limit`` stopped the replay early: the frames after it were never
     #: looked at, so this is a shorter TAKE, not a sparser reading of a long one.
     truncated: bool = False
-    frames_skipped_unready: int = 0  # routed Uncalibrated (§4.6): nothing to publish
     frames_failed: int = 0  # the estimator raised; the stream goes on, as it does live
     frames_missing: int = 0  # index line points at a JPEG that is gone
     #: Frames the motion meter re-scored under ``--restamp-stability``. Counted
@@ -426,7 +407,6 @@ class ReplayStats:
             "frames_estimated": self.frames_estimated,
             "frames_skipped_policy": self.frames_skipped_policy,
             "truncated": self.truncated,
-            "frames_skipped_unready": self.frames_skipped_unready,
             "frames_failed": self.frames_failed,
             "frames_missing": self.frames_missing,
             "frames_restamped": self.frames_restamped,
@@ -454,27 +434,22 @@ class ReplayResult:
     restamp: bool = False
 
 
-def build_session() -> EstimatorSession:
-    """The estimator stack the environment asks for — the gateway's own builder.
+def build_estimator() -> Estimator:
+    """The estimator the environment asks for — the gateway's own builder.
 
     Deliberately calls the gateway's builder (:func:`.recognizer.build_from_env`)
-    rather than growing a second way to
-    read ``BR_MODEL``/``BR_SESSION_BANK``/…: a replay whose estimator is assembled
-    differently from the served one benchmarks something nobody runs. No
-    ``on_swap`` and no hot-swap path, because nothing offline calibrates —
-    ``/calibrate`` is an HTTP endpoint and there is no HTTP here.
+    rather than growing a second way to read the environment: a replay whose
+    estimator is assembled differently from the served one benchmarks something
+    nobody runs.
     """
-    occupancy = None
-    if os.environ.get("BR_OCCUPANCY_BANK"):
-        occupancy = estimator_from_bank(os.environ["BR_OCCUPANCY_BANK"])
-    return EstimatorSession(build_from_env(occupancy), occupancy=occupancy)
+    return build_from_env()
 
 
 def replay(
     recording: Recording,
     out_dir: str | Path,
     *,
-    session: EstimatorSession,
+    estimator: Estimator,
     board_id: str | None = None,
     policy: FramePolicy | None = None,
     restamp: bool = False,
@@ -482,7 +457,7 @@ def replay(
     limit: int | None = None,
     log: TextIO | None = sys.stderr,
 ) -> ReplayResult:
-    """Push ``recording``'s frames through ``session`` and write a replay directory.
+    """Push ``recording``'s frames through ``estimator`` and write a replay directory.
 
     The estimate/repair/debounce is :func:`~board_reader_inference.ingest._read_with_prior`
     — the ingest worker's own body — and the stabilizer is fed the frame's
@@ -588,14 +563,8 @@ def replay(
                 frame = RecordedFrame(
                     header=entry.header, jpeg=jpeg, received_ts=entry.received_ts
                 ).frame()
-                route = session.route(frame)
-                if isinstance(route, Uncalibrated):
-                    # §4.6: an occupancy bank is loaded but nothing can read piece
-                    # types. The live worker counts and skips; so does this.
-                    stats.frames_skipped_unready += 1
-                    continue
                 try:
-                    event = _read_with_prior(route, stabilizer)
+                    event = _read_with_prior(route_for(estimator, frame), stabilizer)
                 except Exception as e:  # one bad frame is not the end of the stream
                     stats.frames_failed += 1
                     _say(log, f"  seq {entry.seq}: estimation failed ({e})")
@@ -626,8 +595,9 @@ def replay(
         restamp=restamp,
     )
     _link_source(out, recording)
-    active = session.estimator
-    reader = active.recognizer if isinstance(active, RecognizerEstimator) else active
+    reader = (
+        estimator.recognizer if isinstance(estimator, RecognizerEstimator) else estimator
+    )
     _write_manifest(result, recording, policy, type(reader).__name__)
     return result
 
@@ -838,7 +808,6 @@ def render(result: ReplayResult) -> str:
     ]
     skipped = [
         (s.frames_skipped_policy, "by the frame policy"),
-        (s.frames_skipped_unready, "with no estimator ready"),
         (s.frames_failed, "the estimator raised on"),
         (s.frames_missing, "whose JPEG is gone"),
     ]
@@ -893,7 +862,7 @@ def run(
     return replay(
         recording,
         recording.path / REPLAYS_DIR / chosen_name,
-        session=build_session(),
+        estimator=build_estimator(),
         board_id=board_id,
         policy=policy,
         restamp=restamp,

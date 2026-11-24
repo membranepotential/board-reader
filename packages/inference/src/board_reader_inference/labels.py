@@ -79,8 +79,8 @@ def parse_frame(raw: object) -> BoardFrame:
 def rotate_placement(placement: str, k: int) -> str:
     """Rotate a placement by ``k`` quarter-turns, matching ``np.rot90``.
 
-    ``autocalib.resolve_rotation`` reports the turn it applied to the *grid*, so
-    undoing it on a placement is ``rotate_placement(shown, -k)``.
+    An ``autorotated`` sidecar records the turn applied to the *grid*, so undoing
+    it on a placement is ``rotate_placement(shown, -k)``.
     """
     grid = np.array(parse_placement(placement), dtype="<U5")
     return encode_placement(np.rot90(grid, k).tolist())

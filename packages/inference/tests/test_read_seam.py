@@ -38,11 +38,6 @@ ALLOWED_CONSTRUCTORS = {
     # different models entirely, and the 0.20 margin was fitted on the trained
     # stack's distribution, never measured on theirs.
     ("recognizer.py", "event_from_dist"),
-    # /estimate's autorotate rebuilds an event from an already-read (and already
-    # calibrated) distribution rotated by k*90. A rotation is a permutation of
-    # squares, so it commutes with the demotion — re-applying would be a no-op
-    # anyway, and re-deriving placement/confidence is the whole point here.
-    ("server.py", "create_app.estimate"),
 }
 
 

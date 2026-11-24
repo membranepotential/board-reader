@@ -70,9 +70,8 @@ def test_adapter_is_an_estimator_on_the_photo_path_that_ignores_corners():
 
 
 def test_build_from_env_without_br_chessq_keeps_the_old_tiers(monkeypatch):
-    for name in ("BR_CHESSQ", "BR_MODEL", "BR_MODEL_B", "BR_MODEL_TUNED", "BR_CENTROIDS",
-                 "BR_SESSION_BANK"):
+    for name in ("BR_CHESSQ", "BR_MODEL", "BR_MODEL_B", "BR_MODEL_TUNED"):
         monkeypatch.delenv(name, raising=False)
-    est = build_from_env(None)
+    est = build_from_env()
     assert isinstance(est, StubEstimator)
     assert est.placement == START_PLACEMENT

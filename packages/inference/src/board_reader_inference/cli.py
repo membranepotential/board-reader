@@ -1,10 +1,7 @@
-"""``board-reader-inference`` CLI — run the gateway and calibrate centroids.
+"""``board-reader-inference`` CLI — run the gateway and measure what it reads.
 
     board-reader-inference serve --host 0.0.0.0 --port 8000
-    board-reader-inference serve --centroids centroids.npz      # use the M1 estimator
     board-reader-inference serve --record-dir runs/             # ingress recorded here
-    board-reader-inference calibrate --image rect.png --placement <FEN1> -o centroids.npz
-    board-reader-inference rebuild-bank --mask gray -o bank.npz  # re-embed the bank
     board-reader-inference positions --changes-only              # tail the position stream
     board-reader-inference positions --out run.ndjson --quiet    # capture it to a file
     board-reader-inference eval                                  # score the deployed stack
@@ -12,8 +9,6 @@
     board-reader-inference replay recordings/<s> --score         # re-read a take offline
 
 Imports only :mod:`board_reader_core` and this package; it never imports the edge.
-Calibration takes an **already-rectified** board crop (run ``board-reader-edge
-rectify`` first) — keeping board geometry on the edge and recognition here.
 """
 
 from __future__ import annotations
@@ -31,10 +26,6 @@ def cmd_serve(args: argparse.Namespace) -> int:
     import uvicorn
 
     from board_reader_inference.schedule import DEFAULT_POLICY_SPEC
-
-    if args.centroids:
-        # Picked up by recognizer.build_from_env() when the app is built.
-        os.environ["BR_CENTROIDS"] = args.centroids
 
     # Every served run records its ingress by default (WP-H2), so a session can
     # always be replayed afterwards — including one driven by the phone /camera
@@ -80,156 +71,6 @@ def cmd_serve(args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_calibrate(args: argparse.Namespace) -> int:
-    import cv2
-    import numpy as np
-
-    from board_reader_core.corners import parse_corners
-
-    from board_reader_inference.centroid import build_centroids
-    from board_reader_inference.embed import make_embedder
-    from board_reader_inference.squares import (
-        BboxGeometry,
-        crop_squares,
-        crop_squares_photo,
-    )
-
-    if bool(args.image) == bool(args.photo):
-        raise SystemExit("pass exactly one of --image (rectified crop) or --photo")
-    if args.photo and not args.corners:
-        raise SystemExit("--photo needs --corners x0,y0,...,x3,y3 (a8,h8,h1,a1)")
-
-    if args.photo:
-        photo = cv2.imread(args.photo, cv2.IMREAD_COLOR)
-        if photo is None:
-            raise SystemExit(f"could not read photo: {args.photo}")
-        try:
-            corners = parse_corners(args.corners)
-        except ValueError as e:
-            raise SystemExit(f"--corners {e}") from e
-        crops = crop_squares_photo(
-            photo,
-            corners,
-            geometry=BboxGeometry(headroom=args.headroom, side_pad=args.side_pad),
-            size=args.square_size or 224,
-        )
-        crop_mode, source = "photo", args.photo
-    else:
-        board = cv2.imread(args.image, cv2.IMREAD_COLOR)
-        if board is None:
-            raise SystemExit(f"could not read rectified board image: {args.image}")
-        crops = crop_squares(board, inset=args.inset, size=args.square_size)
-        crop_mode, source = "rectified", args.image
-
-    classifier = build_centroids(
-        make_embedder(args.backbone),
-        crops,
-        args.placement,
-        temperature=args.temperature,
-        backbone=args.backbone,
-        crop_mode=crop_mode,
-        augment=args.augment,
-        box_headroom=args.headroom,
-        box_side_pad=args.side_pad,
-    )
-    classifier.save(args.out)
-    present = int((~np.isnan(classifier.centroids).any(axis=1)).sum())
-    print(
-        f"calibrated {present}/13 class centroids ({args.backbone}, {crop_mode}"
-        f"{', augmented' if args.augment else ''}) from {source} -> {args.out}"
-    )
-    return 0
-
-
-def cmd_rebuild_bank(args: argparse.Namespace) -> int:
-    from pathlib import Path
-
-    from board_reader_core.protocol import NUM_CLASSES
-
-    from board_reader_inference.embed import make_embedder
-    from board_reader_inference.rebuild import (
-        load_calibrate_uploads,
-        parse_mask,
-        rebuild_bank,
-    )
-    from board_reader_inference.squares import BboxGeometry
-
-    mask = parse_mask(args.mask)
-    # Before any GPU work: a bank npz is untracked (data/ is gitignored) and a
-    # pinned baseline is one tab-completion away from being unrecoverable.
-    if Path(args.out).exists() and not args.force:
-        print(
-            f"{args.out} already exists; refusing to overwrite it. Pass --force to "
-            "replace it, or name a different -o. (Bank files are gitignored: an "
-            "overwrite cannot be undone.)",
-            file=sys.stderr,
-        )
-        return 2
-    uploads, unusable = load_calibrate_uploads(args.uploads)
-    for skip in unusable:
-        print(f"  {skip.outcome:<9} {skip.upload_id}: {skip.detail}", file=sys.stderr)
-    if not uploads:
-        print(
-            f"no readable calibrate uploads under {args.uploads} "
-            f"({len(unusable)} skipped)",
-            file=sys.stderr,
-        )
-        return 2
-
-    guard = None
-    if args.verify_labels:
-        from board_reader_inference.trained import TrainedEstimator
-
-        try:
-            guard = TrainedEstimator(args.guard_model)
-        except Exception as e:
-            print(
-                f"label guard needs a usable model: {args.guard_model} did not load "
-                f"({e}). Point --guard-model at the deployed classifier, or pass "
-                "--no-verify-labels to embed the operator's labels unchecked.",
-                file=sys.stderr,
-            )
-            return 2
-
-    result = rebuild_bank(
-        uploads,
-        make_embedder(args.backbone),
-        mask=mask,
-        guard=guard,
-        include_rectified=args.include_rectified,
-        backbone=args.backbone,
-        geometry=BboxGeometry(headroom=args.headroom, side_pad=args.side_pad),
-    )
-    for verdict in result.verdicts:
-        stream = sys.stdout if verdict.outcome == "used" else sys.stderr
-        print(
-            f"  {verdict.outcome:<9} {verdict.upload_id}: {verdict.detail}", file=stream
-        )
-    counts = " · ".join(
-        f"{len(result.of(outcome))} {outcome}"
-        for outcome in ("used", "rejected", "rectified", "unusable")
-        if result.of(outcome)
-    )
-    result.classifier.save(args.out)
-    print(
-        f"rebuilt {result.exemplars} exemplars ({result.classes}/{NUM_CLASSES} "
-        f"classes) from {len(uploads)} uploads under {args.uploads} [{counts}] "
-        f"[mask={args.mask}, {args.backbone}, photo hr={args.headroom} "
-        f"sp={args.side_pad}, guard={args.guard_model if guard else 'off'}] "
-        f"-> {args.out}"
-    )
-    if result.classes < NUM_CLASSES and not args.allow_incomplete:
-        print(
-            f"bank covers only {result.classes}/{NUM_CLASSES} classes — the missing "
-            "ones can never be predicted, so this bank silently caps recognition. "
-            "Add calibrate photos containing them, or pass --allow-incomplete if "
-            "that is intended.",
-            file=sys.stderr,
-        )
-        return 1
-    return 0
-
-
 def cmd_positions(args: argparse.Namespace) -> int:
     from board_reader_inference.positions import run
 
@@ -269,7 +110,6 @@ def cmd_eval(args: argparse.Namespace) -> int:
     try:
         report = run(
             args.paths or None,
-            autorotate=args.autorotate,
             prior=not args.no_prior,
             temperature=args.temperature,
             json_out=args.json,
@@ -380,10 +220,8 @@ def cmd_replay(args: argparse.Namespace) -> int:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    from board_reader_core.protocol import START_PLACEMENT
 
     from board_reader_inference.evaluate import DEFAULT_PATHS
-    from board_reader_inference.session import FRESH_BANK_GEOMETRY
 
     p = argparse.ArgumentParser(prog="board-reader-inference", description=__doc__)
     sub = p.add_subparsers(dest="command", required=True)
@@ -391,9 +229,6 @@ def build_parser() -> argparse.ArgumentParser:
     s = sub.add_parser("serve", help="run the inference gateway")
     s.add_argument("--host", default="127.0.0.1")
     s.add_argument("--port", type=int, default=8000)
-    s.add_argument(
-        "--centroids", help="path to a centroids .npz (use the M1 CentroidEstimator)"
-    )
     s.add_argument(
         "--record-dir", dest="record_dir", default=DEFAULT_RECORD_DIR,
         help=f"record every ingested frame under here (default {DEFAULT_RECORD_DIR}/); "
@@ -411,108 +246,6 @@ def build_parser() -> argparse.ArgumentParser:
              "before scheduling — ~12x the GPU",
     )
     s.set_defaults(func=cmd_serve)
-
-    c = sub.add_parser("calibrate", help="build class centroids from a labeled position")
-    c.add_argument("--image", help="a rectified top-down board crop")
-    c.add_argument(
-        "--photo",
-        help="an ORIGINAL photo (full-piece boxes; needs --corners) — preferred "
-        "for real photos: warped squares decapitate pieces",
-    )
-    c.add_argument(
-        "--corners",
-        help="playing-surface corners in --photo pixels: x0,y0,...,x3,y3 (a8,h8,h1,a1)",
-    )
-    c.add_argument(
-        "--placement", default=START_PLACEMENT, help="the board's true FEN field 1"
-    )
-    c.add_argument(
-        "--backbone", default="lite", choices=["lite", "dinov2"],
-        help="embedder: 'lite' (synthetic/tests) or 'dinov2' (real photos)",
-    )
-    c.add_argument("-o", "--out", default="centroids.npz", help="output .npz path")
-    c.add_argument("--inset", type=float, default=0.1)
-    c.add_argument("--square-size", dest="square_size", type=int, default=None)
-    c.add_argument("--temperature", type=float, default=0.1)
-    c.add_argument(
-        "--headroom", type=float, default=1.6,
-        help="--photo mode: upward box extension in square-widths (piece height)",
-    )
-    c.add_argument(
-        "--side-pad", dest="side_pad", type=float, default=0.15,
-        help="--photo mode: sideways box padding in square-widths",
-    )
-    c.add_argument(
-        "--augment", action=argparse.BooleanOptionalAction, default=True,
-        help="photometric augmentation (gamma/white-balance variants) of the "
-        "calibration crops; widens lighting robustness",
-    )
-    c.set_defaults(func=cmd_calibrate)
-
-    from board_reader_inference.rebuild import DEFAULT_GUARD_MODEL, MASK_CHOICES
-
-    b = sub.add_parser(
-        "rebuild-bank",
-        help="re-embed the session exemplar bank from retained /calibrate uploads",
-        description="Rebuild a session bank offline from every retained "
-        "`<stamp>-calibrate.jpg`/`.json` pair, running the same label guard, "
-        "cropping and exemplar machinery /calibrate does. --mask picks the "
-        "occlusion masking the exemplars are embedded under, so a bank can be "
-        "domain-aligned with a masked serving path (BR_CROP_MASK) instead of "
-        "predating it.",
-    )
-    b.add_argument(
-        "--uploads", default="data/uploads",
-        help="directory of retained uploads (BR_SAVE_UPLOADS); default data/uploads",
-    )
-    b.add_argument("-o", "--out", required=True, help="output bank .npz path")
-    b.add_argument(
-        "--force", action="store_true",
-        help="overwrite --out if it already exists (bank files are gitignored, so "
-        "an overwrite is unrecoverable — hence off by default)",
-    )
-    b.add_argument(
-        "--mask", default="gray", choices=list(MASK_CHOICES),
-        help="occlusion masking applied to the exemplar crops (serving default: "
-        "gray). 'none' embeds unmasked regardless of BR_CROP_MASK",
-    )
-    b.add_argument(
-        "--verify-labels", action=argparse.BooleanOptionalAction, default=True,
-        help="check each upload's labels against --guard-model before embedding, "
-        "exactly as /calibrate does (rotated corner order silently color-swaps a "
-        "bank). --no-verify-labels embeds the sidecars unchecked",
-    )
-    b.add_argument(
-        "--guard-model", dest="guard_model", default=DEFAULT_GUARD_MODEL,
-        help=f"ONNX classifier the label guard probes with (default "
-        f"{DEFAULT_GUARD_MODEL}); should be the model that will serve against "
-        "this bank",
-    )
-    b.add_argument(
-        "--include-rectified", dest="include_rectified", action="store_true",
-        help="also embed already-rectified warps (corners == the image border). "
-        "Excluded by default: masking is inert on them and their flat squares are "
-        "out of domain for the bank's tall photo boxes",
-    )
-    b.add_argument(
-        "--allow-incomplete", dest="allow_incomplete", action="store_true",
-        help="exit 0 even if the bank covers fewer than 13 classes (a class with "
-        "no exemplar can never be predicted)",
-    )
-    b.add_argument(
-        "--backbone", default="dinov2", choices=["lite", "dinov2"],
-        help="embedder; must match the one serving will score against",
-    )
-    b.add_argument(
-        "--headroom", type=float, default=FRESH_BANK_GEOMETRY.headroom,
-        help="photo-box upward extension in square-widths (the bank's own geometry)",
-    )
-    b.add_argument(
-        "--side-pad", dest="side_pad", type=float,
-        default=FRESH_BANK_GEOMETRY.side_pad,
-        help="photo-box sideways padding in square-widths",
-    )
-    b.set_defaults(func=cmd_rebuild_bank)
 
     from board_reader_inference.positions import DEFAULT_URL
 
@@ -554,13 +287,6 @@ def build_parser() -> argparse.ArgumentParser:
         nargs="*",
         help="files/dirs holding labels (*.label.json, ground_truth.json); "
         f"default: {' '.join(DEFAULT_PATHS)}",
-    )
-    e.add_argument(
-        "--autorotate",
-        action="store_true",
-        help="also let the estimator pick the board's orientation, as the "
-        "snapshot page does with auto-detected corners; off by default so the "
-        "score isolates recognition from orientation",
     )
     e.add_argument(
         "--no-prior",

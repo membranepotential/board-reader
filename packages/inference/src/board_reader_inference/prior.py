@@ -23,9 +23,9 @@ scope until they do.
 **Orientation matters, for exactly one constraint, and it must not be guessed.**
 Three of the four read only piece *counts* and are rotation-invariant.
 ``BACK_RANK_PAWNS`` is about where a pawn sits, so it needs a known frame — and a
-*guessed* frame is worse than none, because the only orientation guesser we have
-(:func:`.autocalib.resolve_rotation`) picks the rotation that **minimises pawns on
-ranks 1/8**, the very quantity this constraint measures. Feed it that guess and
+*guessed* frame is worse than none, because the orientation guesser the old
+corner-frame stack had picked the rotation that **minimises pawns on ranks 1/8**,
+the very quantity this constraint measures. Feed it that guess and
 the constraint is circular: where the guess is right there is nothing left to
 fire on, and where it does fire the residual is evidence the guess was *wrong* —
 so the decoder deletes a good square. Measured on
