@@ -5,7 +5,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from board_reader_core.wire import FRAME, Frame, decode_jpeg, encode_jpeg
+from board_reader_core.wire import FRAME, Frame, FrameHeader, decode_jpeg, encode_jpeg
 
 
 def _img(seed: int = 0) -> np.ndarray:
@@ -104,3 +104,20 @@ def test_corners_of_the_wrong_length_are_rejected(bad):
         Frame.from_header(
             {"board_id": "A1", "seq": 0, "capture_ts": 0.0, "corners": bad}, _img()
         )
+
+
+def test_the_header_an_edge_sends_is_validated_as_it_is_built():
+    """`header()` goes through `FrameHeader`, so a Python edge cannot send what the
+    contract refuses (the browser edge is held to the same schema)."""
+    for bad in ({"stability": 1.5}, {"sharpness": -1.0}, {"clock": "sideways"}, {"board_id": ""}):
+        frame = Frame(**{"board_id": "A1", "seq": 0, "capture_ts": 1.0, "image": _img(), **bad})
+        with pytest.raises(ValueError):
+            frame.header()
+
+
+def test_the_header_model_refuses_what_the_wire_does_not_define():
+    good = Frame(board_id="A1", seq=0, capture_ts=1.0, image=_img()).header()
+    assert FrameHeader.from_dict(good).to_dict() == good
+    for bad in ({**good, "stability_restamped": True}, {**good, "seq": "4"}, {**good, "seq": 1.5}):
+        with pytest.raises(ValueError):
+            FrameHeader.from_dict(bad)
