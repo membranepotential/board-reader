@@ -429,7 +429,9 @@ evidence, so the raw board is `argmax(square_dist)` (`PositionEvent.raw_placemen
 and nothing is lost. `PositionEvent.from_square_dist` takes the settled board as an
 optional `placement` and `with_placement` swaps one in; both derive `pending`, and
 `validate()` checks it, so `placement`, `pending` and `square_dist` cannot drift.
-`/estimate` publishes the read itself with no pending squares. `events.ndjson` keeps
+`/estimate` publishes the read itself with no pending squares. `changed_utc` says
+when the settled board last changed (`BoardStabilizer.changed_ts`), so move times are
+recoverable from the stream. `events.ndjson` keeps
 the read as the top row of each square's `evidence`, and `eval-session` still reads
 the older lines that carry `settled`.
 
@@ -587,6 +589,7 @@ every message in this section is `board_reader_core.schema`'s). One event per re
 {
   "board_id": "A1",
   "utc": "2026-06-15T14:22:09.470Z",
+  "changed_utc": "2026-06-15T14:22:08.120Z",
   "seq": 12831,
   "orientation": "a1_bottom_left",
   "classes": ["empty","P","N","B","R","Q","K","p","n","b","r","q","k"],
@@ -600,7 +603,16 @@ every message in this section is `board_reader_core.schema`'s). One event per re
 }
 ```
 
-- `utc` — the edge **capture** time, RFC 3339 UTC with milliseconds and a `Z`.
+- `utc` — the edge **capture** time of this read, RFC 3339 UTC with milliseconds and a `Z`.
+- `changed_utc` — when `placement` last changed, same format and clock: the capture
+  time of the earliest read that showed the board as it now stands (the start of the
+  run of reads that settled it; for a commit of several squares, the latest of their
+  run starts). It stays put while the board holds, and equals `utc` on `/estimate`.
+  Timestamp a move by the `changed_utc` of the first event that carries the new board:
+  on the gate takes it sits a median 1.45 s after the truth boundary (p90 2.76 s),
+  against 3.12 s (p90 4.32 s) for that event's `utc`; the motion burst's calm start was
+  worse in the tail and is not used
+  ([report](reports/2026-11-24-changed-utc.md)). A replay derives it the same way.
 - `seq` — per-board monotonic, a non-negative integer; authoritative for ordering.
 - `orientation` — always `a1_bottom_left`, reserved. The placement is in the chess
   frame (rank 8 first, file a first, as in FEN), resolved per frame by the recognizer.

@@ -162,6 +162,11 @@ def test_settles_on_recorded_time_not_wall_time(source):
     window_frames = int(SETTLE_SECONDS / FRAME_DT)
     assert settled[first_e4 + window_frames - 1] == START_PLACEMENT
     assert settled[first_e4 + window_frames] == E4
+    # The board changed when e4 was first read, not when the window closed: an
+    # old recording replayed gets its changed_utc derived the same way.
+    events = _events(result)
+    assert events[first_e4 + window_frames]["changed_utc"] == events[first_e4]["utc"]
+    assert events[first_e4 + window_frames - 1]["changed_utc"] == events[0]["utc"]
     # And it did not take 2.5 s of anybody's wall clock to get there.
     assert elapsed < SETTLE_SECONDS
 

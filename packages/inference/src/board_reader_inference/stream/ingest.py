@@ -67,7 +67,7 @@ from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass, replace
 
 from board_reader_core.control import DEFAULT_RULES, Rules
-from board_reader_core.protocol import MotionUpdate, PositionEvent, square_evidence
+from board_reader_core.protocol import MotionUpdate, PositionEvent, iso_utc, square_evidence
 from board_reader_core.wire import Frame
 
 from board_reader_inference.recognition.recognizer import FrameRead, FrameReading
@@ -302,7 +302,9 @@ def _read_and_settle(
     The raw read then feeds the board's :class:`.stabilize.BoardStabilizer`, and
     the event is published with the debounced board as its ``placement``
     (:meth:`PositionEvent.with_placement`; ``square_dist`` untouched, so the raw
-    board stays its argmax) — safe here despite the worker thread because
+    board stays its argmax) and the time it last changed as ``changed_utc``
+    (:attr:`.stabilize.BoardStabilizer.changed_ts`) — safe here despite the worker
+    thread because
     each board's worker estimates strictly one frame at a time, in order, which
     is exactly the stream a debounce needs. The guard relies on the same
     one-at-a-time order. ``rules`` is the board's setting for this read.
@@ -313,7 +315,10 @@ def _read_and_settle(
         return dropped
     event = reading.event
     settled = stabilizer.observe(event.placement, frame.capture_ts, rules)
-    return replace(reading, event=event.with_placement(settled))
+    changed = stabilizer.changed_ts
+    assert changed is not None  # observe() has just seen a read
+    published = event.with_placement(settled, changed_utc=iso_utc(changed))
+    return replace(reading, event=published)
 
 
 @dataclass(frozen=True, slots=True)

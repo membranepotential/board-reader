@@ -51,6 +51,7 @@ export function positionEvent(overrides: EventOverrides = {}): Record<string, un
     board_id: 'phone',
     seq: 1,
     utc: '2026-08-07T12:00:00.000Z',
+    changed_utc: '2026-08-07T12:00:00.000Z',
     orientation: 'a1_bottom_left',
     classes: [...CLASSES],
     placement: START_PLACEMENT,

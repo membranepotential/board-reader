@@ -18,6 +18,7 @@ export function positionEvent(over: Record<string, unknown> = {}): Record<string
     board_id: 'phone',
     seq: 1,
     utc: '2026-08-07T10:00:00.000Z',
+    changed_utc: '2026-08-07T10:00:00.000Z',
     orientation: 'a1_bottom_left',
     classes: [...CLASSES],
     placement: START_PLACEMENT,

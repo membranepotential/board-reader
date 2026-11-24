@@ -231,6 +231,19 @@ class BoardStabilizer:
         #: When each ripe-but-uncommitted square first went ripe, so a blocked
         #: one can time out rather than wait on a partner that never arrives.
         self._ripe_since: dict[tuple[int, int], float] = {}
+        self._changed_ts: float | None = None
+
+    @property
+    def changed_ts(self) -> float | None:
+        """When the settled board last changed: the capture time of the earliest
+        read that showed it, ``None`` before the first read.
+
+        A commit adopts squares whose unbroken runs began at different reads (a
+        move's two squares, a dragged partner); the board as it now stands was
+        first read at the latest of those starts. The first read sets it to its
+        own time. A read that commits nothing leaves it alone.
+        """
+        return self._changed_ts
 
     def observe(
         self, placement: str, ts: float, rules: Rules = DEFAULT_RULES
@@ -251,6 +264,7 @@ class BoardStabilizer:
         grid = parse_placement(placement)
         if self._settled is None:
             self._settled = [list(row) for row in grid]
+            self._changed_ts = ts
             return placement
 
         contested: list[tuple[int, int]] = []
@@ -280,7 +294,10 @@ class BoardStabilizer:
                     ripe.append((r, c))
                     self._ripe_since.setdefault((r, c), ts)
 
-        for r, c in self._commit(grid, ripe, contested, ts, rules):
+        taken = self._commit(grid, ripe, contested, ts, rules)
+        if taken:
+            self._changed_ts = max(self._candidates[square].first_ts for square in taken)
+        for r, c in taken:
             self._settled[r][c] = grid[r][c]
             self._forget((r, c))
         return encode_placement(self._settled)

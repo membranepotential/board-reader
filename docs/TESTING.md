@@ -622,8 +622,13 @@ one compact line each (`square_dist` stripped; `frame_seq`/`capture_ts`/
 board's settle setting):
 
 ```bash
-tail -f recordings/*/events.ndjson | jq -c '{seq, placement, pending, rules}'
+tail -f recordings/*/events.ndjson | jq -c '{seq, utc, changed_utc, placement, pending, rules}'
 ```
+
+Move a piece while it runs. Expected: `pending` names the move's squares for a read or
+two, then `placement` takes the new board and `changed_utc` jumps once, to the capture
+time of the first read that showed it (earlier than that event's `utc`), and stays put
+while the board holds; `utc` advances with every read.
 
 Each line also carries `evidence`: the **top-2 digest**, 64 squares in board
 order, each `[[class, p], [runner-up, p]]`. It is what survives dropping

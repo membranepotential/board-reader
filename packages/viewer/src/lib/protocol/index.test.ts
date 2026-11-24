@@ -23,6 +23,7 @@ const validEvent = {
   board_id: 'phone',
   seq: 12,
   utc: '2026-08-07T10:00:00.000Z',
+  changed_utc: '2026-08-07T09:59:58.500Z',
   orientation: 'a1_bottom_left',
   classes: [...CLASSES],
   placement: START_PLACEMENT,

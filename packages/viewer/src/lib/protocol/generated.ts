@@ -228,6 +228,15 @@ export type MotionUpdate = Immutable<z.infer<typeof MotionUpdate>>;
  * where that raw board disagrees with `placement`: a move in flight, or a
  * misread still being debounced.
  *
+ * `utc` is this read's capture time. `changed_utc` is when `placement`
+ * last changed: the capture time of the earliest read that showed the board as
+ * it now stands (the start of the run of reads that settled it), in the same
+ * format and on the same edge clock. It stays put while the board holds, so a
+ * consumer timestamps a move by the `changed_utc` of the first event that
+ * carries the new board, not by that event's `utc` (which is the read that
+ * finished settling it, a settle window or more later). For a one-shot read it
+ * equals `utc`.
+ *
  * Construct via `from_square_dist` (and `with_placement` for a
  * settled board), so `pending` and `confidence` stay derived from
  * `square_dist` and can never drift out of sync with it. Every field is
@@ -238,6 +247,7 @@ export const PositionEvent = z.strictObject({
   clock: ClockState,
   board_id: z.string().min(1),
   utc: z.string().regex(/^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]+)?Z$/),
+  changed_utc: z.string().regex(/^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]+)?Z$/),
   seq: z.int().min(0).max(9007199254740991),
   orientation: z.literal('a1_bottom_left'),
   classes: z.tuple([

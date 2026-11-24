@@ -60,6 +60,30 @@ def test_a_real_move_is_adopted_once_it_spans_the_window():
     assert _pending(E4, done) == ()
 
 
+def test_changed_ts_is_the_first_read_that_showed_the_settled_board():
+    """The board changes at the start of the run that settled it, not at the read
+    that finished the window; a read that commits nothing leaves it alone."""
+    stab = BoardStabilizer(SettleConfig(seconds=2.5))
+    assert stab.changed_ts is None
+    stab.observe(START_PLACEMENT, 0.0)
+    assert stab.changed_ts == 0.0
+    stab.observe(E4, 1.0)  # the move is first read here
+    stab.observe(E4, 2.0)
+    assert stab.changed_ts == 0.0  # not settled yet: still the start position's time
+    assert stab.observe(E4, 3.6) == E4
+    assert stab.changed_ts == 1.0
+    stab.observe(E4, 9.0)
+    assert stab.changed_ts == 1.0
+
+
+def test_a_commit_of_several_squares_changes_at_the_latest_run_start():
+    """A drag adopts a partner whose run began earlier; the board as it now
+    stands was first read only once the later square read its new class too."""
+    stab = BoardStabilizer(SettleConfig(seconds=2.5))
+    _swap_stream(stab, START_PLACEMENT)  # d8 from 1.0 (dragged), e8 from 2.0
+    assert stab.changed_ts == 2.0
+
+
 def test_wall_clock_alone_is_not_evidence():
     """One read followed by silence must not be adopted on its second sighting
     hours later — at least SETTLE_MIN_READS *consistent* reads are required."""

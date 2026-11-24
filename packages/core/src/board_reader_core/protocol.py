@@ -352,6 +352,15 @@ class PositionEvent(Wire):
     where that raw board disagrees with ``placement``: a move in flight, or a
     misread still being debounced.
 
+    ``utc`` is this read's capture time. ``changed_utc`` is when ``placement``
+    last changed: the capture time of the earliest read that showed the board as
+    it now stands (the start of the run of reads that settled it), in the same
+    format and on the same edge clock. It stays put while the board holds, so a
+    consumer timestamps a move by the ``changed_utc`` of the first event that
+    carries the new board, not by that event's ``utc`` (which is the read that
+    finished settling it, a settle window or more later). For a one-shot read it
+    equals ``utc``.
+
     Construct via :meth:`from_square_dist` (and :meth:`with_placement` for a
     settled board), so ``pending`` and ``confidence`` stay derived from
     ``square_dist`` and can never drift out of sync with it. Every field is
@@ -361,6 +370,7 @@ class PositionEvent(Wire):
 
     board_id: BoardId
     utc: Utc
+    changed_utc: Utc
     seq: Natural
     orientation: Orientation = DEFAULT_ORIENTATION
     classes: Classes = CLASSES
@@ -381,19 +391,22 @@ class PositionEvent(Wire):
         utc: str,
         square_dist: np.ndarray,
         placement: str | None = None,
+        changed_utc: str | None = None,
         stability: float = 1.0,
         clock: ClockState | None = None,
         status: Status = "ok",
         orientation: Orientation = DEFAULT_ORIENTATION,
         confidence_reduce: str = "mean",
     ) -> PositionEvent:
-        """The event for one read. ``placement`` defaults to the read itself."""
+        """The event for one read. ``placement`` defaults to the read itself, and
+        ``changed_utc`` to ``utc``."""
         arr = _square_dist(np.asarray(square_dist, dtype=np.float32))
         board = placement_from_dist(arr) if placement is None else placement
         return cls(
             board_id=board_id,
             seq=seq,
             utc=utc,
+            changed_utc=utc if changed_utc is None else changed_utc,
             square_dist=arr,
             placement=board,
             pending=pending_squares(arr, board),
@@ -404,13 +417,17 @@ class PositionEvent(Wire):
             orientation=orientation,
         )
 
-    def with_placement(self, placement: str) -> PositionEvent:
-        """This read published with ``placement`` (a settled board) instead.
+    def with_placement(self, placement: str, *, changed_utc: str) -> PositionEvent:
+        """This read published with ``placement`` (a settled board), which last
+        changed at ``changed_utc``.
 
         ``pending`` is derived again, so the event stays self-consistent.
         """
         return replace(
-            self, placement=placement, pending=pending_squares(self.square_dist, placement)
+            self,
+            placement=placement,
+            pending=pending_squares(self.square_dist, placement),
+            changed_utc=changed_utc,
         )
 
     @property

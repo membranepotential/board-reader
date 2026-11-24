@@ -248,6 +248,8 @@ def test_the_settled_board_rides_the_stream_and_holds_through_a_one_read_flicker
         assert events[1].raw_placement == flicker
         assert events[1].pending == ("e4", "e2")  # board order: rank 8 first
         assert events[2].pending == ()
+        # The board never changed, so neither did the time it last changed.
+        assert {e.changed_utc for e in events} == {events[0].utc}
         for event in events:
             event.validate()
 
