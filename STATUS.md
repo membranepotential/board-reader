@@ -14,7 +14,6 @@ confidences**. No moves, no legality, no PGN — those belong to the downstream 
 - **file splits DONE** (Sonnet): snapshot page `84ecbc0`, `measurement/{trial,evaluate}/` `a815f91`, `control/camera/`
   `878f80a`, `stream/schedule/` `bbef6b2`; gate identical. Next round: `replay.py`, `ingest.py`, `server.py`,
   /control + /camera pages, core `control.py`, `camera/registry.py` (573: extract the auto-frame driver).
-- **add stream** — node supervises `board-reader-edge camera` subprocesses from /control — running (agent S).
 
 ## Done (2026-11-24/25 — the ChessQ rebuild; plan: [docs/plans/2026-11-24-simplify-around-chessq.md](docs/plans/2026-11-24-simplify-around-chessq.md))
 
@@ -31,6 +30,8 @@ confidences**. No moves, no legality, no PGN — those belong to the downstream 
   /ingest owner guard; **streams as cameras** (D19, `bf546c3`): `board-reader-edge camera <YouTube URL>`.
 - **/control as cards** (`9b67284`, `96338f9`): one card per camera; Framing = Auto | Manual toggle,
   Crop in Manual, Re-detect in Auto; stopped camera's picture = preview cropped in CSS; Add camera/stream modals.
+- **Add stream from /control** (D22, `5a786c8`, `1b3a036`): node supervises `board-reader-edge camera`
+  processes, restarts with backoff, persists in `streams.json`; list + Remove in the Add stream modal.
 - **Auto-frame** (D20/D21, `e72eb8e` M1, `b7f3b95` M2, `11c128f`): register → full frame → locate → crop
   pushed, read published; moved camera re-framed from previews (R² ≥ 0.97, > 5 % twice); gate identical.
   Drift not yet checked live.
