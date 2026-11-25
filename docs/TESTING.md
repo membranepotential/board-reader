@@ -51,7 +51,7 @@ Narrow to a file, or just run the gate.
 
 | Symptom | What it means | Do this |
 |---|---|---|
-| Suite hangs with no output | A test is wedged | Wait 120 s: `faulthandler_timeout` dumps every thread's stack and names the test. Then read the stack — do not just re-run. |
+| A test fails with `Timeout (>10.0s)` | A test is wedged (often a socket read waiting for a message the node never sends) | pytest-timeout printed every thread's stack: read it, do not just re-run. Read test sockets through the bounded receive in `packages/inference/tests/conftest.py`. |
 | Port already in use / e2e weirdness | A previous session left `make dev` running | `make stop` — it now names the pids it killed, escalates to SIGKILL, and exits non-zero if anything survived |
 | Node aborts mid-stream (status 134), `BFCArena`/`CL_MEM_OBJECT_ALLOCATION_FAILURE` | The GPU is full — often a leaked server still holding a CUDA context | `nvidia-smi --query-compute-apps=pid,used_memory --format=csv`, then `make stop`. A released port does **not** mean the process is gone |
 | GPU test fails (`BFCArena`, OOM) | The GPU is busy, not a code bug | Re-run `make test-gpu` when idle. `make test` excludes these for exactly this reason. |

@@ -351,6 +351,7 @@ _STILL = _ROOT / "data/eval/heldout-20260831/img_0763.label.json"
 
 
 @pytest.mark.gpu
+@pytest.mark.timeout(120)  # builds a real ONNX session
 @pytest.mark.parametrize(
     "model",
     [

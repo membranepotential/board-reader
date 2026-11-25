@@ -42,6 +42,7 @@ dev = [
     # `uvx` so every checkout and every agent lints with the same version — a
     # gate whose ruleset drifts by machine is not a gate.
     "ruff>=0.14",
+    "pytest-timeout>=2.4.0",
 ]
 
 [tool.ruff]
@@ -127,18 +128,16 @@ testpaths = [
 # contention from a training run or a second agent session). `make test`
 # deselects them and says so; `make test-gpu` runs exactly them.
 markers = ["gpu: needs the GPU (real ONNX InferenceSession); deselected by `make test`"]
-# A hung test must never again be a silent hang. The suite's slowest test is ~8s,
-# so 120s means "something is wedged, not slow": faulthandler dumps every thread's
-# stack to stderr and names the test, turning a run that sits there for a quarter
-# of an hour with no output into one that says where it is stuck. Diagnosis only —
-# it does not fail or kill the test, so it can never make a green run red.
+# A hung test must fail, not sit there: pytest-timeout fails any test that runs
+# longer than 10 s (the slowest takes ~6 s under `-n auto`) and prints every
+# thread's stack, so the failure names where it is stuck. A test that legitimately
+# needs longer says so with `@pytest.mark.timeout(<s>)` (the GPU test does).
 #
-# The hang this was written for: `WS /ingest` acks on *receipt* and estimates on a
-# worker task, and Starlette's TestClient tears the event loop down under that
-# worker (see packages/inference/tests/conftest.py). A test that then read the
-# retained position off `WS /viewer` waited forever for an event nobody would
-# publish. Fixed at the source there; this is the net under it.
-faulthandler_timeout = 120
+# The hangs this is for: Starlette's `WebSocketTestSession.receive_text()` waits
+# forever, so a test awaiting a message the node never sends blocked the whole
+# run (`WS /viewer` once, test_autoframe_gateway.py's previews later). Read test
+# sockets with a bounded receive as well (packages/inference/tests/conftest.py).
+timeout = 10
 filterwarnings = [
     # Starlette's TestClient warns about httpx vs httpx2; harmless for our suite.
     "ignore:Using `httpx` with `starlette.testclient`",
