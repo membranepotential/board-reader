@@ -73,16 +73,16 @@ status line and **no controls at all**. Everything about what it films is set fr
 **control UI** on the laptop (`GET /control` on the viewer), held per board on the
 inference node, and pushed to the phone, which applies it:
 
-- **The node names the cameras** (DESIGN D18). The phone keeps a random device id in
-  `localStorage` and holds `WS /cameras/{device_id}` open from the moment the page
-  loads; the node answers with the board id the phone streams as (`assigned`): the
-  lowest free `board-N` for a new device, and the same one for good after that.
-  `/control` lists every known camera over `WS /cameras` (name, board id, short device
-  id, link, stream, last frame, lens and frame), gives one a name inline (an alias the
-  live page shows, from the `names` message on `/viewer`), forgets a disconnected one,
-  and shows a QR code that opens `/camera` on a phone. The phone names its device id
-  on every frame, and `/ingest` refuses a frame under a board id that is another
-  camera's.
+- **The node names the cameras** (DESIGN D18). The phone keeps a random device id (a
+  UUID) in `localStorage` and holds `WS /cameras/{device_id}` open from the moment the
+  page loads. A camera's board id is that device id, for good. The node answers with
+  the board id and the camera's name (`assigned`): a new camera is called the lowest
+  `board-N` no other camera's name uses, until `/control` renames it. `/control` lists
+  every known camera over `WS /cameras` (name, short device id, link, stream, last
+  frame, lens and frame), renames one inline (an alias the live page shows, from the
+  `names` message on `/viewer`), forgets a disconnected one, and shows a QR code that
+  opens `/camera` on a phone. The phone names its device id on every frame, and
+  `/ingest` refuses a frame under a board id that is another camera's.
 - **The control channel is pushed over WebSockets; nothing polls.** The
   phone's socket is open from the moment the page loads. It sends
   its `CameraReport` — the lenses `enumerateDevices` lists, the label of the one open,
@@ -164,7 +164,7 @@ OpenCV's FFmpeg backend and samples it at the phone's 20 fps; a video plays at r
 from `--start`, a live stream reconnects. `camera/run.py` runs the capture, crop, meter,
 forwarder and encode on a camera thread, and the two sockets and the previews on the
 event loop; the frames go out on `/ingest` (latest wins, `client.IngestLink`) under the
-assigned board id with the device id in the header.
+board id the node named (the device id), with the device id in the header.
 
 On the **gateway**, the `/ingest` handler acks each frame on receipt and hands it to
 `FrameIngest.submit`, where the board's read scheduler decides on that frame at once. A

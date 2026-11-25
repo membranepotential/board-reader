@@ -59,14 +59,16 @@ config down the phone's socket (`/cameras/{device_id}`) on connect and on every 
 phone sends the report when it changes. `serve` keeps the configs in
 `data/camera-config.json` (`BR_CAMERA_CONFIG`), so a restarted node resumes the stream.
 
-**Device id / assigned board id** — a phone's own random id, kept in its browser, and the
-board id the node gives that device (`board-1`, `board-2`, ...; DESIGN D18), once and for
-good. The node keeps the pairs with the configs, so a phone keeps its board id across a
-reload and a restart, and refuses `/ingest` frames from any other device under it.
+**Device id** — a camera's own random id (a UUID), kept in the phone's browser or in
+the Python edge's state file, and the camera's board id for good (DESIGN D18), so a
+phone keeps its board id across a reload and a restart. The node refuses `/ingest`
+frames from any other device under it.
 
-**Camera name** — what people call a camera, set on `/control` (DESIGN D18): an alias
-for its board id, shown on the live page, `/control`, the phone and in the PGN's `Site`
-tag. A rename changes only the name; the board id stays.
+**Camera name** — what people call a camera (DESIGN D18): an alias for its board id,
+shown on the live page, `/control`, the phone and in the PGN's `Site` tag. A new camera
+is called the lowest `board-N` no other camera's name uses; `/control` may rename it.
+A rename changes only the name; the board id stays. The node keeps the names with the
+configs, so they survive a restart.
 
 **Board direction** — which way the board lies in the camera's image
 (`board_reader_core.control.BoardDirection`): the angle of the e1→e8 axis from ChessQ's

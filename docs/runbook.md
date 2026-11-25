@@ -71,13 +71,15 @@ which switches Auto-frame off for that camera until you switch it on again or pr
 and [[TESTING#Option T — Auto-frame: the node frames the camera by itself (DESIGN D21)]]).
 When Auto-frame says "no board found", the board is not in the picture or too small
 in it (under about a sixth of its width); it retries after 3 s, 10 s, then every 30 s.
-The node log names every attempt (`auto-frame board-N: ...`).
-The node assigns each phone its board id (`board-1`, `board-2`, ...; DESIGN D18) by a
-device id the phone keeps, for good; `/control` lists the phones, names them (the live
-page shows the name; the board id stays), forgets one that is no longer used, and shows
-a QR code that opens `/camera`. `serve` keeps each board's config and each phone's board
-id in `data/camera-config.json` (`BR_CAMERA_CONFIG`; empty keeps them in memory only),
-so a restart gives every phone its id and framing back. A phone in a private window
+The node log names every attempt (`auto-frame <board id>: ...`).
+A phone streams under the device id it keeps (a UUID) as its board id, for good (DESIGN
+D18); the node calls a new phone the lowest `board-N` no other camera's name uses.
+`/control` lists the phones, renames them (the live page shows the name; the board id
+stays), forgets one that is no longer used, and shows a QR code that opens `/camera`.
+`serve` keeps each board's config and each camera's name in `data/camera-config.json`
+(`BR_CAMERA_CONFIG`; empty keeps them in memory only), so a restart gives every phone
+its name and framing back. A file written before the board id was the device id loads
+migrated: each camera keeps the label it had (its name, else its old `board-N`). A phone in a private window
 keeps no id, and each reload makes it a new camera (its status line says so); forget
 the old ones on `/control`. A phone page opened before the update says it is out of date: reload
 it. By hand:
