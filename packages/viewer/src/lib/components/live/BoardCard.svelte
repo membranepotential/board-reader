@@ -32,10 +32,12 @@
 
   interface Props {
     board: BoardState;
+    /** What people call the board: its camera's name, or its id (DESIGN D18). */
+    label: string;
     liveness: BoardLiveness;
   }
 
-  const { board, liveness }: Props = $props();
+  const { board, label, liveness }: Props = $props();
 
   let previewOpen = $state(false);
   /** Open by default: the game is what a player watches during a game. */
@@ -49,7 +51,13 @@
 
 <div class="board-card" class:stale={liveness.stale}>
   <h2>
-    <span>board {board.id}</span>
+    <span class="label" data-board={board.id}>
+      {#if label === board.id}
+        board {board.id}
+      {:else}
+        {label} <span class="board-id">{board.id}</span>
+      {/if}
+    </span>
     <span class="chips">
       {#if motion.kind === 'moving'}
         <span
@@ -114,7 +122,7 @@
     </div>
 
     <GameDrawer open={gameOpen} onToggle={() => (gameOpen = !gameOpen)}>
-      <GamePanel {event} />
+      <GamePanel {event} board={label} />
     </GameDrawer>
   </div>
 </div>
@@ -136,6 +144,11 @@
     justify-content: space-between;
     gap: 12px;
     align-items: center;
+  }
+  .board-id {
+    font-weight: 400;
+    font-size: 12px;
+    color: #6b7280;
   }
   .chips {
     display: flex;

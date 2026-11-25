@@ -7,14 +7,16 @@
    * streams. The node holds that config per board and pushes it to the phone. The
    * same config says which chess the board plays (`rules`), which only the node reads.
    *
-   * The CAMERA LIST (`CamerasLink`, `WS /cameras`) names every phone the node knows,
-   * by the board id the node assigned it, and renames one inline. The operator picks
+   * The CAMERA LIST (`CamerasLink`, `WS /cameras`) shows every phone the node knows,
+   * by its name (or the board id the node assigned it, which never changes), names
+   * one inline, and forgets a disconnected one (after a confirm). The operator picks
    * a camera there; its controls below talk to its board over that board's socket
    * (`ControlLink`): the node pushes the camera state on connect and on every change,
    * the phone's preview, the latest received frame and a health tick, so nothing here
-   * polls. A camera is picked by DEVICE id, so a rename moves the controls to the new
-   * board id with it. Both sockets close while the tab is hidden, which is also what
-   * tells the phone to stop sending previews nobody sees.
+   * polls. A camera is picked by DEVICE id, so forgetting one and a new phone taking
+   * its board id never leaves the controls on the wrong camera. Both sockets close
+   * while the tab is hidden, which is also what tells the phone to stop sending
+   * previews nobody sees.
    *
    * The crop is edited locally and only sent on Save, so a pushed state never yanks
    * a rectangle out from under the pointer. The lens, resolution, rules and stream
@@ -57,10 +59,11 @@
   let cameras = $state.raw<readonly CameraEntry[] | null>(null);
   /** The device the operator picked; `null` follows the first connected camera. */
   let chosen = $state<string | null>(null);
-  /** The device whose new board id is being typed, and the name so far. */
+  /** The device whose new name is being typed, and the name so far. */
   let renaming = $state<string | null>(null);
   let newName = $state('');
-  let renameFailure = $state<string | null>(null);
+  /** Why the node refused the last rename or forget, or why the list is down. */
+  let listFailure = $state<string | null>(null);
   let camera = $state.raw<StateMessage | null>(null);
   let preview = $state.raw<PreviewMessage | null>(null);
   let received = $state.raw<FrameMessage | null>(null);
@@ -81,12 +84,14 @@
   );
   /** The picked camera's board: what its controls talk to. */
   const boardId = $derived(selected?.board_id ?? null);
+  /** What people call a camera: its name, or its board id. */
+  const labelOf = (entry: CameraEntry): string => entry.name ?? entry.board_id;
 
   onMount(() => {
     const next = new CamerasLink({
       onMessage: receiveList,
       onLink: (isUp, detail) => {
-        if (!isUp) renameFailure = `the node is not reachable (${detail}) — reconnecting…`;
+        listFailure = isUp ? null : `the node is not reachable (${detail}) — reconnecting…`;
       }
     });
     list = next;
@@ -135,31 +140,42 @@
 
   function receiveList(message: CamerasDown): void {
     if (message.type === 'refused') {
-      renameFailure = `not renamed: ${message.reason}`;
+      listFailure = `the node refused: ${message.reason}`;
       return;
     }
     cameras = message.cameras;
-    // A rename is done when the list shows the camera under its new id.
+    // A rename is done when the list shows the camera under its new name.
     const entry = message.cameras.find((e) => e.device_id === renaming);
-    if (renaming !== null && (entry === undefined || entry.board_id === newName.trim())) {
+    if (renaming !== null && (entry === undefined || labelOf(entry) === (newName.trim() || entry.board_id))) {
       renaming = null;
-      renameFailure = null;
+      listFailure = null;
     }
   }
 
   function startRename(entry: CameraEntry): void {
     renaming = entry.device_id;
-    newName = entry.board_id;
-    renameFailure = null;
+    newName = labelOf(entry);
+    listFailure = null;
   }
 
-  function submitRename(device: string, current: string): void {
-    const name = newName.trim();
-    if (name === current) {
+  /** An empty name, or the board id itself, clears the name. */
+  function submitRename(entry: CameraEntry): void {
+    const typed = newName.trim();
+    const name = typed === '' || typed === entry.board_id ? null : typed;
+    if (name === entry.name) {
       renaming = null;
-    } else if (list === null || !list.rename(device, name)) {
-      renameFailure = 'not renamed: the node is not connected';
+    } else if (list === null || !list.rename(entry.device_id, name)) {
+      listFailure = 'not renamed: the node is not connected';
     }
+  }
+
+  function forget(entry: CameraEntry): void {
+    const asked =
+      `Forget camera ${labelOf(entry)}? Its board id ${entry.board_id} and its settings are dropped, ` +
+      'and the id may go to the next new phone. If this phone comes back, it is a new camera.';
+    if (!window.confirm(asked)) return;
+    if (chosen === entry.device_id) chosen = null;
+    listFailure = list !== null && list.forget(entry.device_id) ? null : 'not forgotten: the node is not connected';
   }
 
   /** How a camera's capture reads in the list: lens, then the frame it delivers. */
@@ -223,7 +239,13 @@
 <header>
   <h1>board-reader · camera control</h1>
   {#if boardId !== null}
-    <span class="board">board <strong>{boardId}</strong></span>
+    <span class="board">
+      {#if selected !== null && selected.name !== null}
+        camera <strong>{selected.name}</strong> · board {boardId}
+      {:else}
+        board <strong>{boardId}</strong>
+      {/if}
+    </span>
     <span class="chip" class:up={connected}>
       {camera === null ? 'connecting…' : connected ? 'phone connected' : 'phone not connected'}
     </span>
@@ -247,12 +269,14 @@
       <table>
         <thead>
           <tr>
-            <th>board</th>
             <th>camera</th>
+            <th>board</th>
+            <th>device</th>
             <th>link</th>
             <th>stream</th>
             <th>last frame</th>
             <th>lens · frame</th>
+            <th><span class="visually-hidden">actions</span></th>
           </tr>
         </thead>
         <tbody>
@@ -267,45 +291,54 @@
                   <form
                     onsubmit={(e) => {
                       e.preventDefault();
-                      submitRename(entry.device_id, entry.board_id);
+                      submitRename(entry);
                     }}
                   >
                     <input
-                      aria-label="new board id for camera {shortDeviceId(entry.device_id)}"
+                      aria-label="name for camera {shortDeviceId(entry.device_id)}"
+                      placeholder={entry.board_id}
                       bind:value={newName}
-                      size="12"
+                      size="14"
                       maxlength="32"
                     />
                     <button type="submit" class="primary">Save</button>
                     <button type="button" onclick={() => (renaming = null)}>Cancel</button>
                   </form>
-                  {#if renameFailure !== null}
-                    <p class="warn" role="alert">{renameFailure}</p>
-                  {/if}
                 {:else}
                   <button
                     type="button"
                     class="pick"
                     aria-pressed={entry.device_id === selected?.device_id}
-                    onclick={() => (chosen = entry.device_id)}>{entry.board_id}</button
+                    onclick={() => (chosen = entry.device_id)}>{labelOf(entry)}</button
                   >
                   <button type="button" class="rename" onclick={() => startRename(entry)}>Rename</button>
                 {/if}
-                {#if entry.refused_board !== null}
-                  <p class="warn" data-warning="refused-board">
-                    asked for {entry.refused_board}, which another camera holds
-                  </p>
-                {/if}
               </td>
+              <td class="board-id">{entry.board_id}</td>
               <td class="device">{shortDeviceId(entry.device_id)}</td>
               <td class:bad={!entry.connected}>{entry.connected ? 'connected' : 'not connected'}</td>
               <td>{entry.report?.ingest ?? '—'}</td>
               <td>{formatAge(entry.frame_age_s)}</td>
               <td>{captureOf(entry)}</td>
+              <td>
+                <button
+                  type="button"
+                  class="forget"
+                  disabled={entry.connected}
+                  title={entry.connected
+                    ? 'a connected camera cannot be forgotten: close its /camera page first'
+                    : 'drop this camera, its board id and its settings'}
+                  onclick={() => forget(entry)}>Forget</button
+                >
+              </td>
             </tr>
           {/each}
         </tbody>
       </table>
+      <p class="hint">A connected camera cannot be forgotten: close its /camera page first.</p>
+    {/if}
+    {#if listFailure !== null}
+      <p class="warn" role="alert">{listFailure}</p>
     {/if}
   </div>
   <aside class="add">
@@ -542,7 +575,8 @@
   td.bad {
     color: #ff8f8f;
   }
-  td.device {
+  td.device,
+  td.board-id {
     color: #7d8590;
     font-family: ui-monospace, monospace;
   }
@@ -564,10 +598,23 @@
   tr.picked button.pick {
     color: #e6e6e6;
   }
-  button.rename {
+  button.rename,
+  button.forget {
     padding: 2px 8px;
     margin-left: 6px;
     font-size: 12px;
+  }
+  button.forget:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+  }
+  .visually-hidden {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
   }
   input,
   select {

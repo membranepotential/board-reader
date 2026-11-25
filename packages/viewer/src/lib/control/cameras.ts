@@ -3,16 +3,17 @@
  *
  * The node pushes the whole list on connect, on every change (a phone connects or
  * leaves, reports, is renamed) and about once a second for the frame ages, so the
- * page polls nothing. A rename goes up as one `rename` message; the node answers
- * with the new list, or with a refusal (a name another camera holds, one that is no
- * board id).
+ * page polls nothing. A rename (a camera's name; its board id never changes) goes
+ * up as one `rename` message, forgetting a disconnected camera as one `forget`; the
+ * node answers with the new list, or with a refusal (a name another camera has, one
+ * that is no camera name, a camera still connected).
  */
 
 import { CAMERAS_SOCKET, wsUrl } from '#lib/api.ts';
 import { parseWire } from '#lib/protocol/index.ts';
 import { CamerasDown } from '#lib/protocol/generated.ts';
 import { ReconnectingSocket, type SocketOptions } from '#lib/socket.ts';
-import { renameMessage } from './messages';
+import { forgetMessage, renameMessage } from './messages';
 
 export interface CamerasLinkOptions extends Partial<SocketOptions> {
   readonly onMessage: (message: CamerasDown) => void;
@@ -46,8 +47,13 @@ export class CamerasLink {
     this.socket.stop();
   }
 
+  /** `false` when the node is not connected: nothing was sent. `null` clears the name. */
+  rename(deviceId: string, name: string | null): boolean {
+    return this.socket.send(renameMessage(deviceId, name));
+  }
+
   /** `false` when the node is not connected: nothing was sent. */
-  rename(deviceId: string, boardId: string): boolean {
-    return this.socket.send(renameMessage(deviceId, boardId));
+  forget(deviceId: string): boolean {
+    return this.socket.send(forgetMessage(deviceId));
   }
 }

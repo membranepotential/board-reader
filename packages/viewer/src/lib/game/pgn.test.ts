@@ -18,9 +18,10 @@ function game(moves: readonly DecodedMove[], over: Partial<DecodedGame> = {}): D
 
 describe('gamePgn', () => {
   it('writes the tags, the moves and the time each move took', () => {
-    const pgn = gamePgn(game([move('e4', 3.4), move('e5', 12), move('Qh5', 12)]));
+    const pgn = gamePgn(game([move('e4', 3.4), move('e5', 12), move('Qh5', 12)]), 'kitchen table');
     const [parsed] = parsePgn(pgn);
     expect(Object.fromEntries(parsed!.headers)).toMatchObject({
+      Site: 'kitchen table',
       Date: '2026.11.24',
       UTCDate: '2026.11.24',
       UTCTime: '19:41:05',
@@ -34,11 +35,11 @@ describe('gamePgn', () => {
 
   it('writes the result of a finished game', () => {
     const mate = game([move('f3', 1), move('e5', 2), move('g4', 3), move('Qh4#', 4)], { outcome: { winner: 'black' } });
-    expect(gamePgn(mate)).toMatch(/\[Result "0-1"\][\s\S]*Qh4# \{ \[%emt 0:00:01\] \} 0-1/);
+    expect(gamePgn(mate, 'board-1')).toMatch(/\[Result "0-1"\][\s\S]*Qh4# \{ \[%emt 0:00:01\] \} 0-1/);
   });
 
   it('writes an unknown date before the first read', () => {
-    expect(gamePgn(game([], { startedAt: null }))).toContain('[Date "????.??.??"]');
+    expect(gamePgn(game([], { startedAt: null }), 'board-1')).toContain('[Date "????.??.??"]');
   });
 });
 

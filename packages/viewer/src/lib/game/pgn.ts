@@ -37,9 +37,14 @@ function withMoves(game: Game<PgnNodeData>, moves: readonly PgnNodeData[]): Game
   return game;
 }
 
-/** The whole PGN: the seven-tag roster, the UTC date and time, timed moves. */
-export function gamePgn(decoded: DecodedGame): string {
+/**
+ * The whole PGN: the seven-tag roster, the UTC date and time, timed moves. `board` is
+ * what people call the board (its camera's name, else its id) and goes in `Site`, so
+ * games copied from two boards say which board each was played on.
+ */
+export function gamePgn(decoded: DecodedGame, board: string): string {
   const game = defaultGame<PgnNodeData>(defaultHeaders);
+  game.headers.set('Site', board);
   game.headers.set('Result', makeOutcome(decoded.outcome));
   if (decoded.startedAt !== null) {
     const { date, time } = utcTags(decoded.startedAt);

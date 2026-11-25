@@ -50,7 +50,7 @@
 <main>
   {#if stream}
     {#each stream.boards as board (board.id)}
-      <BoardCard {board} liveness={stream.liveness(board)} />
+      <BoardCard {board} label={stream.label(board.id)} liveness={stream.liveness(board)} />
     {/each}
   {/if}
 </main>

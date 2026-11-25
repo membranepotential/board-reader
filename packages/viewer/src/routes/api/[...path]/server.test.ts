@@ -21,7 +21,7 @@ function call(path: string, init?: RequestInit): Promise<Response> {
   return Promise.resolve(fallback({ request, url: new URL(request.url) } as Event));
 }
 
-/** Reflects each request as JSON; a camera report is refused, in the node's words. */
+/** Reflects each request as JSON; a label for no upload is refused, in the node's words. */
 const node = http.createServer((req, res) => {
   const chunks: Buffer[] = [];
   req.on('data', (chunk: Buffer) => chunks.push(chunk));
@@ -32,7 +32,7 @@ const node = http.createServer((req, res) => {
       contentType: req.headers['content-type'] ?? null,
       body: Buffer.concat(chunks).toString('latin1')
     });
-    res.writeHead(req.url?.endsWith('/camera/report') ? 422 : 200, {
+    res.writeHead(req.url === '/labels/missing' ? 422 : 200, {
       'content-type': 'application/json',
       'content-length': Buffer.byteLength(body),
       'x-seq': '42'
@@ -72,10 +72,10 @@ describe('the /api relay', () => {
   );
 
   it("returns the node's refusal, status and headers unchanged", async () => {
-    const res = await call('/api/boards/phone/camera/report', { method: 'PUT', body: '{}' });
+    const res = await call('/api/labels/missing', { method: 'POST', body: '{}' });
     expect(res.status).toBe(422);
     expect(res.headers.get('x-seq')).toBe('42');
-    expect((await res.json()).method).toBe('PUT');
+    expect((await res.json()).method).toBe('POST');
   });
 
   it('answers an unreachable node with a 502 that names it', async () => {

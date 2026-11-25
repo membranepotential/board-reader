@@ -12,7 +12,8 @@
   import { gamePgn, lichessAnalysisUrl } from '#lib/game/pgn.ts';
   import type { PositionEvent } from '#lib/protocol/generated.ts';
 
-  let { event }: { event: PositionEvent } = $props();
+  /** `board` is what people call the board; it goes in the PGN's `Site` tag. */
+  let { event, board }: { event: PositionEvent; board: string } = $props();
 
   /** At this many squares of disagreement the board is likely not the game (a hand
    *  covers two or three). */
@@ -41,7 +42,7 @@
     copyFailed = false;
   }
 
-  const pgn = $derived(gamePgn(game));
+  const pgn = $derived(gamePgn(game, board));
   const lichess = $derived(lichessAnalysisUrl(game));
   const provisional = $derived(game.moves.filter((move) => !move.committed).length);
   /** Keeps the move list's scroll position right: a list the user left at the bottom

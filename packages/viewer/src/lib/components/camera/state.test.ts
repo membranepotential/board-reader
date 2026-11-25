@@ -2,7 +2,6 @@ import { describe, expect, it } from 'vitest';
 import { DEFAULT_CAMERA_CONFIG } from '#lib/protocol/index.ts';
 import type { CameraConfig } from '#lib/protocol/generated.ts';
 import {
-  askedBoardFrom,
   cropBox,
   fitLongSide,
   freshFrameClock,
@@ -27,14 +26,6 @@ const DEFAULT_CAPTURE: Capture = { device: null, resolution: '1080p' };
 function config(overrides: Partial<CameraConfig>): CameraConfig {
   return { ...DEFAULT_CAMERA_CONFIG, ...overrides };
 }
-
-describe('the board id', () => {
-  it('is asked for by ?board=, and otherwise left to the node', () => {
-    expect(askedBoardFrom('?board=left')).toBe('left');
-    expect(askedBoardFrom('')).toBeNull();
-    expect(askedBoardFrom('?board=%20%20')).toBeNull();
-  });
-});
 
 describe('applying a config to the camera', () => {
   it('asks for nothing when the camera already is what the config says', () => {

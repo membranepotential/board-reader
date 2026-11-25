@@ -5,7 +5,7 @@
  *
  *  - the phone's, `cameraSocket(deviceId)`: it sends `report` (text) and, only while
  *    the node asks, preview JPEGs (binary); it hears a `PhoneDown`.
- *  - the camera list's, `CAMERAS_SOCKET`: it sends `rename`; it hears a
+ *  - the camera list's, `CAMERAS_SOCKET`: it sends `rename` and `forget`; it hears a
  *    `CamerasDown`.
  *  - a control page's, one per board, `controlSocket(id)`: it sends `configure`; it
  *    hears a `ControlDown`.
@@ -19,6 +19,7 @@ import type {
   CameraConfig,
   CameraReport,
   ConfigureMessage,
+  ForgetMessage,
   RenameMessage,
   ReportMessage
 } from '#lib/protocol/generated.ts';
@@ -33,8 +34,14 @@ export function configureMessage(config: CameraConfig): string {
   return JSON.stringify(message);
 }
 
-export function renameMessage(deviceId: string, boardId: string): string {
-  const message: RenameMessage = { type: 'rename', device_id: deviceId, board_id: boardId };
+/** `null` clears the name: the camera is then shown by its board id. */
+export function renameMessage(deviceId: string, name: string | null): string {
+  const message: RenameMessage = { type: 'rename', device_id: deviceId, name };
+  return JSON.stringify(message);
+}
+
+export function forgetMessage(deviceId: string): string {
+  const message: ForgetMessage = { type: 'forget', device_id: deviceId };
   return JSON.stringify(message);
 }
 

@@ -17,8 +17,9 @@
    *
    * The page connects by the phone's DEVICE ID (`#lib/edge/device`, kept in
    * `localStorage`), and the node says which board id it streams as: the same one
-   * after a reload, a new one only if the control UI renames it (then at once, no
-   * reload). `?board=<id>` asks for an id; one another camera holds is refused.
+   * for good (DESIGN D18), and the name the control UI gave it, if any. Every frame
+   * names the device too, so the node refuses a frame under another camera's board.
+   * `?board=<id>` means nothing any more: the page ignores it with a console note.
    *
    * Same-origin and relative throughout (`#lib/api`), relayed by the viewer:
    * `getUserMedia` needs a secure context, and one origin means one certificate.
@@ -55,7 +56,6 @@
     SEND_LONG_SIDE,
     SHARPNESS_LONG_SIDE,
     TICK_MS,
-    askedBoardFrom,
     cropBox,
     fitLongSide,
     freshFrameClock,
@@ -77,6 +77,8 @@
   let lensLabel = $state<string | null>(null);
   /** The board id the node says this phone streams as; `null` until it has said. */
   let boardId = $state<string | null>(null);
+  /** The name /control gave this camera; `null` shows the board id alone. */
+  let boardName = $state<string | null>(null);
   /** This phone's device id; `null` until mounted (prerendering has no storage). */
   let identity = $state.raw<DeviceIdentity | null>(null);
   /** Another page of this phone took over the camera link: this one stands down. */
@@ -139,7 +141,7 @@
   let frameClock = freshFrameClock(0);
   let encoding = false;
   let previewing = false;
-  /** Created on mount: the device id and `?board=` are not readable while prerendering. */
+  /** Created on mount: the device id is not readable while prerendering. */
   let link: CameraLink | null = null;
   let stamps: number[] = [];
 
@@ -150,7 +152,7 @@
   const crop = $derived(config.crop);
   const status = $derived(
     [
-      `board ${boardId ?? '…'}`,
+      boardName === null ? `board ${boardId ?? '…'}` : `${boardName} (board ${boardId})`,
       nodeReachable === null ? 'node…' : nodeReachable ? 'node connected' : 'node unreachable',
       ingestState === 'streaming'
         ? `streaming ${fps.toFixed(1)} fps`
@@ -270,6 +272,7 @@
     if (jpeg === null) return;
     const outcome = ingest.sendFrame({
       boardId: board,
+      deviceId: identity?.id ?? null,
       captureTs,
       stability: decision.stability,
       ...(sharpness === null ? {} : { sharpness }),
@@ -286,13 +289,13 @@
 
   // ---- the control channel ------------------------------------------------------
 
-  function connectControl(deviceId: string, board: string | null): CameraLink {
+  function connectControl(deviceId: string): CameraLink {
     return new CameraLink({
       deviceId,
-      board,
-      onAssigned: (id) => {
-        if (id !== boardId) trial.note('assigned', { board: id });
+      onAssigned: (id, name) => {
+        if (id !== boardId || name !== boardName) trial.note('assigned', { board: id, name });
         boardId = id;
+        boardName = name;
       },
       onReplaced: () => {
         trial.note('replaced');
@@ -540,7 +543,9 @@
     port = location.port || (location.protocol === 'https:' ? '443' : '80');
     const self = deviceIdentity(() => window.localStorage, randomDeviceId);
     identity = self;
-    const asked = askedBoardFrom(location.search);
+    if (new URLSearchParams(location.search).has('board')) {
+      console.info('?board= is ignored: the node assigns this phone its board id; name it on /control');
+    }
     const [motionCanvas, motion] = canvas2d();
     motionCanvas.width = MOTION_DRAW_SIDE;
     motionCanvas.height = MOTION_DRAW_SIDE;
@@ -551,14 +556,14 @@
     sendCtx = sendCanvas.getContext('2d');
 
     trial.start();
-    trial.note('page-open', { ua: navigator.userAgent, device: self.id, kept: self.kept, asked });
+    trial.note('page-open', { ua: navigator.userAgent, device: self.id, kept: self.kept });
     void startCamera();
     const timers = [
       setInterval(frameTick, Math.round(1000 / CAPTURE_FPS)),
       setInterval(paintStatus, TICK_MS),
       setInterval(() => void postPreview(), PREVIEW_MS)
     ];
-    link = connectControl(self.id, asked);
+    link = connectControl(self.id);
     link.report(report);
     link.start();
 

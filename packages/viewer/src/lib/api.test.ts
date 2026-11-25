@@ -134,7 +134,6 @@ describe('failures carry the node own wording', () => {
 describe('the camera control sockets', () => {
   it('are relative, under the socket relay: the phone by device, a control page by board', () => {
     expect(cameraSocket('kitchen-phone-id')).toBe('/ws/cameras/kitchen-phone-id');
-    expect(cameraSocket('kitchen-phone-id', 'left board')).toBe('/ws/cameras/kitchen-phone-id?board=left%20board');
     expect(controlSocket('board-1')).toBe('/ws/boards/board-1/control');
   });
 });

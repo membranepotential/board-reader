@@ -198,3 +198,26 @@ test('the frame preview fetches only while it is open', async ({ page }) => {
   await expect(page.locator('.board-card .meta code').first()).toHaveText('10');
   expect(frameRequests).toHaveLength(taken);
 });
+
+/**
+ * A rename on /control is a label (DESIGN D18): the node sends the cameras' names, and
+ * the card relabels in place. It stays the same card, keyed by the board id that never
+ * changes, so its game drawer keeps its moves; a rebuilt card would start an empty one.
+ */
+test("a renamed camera's card relabels in place and keeps its game", async ({ page }) => {
+  const socket = await FakeViewerSocket.install(page);
+  await page.goto('/');
+
+  socket.send(positionEvent({ board_id: 'board-1' }));
+  const card = page.locator('.board-card');
+  await expect(card.locator('h2 .label')).toHaveText('board board-1');
+  await card.evaluate((el) => el.setAttribute('data-kept', 'yes'));
+
+  socket.send({ type: 'names', names: [{ board_id: 'board-1', name: 'kitchen' }] });
+  await expect(card.locator('h2 .label')).toHaveText('kitchen board-1');
+  await expect(card).toHaveAttribute('data-kept', 'yes');
+  await expect(page.locator('.board-card')).toHaveCount(1);
+
+  socket.send({ type: 'names', names: [] });
+  await expect(card.locator('h2 .label')).toHaveText('board board-1');
+});

@@ -191,6 +191,33 @@ describe('PositionStream', () => {
     stream.stop();
   });
 
+  it('labels a board by the name the node gives its camera, and keeps the board itself', () => {
+    let socket: { onmessage: ((m: MessageEvent) => void) | null } = { onmessage: null };
+    const stream = new PositionStream({
+      url: 'ws://test/ws/viewer',
+      clock: () => 0,
+      socketFactory: () => {
+        socket = { onmessage: null };
+        return Object.assign(socket, { close: () => {} }) as unknown as WebSocket;
+      }
+    });
+    stream.start();
+    const send = (message: unknown) => socket.onmessage?.({ data: JSON.stringify(message) } as MessageEvent);
+    send(positionEvent({ board_id: 'board-1' }));
+    const before = stream.board('board-1');
+    expect(stream.label('board-1')).toBe('board-1');
+
+    send({ type: 'names', names: [{ board_id: 'board-1', name: 'kitchen' }] });
+    expect(stream.label('board-1')).toBe('kitchen');
+    // A rename is a label: the board, its id and its state are the same object.
+    expect(stream.board('board-1')).toBe(before);
+    expect(stream.boards.map((b) => b.id)).toEqual(['board-1']);
+
+    send({ type: 'names', names: [] }); // the name was cleared
+    expect(stream.label('board-1')).toBe('board-1');
+    stream.stop();
+  });
+
   it('reports staleness against the ticker, not against event.utc', () => {
     const clock = { now: 1000 };
     const stream = streamAt(clock);

@@ -10,10 +10,10 @@ afterEach(() => vi.unstubAllGlobals());
 const ENTRY: CameraEntry = {
   device_id: 'kitchen-phone-id',
   board_id: 'board-1',
+  name: 'kitchen',
   connected: true,
   report: null,
-  frame_age_s: 0.4,
-  refused_board: null
+  frame_age_s: 0.4
 };
 
 function link() {
@@ -35,11 +35,18 @@ describe('the camera list link', () => {
     expect(onMessage).toHaveBeenCalledExactlyOnceWith({ type: 'cameras', cameras: [ENTRY] });
   });
 
-  it('sends a rename only while connected', () => {
+  it('sends a rename and a forget only while connected', () => {
     const { net, cameras } = link();
     expect(cameras.rename('kitchen-phone-id', 'left')).toBe(false);
+    expect(cameras.forget('kitchen-phone-id')).toBe(false);
     net.sockets[0]!.open();
     expect(cameras.rename('kitchen-phone-id', 'left')).toBe(true);
-    expect(net.sockets[0]!.texts).toEqual([{ type: 'rename', device_id: 'kitchen-phone-id', board_id: 'left' }]);
+    expect(cameras.rename('kitchen-phone-id', null)).toBe(true);
+    expect(cameras.forget('kitchen-phone-id')).toBe(true);
+    expect(net.sockets[0]!.texts).toEqual([
+      { type: 'rename', device_id: 'kitchen-phone-id', name: 'left' },
+      { type: 'rename', device_id: 'kitchen-phone-id', name: null },
+      { type: 'forget', device_id: 'kitchen-phone-id' }
+    ]);
   });
 });

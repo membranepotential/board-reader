@@ -81,10 +81,10 @@ class FakeControlNode {
       const camera = {
         device_id: 'kitchen-phone-id',
         board_id: 'board-1',
+        name: null,
         connected: true,
         report: null,
-        frame_age_s: 0.5,
-        refused_board: null
+        frame_age_s: 0.5
       };
       ws.send(JSON.stringify({ type: 'cameras', cameras: [camera] }));
     });

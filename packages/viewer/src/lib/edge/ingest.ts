@@ -40,6 +40,11 @@ export type SendOutcome =
 
 export interface OutgoingFrame {
   readonly boardId: string;
+  /**
+   * The phone's device id: the node takes a frame under a camera's board id only
+   * from that camera (DESIGN D18). `null` from an edge without one.
+   */
+  readonly deviceId: string | null;
   /** Epoch SECONDS at capture (DESIGN D5). */
   readonly captureTs: number;
   readonly stability: number;
@@ -215,7 +220,8 @@ export class IngestClient {
       stability: frame.stability,
       sharpness: frame.sharpness ?? null,
       clock: 'none',
-      burst_id: frame.burstId
+      burst_id: frame.burstId,
+      device_id: frame.deviceId
     };
     socket.send(JSON.stringify(header));
     socket.send(frame.jpeg);

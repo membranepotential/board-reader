@@ -9,6 +9,10 @@
  * buffer, no inference from one event to the next; a board's whole state is its
  * latest event plus how fresh that event is.
  *
+ * Beside the boards it keeps the cameras' names (the node's `names` snapshot, DESIGN
+ * D18): what people call each board. A name is only a label; every board stays keyed
+ * by its id, which a rename does not change, so a renamed card keeps its game.
+ *
  * Reconnects with exponential backoff, because the viewer relay closes the socket
  * with the node's own reason when the node is the thing that is down, and a page
  * left at the board must come back by itself.
@@ -17,7 +21,7 @@
 import { VIEWER_SOCKET, wsUrl } from '../api';
 import { changedSquares, fenToGrid, type BoardGrid } from '../board/fen';
 import { isSquareKey, parseWire, type SquareKey } from '../protocol';
-import { MotionUpdate, PositionEvent, ViewerMessage } from '../protocol/generated';
+import { MotionUpdate, NamesMessage, PositionEvent, ViewerMessage } from '../protocol/generated';
 import {
   changeRings,
   eventsPerSecond,
@@ -95,6 +99,8 @@ export class PositionStream {
   #boards = $state<Record<string, BoardState>>({});
   /** Per board, the last per-frame motion sample — kept apart from the reads. */
   #motion = $state<Record<string, MotionSample>>({});
+  /** Board id → its camera's name, as the node's last `names` snapshot said. */
+  #names = $state<Readonly<Record<string, string>>>({});
   #connection = $state<ConnectionState>('connecting');
   /** Advanced by the ticker; every age, rate and ring fade is derived from it. */
   #now = $state(0);
@@ -126,6 +132,11 @@ export class PositionStream {
 
   board(id: string): BoardState | undefined {
     return this.#boards[id];
+  }
+
+  /** What people call board `id`: its camera's name, or the id itself. */
+  label(id: string): string {
+    return this.#names[id] ?? id;
   }
 
   /** Freshness of one board against the shared clock — reactive, no timers per card. */
@@ -218,6 +229,11 @@ export class PositionStream {
     return message;
   }
 
+  /** The whole map, replaced: a board the snapshot leaves out shows its id again. */
+  #foldNames(message: NamesMessage): void {
+    this.#names = Object.fromEntries(message.names.map(({ board_id, name }) => [board_id, name]));
+  }
+
   #connect(): void {
     const socket = this.#factory(this.options.url ?? wsUrl(VIEWER_SOCKET));
     this.#socket = socket;
@@ -233,12 +249,14 @@ export class PositionStream {
     socket.onmessage = (message: MessageEvent) => {
       if (socket !== this.#socket) return;
       if (typeof message.data !== 'string') return;
-      // One stream, two message kinds: a motion update names its `type`, a
-      // position event has none.
+      // One stream, three message kinds: a motion update and the names say their
+      // `type`, a position event has none.
       const parsed = parseWire(ViewerMessage, message.data);
       if (!parsed.ok) return;
-      if ('type' in parsed.value) this.#foldMotion(parsed.value);
-      else this.#foldEvent(parsed.value);
+      const received = parsed.value;
+      if (!('type' in received)) this.#foldEvent(received);
+      else if (received.type === 'motion') this.#foldMotion(received);
+      else this.#foldNames(received);
     };
     socket.onerror = () => socket.close();
     socket.onclose = () => {

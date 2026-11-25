@@ -34,14 +34,6 @@ export const PREVIEW_MS = 1500;
 export const TICK_MS = 200;
 export const RATE_WINDOW_MS = 3000;
 
-/**
- * The board id `?board=<id>` asks the node for, or `null` to take the one the node
- * assigns (the phone's own, kept across reloads). The node checks it.
- */
-export function askedBoardFrom(search: string): string | null {
-  return new URLSearchParams(search).get('board')?.trim() || null;
-}
-
 // ---- the camera --------------------------------------------------------------
 
 /** Why the camera is not available. The page renders one explainer per variant. */

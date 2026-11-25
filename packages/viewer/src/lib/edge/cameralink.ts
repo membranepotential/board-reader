@@ -1,8 +1,9 @@
 /**
  * The phone's end of the camera control channel: one socket, by its device id.
  *
- * The node says which board id the phone streams as (`assigned`) — on connect and
- * whenever the control UI renames it — pushes the config the control UI set — on
+ * The node says which board id the phone streams as and what it is called
+ * (`assigned`) — on connect, and again with the new name whenever the control UI
+ * renames it; the board id never changes — pushes the config the control UI set — on
  * connect and on every change — and says whether anyone is watching (`previews`).
  * The phone sends its `CameraReport` on connect and whenever it changes, never on a
  * timer, and a whole-frame preview JPEG only while previews are wanted.
@@ -27,10 +28,8 @@ import { ReconnectingSocket, type SocketOptions } from '#lib/socket.ts';
 
 export interface CameraLinkOptions extends Partial<SocketOptions> {
   readonly deviceId: string;
-  /** The board id this page asks for (`?board=`); `null` takes the node's. */
-  readonly board: string | null;
-  /** The board id the node says this phone streams as. */
-  readonly onAssigned: (boardId: string) => void;
+  /** The board id the node says this phone streams as, and its name if it has one. */
+  readonly onAssigned: (boardId: string, name: string | null) => void;
   /** Another page of this phone took over; this link has stopped. */
   readonly onReplaced: () => void;
   readonly onConfig: (config: CameraConfig) => void;
@@ -48,10 +47,9 @@ export class CameraLink {
   private previews = false;
 
   constructor(private readonly options: CameraLinkOptions) {
-    const { deviceId, board, onAssigned, onReplaced, onConfig, onPreviews, onLink, onRefused, ...socket } =
-      options;
+    const { deviceId, onAssigned, onReplaced, onConfig, onPreviews, onLink, onRefused, ...socket } = options;
     this.socket = new ReconnectingSocket(
-      { ...socket, url: socket.url ?? wsUrl(cameraSocket(deviceId, board)) },
+      { ...socket, url: socket.url ?? wsUrl(cameraSocket(deviceId)) },
       {
         onOpen: () => {
           this.sent = null;
@@ -69,7 +67,7 @@ export class CameraLink {
           const message = parsed.value;
           switch (message.type) {
             case 'assigned':
-              onAssigned(message.board_id);
+              onAssigned(message.board_id, message.name ?? null);
               break;
             case 'config':
               onConfig(message.config);

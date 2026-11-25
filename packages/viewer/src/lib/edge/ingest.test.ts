@@ -49,6 +49,7 @@ function connected(): { client: IngestClient; sockets: FakeSocket[] } {
 
 const frame = (extra: Partial<Parameters<IngestClient['sendFrame']>[0]> = {}) => ({
   boardId: 'phone',
+  deviceId: 'kitchen-phone-id',
   captureTs: 1_754_560_800.5,
   stability: 0.9,
   burstId: null,
@@ -82,7 +83,8 @@ describe('the two-frame ingest wire', () => {
       stability: 0.9,
       sharpness: null,
       clock: 'none',
-      burst_id: 'phone:b0'
+      burst_id: 'phone:b0',
+      device_id: 'kitchen-phone-id'
     });
     // Every key the schema states, so the node's strict `FrameHeader` accepts it.
     expect(FrameHeader.safeParse(header).success).toBe(true);

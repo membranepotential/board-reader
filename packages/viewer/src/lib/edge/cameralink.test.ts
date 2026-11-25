@@ -17,7 +17,7 @@ const LIVE: CameraReport = {
 beforeEach(() => vi.stubGlobal('location', { href: 'https://viewer.test/page' }));
 afterEach(() => vi.unstubAllGlobals());
 
-function link(board: string | null = null) {
+function link() {
   const net = fakeNetwork();
   const onAssigned = vi.fn();
   const onReplaced = vi.fn();
@@ -26,7 +26,6 @@ function link(board: string | null = null) {
   const onLink = vi.fn();
   const camera = new CameraLink({
     deviceId: 'kitchen-phone-id',
-    board,
     ...net.options,
     onAssigned,
     onReplaced,
@@ -47,14 +46,16 @@ describe('the phone link', () => {
     expect(net.sockets[0]!.texts).toEqual([{ type: 'report', report: REPORT }]);
   });
 
-  it('asks for the board the page names, and takes the one the node assigns', () => {
-    const { net, camera, onAssigned } = link('left');
+  it('takes the board id the node assigns, and the name /control gives it', () => {
+    const { net, camera, onAssigned } = link();
     camera.start();
-    expect(net.sockets[0]!.url).toMatch(/\/ws\/cameras\/kitchen-phone-id\?board=left$/);
     net.sockets[0]!.open();
-    net.sockets[0]!.deliver({ type: 'assigned', board_id: 'board-2' });
-    net.sockets[0]!.deliver({ type: 'assigned', board_id: 'table' }); // renamed on /control
-    expect(onAssigned.mock.calls).toEqual([['board-2'], ['table']]);
+    net.sockets[0]!.deliver({ type: 'assigned', board_id: 'board-2', name: null });
+    net.sockets[0]!.deliver({ type: 'assigned', board_id: 'board-2', name: 'kitchen' }); // renamed
+    expect(onAssigned.mock.calls).toEqual([
+      ['board-2', null],
+      ['board-2', 'kitchen']
+    ]);
   });
 
   it('stops for good when another page of this phone takes over', () => {

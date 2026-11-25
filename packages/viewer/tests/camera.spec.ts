@@ -61,7 +61,7 @@ class FakeControl {
         }
       });
       // What the node says to a phone that has just connected.
-      ws.send(JSON.stringify({ type: 'assigned', board_id: node.boardId }));
+      ws.send(JSON.stringify({ type: 'assigned', board_id: node.boardId, name: null }));
       ws.send(JSON.stringify({ type: 'config', config: node.config }));
       ws.send(JSON.stringify({ type: 'previews', on: node.watched }));
     });
@@ -81,10 +81,9 @@ class FakeControl {
     this.socket?.send(JSON.stringify({ type: 'config', config: this.config }));
   }
 
-  /** The control UI renamed this camera: the node tells the phone at once. */
-  rename(boardId: string): void {
-    this.boardId = boardId;
-    this.socket?.send(JSON.stringify({ type: 'assigned', board_id: boardId }));
+  /** The control UI named this camera: the node tells the phone at once; the id stays. */
+  rename(name: string): void {
+    this.socket?.send(JSON.stringify({ type: 'assigned', board_id: this.boardId, name }));
   }
 
   /** Another page of this phone connected: the node says so, then closes this one. */
@@ -121,7 +120,7 @@ test.describe('a dumb camera', () => {
     await expect(page.getByTestId('camera-status')).toContainText('board board-1');
   });
 
-  test('keeps its device id across a reload, and streams under the board id the node renames it to', async ({
+  test('keeps its device id across a reload, and streams under its board id when named', async ({
     page
   }) => {
     const node = await openCamera(page);
@@ -134,10 +133,14 @@ test.describe('a dumb camera', () => {
 
     node.configure({ streaming: true });
     await expect.poll(() => node.headers.at(-1)?.['board_id'], { timeout: 8_000 }).toBe('board-1');
-    // Renamed on /control: the next frames name the new board, with no reload.
+    // Every frame names this phone, so the node can refuse one under another's board.
+    expect(node.headers.at(-1)?.['device_id']).toBe(device);
+    // Named on /control: the page shows the name; the frames keep the board id.
     node.rename('table');
-    await expect(page.getByTestId('camera-status')).toContainText('board table');
-    await expect.poll(() => node.headers.at(-1)?.['board_id'], { timeout: 8_000 }).toBe('table');
+    await expect(page.getByTestId('camera-status')).toContainText('table (board board-1)');
+    const sent = node.headers.length;
+    await expect.poll(() => node.headers.length, { timeout: 8_000 }).toBeGreaterThan(sent);
+    expect(node.headers.at(-1)?.['board_id']).toBe('board-1');
   });
 
   test('stands down when another page of the same phone takes over', async ({ page }) => {

@@ -1,8 +1,7 @@
 /**
  * Two phones and a control page against one node (`helpers/cameras.ts`): the node
  * assigns each phone its board id, keeps it across a reload and a node restart,
- * renames it from /control, and refuses a phone that asks for an id another camera
- * holds. Each phone is its own browser context, so its own `localStorage`, so its
+ * names it from /control without changing the id, and forgets a disconnected one. Each phone is its own browser context, so its own `localStorage`, so its
  * own device id, exactly as two phones are.
  */
 
@@ -43,7 +42,7 @@ test('each phone gets its own board, and keeps it across a reload', async ({ bro
   await expect(rows(control).nth(1)).toContainText('connected');
 });
 
-test('a rename on /control reaches the phone at once and survives a reconnect and a restart', async ({
+test('a rename on /control names the camera, keeps its board id and survives a restart', async ({
   browser,
   baseURL
 }) => {
@@ -53,51 +52,61 @@ test('a rename on /control reaches the phone at once and survives a reconnect an
   await expect(status(phone)).toContainText('board board-2');
   const control = await open(browser, baseURL, node, '/control');
 
-  // By position: while it is edited, the row's id is an input's value, not its text.
+  // By position: while it is edited, the row's name is an input's value, not its text.
   const row = rows(control).nth(1);
   await expect(row).toContainText('board-2');
   await row.getByRole('button', { name: 'Rename' }).click();
-  await row.getByRole('textbox').fill('left');
+  await row.getByRole('textbox').fill('kitchen table');
   await row.getByRole('button', { name: 'Save' }).click();
 
-  await expect(status(phone)).toContainText('board left');
-  await expect(rows(control).filter({ hasText: 'left' })).toHaveCount(1);
-  // Picked on /control, the renamed camera's controls talk to its new board.
-  await rows(control).filter({ hasText: 'left' }).getByRole('button', { name: 'left' }).click();
-  await expect(control.locator('header')).toContainText('board left');
+  await expect(status(phone)).toContainText('kitchen table (board board-2)');
+  await expect(rows(control).filter({ hasText: 'kitchen table' })).toHaveCount(1);
+  await rows(control).filter({ hasText: 'kitchen table' }).getByRole('button', { name: 'kitchen table' }).click();
+  await expect(control.locator('header')).toContainText('camera kitchen table · board board-2');
+  // The frames still name the board id, and now the phone that sends them.
   await control.getByRole('button', { name: 'Start streaming' }).click();
-  await expect.poll(() => node.headers.at(-1)?.['board_id'], { timeout: 8_000 }).toBe('left');
-
-  await phone.reload();
-  await liveViewfinder(phone);
-  await expect(status(phone)).toContainText('board left');
+  await expect.poll(() => node.headers.at(-1)?.['board_id'], { timeout: 8_000 }).toBe('board-2');
+  expect(node.headers.at(-1)?.['device_id']).toBe([...node.boards].find(([, b]) => b === 'board-2')?.[0]);
 
   node.restart();
   await expect(status(phone)).toContainText('node connected');
-  await expect(status(phone)).toContainText('board left');
-  await expect(rows(control).filter({ hasText: 'left' })).toContainText('connected');
+  await expect(status(phone)).toContainText('kitchen table (board board-2)');
+
+  // Another camera's name or board id is refused, and said on /control.
+  const first = rows(control).nth(0);
+  await first.getByRole('button', { name: 'Rename' }).click();
+  await first.getByRole('textbox').fill('board-2');
+  await first.getByRole('button', { name: 'Save' }).click();
+  await expect(control.getByRole('alert')).toContainText('the node refused: board-2 is taken by camera kitchen table');
 });
 
-test('a phone asking for a board another camera holds is refused, and both pages say so', async ({
+test('a disconnected camera can be forgotten after a confirm; a connected one cannot', async ({
   browser,
   baseURL
 }) => {
   const node = new FakeCameraNode();
-  await open(browser, baseURL, node, '/camera');
-  const second = await open(browser, baseURL, node, '/camera?board=board-1');
-
+  const first = await open(browser, baseURL, node, '/camera');
+  const second = await open(browser, baseURL, node, '/camera');
   await expect(status(second)).toContainText('board board-2');
-  await expect(status(second)).toContainText('board-1 is taken by camera');
   const control = await open(browser, baseURL, node, '/control');
-  await expect(rows(control).filter({ hasText: 'board-2' }).locator('[data-warning="refused-board"]')).toContainText(
-    'asked for board-1'
-  );
+  await expect(rows(control)).toHaveCount(2);
 
-  // Renaming to an id another camera holds is refused on /control as well.
-  const row = rows(control).nth(1);
-  await row.getByRole('button', { name: 'Rename' }).click();
-  await row.getByRole('textbox').fill('board-1');
-  await row.getByRole('button', { name: 'Save' }).click();
-  await expect(row.getByRole('alert')).toContainText('not renamed: board-1 is taken by camera');
-  await expect(status(second)).toContainText('board board-2');
+  const forgetFirst = rows(control).nth(0).getByRole('button', { name: 'Forget' });
+  await expect(forgetFirst).toBeDisabled();
+  await expect(control.getByText('A connected camera cannot be forgotten')).toBeVisible();
+
+  await first.context().close();
+  await expect(rows(control).nth(0)).toContainText('not connected');
+  let asked = '';
+  control.once('dialog', (dialog) => {
+    asked = dialog.message();
+    void dialog.accept();
+  });
+  await forgetFirst.click();
+  await expect(rows(control)).toHaveCount(1);
+  expect(asked).toContain('Forget camera board-1?');
+
+  // Its id is free again: the next new phone gets it.
+  const third = await open(browser, baseURL, node, '/camera');
+  await expect(status(third)).toContainText('board board-1');
 });

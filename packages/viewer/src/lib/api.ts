@@ -206,12 +206,11 @@ export function boardFrameUrl(boardId: string, bust: string | number): string {
 // ---- the camera control channel ----------------------------------------------
 
 /**
- * The phone's socket, by its device id (`WS /cameras/{device_id}` on the node).
- * `board` asks the node for that board id; without it the node assigns one.
+ * The phone's socket, by its device id (`WS /cameras/{device_id}` on the node), which
+ * assigns the phone its board id.
  */
-export function cameraSocket(deviceId: string, board: string | null = null): string {
-  const path = `/ws/cameras/${encodeURIComponent(deviceId)}`;
-  return board === null ? path : `${path}?board=${encodeURIComponent(board)}`;
+export function cameraSocket(deviceId: string): string {
+  return `/ws/cameras/${encodeURIComponent(deviceId)}`;
 }
 
 /** The control UI's list of every known camera (`WS /cameras` on the node). */
