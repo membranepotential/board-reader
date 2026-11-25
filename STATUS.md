@@ -46,8 +46,7 @@ confidences**. No moves, no legality, no PGN — those belong to the downstream 
 
 1. **Resting-hand re-test** (you): rest a hand on the board mid-game; no wrong board, "hand?" chip shows.
 2. **Motion meter over the board only** — 45/60 gate moves wait for the 2 s idle read (report `0ada93d`).
-3. **Record more varied games** — second set, second camera, other light. All gate takes are one
-   set; the settle defaults are fitted to it.
+3. **Record more varied games** — second set/camera/light; all gate takes are one set.
 4. **Model the remaining HTTP replies in core** (`/estimate`, `/uploads`, `/labels`, the `/ingest`
    ack) so they are generated too.
 5. **Idea, parked:** fully on-phone portable app — [docs/on-phone-app.md](docs/on-phone-app.md).
