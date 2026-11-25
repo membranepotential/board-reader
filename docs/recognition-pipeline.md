@@ -30,7 +30,7 @@ The code, in order:
 | Read | `recognizer.frame_reader` | Hands the frame's whole image to the recognizer. Any `corners` an older edge or recording still sends are ignored. |
 | Model | `chessq.ChessQRecognizer` | Resizes the BGR frame to 644×644 (aspect ignored, `INTER_AREA`), RGB, ImageNet-normalised; runs the ONNX model; softmaxes the `logits` output into protocol class order. The second output, `direction`, is not used. |
 | Event | `recognizer.event_from_dist` | Builds the position event (`PositionEvent`) from the distribution, uncalibrated, always `status: ok` (DESIGN D1). |
-| Settle | `stabilize.BoardStabilizer` | Holds a board until it has read the same for the settle window; a streamed event publishes it as `placement` (`with_placement`), with `pending` where the read disagrees. Under the board's `rules: standard` it never commits a board more impossible than the one it holds (`rules.py`: at most one king per colour, piece-count and promotion budgets, DESIGN D14); `square_dist` stays the model's own. |
+| Settle | `settle.stabilizer.BoardStabilizer` | Holds a board until it has read the same for the settle window; a streamed event publishes it as `placement` (`with_placement`), with `pending` where the read disagrees. Under the board's `rules: standard` it never commits a board more impossible than the one it holds (`rules.py`: at most one king per colour, piece-count and promotion budgets, DESIGN D14); `square_dist` stays the model's own. |
 
 ## The recognizer seam
 

@@ -2,7 +2,7 @@
 
 Three line generations are read (:func:`_boards`), and a recording made before the
 node settled gets its settled board **derived** here, by replaying the same
-:class:`~board_reader_inference.stream.stabilize.BoardStabilizer` the gateway now
+:class:`~board_reader_inference.stream.settle.stabilizer.BoardStabilizer` the gateway now
 runs live; the report says so, because a replayed number is not a recorded one.
 """
 
@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from board_reader_core.protocol import GRID, encode_placement
 from board_reader_core.recording import EVENTS_NAME, Recording
 
-from board_reader_inference.stream.stabilize import BoardStabilizer
+from board_reader_inference.stream.settle.stabilizer import BoardStabilizer
 
 SQUARES = GRID * GRID
 
@@ -145,7 +145,7 @@ def derive_settled(events: list[RecordedEvent]) -> list[str]:
     """Replay :class:`BoardStabilizer` over a board's events, in order.
 
     What the gateway does live, for recordings that predate it doing so. Fed the
-    read, exactly as the live path feeds it (see :mod:`.stabilize`), and
+    read, exactly as the live path feeds it (see :mod:`~board_reader_inference.stream.settle.stabilizer`), and
     fed **every** event including the ones scoring will exclude — the gateway saw
     those too, and a debounce that skipped them would settle differently.
     """

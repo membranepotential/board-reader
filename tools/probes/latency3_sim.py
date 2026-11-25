@@ -6,7 +6,7 @@
 
 ``CACHE_DIR`` holds ``latency3_cache.py``'s per-frame ChessQ reads. Nothing here
 re-implements the node: the schedule is ``schedule.policies.BurstTriggered``, the debounce
-``stabilize.BoardStabilizer`` (and its guard, ``rules.excess``), the orientation
+``settle.stabilizer.BoardStabilizer`` (and its guard, ``rules.excess``), the orientation
 check ``ingest.OrientationGuard``, and the phone's sending is the edge's
 ``AdaptiveForwarder``, the Python mirror of ``lib/edge/motion.ts``. Only their
 parameters change, through their constructors.
@@ -63,11 +63,8 @@ from board_reader_inference.measurement.trial.truth import SessionTruth, load_tr
 from board_reader_inference.stream.ingest import OrientationGuard
 from board_reader_inference.stream.schedule.constants import EXIT_HOLD_S
 from board_reader_inference.stream.schedule.policies import BurstTriggered
-from board_reader_inference.stream.stabilize import (
-    OBSCURED_ENERGY,
-    BoardStabilizer,
-    SettleConfig,
-)
+from board_reader_inference.stream.settle.config import OBSCURED_ENERGY, SettleConfig
+from board_reader_inference.stream.settle.stabilizer import BoardStabilizer
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from gate_table import GATE_TAKES

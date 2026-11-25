@@ -199,7 +199,7 @@ class ChangeClock:
         """Log this read and return the ``changed_utc`` (as capture seconds) to publish.
 
         ``read`` is the read's own board, ``settled`` the stabilizer's board after it,
-        ``changed_ts`` the stabilizer's :attr:`~.stabilize.BoardStabilizer.changed_ts`,
+        ``changed_ts`` the stabilizer's :attr:`~.settle.stabilizer.BoardStabilizer.changed_ts`,
         and ``held`` the board's :meth:`FrameRing.snapshot` taken for this read.
         """
         if self._reads and seq <= self._reads[-1].seq:

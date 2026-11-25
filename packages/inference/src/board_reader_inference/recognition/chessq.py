@@ -40,7 +40,7 @@ logits; the frame's is the mean of its :data:`ENERGY_TOP` highest squares. A han
 on the board pulls a few squares at its edge up, so the frame's value rises while
 the covered squares still read "empty" at p >= 0.96. The settle debounce refuses to
 commit on a frame above its threshold
-(:attr:`~board_reader_inference.stream.stabilize.SettleConfig.obscured_energy`;
+(:attr:`~board_reader_inference.stream.settle.config.SettleConfig.obscured_energy`;
 docs/reports/2026-11-24-hand-signal-probe.md). The int8 file has the same output,
 so both release files report it. The value lives on the logit scale, so the
 threshold belongs to one model release.

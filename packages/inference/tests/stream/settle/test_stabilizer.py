@@ -3,6 +3,16 @@
 from __future__ import annotations
 
 import pytest
+from _settle_builders import (
+    E4,
+    E4_D5,
+    E4_GONE_A2,
+    E4_GONE_B8,
+    E4_LIFTED,
+    EXD5,
+    GONE_B8,
+    SWAP,
+)
 
 from board_reader_core.protocol import (
     START_PLACEMENT,
@@ -12,24 +22,13 @@ from board_reader_core.protocol import (
     pending_squares,
 )
 
-from board_reader_inference.stream.rules import violation
-from board_reader_inference.stream.stabilize import (
-    OBSCURED_ENERGY,
-    BoardStabilizer,
-    SettleConfig,
-    balanced_squares,
-)
+from board_reader_inference.stream.settle.config import SettleConfig
+from board_reader_inference.stream.settle.rules import violation
+from board_reader_inference.stream.settle.stabilizer import BoardStabilizer
 
-#: START_PLACEMENT after 1.e4 — one real move, two squares changed.
-E4 = "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR"
 #: A phantom: the trial's hallucinated black rook on b6. Note it is *impossible*
 #: — 17 black pieces — so the guard keeps it off the settled board.
 PHANTOM_B6 = "rnbqkbnr/pppppppp/1r6/8/8/8/PPPPPPPP/RNBQKBNR"
-#: The other flicker a hand makes, and a possible board: b8 briefly occluded.
-GONE_B8 = "r1bqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR"
-#: The k/q swap the 08-27 control take coin-flipped into: d8 k, e8 q.
-#: Possible on its own — it is only ever *half* of it that is not.
-SWAP = "rnbkqbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR"
 #: The same reading with d8 misread as empty: e8 still k, d8 no longer q.
 D8_EMPTY = "rnb1kbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR"
 #: Two black kings — what composing halves of START and SWAP produces.
@@ -148,76 +147,6 @@ def test_zero_window_still_needs_min_reads():
     assert stab.observe(GONE_B8, 2.0) == GONE_B8
 
 
-def test_rejects_nonsensical_parameters():
-    with pytest.raises(ValueError):
-        SettleConfig(seconds=-1.0)
-    with pytest.raises(ValueError):
-        SettleConfig(seconds=float("nan"))
-    with pytest.raises(ValueError):
-        SettleConfig(min_reads=0)
-    with pytest.raises(ValueError):
-        SettleConfig(stale_windows=0)
-    for energy in (float("nan"), float("inf"), -float("inf")):
-        with pytest.raises(ValueError):
-            SettleConfig(obscured_energy=energy)
-
-
-def test_settle_config_from_env_keeps_unset_knobs_at_their_defaults():
-    assert SettleConfig.from_env({"BR_SETTLE_SECONDS": "1.5", "BR_SETTLE_MIN_READS": ""}) == (
-        SettleConfig(seconds=1.5)
-    )
-    assert SettleConfig.from_env({}) == SettleConfig()
-    assert SettleConfig.from_env(
-        {"BR_SETTLE_SECONDS": "0.5", "BR_SETTLE_MIN_READS": "1", "BR_SETTLE_STALE_WINDOWS": "3"}
-    ) == SettleConfig(seconds=0.5, min_reads=1, stale_windows=3)
-    assert SettleConfig.from_env({"BR_OBSCURED_ENERGY": "-11.5"}) == (
-        SettleConfig(obscured_energy=-11.5)
-    )
-    assert SettleConfig.from_env({"BR_OBSCURED_ENERGY": "off"}) == (
-        SettleConfig(obscured_energy=None)
-    )
-
-
-@pytest.mark.parametrize(
-    "env",
-    [
-        {"BR_SETTLE_SECONDS": "fast"},
-        {"BR_SETTLE_MIN_READS": "1.5"},
-        {"BR_SETTLE_STALE_WINDOWS": "0"},
-        {"BR_OBSCURED_ENERGY": "high"},
-        {"BR_OBSCURED_ENERGY": "nan"},
-    ],
-)
-def test_a_malformed_settle_env_fails_loudly(env):
-    with pytest.raises(ValueError):
-        SettleConfig.from_env(env)
-
-
-def test_settle_config_names_itself_for_a_replay_directory():
-    assert SettleConfig().is_default
-    config = SettleConfig(seconds=1.5, min_reads=1, stale_windows=3)
-    assert not config.is_default
-    assert config.slug == "settle1.5s-1r-3w"
-    assert config.to_dict() == {
-        "settle_seconds": 1.5,
-        "settle_min_reads": 1,
-        "stale_windows": 3,
-        "obscured_energy": OBSCURED_ENERGY,
-    }
-    assert SettleConfig(obscured_energy=-12.0).slug == "settle0.3s-2r-2w-e-12"
-    assert SettleConfig(obscured_energy=-12.25).slug == "settle0.3s-2r-2w-e-12.25"
-    assert SettleConfig(obscured_energy=None).slug == "settle0.3s-2r-2w-eoff"
-
-
-def test_a_read_is_obscured_only_above_the_threshold():
-    config = SettleConfig(obscured_energy=-12.4)
-    assert config.obscures(-12.0)
-    assert not config.obscures(-12.4)  # strictly above, as the probe gated
-    assert not config.obscures(-13.0)
-    assert not config.obscures(None)  # a recognizer that reports no energy
-    assert not SettleConfig(obscured_energy=None).obscures(0.0)  # the gate is off
-
-
 def test_a_piece_that_only_vanished_never_commits_on_an_obscured_read():
     """The resting hand: reads under it agree on a wrong board for longer than the
     window, and none of them commits, because the knight left b8 for no other
@@ -259,105 +188,6 @@ def test_an_obscured_first_read_is_still_adopted():
     """No settled board exists to hold, so the first read is the board (and the
     clear reads that follow displace whatever it got wrong)."""
     assert BoardStabilizer().observe(GONE_B8, 0.0, obscured=True) == GONE_B8
-
-
-#: E4 with a hand over b8: the move in plain view, one piece hidden elsewhere.
-E4_GONE_B8 = "r1bqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR"
-#: E4 with a hand over a2: the hidden piece is a white pawn, like the moved one.
-E4_GONE_A2 = "rnbqkbnr/pppppppp/8/8/4P3/8/1PPP1PPP/RNBQKBNR"
-#: After 1.e4 d5, then 2.exd5, and that capture half done (the pawn in the hand).
-E4_D5 = "rnbqkbnr/ppp1pppp/8/3p4/4P3/8/PPPP1PPP/RNBQKBNR"
-EXD5 = "rnbqkbnr/ppp1pppp/8/3P4/8/8/PPPP1PPP/RNBQKBNR"
-E4_LIFTED = "rnbqkbnr/ppp1pppp/8/3p4/8/8/PPPP1PPP/RNBQKBNR"
-#: White ready to castle short, castled, and the king moved with the rook to follow.
-CAN_CASTLE = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQK2R"
-CASTLED = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQ1RK1"
-KING_ONLY = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQ2KR"
-#: White's e5 pawn takes d5 en passant, and a white pawn promotes on a8.
-EP_BEFORE = "rnbqkbnr/ppp1pppp/8/3pP3/8/8/PPPP1PPP/RNBQKBNR"
-EP_AFTER = "rnbqkbnr/ppp1pppp/3P4/8/8/8/PPPP1PPP/RNBQKBNR"
-PROMOTE_BEFORE = "4k3/P7/8/8/8/8/8/4K3"
-PROMOTE_AFTER = "Q3k3/8/8/8/8/8/8/4K3"
-
-
-def _squares(*names: str) -> list[tuple[int, int]]:
-    """Algebraic names -> the stabilizer's (row, column) squares."""
-    return [(8 - int(name[1]), "abcdefgh".index(name[0])) for name in names]
-
-
-def _balanced(settled: str, read: str) -> set[tuple[int, int]]:
-    """``balanced_squares`` with every differing square ripe."""
-    was, now = parse_placement(settled), parse_placement(read)
-    ripe = [(r, c) for r in range(8) for c in range(8) if was[r][c] != now[r][c]]
-    return set(balanced_squares(was, now, ripe))
-
-
-@pytest.mark.parametrize(
-    ("settled", "read", "squares"),
-    [
-        (START_PLACEMENT, E4, ("e2", "e4")),  # a move
-        (E4_D5, EXD5, ("e4", "d5")),  # a capture: the pawn left e4 and stands on d5
-        (CAN_CASTLE, CASTLED, ("e1", "g1", "h1", "f1")),  # castling: two groups
-        (START_PLACEMENT, GONE_B8, ()),  # a piece that only vanished
-        (GONE_B8, START_PLACEMENT, ()),  # a piece that only appeared
-        (START_PLACEMENT, SWAP, ()),  # two pieces misread as each other: no square emptied
-        (START_PLACEMENT, E4_GONE_B8, ("e2", "e4")),  # the move, not the hidden knight
-        (START_PLACEMENT, E4_GONE_A2, ()),  # two pawns left, one arrived: which one moved?
-        (CAN_CASTLE, KING_ONLY, ("e1", "g1")),  # the king's group balances on its own
-        (EP_BEFORE, EP_AFTER, ("e5", "d6")),  # en passant: the captured pawn only vanished
-        (PROMOTE_BEFORE, PROMOTE_AFTER, ()),  # a promotion: a pawn vanished, a queen appeared
-    ],
-)
-def test_balanced_squares_are_the_pieces_that_left_one_square_for_another(
-    settled, read, squares
-):
-    assert _balanced(settled, read) == set(_squares(*squares))
-
-
-def test_balanced_squares_looks_at_ripe_squares_only():
-    """A group is judged on what is ripe: the move's target alone is a piece that
-    only appeared, however clearly the read shows the source empty too."""
-    was, now = parse_placement(START_PLACEMENT), parse_placement(E4)
-    assert balanced_squares(was, now, _squares("e4")) == []
-    assert balanced_squares(was, now, []) == []
-
-
-def test_committing_balanced_squares_never_raises_the_excess():
-    """Why an obscured commit needs no guard: per piece the count stays the same
-    and a capture only removes a piece. Seeded boards from a small alphabet, so
-    that kings, pawns and queens sit at their limits; each read makes a few moves
-    and a few misreads. Adopting the whole read does raise the excess on the same
-    boards, so the generator reaches the conditions."""
-    import random
-
-    rng = random.Random(20261125)
-    alphabet = ["empty"] * 6 + list("KkPpQqNn")
-    cells = [(r, c) for r in range(2) for c in range(8)]
-    pad = [["empty"] * 8 for _ in range(6)]
-
-    def total(grid: list[list[str]]) -> int:
-        return violation(encode_placement(grid)).total
-
-    committed = whole_read_raises = 0
-    for _ in range(1000):
-        was = [[rng.choice(alphabet) for _ in range(8)] for _ in range(2)] + pad
-        now = [row[:] for row in was]
-        for _ in range(rng.randint(1, 3)):  # moves and captures
-            (r0, c0), (r1, c1) = rng.sample(cells, 2)
-            now[r1][c1], now[r0][c0] = now[r0][c0], "empty"
-        for _ in range(rng.randint(0, 2)):  # misreads
-            r, c = rng.choice(cells)
-            now[r][c] = rng.choice(alphabet)
-        ripe = [(r, c) for r, c in cells if was[r][c] != now[r][c]]
-        taken = balanced_squares(was, now, ripe)
-        after = [row[:] for row in was]
-        for r, c in taken:
-            after[r][c] = now[r][c]
-        committed += bool(taken)
-        whole_read_raises += total(now) > total(was)
-        assert total(after) <= total(was)
-    assert committed > 300
-    assert whole_read_raises > 20
 
 
 def test_a_move_in_plain_view_commits_on_obscured_reads():
@@ -600,7 +430,7 @@ def _excess_rises(build) -> bool:
     """Does any seeded stream ever make the settled board less possible?"""
     import random
 
-    from board_reader_inference.stream.stabilize import _excess
+    from board_reader_inference.stream.settle.stabilizer import _excess
 
     for window in _PROPERTY_WINDOWS:
         for seed in range(_PROPERTY_SEEDS):
@@ -679,7 +509,7 @@ def test_a_blocked_square_is_not_starved_forever():
     the quorum and can never be dragged. Before the deadline this held `k` for
     200 reads / 260 s. It must now land within one window to ripen plus
     STALE_WINDOWS to time out."""
-    from board_reader_inference.stream.stabilize import STALE_WINDOWS
+    from board_reader_inference.stream.settle.config import STALE_WINDOWS
 
     window = 2.5
     stab = BoardStabilizer(SettleConfig(seconds=window))

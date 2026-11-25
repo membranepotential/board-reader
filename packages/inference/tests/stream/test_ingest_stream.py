@@ -482,7 +482,7 @@ def test_each_board_settles_with_the_ingest_settle_config():
     """``FrameIngest(settle=...)`` builds every board's debounce: with a zero
     window and one read, the first changed read settles at once."""
     from board_reader_inference.recognition.recognizer import event_from_dist
-    from board_reader_inference.stream.stabilize import SettleConfig
+    from board_reader_inference.stream.settle.config import SettleConfig
 
     e4 = "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR"
     boards = {0: START_PLACEMENT, 1: e4}
@@ -509,7 +509,7 @@ def test_an_obscured_read_is_published_as_such_and_commits_only_the_move():
     window that commits any changed read at once, the obscured read commits the
     move it shows in plain view and holds the knight a hand hides on b8."""
     from board_reader_inference.recognition.recognizer import event_from_dist
-    from board_reader_inference.stream.stabilize import SettleConfig
+    from board_reader_inference.stream.settle.config import SettleConfig
 
     e4 = "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR"
     e4_gone_b8 = "r1bqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR"

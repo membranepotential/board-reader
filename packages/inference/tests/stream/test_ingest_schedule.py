@@ -44,7 +44,7 @@ from board_reader_inference.stream.ingest import BACKSTOP_SLACK, FrameIngest
 from board_reader_inference.stream.schedule.default import DEFAULT_POLICY_SPEC
 from board_reader_inference.stream.schedule.parse import parse_policy
 from board_reader_inference.stream.schedule.policies import BurstTriggered, EveryFrame
-from board_reader_inference.stream.stabilize import SETTLE_SECONDS
+from board_reader_inference.stream.settle.config import SETTLE_SECONDS
 
 #: Capture seconds between two frames — 10 fps, a plausible in-burst rate.
 DT = 0.1
@@ -122,7 +122,7 @@ def test_a_completed_move_buys_three_spaced_reads_and_nothing_during_the_hand():
     The move runs from frame 5 to 10; the burst ends the shipped node's 0.3 s of calm
     later (``exit_hold_s``, shorter than the edge's ``EXIT_HOLD_S``) at frame 14, which
     owes three reads ``spacing_s=0.3`` apart — 0.6 s of span, at least the
-    :data:`~board_reader_inference.stream.stabilize.SETTLE_SECONDS` a completed move
+    :data:`~board_reader_inference.stream.settle.config.SETTLE_SECONDS` a completed move
     needs before it can settle on its own evidence.
     """
 

@@ -186,7 +186,10 @@ def cmd_replay(args: argparse.Namespace) -> int:
     from board_reader_inference.measurement.replay import render, run
     from board_reader_inference.measurement.trial.truth import TRUTH_NAME, TruthError
     from board_reader_inference.stream.schedule.parse import parse_policy
-    from board_reader_inference.stream.stabilize import SettleConfig, parse_obscured_energy
+    from board_reader_inference.stream.settle.config import (
+        SettleConfig,
+        parse_obscured_energy,
+    )
 
     try:
         # Parsed before anything expensive: a typo in --policy must cost a line of
@@ -339,7 +342,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     from board_reader_inference.measurement.replay import REPLAYS_DIR
     from board_reader_inference.stream.schedule.parse import POLICIES
-    from board_reader_inference.stream.stabilize import GATE_OFF, SettleConfig
+    from board_reader_inference.stream.settle.config import GATE_OFF, SettleConfig
 
     POLICY_DEFAULT = "every-frame"
     POLICY_HELP = "Known: " + "; ".join(

@@ -3,7 +3,7 @@
 **Two streams, scored apart.** A published event carries two boards and they fail
 differently: the read's own board (the argmax of ``square_dist``, recorded as the
 top class of each square's ``evidence``) and the temporal debounce (``placement``,
-:mod:`~board_reader_inference.stream.stabilize`). Scoring them side by side is the
+:mod:`~board_reader_inference.stream.settle.stabilizer`). Scoring them side by side is the
 whole point — it is what says whether the debounce earns its keep on a real
 stream, which no single-photo eval can answer.
 

@@ -12,7 +12,7 @@ no model needed, under three variants:
   off       the energy gate off (every ripe square commits)
   balanced  BoardStabilizer as it ships now: an obscured read commits a ripe piece
             group only when the group is balanced, as many squares lose piece P to
-            "empty" as squares gain P (``stabilize.balanced_squares``)
+            "empty" as squares gain P (``settle.balance.balanced_squares``)
 
 and prints settled perfect / scored, the settled boards that are neither the truth
 nor the previous truth, and the lag from a truth boundary to the first settled
@@ -30,7 +30,7 @@ from board_reader_core.control import DEFAULT_RULES
 from board_reader_core.protocol import encode_placement, parse_placement
 
 from board_reader_inference.measurement.trial.truth import load_truth
-from board_reader_inference.stream.stabilize import BoardStabilizer
+from board_reader_inference.stream.settle.stabilizer import BoardStabilizer
 
 ROOT = Path(__file__).resolve().parents[2] / "recordings"
 EMPTY = parse_placement("8/8/8/8/8/8/8/8")[0][0]

@@ -14,7 +14,7 @@ through today's recognizer and writes fresh events. That is this module.
 :func:`~board_reader_inference.recognition.recognizer.frame_reader` read the ``/ingest``
 worker runs, the same
 :func:`~board_reader_inference.stream.ingest._settle_read` (guard ->
-:class:`~board_reader_inference.stream.stabilize.BoardStabilizer` -> change clock), and the same
+:class:`~board_reader_inference.stream.settle.stabilizer.BoardStabilizer` -> change clock), and the same
 :func:`~board_reader_inference.stream.ingest.event_line` writer. A replayed event is
 what the gateway *would* have published; a second implementation of any of those
 three would make the comparison meaningless.
@@ -50,7 +50,7 @@ a difference in the code or the models, which is the entire point.
 The same split applies to the derived rows: the timing block of a replayed report
 is not the live one (it reads a denser stream), and the settled row settles off a
 different read rate. The debounce is time-windowed rather than count-based
-precisely so that stays as comparable as it can be (see :mod:`.stabilize`) — but
+precisely so that stays as comparable as it can be (see :mod:`~board_reader_inference.stream.settle.stabilizer`) — but
 "as comparable as it can be" is not "the same measurement".
 
 **Output layout.** A replay is written as a *recording-shaped* directory so
@@ -159,11 +159,8 @@ from board_reader_inference.stream.schedule.parse import parse_policy
 from board_reader_inference.stream.schedule.policies import EveryFrame
 from board_reader_inference.stream.schedule.render import policy_slug
 from board_reader_inference.stream.schedule.seam import FramePolicy
-from board_reader_inference.stream.stabilize import (
-    DEFAULT_SETTLE,
-    BoardStabilizer,
-    SettleConfig,
-)
+from board_reader_inference.stream.settle.config import DEFAULT_SETTLE, SettleConfig
+from board_reader_inference.stream.settle.stabilizer import BoardStabilizer
 
 #: Where replays of a recording live, inside the recording they came from — a
 #: benchmark that cannot be traced back to its input is not a benchmark.

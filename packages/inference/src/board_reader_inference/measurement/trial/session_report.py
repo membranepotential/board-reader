@@ -18,7 +18,7 @@ from board_reader_inference.measurement.trial.score import (
 from board_reader_inference.measurement.trial.stats import quantile
 from board_reader_inference.measurement.trial.timing import Timing
 from board_reader_inference.measurement.trial.truth import SessionTruth
-from board_reader_inference.stream.stabilize import SETTLE_MIN_READS, SETTLE_SECONDS
+from board_reader_inference.stream.settle.config import SETTLE_MIN_READS, SETTLE_SECONDS
 
 
 @dataclass

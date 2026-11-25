@@ -34,9 +34,9 @@ exactly never. So every policy in this package reads on a wall of its own: if
 read whatever the meter claims. A stuck meter costs read rate, never reads.
 
 **The interplay with the debounce is the whole design.**
-:class:`~board_reader_inference.stream.stabilize.BoardStabilizer` adopts a changed square
-only after :data:`~board_reader_inference.stream.stabilize.SETTLE_MIN_READS` agreeing
-reads spanning :data:`~board_reader_inference.stream.stabilize.SETTLE_SECONDS` — a
+:class:`~board_reader_inference.stream.settle.stabilizer.BoardStabilizer` adopts a changed square
+only after :data:`~board_reader_inference.stream.settle.config.SETTLE_MIN_READS` agreeing
+reads spanning :data:`~board_reader_inference.stream.settle.config.SETTLE_SECONDS` — a
 *time* window, so that it survives the order-of-magnitude swing in read rate. A
 scheduler that reads once per move therefore never settles anything: one read is
 not a quorum however long you wait. Hence ``burst_end_reads``/``spacing_s``: a
@@ -137,7 +137,7 @@ class BurstTriggered:
     ``burst_end_reads`` / ``spacing_s``
         How much evidence a burst end is worth. One read is enough for the raw
         stream but can never move the settled board:
-        :class:`~board_reader_inference.stream.stabilize.BoardStabilizer` wants
+        :class:`~board_reader_inference.stream.settle.stabilizer.BoardStabilizer` wants
         ``SETTLE_MIN_READS`` reads spanning ``SETTLE_SECONDS``, so a single read
         per move leaves the debounce holding the previous position until the
         keepalive slowly catches up. The shipped three reads 0.3 s apart hand

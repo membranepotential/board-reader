@@ -98,11 +98,8 @@ from board_reader_inference.stream.hub import PositionHub
 from board_reader_inference.stream.schedule.constants import DUE_EPS, ENTER_BURST
 from board_reader_inference.stream.schedule.policies import EveryFrame
 from board_reader_inference.stream.schedule.seam import FramePolicy, ReadKind, stability_of
-from board_reader_inference.stream.stabilize import (
-    DEFAULT_SETTLE,
-    BoardStabilizer,
-    SettleConfig,
-)
+from board_reader_inference.stream.settle.config import DEFAULT_SETTLE, SettleConfig
+from board_reader_inference.stream.settle.stabilizer import BoardStabilizer
 
 log = logging.getLogger(__name__)
 
@@ -338,11 +335,11 @@ def _settle_read(
     :class:`OrientationGuard` sees the read first: a dropped read never
     reaches the debounce, so a misread board cannot start settling.
 
-    The raw read then feeds the board's :class:`.stabilize.BoardStabilizer`, and
+    The raw read then feeds the board's :class:`.settle.stabilizer.BoardStabilizer`, and
     the event is published with the debounced board as its ``placement``
     (:meth:`PositionEvent.with_placement`; ``square_dist`` untouched, so the raw
     board stays its argmax) and the time it last changed as ``changed_utc``: the
-    stabilizer's :attr:`~.stabilize.BoardStabilizer.changed_ts`, back-dated by the
+    stabilizer's :attr:`~.settle.stabilizer.BoardStabilizer.changed_ts`, back-dated by the
     board's :class:`~.backdate.ChangeClock` over ``held``, the board's held frames
     (:meth:`~.backdate.FrameRing.snapshot`, taken when the frame arrived) — safe here
     despite the worker thread because the read worker estimates strictly one
@@ -350,7 +347,7 @@ def _settle_read(
     debounce needs. The
     guard and the clock rely on the same one-at-a-time order. ``rules`` is the
     board's setting for this read. A read whose frame energy the stabilizer's
-    config calls obscured (:meth:`~.stabilize.SettleConfig.obscures`) commits
+    config calls obscured (:meth:`~.settle.config.SettleConfig.obscures`) commits
     only balanced piece groups and is published with ``obscured`` set.
     """
     dropped = guard.check(frame.seq, reading.direction)

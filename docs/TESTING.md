@@ -119,7 +119,7 @@ What's covered today — the main files (`git ls-files 'packages/*/tests/*.py'
 | Edge adapter | `packages/edge/tests/test_adapter.py` | frames → wire envelopes, throttle, **static `--roi` crop, motion measured inside it, no `corners` sent** |
 | **Recognizer seam** | `packages/inference/tests/recognition/test_recognizer.py` | **the stub, the event a distribution becomes, the one frame read, the environment builder and its loud fallback** |
 | **ChessQ** | `packages/inference/tests/recognition/test_chessq.py` | **preprocessing and output mapping on a fake model; one `gpu` test reads a held-out still with the real V6** |
-| **Settle + guard** | `packages/inference/tests/stream/test_stabilize.py`, `test_rules.py` | **the per-square debounce behind a streamed event's `placement`; under `standard` rules a settle never makes the board more impossible (≤1 king per colour, ≤16 pieces, the promotion budget), under `free` it settles whatever the reads agree on** |
+| **Settle + guard** | `packages/inference/tests/stream/settle/` (`test_stabilizer.py`, `test_config.py`, `test_balance.py`, `test_rules.py`) | **the per-square debounce behind a streamed event's `placement`; under `standard` rules a settle never makes the board more impossible (≤1 king per colour, ≤16 pieces, the promotion budget), under `free` it settles whatever the reads agree on** |
 | **Recording format** | `packages/core/tests/test_recording.py` | **byte-exact round trip, corners survive, truncated session still replays, size cap** |
 | **Ingress recording** | `packages/inference/tests/test_recording_ingest.py` | **every `/ingest` frame lands on disk (incl. pre-filter drops); off unless asked; a write failure never breaks the stream** |
 | **Edge camera** | `packages/edge/tests/camera/test_camera_{link,stream,run}.py` | **the device id kept in its state file; the control socket against a fake node (report, assigned, config, previews, `replaced`); yt-dlp resolution (faked), 20 fps sampling, real-time VOD pacing from `--start`, live reconnects; crop, meter rebase and the frames on `/ingest` under the assigned board id with the device id** |
@@ -669,7 +669,7 @@ only appeared, waits for a clear read.
    empty (the failure the gate exists for). `jq -c '[.frame_seq, .obscured]'` on the
    session's `events.ndjson` shows the flag per read.
 
-Automated: `test_stabilize.py` (which squares an obscured read commits, and that the
+Automated: `test_stabilizer.py` and `test_balance.py` (which squares an obscured read commits, and that the
 stale path waits), `test_chessq.py` (the frame energy), `test_ingest_stream.py` (the
 flag reaches the event), `test_server.py` (a move beside a resting hand, through the
 gateway), `tests/live.spec.ts` (the chip).
@@ -953,7 +953,7 @@ same knobs from `BR_SETTLE_SECONDS`, `BR_SETTLE_MIN_READS`,
    Expected: `"settle": {"settle_seconds": 1.0, ...}`; the node log prints
    `settling with {...}`. `BR_SETTLE_MIN_READS=x` makes the node refuse to start.
 
-Automated: `test_stabilize.py` (`SettleConfig`, its env, the deadline),
+Automated: `test_config.py` (`SettleConfig`, its env) and `test_stabilizer.py` (the deadline),
 `test_replay.py` (name, digest, manifest, the CLI flags), `test_ingest_stream.py`
 (each board's debounce, `/healthz`).
 

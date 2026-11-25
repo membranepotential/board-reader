@@ -407,7 +407,7 @@ stream ([report](reports/2026-11-24-prior-backrank.md)).
 
 **Decision.**
 - **The decoder and the `prior` block are gone.** The stabilizer settles the raw read.
-- **The settle guard stays** (`stabilize._excess`, conditions in `stream/rules.py`): a
+- **The settle guard stays** (`settle.stabilizer._excess`, conditions in `stream/settle/rules.py`): a
   commit may not make the settled board more impossible. The conditions hold in any
   position of a standard game, whoever is to move: ≤1 king per colour (0 is fine, a
   hand hides kings), ≤16 pieces per colour, surplus officers plus pawns ≤8 per colour.
@@ -477,7 +477,7 @@ nine moves that were in plain view, one of them for 13 s
 - **A read above `BR_OBSCURED_ENERGY` is obscured** (`SettleConfig.obscured_energy`,
   default −12.4 for ChessQ V6, `off` disables). It starts and extends a square's
   challenger like any read.
-- **An obscured read commits balanced piece groups only** (`stabilize.balanced_squares`).
+- **An obscured read commits balanced piece groups only** (`settle.balance.balanced_squares`).
   Of the read's ripe squares, those of piece P form a group; the group is balanced when
   as many squares lose P to "empty" as gain P. A hand hides pieces, which gives losses
   without gains, so they never balance. A move, a capture and castling balance. A
@@ -887,7 +887,7 @@ commit whose DESIGN.md carried every section with its dated amendments.
 |---|---|---|
 | `board-reader-core` | the shared contract | `protocol` (L3 events, §5), `wire` (L1→L2 frames, §4.5), `control` (camera config and report), `wiremodel` (how those are modelled) and `schema` (their JSON Schema, D13), `recording` (session directories), `sim` (synthetic renders, §6) |
 | `board-reader-edge` | the Python edge ("Pi") | `source` (camera, video, images, synthetic game, recording), `motion` (stability), `forwarder` (adaptive rate), `client` (WebSocket), `adapter` (pacing), `camera/` (the control link, the stream source, the run loop: D19), `cli` (`feed`, `camera`) |
-| `board-reader-inference` | the inference node ("Jetson") | at the root `server` (FastAPI gateway), `cli`, `positions` (headless `/viewer` client); `recognition/`: `recognizer` + `chessq` + `onnxrt` (the read); `stream/`: `ingest` (inbox + workers), `schedule/` (read policy), `stabilize` (debounce), `rules` (its guard's conditions), `hub`; `control/`: `camera/` (the camera control channel); `measurement/`: `replay`, the `evaluate/` and `trial/` packages, `labels`, `calibration` (temperature scaling for eval only) |
+| `board-reader-inference` | the inference node ("Jetson") | at the root `server` (FastAPI gateway), `cli`, `positions` (headless `/viewer` client); `recognition/`: `recognizer` + `chessq` + `onnxrt` (the read); `stream/`: `ingest` (inbox + workers), `schedule/` (read policy), `settle/` (the debounce: `config`, `stabilizer`, `balance`, and `rules`, its guard's conditions), `hub`; `control/`: `camera/` (the camera control channel); `measurement/`: `replay`, the `evaluate/` and `trial/` packages, `labels`, `calibration` (temperature scaling for eval only) |
 | `packages/viewer` (Node) | the viewer: a SvelteKit app whose pages are prerendered, with `/api/*` and `/api/client-log` as routes, served by `server/main.ts`, which adds the `/ws/*` relay and the TLS port (D12) | `src/routes/api`, `server/{main,ws,tls}.ts`; pages `/`, `/camera`, `/control`, `/snapshot` |
 
 **Separation rule.** `edge` and `inference` never import each other; they meet only on

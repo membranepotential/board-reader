@@ -1,6 +1,6 @@
 """Boards no game of standard chess can reach: the conditions the settle guard counts.
 
-:class:`~board_reader_inference.stream.stabilize.BoardStabilizer` composes its
+:class:`~board_reader_inference.stream.settle.stabilizer.BoardStabilizer` composes its
 settled board out of squares that settle one by one, and a naive per-square
 debounce can compose a board no read ever claimed (two black kings, from the two
 halves of a k/q swap). Its guard refuses a commit that makes the settled board

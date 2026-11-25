@@ -120,7 +120,7 @@ is MIT and build-time only — it does not enter the bundle.
 ## 5. The inference node imports python-chess (GPL-3.0-or-later)
 
 `board-reader-inference` depends on **[python-chess](https://github.com/niklasf/python-chess)**
-(PyPI `chess`, `GPL-3.0-or-later`). The settle guard (`stream/rules.py`) counts its
+(PyPI `chess`, `GPL-3.0-or-later`). The settle guard (`stream/settle/rules.py`) counts its
 conditions on a `chess.Board` (DESIGN D14).
 
 - **Our source stays Apache-2.0.** The repository holds no python-chess code; the

@@ -104,12 +104,12 @@ loudly, when `BR_CHESSQ` is unset or names no file.
 its position event, run by `/estimate`, the ingest workers and replay.
 
 **Rules** — a board's settle setting (`CameraConfig.rules`, set on `/control`):
-`standard` keeps the settled board from becoming more impossible (`rules.py`: ≤1 king per
+`standard` keeps the settled board from becoming more impossible (`settle/rules.py`: ≤1 king per
 colour, ≤16 pieces per colour, the promotion budget), `free` turns that guard off for extra
 material or a variant. Until 2026-11-24 a per-read **prior** decoder (`prior.py`) also
 repaired impossible reads; it is gone (DESIGN D14).
 
-**Settled** — the debounced board (`stabilize.py`): the last placement that held for the
+**Settled** — the debounced board (`settle/stabilizer.py`): the last placement that held for the
 settle window. Since 2026-11-24 it is a streamed event's `placement`, with `pending` naming
 the squares where the read (the argmax of `square_dist`) disagrees; before, it rode beside
 the read as a `settled` block (DESIGN D15).

@@ -87,7 +87,7 @@ from board_reader_inference.stream.ingest import Busy, FrameIngest, drop_line, e
 from board_reader_inference.stream.schedule.parse import parse_policy
 from board_reader_inference.stream.schedule.policies import EveryFrame
 from board_reader_inference.stream.schedule.seam import FramePolicy, ReadKind
-from board_reader_inference.stream.stabilize import SettleConfig
+from board_reader_inference.stream.settle.config import SettleConfig
 
 log = logging.getLogger(__name__)
 
@@ -352,7 +352,7 @@ def create_app(
 
     # Streaming ingress (WP-G1/G2): frames are read off the event loop by
     # per-board workers, through the same read ``POST /estimate`` runs.
-    # The debounce's knobs (BR_SETTLE_*; unset keeps stabilize.py's defaults). A
+    # The debounce's knobs (BR_SETTLE_*; unset keeps settle/config.py's defaults). A
     # malformed value fails here, at startup, like a malformed BR_SCHEDULE.
     settle = SettleConfig.from_env()
     if not settle.is_default:

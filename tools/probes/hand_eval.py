@@ -37,7 +37,7 @@ from board_reader_core.recording import Recording
 from board_reader_inference.measurement.trial.events import read_events
 from board_reader_inference.stream.schedule.default import DEFAULT_POLICY_SPEC
 from board_reader_inference.stream.schedule.parse import parse_policy
-from board_reader_inference.stream.stabilize import BoardStabilizer
+from board_reader_inference.stream.settle.stabilizer import BoardStabilizer
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from hand_signals import (

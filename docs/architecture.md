@@ -370,7 +370,7 @@ stateless estimator emits, and precisely the argument for the layer above it.
 
 One narrow exception ships since 08-13: on *streamed* events the gateway publishes a
 settled board as `placement` (DESIGN §5, D15) — a per-square display debounce (an unbroken 0.5 s of
-consistent reads, at least two, `board_reader_inference.stream.stabilize`, never composing a board *less*
+consistent reads, at least two, `board_reader_inference.stream.settle.stabilizer`, never composing a board *less*
 possible than the one it already holds unless the board's `rules` are `free`, and never
 stale by more than ~3 settle windows) over the raw placements, born from the first
 phone trial where a hand mid-move and a coin-flip two-kings read made the live board

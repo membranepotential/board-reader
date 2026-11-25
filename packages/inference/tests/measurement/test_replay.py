@@ -55,7 +55,7 @@ from board_reader_inference.stream.schedule.meter import RESTAMPED_KEY
 from board_reader_inference.stream.schedule.parse import parse_policy
 from board_reader_inference.stream.schedule.policies import BurstTriggered, EveryFrame
 from board_reader_inference.stream.schedule.seam import ReadKind
-from board_reader_inference.stream.stabilize import SETTLE_SECONDS, SettleConfig
+from board_reader_inference.stream.settle.config import SETTLE_SECONDS, SettleConfig
 
 E4 = "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR"
 

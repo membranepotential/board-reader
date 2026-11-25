@@ -1,4 +1,4 @@
-"""Tests for the settle guard's conditions (:mod:`board_reader_inference.stream.rules`)."""
+"""Tests for the settle guard's conditions (:mod:`board_reader_inference.stream.settle.rules`)."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ import pytest
 
 from board_reader_core.protocol import START_PLACEMENT
 
-from board_reader_inference.stream.rules import Violation, excess, violation
+from board_reader_inference.stream.settle.rules import Violation, excess, violation
 
 MIDGAME = "r2qk2r/1b1pbppp/p1n1p3/1ppnP3/5B2/1BNP1N2/PPP2PPP/R2Q1RK1"
 
