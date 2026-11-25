@@ -1,7 +1,7 @@
 /**
  * A stand-in inference node for several phones and a control page at once.
  *
- * It plays `control.camera.CameraRegistry`'s rules on the sockets the pages open,
+ * It plays `control.camera.registry.CameraRegistry`'s rules on the sockets the pages open,
  * from the test process, so two browser contexts (two phones, each with its own
  * `localStorage`, so its own device id) and a control page meet one node:
  *
@@ -14,7 +14,7 @@
  *
  * `restart()` drops every socket and keeps only what the node writes to its config
  * file (the device -> board pairs, the names and the configs), the way a restarted node comes
- * back. The file itself is the Python suite's to test (`test_camera.py`).
+ * back. The file itself is the Python suite's to test (`test_persistence.py`).
  */
 
 import type { BrowserContext, WebSocketRoute } from '@playwright/test';

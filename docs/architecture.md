@@ -100,7 +100,7 @@ inference node, and pushed to the phone, which applies it:
   streaming on `/ws/ingest`. The contract — every message type and its direction — is
   `board_reader_core.control` (each socket direction one union discriminated on
   `type`, in the JSON Schema of `board_reader_core.schema`); the node keeps the state
-  (`control.camera.CameraRegistry`, the single source of truth) and persists each
+  (`control.camera.registry.CameraRegistry`, the single source of truth) and persists each
   board's config to `BR_CAMERA_CONFIG` (`serve` sets `data/camera-config.json`; empty
   keeps it in memory only), so a restart keeps the framing. Each socket's outbox keeps only the
   latest message of each type, so a slow page cannot make the node buffer. The frames

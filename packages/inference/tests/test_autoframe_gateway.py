@@ -1,7 +1,7 @@
 """Auto-frame through the gateway (DESIGN D21): the camera socket, the read queue,
 the crop pushed back and the read published, with a recognizer that finds a board.
 
-The registry's decisions are tested in ``control/test_camera.py`` and the
+The registry's decisions are tested in ``control/camera/test_registry_autoframe.py`` and the
 controller in ``control/autoframe/``; this file checks only the wiring between
 them, ``locate.autoframe`` and the read worker.
 """

@@ -1,7 +1,7 @@
 """Camera identity across the gateway (DESIGN D18): who may stream under a board id,
 and how the live page hears the cameras' names.
 
-The decisions themselves are the registry's (``tests/control/test_camera.py``);
+The decisions themselves are the registry's (``tests/control/camera/test_registry.py``);
 these tests check that ``/ingest`` and ``/viewer`` act on them.
 """
 

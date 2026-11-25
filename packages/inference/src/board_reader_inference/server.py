@@ -17,7 +17,7 @@ Runs on the inference node. Its surfaces:
   camera control channel: each phone's board id and the control UI's config for its
   camera, pushed to the phone; the list of cameras, and each board's state, previews
   and the node's health, pushed to the control UI
-  (:mod:`board_reader_inference.control.camera`). The registry there also decides
+  (:mod:`board_reader_inference.control.camera.registry`). The registry there also decides
   which ``/ingest`` frames a board id takes, and runs Auto-frame (DESIGN D21): the
   full frames it asks the cameras for are located here, on the read worker
   (:func:`~board_reader_inference.recognition.locate.autoframe`), and the result is
@@ -57,13 +57,10 @@ from board_reader_inference.control.autoframe.events import (
 )
 from board_reader_inference.control.autoframe.geometry import FrameProposal, Located
 from board_reader_inference.control.autoframe.tuning import Tuning
-from board_reader_inference.control.camera import (
-    CameraRegistry,
-    FullFrame,
-    NodeStatus,
-    StreamedFrame,
-)
-from board_reader_inference.control.camera import router as camera_router
+from board_reader_inference.control.camera.health import NodeStatus, StreamedFrame
+from board_reader_inference.control.camera.records import FullFrame
+from board_reader_inference.control.camera.registry import CameraRegistry
+from board_reader_inference.control.camera.router import router as camera_router
 from board_reader_inference.measurement.labels import READ_FRAME
 from board_reader_inference.recognition.locate import (
     MIN_R2,

@@ -1,4 +1,4 @@
-"""Camera control on the inference node: per-board config, phone reports, previews.
+"""Every board's camera state, every known camera, and who may stream as which board.
 
 The node holds, per ``board_id``, what the control UI chose for that board's camera
 (:class:`~board_reader_core.control.CameraConfig`), the last thing the camera said
@@ -21,13 +21,8 @@ The registry also decides which ``/ingest`` frames a board id accepts
 (:meth:`CameraRegistry.ingest_refusal`): a board id a camera holds takes frames from
 that camera only, so a stale page or a replay cannot stream into a camera's board.
 
-The configs, the device -> board pairs and the names can outlive a restart: with
-``BR_CAMERA_CONFIG=<path>`` set (``serve`` sets it), every change is written to that
-JSON file and read back at startup, so a node restarted mid-game gives each phone
-its board id back and pushes the same crop, lens, resolution and streaming switch to
-it when it reconnects, and settles each board under the same rules. Unset,
-everything is in memory. Reports, previews and the board direction are always in
-memory: the phone and the recognizer send them again.
+The configs, the device -> board pairs and the names can outlive a restart
+(:mod:`~board_reader_inference.control.camera.persistence`).
 
 The registry also follows each board's **direction** in the image, from the
 recognizer's reads (:meth:`CameraRegistry.observe_direction`): which side White sits
@@ -44,87 +39,43 @@ hands the result back (:meth:`CameraRegistry.autoframe_result`), together with t
 read to publish when there is one.
 
 The registry is the single source of truth, and it **pushes**: every change is
-posted at once to every socket that cares (the message types and their directions
-are :mod:`board_reader_core.control`'s):
-
-* ``WS /cameras/{device_id}`` — the phone. It hears its board id, its config and
-  whether to send previews; it says what the camera is and sends previews. One
-  socket per device: a newer one replaces the older, which hears ``replaced``.
-* ``WS /cameras`` — the control UI's list of every known camera; it sends renames
-  and forgets.
-* ``WS /boards/{board_id}/control`` — each open control page. It hears the state,
-  the previews, the latest received frame and a health tick; it sends configs.
-
-No polling, so no HTTP request per message and nothing to log per message: a
-socket costs one access-log line when it opens.
-
-Each socket gets a :class:`Mailbox` that keeps only the **latest message of each
-type**. Every message here is a snapshot (a config, a state, a picture, a health
-reading), so a slow client that misses an intermediate one loses nothing it needs,
-and no client can make the node buffer without bound.
+posted at once to the :class:`~board_reader_inference.control.camera.mailbox.Mailbox`
+of every socket that cares (the sockets are
+:mod:`board_reader_inference.control.camera.router`'s).
 """
 
 from __future__ import annotations
 
 import asyncio
-import contextlib
-import json
 import logging
-import math
-import os
 import re
-import statistics
 import time
-from collections import deque
-from collections.abc import Callable, Coroutine, Mapping
-from dataclasses import dataclass, field, replace
+from collections.abc import Callable
+from dataclasses import replace
 from itertools import count
-from pathlib import Path
-from typing import Any, ClassVar, Protocol
-
-from fastapi import APIRouter, WebSocket
-from starlette.websockets import WebSocketDisconnect
 
 from board_reader_core.control import (
     DEFAULT_RULES,
     MAX_FULL_FRAME_BYTES,
     AssignedMessage,
     BoardDirection,
-    CameraBoardId,
     CameraConfig,
     CameraEntry,
-    CameraName,
     CameraReport,
-    CamerasDown,
     CamerasMessage,
     ConfigMessage,
     ControlDown,
-    DeviceId,
-    ForgetMessage,
-    FrameMessage,
     FullFrameMessage,
-    HealthMessage,
     PhoneDown,
     PreviewMessage,
     PreviewsMessage,
-    RefusedMessage,
     ReplacedMessage,
-    ReportMessage,
     Rules,
     SendFullFrameMessage,
     StateMessage,
-    WhiteSide,
     camera_name,
-    parse_cameras_message,
-    parse_control_message,
-    parse_phone_message,
-)
-from board_reader_core.control import (
-    device_id as checked_device_id,
 )
 from board_reader_core.protocol import BoardName, NamesMessage
-from board_reader_core.wire import decode_jpeg
-from board_reader_core.wiremodel import parse
 
 from board_reader_inference.control.autoframe.actions import (
     PublishRead,
@@ -147,216 +98,20 @@ from board_reader_inference.control.autoframe.events import (
 from board_reader_inference.control.autoframe.machine import status, step
 from board_reader_inference.control.autoframe.state import AutoFrame
 from board_reader_inference.control.autoframe.tuning import TUNING, Tuning
+from board_reader_inference.control.camera.direction import DirectionTrack
+from board_reader_inference.control.camera.mailbox import Mailbox
+from board_reader_inference.control.camera.persistence import (
+    Saved,
+    config_path,
+    load_state,
+    save_state,
+)
+from board_reader_inference.control.camera.records import BoardCamera, FullFrame, PhoneLink
 
 log = logging.getLogger(__name__)
 
-#: A preview is a small thumbnail; anything bigger is not one.
-MAX_PREVIEW_BYTES = 1_000_000
-
-#: How often a control page hears the health tick (and the latest received frame).
-HEALTH_EVERY_S = 1.0
-
-#: Where each board's config is kept across restarts; unset or empty, nowhere.
-CAMERA_CONFIG_ENV = "BR_CAMERA_CONFIG"
-
-
-class _Message(Protocol):
-    TYPE: ClassVar[str]
-
-    def to_json(self) -> str: ...
-
-
-class Mailbox[M: _Message]:
-    """The messages one socket has yet to send: the latest of each type.
-
-    Posting a type again replaces the pending one and moves it to the back, so
-    messages leave in the order they were last posted.
-    """
-
-    def __init__(self) -> None:
-        self._pending: dict[str, M] = {}
-        self._ready = asyncio.Event()
-
-    def post(self, message: M) -> None:
-        self._pending.pop(message.TYPE, None)
-        self._pending[message.TYPE] = message
-        self._ready.set()
-
-    def take_nowait(self) -> list[M]:
-        taken = list(self._pending.values())
-        self._pending.clear()
-        self._ready.clear()
-        return taken
-
-    async def take(self) -> list[M]:
-        await self._ready.wait()
-        return self.take_nowait()
-
-
-# ---- the configs on disk --------------------------------------------------------------
-
 #: The board id a new camera gets: this prefix and the lowest free number.
 AUTO_BOARD_PREFIX = "board-"
-
-
-@dataclass(frozen=True, slots=True)
-class Saved:
-    """What the node keeps across restarts: each board's config, each device's board
-    and each named device's name."""
-
-    boards: Mapping[str, CameraConfig] = field(default_factory=dict)
-    cameras: Mapping[str, str] = field(default_factory=dict)
-    names: Mapping[str, str] = field(default_factory=dict)
-
-
-def _parse_saved(raw: object) -> Saved:
-    if (
-        not isinstance(raw, dict)
-        or "boards" not in raw
-        or not set(raw) <= {"boards", "cameras", "names"}
-    ):
-        raise ValueError(
-            'expected {"boards": {<board id>: <config>}, "cameras": {<device id>: <board id>}, '
-            '"names": {<device id>: <name>}}'
-        )
-    if not isinstance(raw["boards"], dict):
-        raise ValueError('"boards" is not an object')
-    boards = {
-        str(board_id): CameraConfig.from_dict(_manual_if_cropped(config))
-        for board_id, config in raw["boards"].items()
-    }
-    # A file from before the cameras were known by device has no "cameras": none known
-    # yet; one from before the names has no "names": none named yet.
-    for key in ("cameras", "names"):
-        if not isinstance(raw.get(key, {}), dict):
-            raise ValueError(f'"{key}" is not an object')
-    cameras: dict[str, str] = parse(dict[DeviceId, CameraBoardId], raw.get("cameras", {}))
-    if len(set(cameras.values())) != len(cameras):
-        raise ValueError("two cameras hold one board id")
-    names: dict[str, str] = parse(dict[DeviceId, CameraName], raw.get("names", {}))
-    if not set(names) <= set(cameras):
-        raise ValueError("a name for a camera that is not known")
-    if len(set(names.values())) != len(names):
-        raise ValueError("two cameras have one name")
-    return Saved(boards, cameras, names)
-
-
-def _manual_if_cropped(config: object) -> object:
-    """A config saved before Auto-frame existed (no ``"auto"``) with a crop: that crop
-    was drawn by hand, so it loads with Auto-frame off rather than being replaced."""
-    if isinstance(config, dict) and "auto" not in config and config.get("crop") is not None:
-        return {**config, "auto": False}
-    return config
-
-
-def load_state(path: Path) -> Saved:
-    """What ``save_state`` wrote; nothing saved if there is no file.
-
-    A file that does not parse in full is ignored with a WARNING, never half
-    applied: the node then starts with the defaults (streaming off, no camera
-    known), the same as a node that never had a file.
-    """
-    try:
-        text = path.read_text()
-    except FileNotFoundError:
-        return Saved()
-    except OSError as e:
-        log.warning("ignoring the camera config %s: %s", path, e)
-        return Saved()
-    try:
-        return _parse_saved(json.loads(text))
-    except ValueError as e:
-        log.warning("ignoring the corrupt camera config %s: %s", path, e)
-        return Saved()
-
-
-def save_state(path: Path, saved: Saved) -> None:
-    """Write everything to ``path`` at once: a temporary file, then a rename.
-
-    A crash mid-write leaves the old file whole, never a truncated one.
-    """
-    path.parent.mkdir(parents=True, exist_ok=True)
-    body = {
-        "boards": {board_id: config.to_dict() for board_id, config in saved.boards.items()},
-        "cameras": dict(saved.cameras),
-        "names": dict(saved.names),
-    }
-    tmp = path.with_name(f".{path.name}.tmp")
-    tmp.write_text(json.dumps(body, indent=2) + "\n")
-    os.replace(tmp, path)
-
-
-def _config_path() -> Path | None:
-    raw = os.environ.get(CAMERA_CONFIG_ENV)
-    return Path(raw) if raw else None
-
-
-# ---- which way the board lies ------------------------------------------------------------
-
-#: The running angle is the median of this many latest reads, so one or two odd
-#: reads (a hand over the board) do not move it.
-DIRECTION_READS = 5
-#: The angle settles once that many reads span at least this many seconds of
-#: capture time, so a burst of reads of one scene cannot settle it alone.
-DIRECTION_SETTLE_S = 2.0
-#: A running angle this far from the settled one means the camera moved. ChessQ
-#: reads a fixed camera within about 2 degrees.
-CAMERA_MOVED_DEGREES = 15.0
-
-#: The angle at which White sits on each side (DESIGN D11; :class:`BoardDirection`).
-_SIDES: dict[WhiteSide, float] = {"bottom": 0.0, "left": 90.0, "top": 180.0, "right": -90.0}
-
-
-def _wrap(degrees: float) -> float:
-    """``degrees`` folded into (-180, 180]."""
-    folded = math.remainder(degrees, 360.0)
-    return 180.0 if folded == -180.0 else folded
-
-
-def white_side(degrees: float) -> WhiteSide:
-    """The side White sits on for a board direction: the nearest of the four."""
-    return min(_SIDES, key=lambda side: abs(_wrap(degrees - _SIDES[side])))
-
-
-@dataclass(frozen=True, slots=True)
-class _Read:
-    degrees: float
-    ts: float
-
-
-@dataclass(slots=True)
-class DirectionTrack:
-    """One board's direction: the latest reads and the angle they settled on."""
-
-    reads: deque[_Read] = field(default_factory=lambda: deque(maxlen=DIRECTION_READS))
-    settled: float | None = None
-
-    def observe(self, degrees: float, ts: float) -> None:
-        self.reads.append(_Read(_wrap(degrees), ts))
-        if self.settled is None and len(self.reads) == DIRECTION_READS:
-            stamps = [read.ts for read in self.reads]
-            if max(stamps) - min(stamps) >= DIRECTION_SETTLE_S:
-                self.settled = self.running()
-
-    def running(self) -> float | None:
-        """The median of the latest reads, taken around the newest so it never wraps."""
-        if not self.reads:
-            return None
-        newest = self.reads[-1].degrees
-        offset = statistics.median(_wrap(read.degrees - newest) for read in self.reads)
-        return _wrap(newest + offset)
-
-    def view(self) -> BoardDirection | None:
-        running = self.running()
-        if running is None:
-            return None
-        moved = (
-            self.settled is not None
-            and abs(_wrap(running - self.settled)) > CAMERA_MOVED_DEGREES
-        )
-        return BoardDirection(
-            degrees=round(running, 1), white_side=white_side(running), camera_moved=moved
-        )
 
 
 def _reframed(old: CameraConfig, new: CameraConfig) -> bool:
@@ -370,43 +125,6 @@ def _new_picture(before: CameraReport | None, after: CameraReport) -> bool:
     if before is None or before.frame is None or after.frame is None:
         return False
     return (before.device, before.frame) != (after.device, after.frame)
-
-
-# ---- the registry --------------------------------------------------------------------------
-
-
-@dataclass(slots=True)
-class BoardCamera:
-    """One board's camera state.
-
-    ``autoframe`` is Auto-frame's controller state; its ``auto`` always equals
-    ``config.auto``, which is the persisted copy.
-    """
-
-    config: CameraConfig = field(default_factory=CameraConfig)
-    report: CameraReport | None = None
-    preview: PreviewMessage | None = None
-    direction: DirectionTrack = field(default_factory=DirectionTrack)
-    watchers: set[Mailbox[ControlDown]] = field(default_factory=set)
-    autoframe: AutoFrame = field(default_factory=AutoFrame)
-
-
-@dataclass(frozen=True, slots=True)
-class FullFrame:
-    """A full frame a camera sent for Auto-frame's ``request``, still a JPEG."""
-
-    board_id: str
-    request: int
-    capture_ts: float
-    jpeg: bytes
-
-
-@dataclass(eq=False, slots=True)
-class PhoneLink:
-    """One open phone socket: the device it speaks for and its outbox."""
-
-    device_id: str
-    mailbox: Mailbox[PhoneDown] = field(default_factory=Mailbox)
 
 
 def _natural(board_id: str) -> list[int | str]:
@@ -445,7 +163,7 @@ class CameraRegistry:
         clock: Callable[[], float] = time.monotonic,
         tuning: Tuning = TUNING,
     ) -> None:
-        self._path = _config_path()
+        self._path = config_path()
         saved = Saved() if self._path is None else load_state(self._path)
         held = set(saved.cameras.values())
         orphans = sorted(set(saved.boards) - held)
@@ -853,268 +571,3 @@ class CameraRegistry:
 
     def direction(self, board_id: str) -> BoardDirection | None:
         return self.board(board_id).direction.view()
-
-
-# ---- what the node says about itself on the health tick ----------------------------
-
-
-@dataclass(frozen=True, slots=True)
-class StreamedFrame:
-    """The last frame ``/ingest`` received for a board, as the control UI needs it."""
-
-    seq: int
-    #: Node clock, seconds.
-    received_at: float
-    width: int
-    height: int
-    jpeg: bytes
-
-
-@dataclass(frozen=True, slots=True)
-class NodeStatus:
-    """The node-side facts a health tick reports, for one board."""
-
-    recognizer: str
-    fallback: str | None
-    received: int
-    refused: int
-    frame: StreamedFrame | None
-
-
-@dataclass(frozen=True, slots=True)
-class StreamSample:
-    """One reading of the stream's position, for its rate between two ticks."""
-
-    seq: int
-    at: float
-
-
-def frame_rate(previous: StreamSample | None, current: StreamSample | None) -> float | None:
-    """Frames per second between two samples, from the frame sequence number.
-
-    ``None`` when there is nothing to measure: no earlier sample, no time between
-    them, or a sequence that went backwards (the phone reloaded and began at 0).
-    """
-    if previous is None or current is None:
-        return None
-    dt = current.at - previous.at
-    frames = current.seq - previous.seq
-    return frames / dt if dt > 0 and frames >= 0 else None
-
-
-# ---- the sockets -------------------------------------------------------------------
-
-
-async def _deliver[M: _Message](ws: WebSocket, mailbox: Mailbox[M]) -> None:
-    while True:
-        for message in await mailbox.take():
-            await ws.send_text(message.to_json())
-            if isinstance(message, ReplacedMessage):
-                # The device's newer socket took over: this one closes, said aloud,
-                # because a handler that only returns leaves the socket open.
-                await ws.close(code=1000, reason="replaced")
-                return
-
-
-class _HungUp(Exception):
-    """One of a socket's loops ended: the client hung up (or a send failed)."""
-
-
-async def _ending(loop: Coroutine[Any, Any, None]) -> None:
-    with contextlib.suppress(WebSocketDisconnect):
-        await loop
-    raise _HungUp
-
-
-async def _until_first_ends(*loops: Coroutine[Any, Any, None]) -> None:
-    """Run a socket's loops together; the first to end (a hang-up) ends them all.
-
-    A ``TaskGroup``, not ``asyncio.wait`` plus a hand-rolled cancel: the server (or
-    Starlette's test client) may cancel the handler from outside at any moment, and
-    only the task group keeps that cancellation intact while it stops the loops.
-    """
-    try:
-        async with asyncio.TaskGroup() as group:
-            for loop in loops:
-                group.create_task(_ending(loop))
-    except* _HungUp:
-        pass
-
-
-class _Refusals:
-    """Refuse one message on one socket: tell the client, log each reason once."""
-
-    def __init__(self, socket: str, mailbox: Mailbox[Any]) -> None:
-        self._socket = socket
-        self._mailbox = mailbox
-        self._logged: set[str] = set()
-
-    def __call__(self, reason: str) -> None:
-        self._mailbox.post(RefusedMessage(reason))
-        if reason not in self._logged:
-            self._logged.add(reason)
-            log.warning("refused a message on %s: %s", self._socket, reason)
-
-
-def _parse_preview(jpeg: bytes) -> PreviewMessage:
-    if len(jpeg) > MAX_PREVIEW_BYTES:
-        raise ValueError(f"preview larger than {MAX_PREVIEW_BYTES} bytes")
-    try:
-        image = decode_jpeg(jpeg)
-    except ValueError as e:
-        raise ValueError("preview is not a JPEG") from e
-    height, width = image.shape[:2]
-    return PreviewMessage(jpeg=jpeg, width=width, height=height)
-
-
-def router(
-    registry: CameraRegistry,
-    status: Callable[[str], NodeStatus],
-    clock: Callable[[], float] = time.time,
-) -> APIRouter:
-    """The control sockets. ``status`` reads the node's own facts per board."""
-    api = APIRouter()
-
-    @api.websocket("/cameras/{device_id}")
-    async def phone(ws: WebSocket, device_id: str) -> None:
-        await ws.accept()
-        try:
-            checked_device_id(device_id)
-        except ValueError as e:
-            await ws.send_text(RefusedMessage(str(e)).to_json())
-            await ws.close(code=1008)
-            return
-        link = registry.connect_phone(device_id)
-        refuse = _Refusals(f"/cameras/{device_id[:8]}", link.mailbox)
-
-        async def receive() -> None:
-            # A full frame's header, waiting for its JPEG (the next binary message).
-            header: FullFrameMessage | None = None
-            while True:
-                message = await ws.receive()
-                if message["type"] == "websocket.disconnect":
-                    return
-                try:
-                    jpeg = message.get("bytes")
-                    if jpeg is not None:
-                        answered, header = header, None
-                        if answered is None:
-                            registry.preview(link, _parse_preview(jpeg))
-                        else:
-                            registry.full_frame(link, answered, jpeg)
-                    else:
-                        header = None
-                        match parse_phone_message(message.get("text") or ""):
-                            case ReportMessage(report=report):
-                                registry.report(link, report)
-                            case FullFrameMessage() as answer:
-                                header = answer
-                except ValueError as e:
-                    refuse(str(e))
-
-        try:
-            await _until_first_ends(receive(), _deliver(ws, link.mailbox))
-        finally:
-            registry.disconnect_phone(link)
-
-    @api.websocket("/boards/{board_id}/camera")
-    async def outdated_phone(ws: WebSocket, board_id: str) -> None:
-        """A /camera page from before the phones had device ids: tell it to reload."""
-        await ws.accept()
-        await ws.send_text(RefusedMessage("this /camera page is out of date: reload it").to_json())
-        await ws.close(code=1008)
-
-    @api.websocket("/cameras")
-    async def camera_list(ws: WebSocket) -> None:
-        await ws.accept()
-        changed = registry.connect_list()
-        mailbox: Mailbox[CamerasDown] = Mailbox()
-        refuse = _Refusals("/cameras", mailbox)
-
-        def frame_age(board_id: str) -> float | None:
-            frame = status(board_id).frame
-            return None if frame is None else max(0.0, clock() - frame.received_at)
-
-        async def receive() -> None:
-            while True:
-                message = await ws.receive()
-                if message["type"] == "websocket.disconnect":
-                    return
-                try:
-                    asked = parse_cameras_message(message.get("text") or "")
-                    if isinstance(asked, ForgetMessage):
-                        registry.forget(asked.device_id)
-                    else:
-                        registry.rename(asked.device_id, asked.name)
-                except ValueError as e:
-                    refuse(str(e))
-
-        async def push() -> None:
-            """The list on connect, on every change, and once a second for the ages."""
-            while True:
-                changed.clear()
-                mailbox.post(registry.cameras(frame_age))
-                with contextlib.suppress(TimeoutError):
-                    async with asyncio.timeout(HEALTH_EVERY_S):
-                        await changed.wait()
-
-        try:
-            await _until_first_ends(receive(), _deliver(ws, mailbox), push())
-        finally:
-            registry.disconnect_list(changed)
-
-    @api.websocket("/boards/{board_id}/control")
-    async def control(ws: WebSocket, board_id: str) -> None:
-        await ws.accept()
-        mailbox = registry.connect_watcher(board_id)
-        refuse = _Refusals(f"/boards/{board_id}/control", mailbox)
-
-        async def receive() -> None:
-            while True:
-                message = await ws.receive()
-                if message["type"] == "websocket.disconnect":
-                    return
-                text = message.get("text")
-                if text is None:
-                    refuse("the control socket takes JSON text messages only")
-                    continue
-                try:
-                    registry.configure(board_id, parse_control_message(text).config)
-                except ValueError as e:
-                    refuse(str(e))
-
-        async def tick() -> None:
-            sample: StreamSample | None = None
-            shown: float | None = None  # received_at of the last frame sent
-            while True:
-                node = status(board_id)
-                now = clock()
-                frame = node.frame
-                current = None if frame is None else StreamSample(seq=frame.seq, at=now)
-                mailbox.post(
-                    HealthMessage(
-                        recognizer=node.recognizer,
-                        fallback=node.fallback,
-                        received=node.received,
-                        refused=node.refused,
-                        frame_age_s=None if frame is None else max(0.0, now - frame.received_at),
-                        fps=frame_rate(sample, current),
-                        direction=registry.direction(board_id),
-                    )
-                )
-                sample = current
-                if frame is not None and frame.received_at != shown:
-                    shown = frame.received_at
-                    mailbox.post(
-                        FrameMessage(
-                            seq=frame.seq, jpeg=frame.jpeg, width=frame.width, height=frame.height
-                        )
-                    )
-                await asyncio.sleep(HEALTH_EVERY_S)
-
-        try:
-            await _until_first_ends(receive(), _deliver(ws, mailbox), tick())
-        finally:
-            registry.disconnect_watcher(board_id, mailbox)
-
-    return api

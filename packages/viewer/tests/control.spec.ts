@@ -11,7 +11,7 @@
  * The node is a stateful fake on the control socket: it pushes its state, a
  * preview, a received frame and a health tick on connect, and takes a `configure`
  * as the new config and pushes the new state back, the way
- * `control.camera.CameraRegistry` does. Its camera list names one phone, on
+ * `control.camera.registry.CameraRegistry` does. Its camera list names one phone, on
  * `board-1`; two phones against one node, and renaming, are `cameras.spec.ts`'s.
  */
 
