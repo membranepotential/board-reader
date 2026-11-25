@@ -23,9 +23,10 @@ Together those lose roughly 1 frame in 150 *under load*, which is why this only
 ever bit the parallel (``make test``) runs. The two symptoms are the same bug:
 
 * ``GET /boards/{id}`` 404s where the test expects 200 — a visible flake;
-* a test that reads the retained latest off ``WS /viewer`` **blocks forever**,
-  because nothing was ever published and ``receive_text()`` has no timeout. That
-  is the whole-suite hang that has cost several sessions.
+* a test that reads the retained latest off ``WS /viewer`` waits for an event
+  nobody publishes. Starlette's ``receive_text()`` has no timeout, so that was the
+  whole-suite hang that cost several sessions; tests now read sockets through
+  ``_socket_reads`` (5 s) and pytest-timeout fails a test after 10 s.
 
 :func:`gateway` and :func:`drain_ingest` remove both. ``gateway`` keeps one portal
 — one event loop — for the client's whole life, so workers outlive their socket

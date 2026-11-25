@@ -11,7 +11,6 @@ confidences**. No moves, no legality, no PGN — those belong to the downstream 
 
 - **device id = board id** — the camera's UUID is its board id; `board-N` only the default name;
   drop the device→board table (D18 amended) — running (agent I).
-- **bounded socket reads** — ~60 unbounded `receive_text()` in 15 test files → one 5 s helper — running (agent R, Sonnet).
 - **file splits DONE** (Sonnet): snapshot page `84ecbc0`, `measurement/{trial,evaluate}/` `a815f91`, `control/camera/`
   `878f80a`, `stream/schedule/` `bbef6b2`, `stream/settle/` `8dcc248`; gate identical. Next round: `replay.py`, `ingest.py`, `server.py`,
   /control + /camera pages, core `control.py`, `camera/registry.py` (573: extract the auto-frame driver).
