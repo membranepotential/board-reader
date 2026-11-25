@@ -22,6 +22,7 @@
    * so the motion chip's animation is switched off once the card is stale.
    */
   import Board from '#lib/board/Board.svelte';
+  import Card from '#lib/components/Card.svelte';
   import { gridToFen } from '#lib/board/fen.ts';
   import { RATE_WINDOW_MS, STALE_MS, formatAge } from '#lib/stores/liveness.ts';
   import type { BoardLiveness, BoardState } from '#lib/stores/positions.svelte.ts';
@@ -49,8 +50,8 @@
   const motion = $derived(liveness.motion);
 </script>
 
-<div class="board-card" class:stale={liveness.stale}>
-  <h2>
+<Card class="board-card" stale={liveness.stale}>
+  {#snippet heading()}
     <span class="label" data-board={board.id}>
       {#if label === board.id}
         board {board.id}
@@ -86,7 +87,7 @@
       {/if}
       <span class="status {event.status}">{event.status}</span>
     </span>
-  </h2>
+  {/snippet}
 
   <div class="card-body">
     <FramePreview
@@ -125,26 +126,9 @@
       <GamePanel {event} board={label} />
     </GameDrawer>
   </div>
-</div>
+</Card>
 
 <style>
-  .board-card {
-    background: #1b1f26;
-    border: 1px solid #272b33;
-    border-radius: 10px;
-    padding: 14px;
-  }
-  .board-card.stale {
-    border-color: #4a3a22;
-  }
-  h2 {
-    font-size: 14px;
-    margin: 0 0 10px;
-    display: flex;
-    justify-content: space-between;
-    gap: 12px;
-    align-items: center;
-  }
   .board-id {
     font-weight: 400;
     font-size: 12px;
@@ -196,7 +180,7 @@
     color: #ff9a9a;
   }
   /* A stream that dies mid-move must not pulse "moving" forever. */
-  .board-card.stale .motion-chip {
+  :global(.board-card.stale) .motion-chip {
     opacity: 0.45;
     animation: none;
   }
@@ -225,8 +209,8 @@
   .meta > :not(.live) {
     transition: filter 150ms linear;
   }
-  .board-card.stale .board-wrap,
-  .board-card.stale .meta > :not(.live) {
+  :global(.board-card.stale) .board-wrap,
+  :global(.board-card.stale) .meta > :not(.live) {
     filter: saturate(0.15) brightness(0.62);
   }
   .board-actions {
