@@ -18,6 +18,7 @@ from __future__ import annotations
 import asyncio
 import io
 import json
+import math
 import os
 import time
 
@@ -141,12 +142,14 @@ def _events(result: ReplayResult) -> list[dict]:
 
 
 def test_settles_on_recorded_time_not_wall_time(source):
-    """The debounce window is 2.5 RECORDED seconds, even in a millisecond replay.
+    """The debounce window is ``SETTLE_SECONDS`` of RECORDED time, even in a
+    millisecond replay.
 
     The whole reason a replay is worth running: the stabilizer is fed each frame's
-    ``capture_ts``, so a settle that takes 2.5 s live takes 2.5 s of recording
-    here — five frames at 0.5 s apart — while the replay itself finishes in
-    milliseconds. A wall-clock stabilizer would settle on the very next read.
+    ``capture_ts``, so a settle that takes the window live takes the window of
+    recording here — the first frame 0.5 s apart that reaches it — while the replay
+    itself finishes in milliseconds. A wall-clock stabilizer would settle on the
+    very next read.
     """
     # Every frame from seq 1 on reads e4; seq 0 is the board the stream adopts.
     read = ScriptedRead(dict.fromkeys(range(1, 8), E4))
@@ -156,10 +159,10 @@ def test_settles_on_recorded_time_not_wall_time(source):
 
     settled = [e["placement"] for e in _events(result)]
     assert settled[0] == START_PLACEMENT
-    # seq 1 is the first e4 read (t0 + 0.5s); the window closes at t0 + 3.0s,
-    # which is seq 6 — SETTLE_SECONDS after the challenger first appeared.
+    # seq 1 is the first e4 read (t0 + 0.5s); the window closes on the first frame
+    # at least SETTLE_SECONDS after the challenger first appeared.
     first_e4 = 1
-    window_frames = int(SETTLE_SECONDS / FRAME_DT)
+    window_frames = math.ceil(SETTLE_SECONDS / FRAME_DT)
     assert settled[first_e4 + window_frames - 1] == START_PLACEMENT
     assert settled[first_e4 + window_frames] == E4
     # The board changed when e4 was first read, not when the window closed: an
@@ -167,7 +170,7 @@ def test_settles_on_recorded_time_not_wall_time(source):
     events = _events(result)
     assert events[first_e4 + window_frames]["changed_utc"] == events[first_e4]["utc"]
     assert events[first_e4 + window_frames - 1]["changed_utc"] == events[0]["utc"]
-    # And it did not take 2.5 s of anybody's wall clock to get there.
+    # And it did not take the window of anybody's wall clock to get there.
     assert elapsed < SETTLE_SECONDS
 
 

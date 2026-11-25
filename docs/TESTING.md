@@ -519,8 +519,9 @@ node packages/viewer/server/main.ts --host 0.0.0.0 --port 8080 --tls-port 8443
    (The stub reads no direction, so the line stays `—` without the ChessQ weights.)
 9. Open the live page `http://localhost:8080` and move a piece. Expected: a burst on the
    phone (fps rises to ~12 while the hand moves) and the new position on the live page
-   about two seconds after the hand leaves (three burst-end reads 0.3 s apart, then the
-   0.5 s settle; in the offline sweep the mean from hand leaving to settled was 1.7 s).
+   about a second after the hand leaves (0.3 s of calm ends the burst, then two of the
+   three burst-end reads 0.3 s apart fill the 0.3 s settle window; on live take 2 the
+   median from move to settled was 0.94 s, [latency round 3](reports/2026-11-25-latency-round3.md)).
 10. Press **Stop streaming** on `/control`. Expected: the phone's status line reads
     `not streaming` within ~1 s, and no new frames reach the node.
 
@@ -776,7 +777,8 @@ label is only as good as the estimator that produced it):
 > [!important] Live event streams are SPARSE — pick `guard_seqs` for the schedule,
 > not for the camera
 > Since the move-trigger milestone the node does **not** publish one event per
-> frame. `BR_SCHEDULE` defaults to `burst-end:keepalive_s=2,burst_end_reads=3,spacing_s=0.3`:
+> frame. `BR_SCHEDULE` defaults to
+> `burst-end:keepalive_s=2,burst_end_reads=3,spacing_s=0.3,exit_hold_s=0.3`:
 > three reads 0.3 s apart when a move finishes, then one every 2 s while the board
 > rests — far fewer events than the frames that arrived
 > ([the 08-27 sweep](reports/2026-08-27-move-trigger-sweep.md), [the settle tuning](reports/2026-11-24-settle-tuning.md)). `frames.ndjson` is
@@ -1033,8 +1035,8 @@ eval and replays are all in the chess frame.
    chess frame).
 4. Run `make gate GATE_NAME=<new-name>` on an idle GPU. Expected: seven
    `replaying ...` lines (about two minutes in all), then the gate table
-   `energy → <new-name>` with a total row. An unchanged pipeline prints every
-   cell once (no `→`): 341/361 raw, 314/361 settled perfect. For a board whose
+   `latency3 → <new-name>` with a total row. An unchanged pipeline prints every
+   cell once (no `→`): 374/405 raw, 350/405 settled perfect. For a board whose
    rules are `free`, add `GATE_FLAGS="--rules free"`.
    `uv run python tools/gate_table.py tkr-shipped cq-v6` prints the adoption gate.
 

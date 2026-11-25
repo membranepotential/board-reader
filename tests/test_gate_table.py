@@ -68,7 +68,8 @@ def test_a_missing_replay_is_named(recordings):
 def test_the_gate_is_the_seven_documented_takes_and_the_pre_fix_ones_restamp(capsys):
     """08-13 and the three held-out takes predate the motion-meter fix."""
     assert gate.main(["--replay-args"]) == 0
-    served = "--policy burst-end:keepalive_s=2,burst_end_reads=3,spacing_s=0.3"  # serve's default
+    # serve's default
+    served = "--policy burst-end:keepalive_s=2,burst_end_reads=3,spacing_s=0.3,exit_hold_s=0.3"
     assert capsys.readouterr().out.splitlines() == [
         f"20260813-193308 {served} --restamp-stability",
         f"20260827-175539 {served}",

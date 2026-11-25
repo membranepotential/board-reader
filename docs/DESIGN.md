@@ -194,7 +194,10 @@ The edge forwards a low **keepalive** at rest (~1 fps) and a **burst** during mo
 both forwarders (the Python edge and the phone's `motion.ts`) keep the burst rate for
 a **tail** of `tail_s` = 1 s, as rest frames (`burst_id` null), because the node reads
 the first calm frames after a move and would otherwise wait ~1 s for each keepalive
-frame ([latency round 2](reports/2026-11-24-latency-round2.md)). Each frame carries
+frame ([latency round 2](reports/2026-11-24-latency-round2.md)). The edge ends a burst
+after 0.7 s of calm (`EXIT_HOLD_S`); the node's scheduler ends it after 0.3 s, so its
+burst-end reads land in the frames the edge still sends densely through its hold and
+tail ([latency round 3](reports/2026-11-25-latency-round3.md)). Each frame carries
 its capture time and `seq` (D5). D4's other half, board detection and rectification on
 the edge, is superseded by D11 (see [Superseded decisions](#superseded-decisions)).
 
@@ -471,6 +474,10 @@ Both lost boards are settle lag (111421, 181802), not a wrong board. On take 2 t
 resting-hand stretch goes from 13/22 to 22/22 settled perfect and from 9 wrong boards to 0,
 and the whole take from 80/94 to 88/94.
 
+The shorter calm hold and settle window of
+[latency round 3](reports/2026-11-25-latency-round3.md) (0.3 s each, §5) rely on this
+gate: with `off` they let hands settle, so `off` needs round 2's settings back.
+
 **Rejected.** Dropping obscured reads (15 gate boards lost: a mid-move read with the
 hand on the piece says something true, so dropping it delays every move by a read);
 holding single high-energy squares (half-adopted moves, 20 not-lag wrong boards);
@@ -498,7 +505,7 @@ commit whose DESIGN.md carried every section with its dated amendments.
 | **Autorotate by chess plausibility** (`?autorotate=1`: fewest pawns on ranks 1/8) | The recognizer resolves orientation (locked decision #15). | [V6 gate](reports/2026-11-24-chessq-v6-replay-gate.md) | `git show 7f56f58:docs/DESIGN.md` (§4.6) |
 | **D8's "occluded squares get low confidence"; the optional burst voter** (§4.2, §4.4; the voter was never built) | D8 as rewritten: burst-end reads plus the settle debounce. | [settle tuning](reports/2026-11-24-settle-tuning.md) | `git show 7f56f58:docs/DESIGN.md` (D8, §4.4) |
 | **Corner-carrying frames** (`corners` on every wire frame; `POST /estimate?corners=`) | `corners` is a legacy wire field: still parsed so old recordings replay, never sent, ignored. `/estimate` takes the photo alone. | plan, Phase B–C | `git show 7f56f58:docs/DESIGN.md` (§4.5) |
-| **The ~2.5 s / 2-read settle window and the one-read `burst-end` schedule; then 1.0 s with three reads 0.6 s apart** | 0.5 s / 2 reads / 2 stale windows, with `burst-end:keepalive_s=2,burst_end_reads=3,spacing_s=0.3` and the forwarder tail (D4). | [settle tuning](reports/2026-11-24-settle-tuning.md); [live latency](reports/2026-11-24-live-latency.md); [latency round 2](reports/2026-11-24-latency-round2.md) | `git show 53c1468:docs/DESIGN.md` (§5) |
+| **The ~2.5 s / 2-read settle window and the one-read `burst-end` schedule; then 1.0 s with three reads 0.6 s apart; then 0.5 s with the edge's 0.7 s calm hold** | 0.3 s / 2 reads / 2 stale windows, with `burst-end:keepalive_s=2,burst_end_reads=3,spacing_s=0.3,exit_hold_s=0.3`, the forwarder tail (D4) and the energy gate (D16). | [settle tuning](reports/2026-11-24-settle-tuning.md); [live latency](reports/2026-11-24-live-latency.md); [latency round 2](reports/2026-11-24-latency-round2.md); [latency round 3](reports/2026-11-25-latency-round3.md) | `git show 53c1468:docs/DESIGN.md` (§5); `git show 0ada93d:docs/DESIGN.md` (§5) |
 | **The hard-constraint prior decoder** (`stream/prior.py`, `PositionEvent.prior`, `/estimate`'s repair, `eval --no-prior`, the trial's `prior` stream) | D14: the settle guard alone, with a per-board `rules` switch. | [prior report](reports/2026-11-24-prior-backrank.md) | `git show f5cc37e:packages/inference/src/board_reader_inference/stream/prior.py` |
 | **Old §7 milestones M1/M5 and §8 work packages WP-A, WP-B, WP-E as written for the DINOv2 pipeline** | §7 and §8 below, with a status per item. | — | `git show 7f56f58:docs/DESIGN.md` (§7, §8) |
 
@@ -557,8 +564,9 @@ the wire. `core` imports neither. `tests/test_layer_separation.py` enforces it.
    (§5; at most 5/s per board, always on a change), and puts the frame in the board's
    **latest-wins inbox**. Of two waiting frames the inbox keeps the sharper one.
 4. The board's worker takes the frame and asks the scheduler whether it is due. The
-   default policy is `burst-end:keepalive_s=2,burst_end_reads=3,spacing_s=0.3`: three
-   reads 0.3 s apart at the end of a motion burst, and a read whenever 2 s of capture
+   default policy is `burst-end:keepalive_s=2,burst_end_reads=3,spacing_s=0.3,exit_hold_s=0.3`:
+   a burst ends after 0.3 s of calm (the edge's own hold is 0.7 s), then three
+   reads 0.3 s apart, and a read whenever 2 s of capture
    time passed without one (the keepalive floor; 3 s until the
    [live latency report](reports/2026-11-24-live-latency.md), 1 s let hands settle). A wall-clock backstop covers a frozen
    `capture_ts`. `BR_SCHEDULE` overrides the policy.
@@ -690,7 +698,7 @@ every message in this section is `board_reader_core.schema`'s). One event per re
   four decimals can tie two classes.
 - **The settle rules** (streamed frames only) — the settled `placement` is a display
   debounce of the reads. A square
-  changes only after it held the same class on every read across **0.5 s** and **≥2
+  changes only after it held the same class on every read across **0.3 s** and **≥2
   reads**. Under the board's `rules: standard` (D14) a settlement is committed only if
   it does not make the board less possible than it already is (≤1 king per colour,
   ≤16 pieces per colour, the promotion budget); a square blocked that way gives up after **2 windows** and the
@@ -701,9 +709,16 @@ every message in this section is `board_reader_core.schema`'s). One event per re
   104/119 settled perfect, 110/119 raw, median move-to-settle 3.0 s; with the 2 s
   keepalive 138/154 and 2.0 s, [live latency](reports/2026-11-24-live-latency.md); with
   three reads 0.3 s apart and the 0.5 s window 140/156 and ~0.6 s from burst end to
-  settled, [latency round 2](reports/2026-11-24-latency-round2.md)). The window must
-  stay strictly between the burst-end spacing and the run's span (0.3 < 0.5 ≤ 0.6):
-  in the sweep a window that two reads span let a hand settle in 19 of 30 configs.
+  settled, [latency round 2](reports/2026-11-24-latency-round2.md); with the node's
+  0.3 s calm hold and the 0.3 s window 350/405, median move-to-settle 3.12 → 2.70 s on
+  the gate and 1.66 → 0.94 s on live take 2,
+  [latency round 3](reports/2026-11-25-latency-round3.md)). The window must stay
+  between the burst-end spacing and the run's span (0.3 ≤ 0.3 ≤ 0.6), and may equal the
+  spacing (two reads span it) **only with the energy gate on** (D16): with the gate off
+  the shipped settings let hands settle (6 on the gate takes, 12 wrong boards while a
+  hand rests on take 2), and round 2, before the gate, saw a two-read window leak a hand
+  in 19 of 30 configs. Nothing falls back by itself; `BR_OBSCURED_ENERGY=off` needs
+  round 2's 0.5 s window and 0.7 s node hold set by hand (runbook).
   This is not the downstream smoother (D3): it uses no move model and no legality; a
   consumer running its own smoother takes the reads from `square_dist`. The live
   viewer draws `placement`; it marks `pending` squares with dashed amber rings and
@@ -835,9 +850,10 @@ What is open now, in rough order:
   a local copy; ChessCam v2 behind the same seam as the hedge. No commercial use.
 - **Hands read as confident empties (D8).** ChessQ gives p ≥ 0.96 to an empty under an
   arm, so confidence cannot flag occlusion. The burst-end scheduler and the `settled`
-  debounce absorb it on the gate (no hand frame settles). A settle window at or below
-  the burst-end spacing lets hands through (19 of 30 swept configs leaked one; the
-  shipped 3 × 0.3 s with 0.5 s leaked none), and so would a stuck motion meter; the
+  debounce absorb it on the gate (no hand frame settles). Without the energy gate
+  (D16) a settle window at or below the burst-end spacing lets hands through (19 of
+  30 swept configs leaked one in round 2; the shipped 0.3 s hold and 0.3 s window leak
+  6 on the gate with the gate off, none with it on), and so would a stuck motion meter; the
   08-13 take settling all its boards is the guard. A hand resting still over the board
   reads as rest and can settle under any window
   ([latency round 2](reports/2026-11-24-latency-round2.md)).

@@ -203,9 +203,9 @@ def test_settle_config_names_itself_for_a_replay_directory():
         "stale_windows": 3,
         "obscured_energy": OBSCURED_ENERGY,
     }
-    assert SettleConfig(obscured_energy=-12.0).slug == "settle0.5s-2r-2w-e-12"
-    assert SettleConfig(obscured_energy=-12.25).slug == "settle0.5s-2r-2w-e-12.25"
-    assert SettleConfig(obscured_energy=None).slug == "settle0.5s-2r-2w-eoff"
+    assert SettleConfig(obscured_energy=-12.0).slug == "settle0.3s-2r-2w-e-12"
+    assert SettleConfig(obscured_energy=-12.25).slug == "settle0.3s-2r-2w-e-12.25"
+    assert SettleConfig(obscured_energy=None).slug == "settle0.3s-2r-2w-eoff"
 
 
 def test_a_read_is_obscured_only_above_the_threshold():

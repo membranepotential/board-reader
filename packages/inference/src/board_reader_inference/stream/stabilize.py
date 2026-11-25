@@ -74,16 +74,27 @@ from board_reader_inference.stream.rules import excess
 
 #: How long a square must read as the same new class before the settled board
 #: adopts it. With the shipped schedule's burst-end run (three reads 0.3 s apart,
-#: spanning 0.6 s) that is a three-read quorum, so a move settles 0.6 s after its
-#: burst ends. Swept 2026-11-24 twice: over 0-2.5 s (docs/reports/2026-11-24-settle-tuning.md;
+#: after a 0.3 s calm hold) two reads span it, so a move settles 0.3 s after its
+#: burst ends. Swept three times: over 0-2.5 s (docs/reports/2026-11-24-settle-tuning.md;
 #: 2.5 s, sized for the old crop stack's noisy reads, mostly bought lag), then
-#: 0.3-1.0 s against the 0.2-0.6 s spacings the forwarder's tail makes possible.
-#: 0.5 s settled no hand on the gate takes with or without the tail; a window at
-#: or below the spacing (two reads) is the knife edge where hands began to settle.
+#: 0.3-1.0 s against the 0.2-0.6 s spacings the forwarder's tail makes possible
+#: (round 2 chose 0.5 s: with the energy gate not yet built, a window at or below
+#: the spacing let hands settle), then 0-0.5 s with the energy gate on
+#: (docs/reports/2026-11-25-latency-round3.md): 0.3 s settled no hand in any cell
+#: and cut live take 2's median move-to-settle from 1.66 s to 0.94 s together with
+#: the schedule's 0.3 s hold.
+#:
+#: **This window relies on the energy gate** (:data:`OBSCURED_ENERGY`,
+#: ``BR_OBSCURED_ENERGY``, DESIGN D16), not on its own length, to keep hands out:
+#: with the gate off, the round-3 settings let hands settle (6 on the gate takes,
+#: 12 wrong boards in take 2's resting-hand stretch). Nothing falls back by
+#: itself: with ``BR_OBSCURED_ENERGY=off``, return to round 2's settings with
+#: ``BR_SETTLE_SECONDS=0.5`` and the schedule's ``exit_hold_s=0.7``.
+#:
 #: Shorter than one hand crossing (~1 s) on purpose: a hand the motion meter sees
 #: is never read (the schedule skips bursts), and a hand resting still on the
-#: board for seconds reads as rest at ANY window up to the 2 s keepalive.
-SETTLE_SECONDS = 0.5
+#: board is what the energy gate catches.
+SETTLE_SECONDS = 0.3
 
 #: And never on fewer than this many consistent reads, however slow the stream —
 #: at one read per window the debounce would otherwise be a pass-through. It is

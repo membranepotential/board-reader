@@ -57,12 +57,15 @@ reads spanning :data:`~board_reader_inference.stream.stabilize.SETTLE_SECONDS` �
 scheduler that reads once per move therefore never settles anything: one read is
 not a quorum however long you wait. Hence ``burst_end_reads``/``spacing_s``: a
 burst end can be worth two or three reads a beat apart, which hands the debounce
-its quorum 0.6 s after the burst end instead of never. Sparsity and settling pull
+its quorum 0.3 s after the burst end instead of never. Sparsity and settling pull
 against each other and the pair of knobs is where the trade is made.
 
 The client-side burst thresholds are mirrored here value for value (see
 :data:`ENTER_BURST`), because a policy that segments bursts differently from the
-edge that forwarded them would be reasoning about a stream nobody sent.
+edge that forwarded them would be reasoning about a stream nobody sent. The one
+deliberate exception is the calm hold: the shipped node ends a burst after 0.3 s of
+calm, the phone after its 0.7 s (:data:`EXIT_HOLD_S`), so the node's burst-end run
+reads frames the phone is still sending at burst rate. See :data:`DEFAULT_POLICY_SPEC`.
 """
 
 from __future__ import annotations
@@ -86,9 +89,16 @@ from board_reader_core.recording import FrameEntry
 #: other pair would describe bursts that never happened.
 ENTER_BURST = 0.7
 EXIT_BURST = 0.85
-#: Sustained calm before a burst is declared over. The pause between two strides
-#: of one move is shorter than this; splitting there would call the middle of a
-#: move a move-complete moment.
+#: Sustained calm before the *edge* declares a burst over — the phone's
+#: ``EXIT_HOLD_S`` in ``motion.ts`` and the Python edge's
+#: ``ForwarderConfig.exit_hold_s``, mirrored here as :class:`BurstTriggered`'s
+#: default. The edge's hold only decides how long it keeps sending at burst rate:
+#: through this hold and then its 1 s tail. The shipped node holds for a shorter
+#: 0.3 s (``exit_hold_s`` in :data:`DEFAULT_POLICY_SPEC`), so its burst-end run
+#: lands inside that dense stretch and a move settles ~0.4 s sooner. The hold has
+#: a floor: at 0.1 s a burst ends in the pause between two strides of one move
+#: (a lifted king settled on live take 2), which is what this hold exists for
+#: (docs/reports/2026-11-25-latency-round3.md).
 EXIT_HOLD_S = 0.7
 
 #: Float slack, so an interval due "exactly now" is not missed by a rounding bit
@@ -345,15 +355,19 @@ class BurstTriggered:
         :class:`~board_reader_inference.stream.stabilize.BoardStabilizer` wants
         ``SETTLE_MIN_READS`` reads spanning ``SETTLE_SECONDS``, so a single read
         per move leaves the debounce holding the previous position until the
-        keepalive slowly catches up. The shipped three reads 0.3 s apart span
-        0.6 s and hand it the quorum at the third, 0.6 s after the burst end
-        (:data:`DEFAULT_POLICY_SPEC`). That needs the edge to keep sending densely
+        keepalive slowly catches up. The shipped three reads 0.3 s apart hand
+        the 0.3 s window its quorum at the second, 0.3 s after the burst end, and the
+        round-3 sweep kept the third (:data:`DEFAULT_POLICY_SPEC`). That needs the edge to keep sending densely
         after its burst ends (the forwarder's tail), or the run waits on keepalive
         frames instead.
 
     ``enter`` / ``exit`` / ``exit_hold_s``
-        The burst hysteresis, defaulted to the client's own constants. Tune only
-        together with the forwarder — they describe the same bursts.
+        The burst hysteresis, defaulted to the client's own constants. Tune
+        ``enter``/``exit`` only together with the forwarder — they describe the
+        same bursts. ``exit_hold_s`` may be shorter than the edge's hold (the
+        shipped spec uses 0.3 s against the phone's 0.7 s), because the edge keeps
+        sending densely through its own hold and tail, so a shorter node hold
+        still finds the frames its run reads.
 
     The state is capture-time only and the policy is otherwise pure, so replaying
     a recording twice schedules the identical frames.
@@ -545,16 +559,29 @@ POLICIES: Mapping[str, type] = {
 }
 
 #: What the live gateway schedules with unless ``BR_SCHEDULE`` says otherwise —
-#: ``BurstTriggered(keepalive_s=2.0, burst_end_reads=3, spacing_s=0.3)``. Only the
+#: ``BurstTriggered(keepalive_s=2.0, burst_end_reads=3, spacing_s=0.3,
+#: exit_hold_s=0.3)``. Only the
 #: non-default parameters appear, because a spec states what was *asked for* (see
 #: :func:`_spec`); the class defaults (:data:`DEFAULT_KEEPALIVE_S` among them) stay
 #: put so every recorded spec string still rebuilds the run it names.
 #:
-#: Three reads 0.3 s apart span 0.6 s, just over ``SETTLE_SECONDS=0.5``, so a
-#: completed move settles on the burst end's own evidence 0.6 s after the burst
-#: ends — provided the frames are there: the edge forwarder keeps its burst rate
-#: for ``tail_s`` (1 s) after a burst, because at the keepalive's 1 fps each of
-#: these reads waited ~1 s for a frame (2026-11-24 live take 2).
+#: The burst ends after 0.3 s of calm, and three reads 0.3 s apart follow. Two of
+#: them span ``SETTLE_SECONDS=0.3``, so a completed move settles on the burst
+#: end's own evidence 0.3 s after the burst ends — provided the frames are there:
+#: the edge forwarder keeps its burst rate through its own 0.7 s hold
+#: (:data:`EXIT_HOLD_S`) and then ``tail_s`` (1 s), because at the keepalive's
+#: 1 fps each of these reads waited ~1 s for a frame (2026-11-24 live take 2).
+#:
+#: **Round 3 (2026-11-25, docs/reports/2026-11-25-latency-round3.md)** shortened
+#: the hold from 0.7 s to 0.3 s and the settle window from 0.5 s to 0.3 s: live
+#: take 2's median move-to-settle fell from 1.66 s to 0.94 s with no hand settling
+#: and no wrong board in its resting-hand stretch. **This relies on the energy gate**
+#: (``BR_OBSCURED_ENERGY``, DESIGN D16): with the gate off, the same settings let
+#: hands settle (6 on the gate takes, 12 wrong boards with a hand resting on take
+#: 2). The node does not fall back by itself; whoever turns the gate off must also
+#: set ``BR_SCHEDULE`` and ``BR_SETTLE_SECONDS`` back to 0.7 s / 0.5 s.
+#:
+#: Round 2's numbers, for the 0.7 s hold and 0.5 s window:
 #: Swept 2026-11-24 (round 2: spacing 0.2-0.6 s x 2-4 reads x settle 0.3-1.0 s,
 #: on cached reads with the tail simulated): with the tail, the gate settles 11 of
 #: 27 reached boundaries within 1 s of the hand leaving instead of 8, the real
@@ -572,7 +599,9 @@ POLICIES: Mapping[str, type] = {
 #: had the same medians at +48 % reads; 1.0 s let a hand settle on two gate takes
 #: (a lifted b8 knight, a c8 bishop under the hand). The keepalive is the floor
 #: when the meter is blind, so it is sized for that case.
-DEFAULT_POLICY_SPEC = "burst-end:keepalive_s=2,burst_end_reads=3,spacing_s=0.3"
+DEFAULT_POLICY_SPEC = (
+    "burst-end:keepalive_s=2,burst_end_reads=3,spacing_s=0.3,exit_hold_s=0.3"
+)
 
 
 def parse_policy(spec: str) -> FramePolicy:
