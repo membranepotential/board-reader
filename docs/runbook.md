@@ -59,12 +59,13 @@ camera page has no controls: open `/control` on the laptop to draw the board's r
 on the phone's preview, pick the lens and resolution, and start or stop the stream
 (DESIGN D11; the full walkthrough is [[TESTING#Option J — Phone live camera, configured from the laptop (DESIGN D11)]]).
 The node assigns each phone its board id (`board-1`, `board-2`, ...; DESIGN D18) by a
-device id the phone keeps, and `/control` lists the phones, renames them, and shows a
-QR code that opens `/camera`. `serve` keeps each board's config and each phone's board
+device id the phone keeps, for good; `/control` lists the phones, names them (the live
+page shows the name; the board id stays), forgets one that is no longer used, and shows
+a QR code that opens `/camera`. `serve` keeps each board's config and each phone's board
 id in `data/camera-config.json` (`BR_CAMERA_CONFIG`; empty keeps them in memory only),
 so a restart gives every phone its id and framing back. A phone in a private window
-keeps no id, and each reload makes it a new camera (its status line says so); rename
-it on `/control`. A phone page opened before the update says it is out of date: reload
+keeps no id, and each reload makes it a new camera (its status line says so); forget
+the old ones on `/control`. A phone page opened before the update says it is out of date: reload
 it. By hand:
 
 ```bash

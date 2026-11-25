@@ -533,7 +533,7 @@ so results depended on load); batching (not needed yet; it would go into
 
 ### D18 — The node names the cameras; a phone keeps a device id (2026-11-25)
 
-**Status:** accepted (user, 2026-11-25).
+**Status:** accepted (user, 2026-11-25); amended the same day (user): the board id is permanent and a rename sets a name, an alias.
 
 **Context.** Every phone streamed as `board=phone` unless its URL said otherwise, so a
 second phone silently streamed into the first one's board, and an operator had to type
@@ -544,23 +544,39 @@ live card and PGN drawer is keyed by, so it must stay put across a reload.
 - **A phone is known by a device id**: a random id (`crypto.randomUUID`) its browser
   makes on the first visit and keeps in `localStorage`. Where storage is unavailable
   (a private window), the id lives as long as the page, and the page says so.
-- **The node assigns the board id.** `WS /cameras/{device_id}` replaces
-  `/boards/{id}/camera`; the node answers `assigned` with the device's board id, and
-  the phone names it on every `/ingest` frame. A new device gets the lowest free
-  `board-N` (an id with a saved config is not handed out, so a stale config never
-  starts a new phone streaming). The device -> board pairs persist in
-  `BR_CAMERA_CONFIG` beside the configs; a file from before has none and still loads.
-- **/control lists and renames the cameras.** `WS /cameras` pushes every known camera
-  (board id, device, link, last report, frame age) on connect, on change and once a
-  second for the ages, and takes `rename`. A rename moves the board's config to the new
-  id, persists, and pushes `assigned` to the phone, which switches its frames without
-  a reload. Events and recordings made under the old id stay as they are; the live page
-  then shows a new card for the new id and the old one goes stale.
-- **Board ids stay unique among the known cameras.** A rename, or a phone's
-  `?board=<id>` (kept as an explicit request), to an id another camera holds is
-  refused; the phone then streams under its own id, and both `/camera` and `/control`
-  say so. A camera's board id must be a plain URL path segment (`CameraBoardId`: up to
-  32 letters, digits, `.`, `_`, `-`), because the per-board routes carry it.
+- **The node assigns the board id, once.** `WS /cameras/{device_id}` replaces
+  `/boards/{id}/camera`; the node answers `assigned` with the device's board id (and
+  its name, below), and the phone names that id and its device id on every `/ingest`
+  frame. A new device gets the lowest free `board-N` (an id with a saved config, or
+  used as a camera's name, is not handed out, so a stale config never starts a new
+  phone streaming). **The board id never changes**: frames, events, configs,
+  recordings, the live card and its PGN stay keyed by it. The device -> board pairs
+  persist in `BR_CAMERA_CONFIG` beside the configs; a file from before has none and
+  still loads. A saved config no camera holds (the old shared `phone` id) is dropped at
+  load with one INFO line, so no camera can inherit it.
+- **A rename sets a name, an alias.** `/control` lists every known camera over
+  `WS /cameras` (name, board id, device, link, last report, frame age) on connect, on
+  change and once a second for the ages, and takes `rename` (`null` clears the name).
+  A name (`CameraName`: up to 32 letters, digits, spaces, `.`, `_`, `-`; no space at
+  either end; ASCII, so Python and the browser judge it alike) is unique among the
+  known cameras and never another camera's board id. A rename persists, pushes
+  `assigned` with the new name to the phone, and changes nothing else. The live page
+  hears the names as one snapshot, `names` on `/viewer` (on connect once any camera has
+  a name, and whole on every change), and relabels the card in place, so its game
+  continues; the PGN's `Site` tag carries the name.
+- **/control forgets a disconnected camera** (`forget`, after a confirm): the node
+  drops its board id, name and config, frees the board's read state on the node, and
+  the id is free again. A connected camera cannot be forgotten (the phone would only
+  be handed a new id at once). The device, if it comes back, is a new camera.
+- **A camera's board id takes frames from that camera only.** `/ingest` refuses, with
+  the reason in the reply and a count in `/healthz` `ingest.not_owned`, a frame from a
+  device under a board id that is not its own, and a frame from a device the node does
+  not know (forgotten, or never connected). An edge with no device id (`feed --board X`,
+  a replayed recording, an old phone page) may stream under any board id no camera
+  holds. A recording keeps the device id as it arrived; its replay sends none.
+- A camera's board id must be a plain URL path segment (`CameraBoardId`: up to 32
+  letters, digits, `.`, `_`, `-`), because the per-board routes carry it. A phone's
+  `?board=<id>` means nothing any more; the page ignores it with a console note.
 - **One socket per device.** A newer socket of the same device replaces the older,
   which hears `replaced`, stops streaming and does not reconnect: two pages of one phone
   would otherwise stream under one board, or take the link from each other forever.
@@ -568,7 +584,10 @@ live card and PGN drawer is keyed by, so it must stay put across a reload.
   answers that it is out of date and must be reloaded.
 
 **Rejected.** Board ids chosen on the phone (`?board=` as the main way): two pages to
-keep in step, and nothing stops two phones from choosing one id. Assigning by
+keep in step, and nothing stops two phones from choosing one id. A rename that changes
+the board id (this decision's first version): it split one game across two ids, the
+live page started a new card with an empty PGN while the old one went stale, and a
+phone that missed the rename streamed under an id that another camera could get next. Assigning by
 connection order without a device id: a reload or a node restart reshuffles the ids. A
 hello message on a board-less socket instead of the device in the path: one more
 message to order before anything else may be sent, for nothing the path cannot carry.

@@ -132,7 +132,7 @@ What's covered today — the main files (`git ls-files 'packages/*/tests/*.py'
 | **Read scheduling** | `packages/inference/tests/stream/test_schedule.py` | **burst detection matches the forwarder's hysteresis; the keepalive floor survives a dead, stuck, absent or NaN meter and a backwards clock; no config spelling switches it off; a new move cancels the last one's owed reads; spec strings round-trip** |
 | **Scheduling, live** | `packages/inference/tests/stream/test_ingest_schedule.py` | **the policy decides on every arriving frame, so a busy estimator delays a burst-end read but never moves it to another frame; per-board isolation; a frozen `capture_ts` falls back to the node's own keepalive; `BR_SCHEDULE` reaches the socket and `every-frame` restores the old gateway** |
 | **Several boards and spikes** | `packages/inference/tests/test_multiboard_load.py` | **three boards flooded or in clumps into a slow recognizer publish, per board, exactly the lines each publishes alone (read frames, settled boards, `utc`, `changed_utc`); the recognizer serves the oldest scheduled read first; a sustained overload drops only keepalive reads and counts each; a drop line is skipped by scoring; two boards on one socket record every frame** |
-| **Camera control** | `packages/core/tests/test_control.py`, `packages/inference/tests/control/test_camera.py` | **the config, report and socket messages refuse malformed input; the registry pushes a config to every phone and every control page, previews are wanted exactly while a page watches, a reconnecting phone hears its config again; with `BR_CAMERA_CONFIG` set the configs survive a restart (written atomically), a corrupt file is ignored with a warning, unset writes nothing, and `serve` sets the default; the board direction is the median of the latest reads, names the nearest side, flags a moved camera once the angle settled and resets on a new crop, lens or resolution; over the real sockets a config reaches the phone, a preview and the last streamed frame reach the page, a health tick arrives with the direction, and a bad message is refused without closing the socket** |
+| **Camera control** | `packages/core/tests/test_control.py`, `packages/inference/tests/control/test_camera.py` | **the config, report and socket messages refuse malformed input; the registry pushes a config to every phone and every control page, previews are wanted exactly while a page watches, a reconnecting phone hears its config again; with `BR_CAMERA_CONFIG` set the configs survive a restart (written atomically), a corrupt file is ignored with a warning, unset writes nothing, and `serve` sets the default; the board direction is the median of the latest reads, names the nearest side, flags a moved camera once the angle settled and resets on a new crop, lens or resolution; over the real sockets a config reaches the phone, a preview and the last streamed frame reach the page, a health tick arrives with the direction, and a bad message is refused without closing the socket; a rename sets a name and keeps the board id, forgetting frees a disconnected camera's id and config (and its read state, `test_ingest_stream.py`), and a board id takes `/ingest` frames from its own camera only** |
 | Viewer | Vitest, not this suite: `packages/viewer/server/*.test.ts`, `src/routes/api/**/server.test.ts` (see *Frontend* below) | the `/api` relay forwards verbatim and names an unreachable node; the `/ws` relay; the cached TLS certificate; the banner; the client log |
 | **Layer split** | `tests/test_layer_separation.py` | edge/inference never import each other |
 | **Deploy parity** | `tests/test_deploy_parity.py` | compose and `make dev` serve the same recognizer |
@@ -171,7 +171,7 @@ only when it changed, previews only while wanted, the config kept across a lost 
 and the control page's link — all plain TypeScript, run in `node`, no DOM.
 
 `camera.spec.ts` plays the node's half of the control channel: on the phone's
-`/ws/cameras/<device id>` socket it assigns a board id, renames it, pushes a config
+`/ws/cameras/<device id>` socket it assigns a board id, names it, pushes a config
 of its choosing, switches previews on and off and replaces the socket, and it decodes
 the JPEGs that reach `/ws/ingest`, so "the crop the config asked for is the crop sent"
 is measured in pixels.
@@ -182,9 +182,13 @@ and that changing the crop alone does not open one.
 camera-moved warning, both from the health tick, and checks the QR code beside the
 camera list. `cameras.spec.ts` puts two phones (two browser contexts, so two device
 ids) and a control page on one stateful fake node (`tests/helpers/cameras.ts`):
-assignment, a reload and a node restart keeping the id, a rename on `/control`, and a
-`?board=` another camera holds being refused. The node's own registry and its config
-file are `packages/inference/tests/control/test_camera.py`'s.
+assignment, a reload and a node restart keeping the id, a rename on `/control` that
+names the camera and keeps its board id, a taken name refused, and forgetting a
+disconnected camera (a connected one cannot be). `live.spec.ts` checks that a `names`
+message relabels a card in place. The node's own registry and its config file are
+`packages/inference/tests/control/test_camera.py`'s; `/ingest` refusing another
+camera's board and the names reaching `/viewer` are
+`packages/inference/tests/test_camera_identity.py`'s.
 
 `pnpm test:e2e` drives the pages in a real Chromium (`tests/*.spec.ts`), against
 the **built** app — `vite build`, then the real viewer server
@@ -574,25 +578,36 @@ What to check beyond the steps:
      list shows two rows, both `connected`.
   2. Click `board-2` in the list. Expected: the header reads `board board-2`, the preview
      is the second phone's view, and every control below now sets that phone.
-  3. Press **Rename** on the `board-2` row, type `left`, press **Save**. Expected: the
-     row reads `left` within a second, the second phone's status line reads
-     `board left` with no reload, and its crop and stream setting are unchanged.
-  4. Reload the second phone's page. Expected: it comes back as `board left`.
-  5. Restart the node (Ctrl-C `make dev`, run it again). Expected: both phones say
-     `node unreachable`, then `node connected` as `board-1` and `left`, and the list
-     shows both again (`data/camera-config.json` keeps the pairs under `"cameras"`).
-  6. Press **Rename** on the `left` row and type `board-1`. Expected: `not renamed:
-     board-1 is taken by camera …` under the row; nothing changes.
-  7. On the second phone, open `/camera?board=board-1`. Expected: its status line says
-     `board-1 is taken by camera …; this phone streams as left`, it keeps streaming as
-     `left`, and its row on `/control` says `asked for board-1, which another camera
-     holds`.
+  3. Open the live page (`/`) in another tab, start the second phone streaming, and
+     play two moves. Expected: a card `board board-2` whose game drawer lists them.
+  4. On `/control`, press **Rename** on the `board-2` row, type `kitchen table`, press
+     **Save**. Expected: the row reads `kitchen table` with `board-2` beside it within a
+     second; the second phone's status line reads `kitchen table (board board-2)` with
+     no reload; its crop and stream setting are unchanged. On the live page the same
+     card now reads `kitchen table board-2`, its game drawer still lists the two moves,
+     the next move joins them, and **Copy PGN** gives `[Site "kitchen table"]`.
+  5. Reload the second phone's page. Expected: it comes back as
+     `kitchen table (board board-2)`.
+  6. Restart the node (Ctrl-C `make dev`, run it again). Expected: both phones say
+     `node unreachable`, then `node connected` as `board-1` and `kitchen table`, and the
+     list shows both again (`data/camera-config.json` keeps the pairs under `"cameras"`
+     and the names under `"names"`).
+  7. Press **Rename** on the `board-1` row and type `board-2`, then `kitchen table`.
+     Expected: each time `the node refused: … is taken by camera kitchen table` under
+     the list; nothing changes. An empty name, saved, shows the board id again.
   8. Open `/camera` in a second tab on the first phone. Expected: the older tab says
      `another /camera page on this phone took over` and stops streaming; the new tab
      streams as `board-1`.
-  On the live page a rename starts a new card for the new id (its PGN drawer starts
-  empty); the old card goes stale. Recordings and events keep the id they were made
-  under.
+  9. On `/control`, look at a connected camera's **Forget** button. Expected: it is
+     greyed out, and the note under the list says a connected camera cannot be
+     forgotten. Close the second phone's `/camera` page; its row reads `not connected`.
+     Press **Forget** on it and confirm. Expected: the row disappears.
+  10. Open `/camera` on the second phone again. Expected: it is a new camera: the
+      lowest free id (`board-2`), no name, no crop, not streaming.
+  11. While the first phone streams, run `uv run board-reader-edge feed --board board-1`
+      against the node. Expected: the feed's frames are refused
+      (`board board-1 belongs to camera …`), `/healthz` `ingest.not_owned` climbs, and
+      the first phone's card is unchanged; with `--board demo` the feed streams.
 
 **Camera stall recovery.** Phone cameras die quietly (backgrounding, a call,
 another app taking the lens); the page must come back on its own. Things to try

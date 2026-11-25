@@ -76,11 +76,13 @@ inference node, and pushed to the phone, which applies it:
 - **The node names the cameras** (DESIGN D18). The phone keeps a random device id in
   `localStorage` and holds `WS /cameras/{device_id}` open from the moment the page
   loads; the node answers with the board id the phone streams as (`assigned`): the
-  lowest free `board-N` for a new device, the same one after a reload or a node restart,
-  a new one the moment `/control` renames it. `?board=<id>` asks for an id, refused
-  while another camera holds it. `/control` lists every known camera over `WS /cameras`
-  (board id, short device id, link, stream, last frame, lens and frame), renames one
-  inline, and shows a QR code that opens `/camera` on a phone.
+  lowest free `board-N` for a new device, and the same one for good after that.
+  `/control` lists every known camera over `WS /cameras` (name, board id, short device
+  id, link, stream, last frame, lens and frame), gives one a name inline (an alias the
+  live page shows, from the `names` message on `/viewer`), forgets a disconnected one,
+  and shows a QR code that opens `/camera` on a phone. The phone names its device id
+  on every frame, and `/ingest` refuses a frame under a board id that is another
+  camera's.
 - **The control channel is pushed over WebSockets; nothing polls.** The
   phone's socket is open from the moment the page loads. It sends
   its `CameraReport` — the lenses `enumerateDevices` lists, the label of the one open,
@@ -205,8 +207,8 @@ See [[recognition-pipeline]].
 | `POST /labels/{upload}` · `GET /uploads` · `GET /uploads/{id}/photo` | ground-truth labels for retained photos (`BR_SAVE_UPLOADS`), in the chess frame |
 | `GET /boards/{id}` | latest retained event for a board |
 | `GET /boards/{id}/frame` | latest raw JPEG ingested for a board (video-like preview) |
-| `WS /cameras/{device_id}` | the phone's camera control socket (`?board=` asks for an id): report and previews up; its board id, config, `previews` on/off and `replaced` down |
-| `WS /cameras` | the control UI's list of every known camera, pushed on change and once a second; `rename` up |
+| `WS /cameras/{device_id}` | the phone's camera control socket: report and previews up; its board id and name, config, `previews` on/off and `replaced` down |
+| `WS /cameras` | the control UI's list of every known camera, pushed on change and once a second; `rename` (sets a name) and `forget` up |
 | `WS /boards/{id}/control` | a control page's socket: `configure` up; state, preview, received frame and a 1 Hz health tick down |
 | `GET /healthz` | liveness (+ `ingest` counters, `misoriented` among them: reads the orientation guard dropped; `recognizer`: name, model, `fallback` when the stub serves; `recording`: session path, frames, bytes) — see the warning in [[runbook#Verifying a restart]] |
 
@@ -217,7 +219,7 @@ See [[recognition-pipeline]].
 | `GET /` | live-position UI (chessground), one card per board |
 | `GET /snapshot` | the phone page: capture → read → output (a photo → a position, correctable and labelable) |
 | `GET /camera` | the phone page: a dumb camera that streams what the control UI configured (the browser edge) |
-| `GET /control` | the laptop page: the list of cameras (rename inline) and a QR code for `/camera`; for the picked camera, the crop rectangle on its full-frame preview, lens, resolution, the board's settle `rules`, start/stop, health |
+| `GET /control` | the laptop page: the list of cameras (name one inline, forget a disconnected one) and a QR code for `/camera`; for the picked camera, the crop rectangle on its full-frame preview, lens, resolution, the board's settle `rules`, start/stop, health |
 | `WS /ws/<path>` | same-origin relays to the inference node's sockets (`ingest`, `viewer`, `cameras/{device}`, `cameras`, `boards/{id}/control`) |
 | `/api/<path>` | same-origin relay of the inference node's whole HTTP API |
 

@@ -60,9 +60,13 @@ phone sends the report when it changes. `serve` keeps the configs in
 `data/camera-config.json` (`BR_CAMERA_CONFIG`), so a restarted node resumes the stream.
 
 **Device id / assigned board id** — a phone's own random id, kept in its browser, and the
-board id the node gives that device (`board-1`, `board-2`, ..., renamed on `/control`;
-DESIGN D18). The node keeps the pairs with the configs, so a phone keeps its board id
-across a reload and a restart.
+board id the node gives that device (`board-1`, `board-2`, ...; DESIGN D18), once and for
+good. The node keeps the pairs with the configs, so a phone keeps its board id across a
+reload and a restart, and refuses `/ingest` frames from any other device under it.
+
+**Camera name** — what people call a camera, set on `/control` (DESIGN D18): an alias
+for its board id, shown on the live page, `/control`, the phone and in the PGN's `Site`
+tag. A rename changes only the name; the board id stays.
 
 **Board direction** — which way the board lies in the camera's image
 (`board_reader_core.control.BoardDirection`): the angle of the e1→e8 axis from ChessQ's
