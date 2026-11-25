@@ -171,4 +171,5 @@ async def _camera_against_a_fake_node() -> None:
     last = reports[-1]
     assert last["devices"] == [{"id": "stream", "label": "Round 5"}]
     assert last["frame"] == {"width": 320, "height": 240}
+    assert last["kind"] == "stream"
     assert "streaming" in {r["ingest"] for r in reports}

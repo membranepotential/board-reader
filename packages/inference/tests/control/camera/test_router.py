@@ -30,6 +30,7 @@ REPORT = {
     "device": "Back Camera",
     "frame": {"width": 1920, "height": 1080},
     "ingest": "idle",
+    "kind": "phone",
 }
 CONFIG = {
     "crop": {"x": 0.2, "y": 0.1, "w": 0.55, "h": 0.8},

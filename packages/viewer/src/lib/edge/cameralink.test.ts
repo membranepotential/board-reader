@@ -4,12 +4,13 @@ import { DEFAULT_CAMERA_CONFIG } from '../protocol';
 import type { CameraReport } from '../protocol/generated';
 import { CameraLink } from './cameralink';
 
-const REPORT: CameraReport = { devices: [], device: null, frame: null, ingest: 'idle' };
+const REPORT: CameraReport = { devices: [], device: null, frame: null, ingest: 'idle', kind: 'phone' };
 const LIVE: CameraReport = {
   devices: [{ id: 'a', label: 'Back Camera' }],
   device: 'Back Camera',
   frame: { width: 1280, height: 720 },
-  ingest: 'idle'
+  ingest: 'idle',
+  kind: 'phone'
 };
 
 

@@ -196,6 +196,7 @@ test.describe('a dumb camera', () => {
     const node = await openCamera(page);
     await expect.poll(() => node.lastReport?.['frame']).toEqual(FRAME);
     expect(node.lastReport).toMatchObject({
+      kind: 'phone',
       device: 'Back Camera',
       ingest: 'idle',
       devices: [

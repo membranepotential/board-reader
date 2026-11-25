@@ -99,9 +99,12 @@ def test_a_report_round_trips_and_knows_when_the_phone_is_upright():
         "device": "Back Camera",
         "frame": {"width": 1080, "height": 1920},
         "ingest": "streaming",
+        "kind": "phone",
     }
     report = CameraReport.from_dict(raw)
     assert report.to_dict() == raw
+    # A phone from before the kind existed is a phone.
+    assert CameraReport.from_dict({k: v for k, v in raw.items() if k != "kind"}) == report
     assert report.frame == FrameSize(width=1080, height=1920)
     assert report.frame.portrait
 

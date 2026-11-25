@@ -17,7 +17,8 @@ one consistent config. The thread hands frames to the loop with
 
 What a non-phone camera does with the config: ``crop`` and ``streaming`` apply;
 ``device`` and ``resolution`` do not (a stream has one picture at one size), so the
-report lists the stream itself as its only lens and states the frame size it delivers.
+report lists the stream itself as its only lens, states the frame size it delivers
+and says it is a ``stream``, so /control offers no lens or resolution for it.
 When Auto-frame asks for a full frame, the loop answers with the latest sampled
 whole frame, or with the first one once the stream delivers.
 """
@@ -206,6 +207,7 @@ class StreamCamera:
             device=self.title,
             frame=self._frame,
             ingest=self._ingest_state,
+            kind="stream",
         )
 
     def _assigned(self, board_id: str) -> None:

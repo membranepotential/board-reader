@@ -59,6 +59,7 @@ class FakeControlNode {
     auto: true
   };
   autoframe: AutoFrameStatus = 'framed';
+  kind: 'phone' | 'stream' = 'phone';
   readonly configures: Config[] = [];
   socket: WebSocketRoute | null = null;
 
@@ -75,7 +76,8 @@ class FakeControlNode {
         ],
         device: 'Back Camera',
         frame: this.frame,
-        ingest: this.config.streaming ? 'streaming' : 'idle'
+        ingest: this.config.streaming ? 'streaming' : 'idle',
+        kind: this.kind
       },
       phone_connected: true,
       autoframe: this.autoframe
@@ -255,6 +257,18 @@ test('Auto-frame says what it is doing for the camera', async ({ page }) => {
   await expect(status).toHaveText('no board found yet; trying again');
   node.setAutoframe('manual');
   await expect(status).toHaveText('off: the crop was set by hand');
+});
+
+test('a stream offers no lens and no resolution to choose', async ({ page }) => {
+  const node = await FakeControlNode.install(page);
+  await page.goto('/control');
+  await expect(page.getByLabel('lens')).toBeVisible();
+  await expect(page.getByLabel('resolution')).toBeVisible();
+  node.kind = 'stream';
+  node.setAutoframe('framed'); // any push of the state
+  await expect(page.getByLabel('lens')).toBeHidden();
+  await expect(page.getByLabel('resolution')).toBeHidden();
+  await expect(page.getByLabel('rules')).toBeVisible();
 });
 
 test('the QR code that opens /camera on a phone sits next to the camera list', async ({ page }) => {

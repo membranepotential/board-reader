@@ -408,34 +408,37 @@
 
   <section class="panel">
     <h2>Camera</h2>
-    <label>
-      lens
-      <select
-        value={config?.device ?? ''}
-        disabled={locked}
-        onchange={(e) => send({ device: e.currentTarget.value || null })}
-      >
-        <option value="">phone's default rear camera</option>
-        {#each report?.devices ?? [] as device (device.id)}
-          <option value={device.label}>{device.label}</option>
-        {/each}
-        {#if config?.device && !report?.devices.some((d) => d.label === config.device)}
-          <option value={config.device}>{config.device} (not reported)</option>
-        {/if}
-      </select>
-    </label>
-    <label>
-      resolution
-      <select
-        value={config?.resolution}
-        disabled={locked}
-        onchange={(e) => send({ resolution: e.currentTarget.value as Resolution })}
-      >
-        {#each RESOLUTION_NAMES as name (name)}
-          <option value={name}>{name}</option>
-        {/each}
-      </select>
-    </label>
+    <!-- A stream has one picture at one size: nothing to choose. -->
+    {#if report?.kind !== 'stream'}
+      <label>
+        lens
+        <select
+          value={config?.device ?? ''}
+          disabled={locked}
+          onchange={(e) => send({ device: e.currentTarget.value || null })}
+        >
+          <option value="">phone's default rear camera</option>
+          {#each report?.devices ?? [] as device (device.id)}
+            <option value={device.label}>{device.label}</option>
+          {/each}
+          {#if config?.device && !report?.devices.some((d) => d.label === config.device)}
+            <option value={config.device}>{config.device} (not reported)</option>
+          {/if}
+        </select>
+      </label>
+      <label>
+        resolution
+        <select
+          value={config?.resolution}
+          disabled={locked}
+          onchange={(e) => send({ resolution: e.currentTarget.value as Resolution })}
+        >
+          {#each RESOLUTION_NAMES as name (name)}
+            <option value={name}>{name}</option>
+          {/each}
+        </select>
+      </label>
+    {/if}
     <label>
       rules
       <select

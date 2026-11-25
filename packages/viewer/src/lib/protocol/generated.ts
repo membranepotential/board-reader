@@ -203,7 +203,8 @@ export type FrameSize = Immutable<z.infer<typeof FrameSize>>;
  * What the edge says about its camera.
  *
  * `device` is the label of the lens actually open and `frame` the size it
- * actually delivers — both `None` until the camera is live.
+ * actually delivers — both `None` until the camera is live. `kind` says which
+ * choices it offers (`CameraKind`); a report without it is a phone's.
  */
 export const CameraReport = z.strictObject({
   devices: z.array(CameraDevice).max(32),
@@ -214,7 +215,8 @@ export const CameraReport = z.strictObject({
     'connecting',
     'streaming',
     'reconnecting'
-  ])
+  ]),
+  kind: z.enum(['phone', 'stream'])
 });
 export type CameraReport = Immutable<z.infer<typeof CameraReport>>;
 

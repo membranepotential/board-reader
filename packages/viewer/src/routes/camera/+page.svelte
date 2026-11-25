@@ -179,7 +179,8 @@
     devices: lenses,
     device: lensLabel,
     frame,
-    ingest: ingestState
+    ingest: ingestState,
+    kind: 'phone'
   });
   // Sent whenever any of it changes (the link drops repeats). `report` is read
   // outside the call: `link?.report(...)` would skip reading it while `link` is

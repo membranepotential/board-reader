@@ -120,6 +120,11 @@ MIN_CROP_SIDE = 0.05
 #: How the edge reports its stream (the browser edge's ``IngestStatus``).
 IngestState = Literal["idle", "connecting", "streaming", "reconnecting"]
 
+#: What kind of camera reports: a phone's ``/camera`` page, whose lens and
+#: resolution /control chooses, or a stream (``board-reader-edge camera``: a video or
+#: a live stream), which has one picture at one size, so /control offers neither.
+CameraKind = Literal["phone", "stream"]
+
 #: How many lenses a report may list; more is not a phone.
 MAX_DEVICES = 32
 
@@ -227,13 +232,15 @@ class CameraReport(Wire):
     """What the edge says about its camera.
 
     ``device`` is the label of the lens actually open and ``frame`` the size it
-    actually delivers — both ``None`` until the camera is live.
+    actually delivers — both ``None`` until the camera is live. ``kind`` says which
+    choices it offers (:data:`CameraKind`); a report without it is a phone's.
     """
 
     devices: Annotated[tuple[CameraDevice, ...], Field(max_length=MAX_DEVICES)] = ()
     device: StrictStr | None = None
     frame: FrameSize | None = None
     ingest: IngestState = "idle"
+    kind: CameraKind = "phone"
 
 
 # ---- messages on the two control sockets -------------------------------------
