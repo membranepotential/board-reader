@@ -6,7 +6,9 @@
  * renames it; the board id never changes — pushes the config the control UI set — on
  * connect and on every change — and says whether anyone is watching (`previews`).
  * The phone sends its `CameraReport` on connect and whenever it changes, never on a
- * timer, and a whole-frame preview JPEG only while previews are wanted.
+ * timer, and a whole-frame preview JPEG only while previews are wanted. When
+ * Auto-frame asks (`send_full_frame`), it answers with one full frame: a header,
+ * then its JPEG.
  *
  * A device has one socket: when another page of the same phone connects, the node
  * says `replaced` to this one, which then stops for good rather than reconnect and
@@ -21,7 +23,7 @@
  */
 
 import { cameraSocket, wsUrl } from '#lib/api.ts';
-import { reportMessage } from '#lib/control/messages.ts';
+import { fullFrameMessage, reportMessage } from '#lib/control/messages.ts';
 import { parseWire } from '#lib/protocol/index.ts';
 import { PhoneDown, type CameraConfig, type CameraReport } from '#lib/protocol/generated.ts';
 import { ReconnectingSocket, type SocketOptions } from '#lib/socket.ts';
@@ -34,6 +36,8 @@ export interface CameraLinkOptions extends Partial<SocketOptions> {
   readonly onReplaced: () => void;
   readonly onConfig: (config: CameraConfig) => void;
   readonly onPreviews: (on: boolean) => void;
+  /** Auto-frame wants one full frame, answered with `sendFullFrame(request, …)`. */
+  readonly onFullFrame: (request: number) => void;
   /** The link opened (`up`) or was lost, with the reason to show. */
   readonly onLink: (up: boolean, detail: string) => void;
   readonly onRefused?: (reason: string) => void;
@@ -47,7 +51,8 @@ export class CameraLink {
   private previews = false;
 
   constructor(private readonly options: CameraLinkOptions) {
-    const { deviceId, onAssigned, onReplaced, onConfig, onPreviews, onLink, onRefused, ...socket } = options;
+    const { deviceId, onAssigned, onReplaced, onConfig, onPreviews, onFullFrame, onLink, onRefused, ...socket } =
+      options;
     this.socket = new ReconnectingSocket(
       { ...socket, url: socket.url ?? wsUrl(cameraSocket(deviceId)) },
       {
@@ -74,6 +79,9 @@ export class CameraLink {
               break;
             case 'previews':
               this.setPreviews(message.on);
+              break;
+            case 'send_full_frame':
+              onFullFrame(message.request);
               break;
             case 'replaced':
               this.stop();
@@ -115,6 +123,16 @@ export class CameraLink {
   sendPreview(jpeg: Blob): boolean {
     if (!this.previews || this.socket.bufferedAmount > 0) return false;
     return this.socket.send(jpeg);
+  }
+
+  /**
+   * The answer to `send_full_frame` `request`: the whole frame captured at
+   * `captureTs` (epoch seconds, the clock the stream's frames use). The header and
+   * the JPEG go out back to back, so the node pairs them. `false` when the link is
+   * down.
+   */
+  sendFullFrame(request: number, captureTs: number, jpeg: Blob): boolean {
+    return this.socket.send(fullFrameMessage(request, captureTs)) && this.socket.send(jpeg);
   }
 
   private flush(): void {

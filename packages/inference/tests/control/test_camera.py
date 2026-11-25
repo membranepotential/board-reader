@@ -11,6 +11,7 @@ import base64
 import json
 import logging
 import os
+from dataclasses import replace
 
 import numpy as np
 import pytest
@@ -24,19 +25,29 @@ from board_reader_core.control import (
     CameraReport,
     ConfigMessage,
     CropRect,
+    FrameSize,
+    FullFrameMessage,
     PreviewMessage,
     PreviewsMessage,
     ReplacedMessage,
+    SendFullFrameMessage,
     StateMessage,
 )
 from board_reader_core.protocol import START_PLACEMENT, BoardName, NamesMessage
 from board_reader_core.sim import render_board
 from board_reader_core.wire import Frame, encode_jpeg
 
+from board_reader_inference.control.autoframe.actions import PublishRead
+from board_reader_inference.control.autoframe.events import (
+    FullFrameFailed,
+    FullFrameLocated,
+)
+from board_reader_inference.control.autoframe.geometry import FrameProposal, Located
 from board_reader_inference.control.camera import (
     CAMERA_CONFIG_ENV,
     DIRECTION_READS,
     CameraRegistry,
+    FullFrame,
     StreamSample,
     frame_rate,
     white_side,
@@ -56,6 +67,8 @@ CONFIG = {
     "device": "Back Ultra Wide Camera",
     "resolution": "2160p",
     "streaming": True,
+    # A crop drawn on /control: Auto-frame is off for it.
+    "auto": False,
 }
 #: ``CONFIG`` as the node sends it: every key, the defaulted ``rules`` included.
 SENT_CONFIG = {**CONFIG, "rules": "standard"}
@@ -75,6 +88,7 @@ def test_a_phone_hears_its_board_its_config_and_that_nobody_watches_on_connect()
         AssignedMessage("board-2"),
         ConfigMessage(CameraConfig()),
         PreviewsMessage(on=False),
+        SendFullFrameMessage(0),  # Auto-frame wants the whole picture
     ]
 
 
@@ -99,7 +113,9 @@ def test_a_newer_socket_of_one_phone_replaces_the_older():
     registry.report(old, CameraReport.from_dict({**REPORT, "ingest": "streaming"}))
     registry.disconnect_phone(old)
     watcher = registry.connect_watcher("board-1")
-    assert watcher.take_nowait() == [StateMessage(CameraConfig(), None, phone_connected=True)]
+    assert watcher.take_nowait() == [
+        StateMessage(CameraConfig(), None, phone_connected=True, autoframe="locating")
+    ]
 
 
 def test_a_config_change_reaches_the_boards_phone_and_every_watcher():
@@ -109,11 +125,13 @@ def test_a_config_change_reaches_the_boards_phone_and_every_watcher():
     for mailbox in (phone.mailbox, *watchers):
         mailbox.take_nowait()
 
-    config = CameraConfig(crop=CropRect(0.1, 0.1, 0.5, 0.5), streaming=True)
+    config = CameraConfig(crop=CropRect(0.1, 0.1, 0.5, 0.5), streaming=True, auto=False)
     registry.configure("board-1", config)
     assert phone.mailbox.take_nowait() == [ConfigMessage(config)]
     for watcher in watchers:
-        assert watcher.take_nowait() == [StateMessage(config, None, phone_connected=True)]
+        assert watcher.take_nowait() == [
+            StateMessage(config, None, phone_connected=True, autoframe="manual")
+        ]
 
 
 def test_previews_are_wanted_exactly_while_a_control_page_watches():
@@ -134,17 +152,23 @@ def test_previews_are_wanted_exactly_while_a_control_page_watches():
 def test_a_watcher_hears_the_phone_come_and_go_and_its_reports():
     registry = CameraRegistry()
     watcher = registry.connect_watcher("board-1")
-    assert watcher.take_nowait() == [StateMessage(CameraConfig(), None, phone_connected=False)]
+    assert watcher.take_nowait() == [
+        StateMessage(CameraConfig(), None, phone_connected=False, autoframe="idle")
+    ]
 
     phone = registry.connect_phone(PHONE)
     report = CameraReport.from_dict(REPORT)
     registry.report(phone, report)
     # Latest state wins: the connect and the report collapse into one message.
-    assert watcher.take_nowait() == [StateMessage(CameraConfig(), report, phone_connected=True)]
+    assert watcher.take_nowait() == [
+        StateMessage(CameraConfig(), report, phone_connected=True, autoframe="locating")
+    ]
 
     registry.disconnect_phone(phone)
     # The report outlives the phone, so the lens list survives a reload.
-    assert watcher.take_nowait() == [StateMessage(CameraConfig(), report, phone_connected=False)]
+    assert watcher.take_nowait() == [
+        StateMessage(CameraConfig(), report, phone_connected=False, autoframe="idle")
+    ]
 
 
 def test_a_new_watcher_gets_the_last_preview_at_once():
@@ -174,7 +198,7 @@ def test_a_rename_sets_a_name_and_nothing_else():
     heard: list[NamesMessage] = []
     registry = CameraRegistry(on_names=heard.append)
     phone = registry.connect_phone(PHONE)
-    config = CameraConfig(crop=CropRect(0.1, 0.1, 0.5, 0.5), streaming=True)
+    config = CameraConfig(crop=CropRect(0.1, 0.1, 0.5, 0.5), streaming=True, auto=False)
     registry.configure("board-1", config)
     page = registry.connect_watcher("board-1")
     for mailbox in (phone.mailbox, page):
@@ -241,7 +265,9 @@ def test_forgetting_a_disconnected_camera_frees_its_id_and_config():
     assert forgotten == ["board-1"]
     assert heard[-1] == NamesMessage(names=())
     # The open page stays, on a board with nothing configured.
-    assert page.take_nowait() == [StateMessage(CameraConfig(), None, phone_connected=False)]
+    assert page.take_nowait() == [
+        StateMessage(CameraConfig(), None, phone_connected=False, autoframe="idle")
+    ]
     # The device that comes back is a new camera: the lowest free id, no config.
     assert registry.connect_phone(OTHER).mailbox.take_nowait()[:2] == [
         AssignedMessage("board-1"), ConfigMessage(CameraConfig()),
@@ -523,6 +549,7 @@ def _hello(phone: WebSocketTestSession) -> str:
     assert assigned["type"] == "assigned"
     assert json.loads(phone.receive_text())["type"] == "config"
     assert json.loads(phone.receive_text())["type"] == "previews"
+    assert json.loads(phone.receive_text())["type"] == "send_full_frame"
     return assigned["board_id"]
 
 
@@ -533,6 +560,7 @@ def test_a_config_set_on_control_is_pushed_to_the_phone():
         }
         assert json.loads(phone.receive_text())["type"] == "config"
         assert json.loads(phone.receive_text()) == {"type": "previews", "on": False}
+        assert json.loads(phone.receive_text()) == {"type": "send_full_frame", "request": 0}
         phone.send_text(json.dumps({"type": "report", "report": REPORT}))
 
         with client.websocket_connect("/boards/board-1/control") as control:
@@ -675,3 +703,119 @@ def test_the_health_tick_says_which_way_the_board_lies(monkeypatch):
             if direction is not None:
                 break
         assert direction == {"degrees": -90.0, "white_side": "right", "camera_moved": False}
+
+
+# ---- Auto-frame -----------------------------------------------------------------------
+
+BOARD = Located(corners=((0.3, 0.3), (0.6, 0.3), (0.6, 0.7), (0.3, 0.7)), r2=0.99)
+FOUND_CROP = CropRect(0.27, 0.26, 0.36, 0.48)
+
+
+class Clock:
+    """The registry's monotonic clock, moved by hand."""
+
+    def __init__(self) -> None:
+        self.now = 100.0
+
+    def __call__(self) -> float:
+        return self.now
+
+
+def _framing() -> tuple[CameraRegistry, Clock, list[FullFrame]]:
+    clock = Clock()
+    asked: list[FullFrame] = []
+    return CameraRegistry(on_full_frame=asked.append, clock=clock), clock, asked
+
+
+def _answer(registry: CameraRegistry, link, request: int) -> None:
+    registry.full_frame(link, FullFrameMessage(request, 50.0), b"jpeg")
+
+
+def test_a_new_camera_is_asked_for_a_full_frame_and_framed_from_it():
+    registry, _, asked = _framing()
+    phone = registry.connect_phone(PHONE)
+    page = registry.connect_watcher("board-1")
+    assert SendFullFrameMessage(0) in phone.mailbox.take_nowait()
+    assert page.take_nowait()[0].autoframe == "locating"
+
+    _answer(registry, phone, 0)
+    assert asked == [FullFrame("board-1", 0, 50.0, b"jpeg")]
+    read = object()
+    published = registry.autoframe_result(
+        "board-1", FullFrameLocated(0, FrameProposal(FOUND_CROP, BOARD, read), 50.0)
+    )
+    assert published == [PublishRead(read, 50.0)]
+    # The node's own crop: pushed to the phone, Auto-frame stays on.
+    framed = CameraConfig(crop=FOUND_CROP)
+    assert phone.mailbox.take_nowait() == [ConfigMessage(framed)]
+    assert page.take_nowait() == [
+        StateMessage(framed, None, phone_connected=True, autoframe="framed")
+    ]
+
+
+def test_an_answer_to_another_request_costs_no_locate():
+    registry, _, asked = _framing()
+    phone = registry.connect_phone(PHONE)
+    _answer(registry, phone, 7)
+    assert asked == []
+
+
+def test_no_board_waits_and_asks_again():
+    registry, clock, _ = _framing()
+    phone = registry.connect_phone(PHONE)
+    page = registry.connect_watcher("board-1")
+    phone.mailbox.take_nowait()
+    _answer(registry, phone, 0)
+    registry.autoframe_result("board-1", FullFrameFailed(0))
+    assert page.take_nowait()[-1].autoframe == "no-board"
+
+    clock.now += 1.0
+    registry.tick()
+    assert phone.mailbox.take_nowait() == []  # still backing off
+    clock.now += 2.5
+    registry.tick()
+    assert phone.mailbox.take_nowait() == [SendFullFrameMessage(1)]
+
+
+def test_a_crop_set_on_control_switches_auto_frame_off_and_the_switch_back_on():
+    registry, _, _ = _framing()
+    phone = registry.connect_phone(PHONE)
+    phone.mailbox.take_nowait()
+    drawn = CameraConfig(crop=CropRect(0.1, 0.1, 0.5, 0.5))  # auto as /control had it: on
+    registry.configure("board-1", drawn)
+    manual = CameraConfig(crop=CropRect(0.1, 0.1, 0.5, 0.5), auto=False)
+    assert registry.board("board-1").config == manual
+    # The answer to the request made before arrives, and changes nothing.
+    assert registry.autoframe_result(
+        "board-1", FullFrameLocated(0, FrameProposal(FOUND_CROP, BOARD, object()), 50.0)
+    ) == []
+    assert phone.mailbox.take_nowait() == [ConfigMessage(manual)]
+
+    registry.configure("board-1", CameraConfig(crop=manual.crop, auto=True))
+    assert phone.mailbox.take_nowait()[-1] == SendFullFrameMessage(1)
+    assert registry.board("board-1").autoframe.auto is True
+
+
+def test_a_new_lens_or_frame_size_asks_for_a_new_full_frame():
+    registry, _, _ = _framing()
+    phone = registry.connect_phone(PHONE)
+    _answer(registry, phone, 0)
+    registry.autoframe_result(
+        "board-1", FullFrameLocated(0, FrameProposal(FOUND_CROP, BOARD, None), 50.0)
+    )
+    report = CameraReport.from_dict(REPORT)
+    registry.report(phone, report)
+    phone.mailbox.take_nowait()
+    upright = FrameSize(width=1080, height=1920)
+    registry.report(phone, replace(report, frame=upright))
+    assert phone.mailbox.take_nowait() == [SendFullFrameMessage(1)]
+
+
+def test_a_crop_saved_before_auto_frame_existed_stays_manual(config_file):
+    config_file.parent.mkdir(parents=True)
+    old = {k: v for k, v in CONFIG.items() if k != "auto"}
+    config_file.write_text(json.dumps({"boards": {"board-1": old}, "cameras": {PHONE: "board-1"}}))
+    registry = CameraRegistry()
+    assert registry.board("board-1").config.auto is False
+    phone = registry.connect_phone(PHONE)
+    assert SendFullFrameMessage(0) not in phone.mailbox.take_nowait()

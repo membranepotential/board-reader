@@ -30,13 +30,17 @@ names it:
 
 ``WS /cameras/{device_id}`` — the phone.
   * up: :class:`ReportMessage` (text), sent on connect and whenever the report
-    changes; a whole-frame preview JPEG (binary, the socket's only binary message),
-    sent only while the node has asked for previews.
+    changes; a whole-frame preview JPEG (binary), sent only while the node has
+    asked for previews; the answer to :class:`SendFullFrameMessage`, a
+    :class:`FullFrameMessage` (text) followed at once by its JPEG (binary). A binary
+    message is that full frame when a :class:`FullFrameMessage` came right before
+    it, and a preview otherwise.
   * down: :class:`AssignedMessage` (its board id and name) on connect and on every
     rename;
     :class:`ConfigMessage` on connect and on every change;
     :class:`PreviewsMessage` on connect and whenever the first /control page opens
-    or the last one closes; :class:`ReplacedMessage` when a newer socket of the same
+    or the last one closes; :class:`SendFullFrameMessage` when Auto-frame wants
+    the whole picture; :class:`ReplacedMessage` when a newer socket of the same
     device took over (the node then closes this one); :class:`RefusedMessage` for a
     message the node refused.
 
@@ -181,6 +185,9 @@ class CameraConfig(Wire):
     * ``streaming`` — whether the edge streams frames to ``/ingest``.
     * ``rules`` — which chess the board plays (:data:`Rules`). The node reads it,
       the edge ignores it.
+    * ``auto`` — whether the node frames the camera by itself (Auto-frame): it asks
+      for a full frame, finds the board and sets ``crop``. A crop set by hand on
+      /control switches it off. The node reads it, the edge ignores it.
 
     Omitted fields take their defaults, so ``{}`` is the default config, and a
     config saved before a field existed still loads.
@@ -191,6 +198,7 @@ class CameraConfig(Wire):
     resolution: Resolution = DEFAULT_RESOLUTION
     streaming: StrictBool = False
     rules: Rules = DEFAULT_RULES
+    auto: StrictBool = True
 
 
 @wire
@@ -239,9 +247,36 @@ class ReportMessage(Message):
     report: CameraReport
 
 
-def parse_phone_message(text: str) -> ReportMessage:
+#: The long side a full frame is sent at, at most: enough for ChessQ to find a board
+#: that fills a sixth of the picture, and a few hundred kB as a JPEG.
+FULL_FRAME_LONG_SIDE = 1920
+
+#: A full frame larger than this is not one.
+MAX_FULL_FRAME_BYTES = 8_000_000
+
+
+@message
+class FullFrameMessage(Message):
+    """Phone -> node: the answer to :class:`SendFullFrameMessage` ``request``; the
+    socket's next message is its JPEG (binary).
+
+    The whole camera frame, uncropped, its long side at most
+    :data:`FULL_FRAME_LONG_SIDE`, and ``capture_ts`` its capture time in epoch
+    seconds, on the same clock as the frames on ``/ingest``.
+    """
+
+    type: Literal["full_frame"] = tag("full_frame")
+    request: Natural
+    capture_ts: StrictFloat
+
+
+#: What the phone sends as text.
+PhoneUp = Annotated[ReportMessage | FullFrameMessage, Field(discriminator="type")]
+
+
+def parse_phone_message(text: str) -> ReportMessage | FullFrameMessage:
     """One text message from the phone's socket; ``ValueError`` says why not."""
-    return parse(ReportMessage, text)
+    return parse(PhoneUp, text)
 
 
 @message
@@ -278,6 +313,19 @@ class PreviewsMessage(Message):
 
 
 @message
+class SendFullFrameMessage(Message):
+    """Node -> phone: send one whole camera frame now (:class:`FullFrameMessage`).
+
+    Auto-frame asks for it when the camera registers or starts streaming, and when
+    the camera moved. A phone whose camera is not live yet answers once it is; only
+    the latest request needs an answer.
+    """
+
+    type: Literal["send_full_frame"] = tag("send_full_frame")
+    request: Natural
+
+
+@message
 class RefusedMessage(Message):
     """Node -> either client: one message was refused; the socket stays open."""
 
@@ -285,18 +333,27 @@ class RefusedMessage(Message):
     reason: Text
 
 
+#: What Auto-frame is doing for one camera, as /control shows it: nothing yet
+#: (``idle``), waiting for the full frame or reading it (``locating``), the crop is
+#: set (``framed``), the last full frame showed no board and a retry waits
+#: (``no-board``), or off because the crop was set by hand (``manual``).
+AutoFrameStatus = Literal["idle", "locating", "framed", "no-board", "manual"]
+
+
 @message
 class StateMessage(Message):
     """Node -> control page: the board's camera as the node holds it.
 
     ``report`` is the phone's last report (kept after it disconnects, so the lens
-    list survives a reload); ``phone_connected`` says whether its socket is open.
+    list survives a reload); ``phone_connected`` says whether its socket is open;
+    ``autoframe`` what Auto-frame is doing (:data:`AutoFrameStatus`).
     """
 
     type: Literal["state"] = tag("state")
     config: CameraConfig
     report: CameraReport | None
     phone_connected: StrictBool
+    autoframe: AutoFrameStatus
 
 
 def _from_base64(value: object) -> object:
@@ -532,7 +589,12 @@ def parse_cameras_message(text: str) -> RenameMessage | ForgetMessage:
 
 #: What the node sends the phone.
 PhoneDown = Annotated[
-    AssignedMessage | ConfigMessage | PreviewsMessage | ReplacedMessage | RefusedMessage,
+    AssignedMessage
+    | ConfigMessage
+    | PreviewsMessage
+    | SendFullFrameMessage
+    | ReplacedMessage
+    | RefusedMessage,
     Field(discriminator="type"),
 ]
 #: What the node sends the control UI's camera list.

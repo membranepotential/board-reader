@@ -106,6 +106,9 @@ export type CropRect = Immutable<z.infer<typeof CropRect>>;
  * * `streaming` — whether the edge streams frames to `/ingest`.
  * * `rules` — which chess the board plays (`Rules`). The node reads it,
  *   the edge ignores it.
+ * * `auto` — whether the node frames the camera by itself (Auto-frame): it asks
+ *   for a full frame, finds the board and sets `crop`. A crop set by hand on
+ *   /control switches it off. The node reads it, the edge ignores it.
  *
  * Omitted fields take their defaults, so `{}` is the default config, and a
  * config saved before a field existed still loads.
@@ -115,7 +118,8 @@ export const CameraConfig = z.strictObject({
   device: z.string().min(1).nullable(),
   resolution: z.enum(['720p', '1080p', '2160p']),
   streaming: z.boolean(),
-  rules: z.enum(['standard', 'free'])
+  rules: z.enum(['standard', 'free']),
+  auto: z.boolean()
 });
 export type CameraConfig = Immutable<z.infer<typeof CameraConfig>>;
 
@@ -239,6 +243,21 @@ export const CamerasMessage = z.strictObject({
   type: z.literal('cameras')
 });
 export type CamerasMessage = Immutable<z.infer<typeof CamerasMessage>>;
+
+/**
+ * Phone -> node: the answer to `SendFullFrameMessage` `request`; the
+ * socket's next message is its JPEG (binary).
+ *
+ * The whole camera frame, uncropped, its long side at most
+ * `FULL_FRAME_LONG_SIDE`, and `capture_ts` its capture time in epoch
+ * seconds, on the same clock as the frames on `/ingest`.
+ */
+export const FullFrameMessage = z.strictObject({
+  request: z.int().min(0).max(9007199254740991),
+  capture_ts: z.number(),
+  type: z.literal('full_frame')
+});
+export type FullFrameMessage = Immutable<z.infer<typeof FullFrameMessage>>;
 
 /**
  * Node -> control page, about once a second: the recognizer and the stream.
@@ -430,15 +449,6 @@ export const ReplacedMessage = z.strictObject({
 });
 export type ReplacedMessage = Immutable<z.infer<typeof ReplacedMessage>>;
 
-export const PhoneDown = z.discriminatedUnion('type', [
-  AssignedMessage,
-  ConfigMessage,
-  PreviewsMessage,
-  ReplacedMessage,
-  RefusedMessage
-]);
-export type PhoneDown = Immutable<z.infer<typeof PhoneDown>>;
-
 /**
  * Phone -> node: what the camera is now.
  */
@@ -449,15 +459,46 @@ export const ReportMessage = z.strictObject({
 export type ReportMessage = Immutable<z.infer<typeof ReportMessage>>;
 
 /**
+ * Node -> phone: send one whole camera frame now (`FullFrameMessage`).
+ *
+ * Auto-frame asks for it when the camera registers or starts streaming, and when
+ * the camera moved. A phone whose camera is not live yet answers once it is; only
+ * the latest request needs an answer.
+ */
+export const SendFullFrameMessage = z.strictObject({
+  request: z.int().min(0).max(9007199254740991),
+  type: z.literal('send_full_frame')
+});
+export type SendFullFrameMessage = Immutable<z.infer<typeof SendFullFrameMessage>>;
+
+export const PhoneDown = z.discriminatedUnion('type', [
+  AssignedMessage,
+  ConfigMessage,
+  PreviewsMessage,
+  SendFullFrameMessage,
+  ReplacedMessage,
+  RefusedMessage
+]);
+export type PhoneDown = Immutable<z.infer<typeof PhoneDown>>;
+
+/**
  * Node -> control page: the board's camera as the node holds it.
  *
  * `report` is the phone's last report (kept after it disconnects, so the lens
- * list survives a reload); `phone_connected` says whether its socket is open.
+ * list survives a reload); `phone_connected` says whether its socket is open;
+ * `autoframe` what Auto-frame is doing (`AutoFrameStatus`).
  */
 export const StateMessage = z.strictObject({
   config: CameraConfig,
   report: CameraReport.nullable(),
   phone_connected: z.boolean(),
+  autoframe: z.enum([
+    'idle',
+    'locating',
+    'framed',
+    'no-board',
+    'manual'
+  ]),
   type: z.literal('state')
 });
 export type StateMessage = Immutable<z.infer<typeof StateMessage>>;

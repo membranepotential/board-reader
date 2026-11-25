@@ -26,6 +26,12 @@ export const JPEG_QUALITY = 0.75;
 /** The focus score is measured on this small copy of the sent crop. */
 export const SHARPNESS_LONG_SIDE = 400;
 /** The full-frame preview the control UI draws the crop on: small and rare. */
+/**
+ * The full frame Auto-frame reads, when the node asks: the whole picture, its long
+ * side at most core's `FULL_FRAME_LONG_SIDE`, sharp enough for a small board.
+ */
+export const FULL_FRAME_LONG_SIDE = 1920;
+export const FULL_FRAME_QUALITY = 0.9;
 export const PREVIEW_LONG_SIDE = 480;
 export const PREVIEW_QUALITY = 0.6;
 /** Sent only while a control page watches (the node's `previews` message). */

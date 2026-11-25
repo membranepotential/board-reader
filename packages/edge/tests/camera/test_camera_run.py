@@ -16,6 +16,7 @@ from board_reader_core.control import (
     ConfigMessage,
     CropRect,
     PreviewsMessage,
+    SendFullFrameMessage,
 )
 from board_reader_core.wire import decode_jpeg
 
@@ -106,21 +107,32 @@ def test_the_camera_streams_under_its_assigned_board_with_its_crop():
 
 
 async def _camera_against_a_fake_node() -> None:
-    """The node assigns a board and a crop, turns streaming and previews on; frames follow."""
+    """The node assigns a board and a crop, asks for a full frame, turns streaming
+    and previews on; the full frame, previews and frames follow."""
     heard: dict[str, object] = {"reports": []}
     got_frame = asyncio.Event()
 
     async def node(ws: ServerConnection) -> None:
         if ws.request.path.startswith("/cameras/"):
             await ws.send(AssignedMessage(board_id="board-5").to_json())
+            # Asked before any frame exists: answered with the first one.
+            await ws.send(SendFullFrameMessage(request=3).to_json())
             await ws.send(ConfigMessage(CameraConfig(crop=CROP, streaming=True)).to_json())
             await ws.send(PreviewsMessage(on=True).to_json())
+            full_frame: dict | None = None
             async for message in ws:
                 if isinstance(message, bytes):
-                    heard["preview"] = decode_jpeg(message).shape[:2]
+                    shape = decode_jpeg(message).shape[:2]
+                    if full_frame is not None:
+                        heard["full_frame"] = (full_frame["request"], shape)
+                        full_frame = None
+                    else:
+                        heard["preview"] = shape
+                elif (parsed := json.loads(message))["type"] == "full_frame":
+                    full_frame = parsed
                 else:
-                    heard["reports"].append(json.loads(message)["report"])  # type: ignore[union-attr]
-                if "preview" in heard and got_frame.is_set():
+                    heard["reports"].append(parsed["report"])  # type: ignore[union-attr]
+                if {"preview", "full_frame"} <= heard.keys() and got_frame.is_set():
                     return
         else:  # /ingest
             header = json.loads(await ws.recv())
@@ -142,7 +154,7 @@ async def _camera_against_a_fake_node() -> None:
         )
         run = asyncio.create_task(camera.run())
         await got_frame.wait()
-        while "preview" not in heard:
+        while not {"preview", "full_frame"} <= heard.keys():
             await asyncio.sleep(0.02)
         run.cancel()
         await asyncio.gather(run, return_exceptions=True)
@@ -153,6 +165,7 @@ async def _camera_against_a_fake_node() -> None:
     assert header["device_id"] == DEVICE
     assert heard["frame"] == (240, 160)  # cropped to the middle half
     assert heard["preview"] == (240, 320)  # the whole frame, already under the preview size
+    assert heard["full_frame"] == (3, (240, 320))  # uncropped
     reports = heard["reports"]
     assert isinstance(reports, list)
     last = reports[-1]

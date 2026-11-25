@@ -18,7 +18,10 @@ Runs on the inference node. Its surfaces:
   camera, pushed to the phone; the list of cameras, and each board's state, previews
   and the node's health, pushed to the control UI
   (:mod:`board_reader_inference.control.camera`). The registry there also decides
-  which ``/ingest`` frames a board id takes.
+  which ``/ingest`` frames a board id takes, and runs Auto-frame (DESIGN D21): the
+  full frames it asks the cameras for are located here, on the read worker
+  (:func:`~board_reader_inference.recognition.locate.autoframe`), and the result is
+  handed back to it.
 
 The gateway holds the recognizer and the position hub. It never imports the
 edge package; it only speaks the wire (:mod:`board_reader_core.wire`).
@@ -38,6 +41,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
+import numpy as np
 from fastapi import FastAPI, Query, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
@@ -47,18 +51,34 @@ from board_reader_core.protocol import PositionEvent
 from board_reader_core.recording import FrameRecorder
 from board_reader_core.wire import Frame, decode_jpeg
 
+from board_reader_inference.control.autoframe.events import (
+    FullFrameFailed,
+    FullFrameLocated,
+)
+from board_reader_inference.control.autoframe.geometry import FrameProposal, Located
+from board_reader_inference.control.autoframe.tuning import Tuning
 from board_reader_inference.control.camera import (
     CameraRegistry,
+    FullFrame,
     NodeStatus,
     StreamedFrame,
 )
 from board_reader_inference.control.camera import router as camera_router
 from board_reader_inference.measurement.labels import READ_FRAME
+from board_reader_inference.recognition.locate import (
+    MIN_R2,
+    Grid,
+    NoBoard,
+    Proposal,
+    autoframe,
+)
 from board_reader_inference.recognition.recognizer import (
     FrameReading,
+    Recognition,
     Recognizer,
     StubRecognizer,
     build_from_env,
+    event_from_dist,
     frame_reader,
 )
 from board_reader_inference.stream.hub import PositionHub
@@ -152,6 +172,25 @@ def _frame_policy() -> Callable[[], FramePolicy]:
     return lambda: parse_policy(spec)
 
 
+#: How often Auto-frame hears the time (``CameraRegistry.tick``): its retries and
+#: timeouts are seconds apart, so once a second is fine-grained enough.
+AUTOFRAME_TICK_S = 1.0
+
+
+def _located(grid: Grid) -> Located:
+    """locate's grid as Auto-frame's board: its corners and R^2."""
+    a, b, c, d = ((float(x), float(y)) for x, y in grid.corners)
+    return Located(corners=(a, b, c, d), r2=grid.r2)
+
+
+@dataclass(frozen=True, slots=True)
+class _Located:
+    """A full frame, decoded, and what ``autoframe`` found in it."""
+
+    image: np.ndarray
+    found: Proposal | NoBoard
+
+
 @dataclass(frozen=True, slots=True)
 class _Retained:
     """The latest frame ``/ingest`` accepted for one board, kept for previews."""
@@ -176,7 +215,75 @@ def create_app(
         ingest_.forget(board_id)
         latest_frames.pop(board_id, None)
 
-    cameras = CameraRegistry(on_names=hub_.set_names, on_forget=_forget_board)
+    # Auto-frame (D21): each full frame a camera sends is located on the read
+    # worker, between the reads, and the result goes back to the registry.
+    locating: set[asyncio.Task[None]] = set()
+
+    def _on_full_frame(full: FullFrame) -> None:
+        task = asyncio.get_running_loop().create_task(_locate(full))
+        locating.add(task)
+        task.add_done_callback(locating.discard)
+
+    async def _locate(full: FullFrame) -> None:
+        def work() -> _Located:
+            image = decode_jpeg(full.jpeg)
+            return _Located(image, autoframe(recognizer_.read, image))
+
+        try:
+            located = await ingest_.call(work)
+        except ValueError as e:
+            log.warning("board %s: the full frame is no JPEG: %s", full.board_id, e)
+            cameras.autoframe_result(full.board_id, FullFrameFailed(full.request))
+            return
+        found = located.found
+        if isinstance(found, NoBoard):
+            r2 = "no grid" if found.r2 is None else f"best R^2 {found.r2:.2f}"
+            log.info("auto-frame %s: no board in the full frame (%d reads, %s)",
+                     full.board_id, found.reads, r2)
+            cameras.autoframe_result(full.board_id, FullFrameFailed(full.request))
+            return
+        log.info(
+            "auto-frame %s: board found in %d reads (R^2 %.3f, %.0f%% of the last read), "
+            "crop %s", full.board_id, found.reads, found.grid.r2, 100 * found.board_share,
+            found.crop.to_dict(),
+        )
+        proposal = FrameProposal(
+            crop=found.crop,
+            board=_located(found.grid),
+            read=found.recognition if found.dominant else None,
+        )
+        published = cameras.autoframe_result(
+            full.board_id, FullFrameLocated(full.request, proposal, full.capture_ts)
+        )
+        for publish in published:
+            _publish_located(full.board_id, publish.read, publish.capture_ts, located.image)
+
+    def _publish_located(
+        board_id: str, recognition: Recognition, capture_ts: float, image: np.ndarray
+    ) -> None:
+        """Auto-frame's last read into the board's stream, as its latest seq."""
+        entry = latest_frames.get(board_id)
+        frame = Frame(
+            board_id=board_id,
+            seq=0 if entry is None else entry.streamed.seq,
+            capture_ts=capture_ts,
+            image=image,
+        )
+        reading = FrameReading(
+            event_from_dist(frame, recognition.square_dist),
+            recognition.direction,
+            recognition.frame_energy,
+            recognition.grid,
+        )
+        if not ingest_.publish_read(frame, reading):
+            log.info("auto-frame %s: its read is older than the stream's; not published", board_id)
+
+    cameras = CameraRegistry(
+        on_names=hub_.set_names,
+        on_forget=_forget_board,
+        on_full_frame=_on_full_frame,
+        tuning=Tuning(min_r2=MIN_R2),
+    )
     #: /ingest frames refused because their board id is another camera's (D18).
     frames_not_owned = 0
 
@@ -246,12 +353,22 @@ def create_app(
     if recorder is not None:
         print(f"recording ingress frames to {recorder.path}")
 
+    async def _tick_autoframe() -> None:
+        while True:
+            await asyncio.sleep(AUTOFRAME_TICK_S)
+            cameras.tick()
+
     @contextlib.asynccontextmanager
     async def lifespan(app_: FastAPI):
+        ticks = asyncio.create_task(_tick_autoframe(), name="autoframe-ticks")
         try:
             async with ingest_.lifespan(app_):
                 yield
         finally:
+            ticks.cancel()
+            for task in (ticks, *locating):
+                task.cancel()
+            await asyncio.gather(ticks, *locating, return_exceptions=True)
             if recorder is not None:
                 recorder.close()
 

@@ -41,6 +41,13 @@ stall, and the ingest socket backs up behind the model.
   session's capped arena), and each board's events publish in its arrival order
   (monotone ``seq``).
 
+**Work between reads.** :meth:`FrameIngest.call` runs other work that needs the
+recognizer (Auto-frame locating the board in a full frame, 2 to 8 reads) on the same
+worker, in the same queue, oldest first, so the GPU still runs one call at a time.
+:meth:`FrameIngest.publish_read` puts a read made that way into its board's stream:
+it joins the queue like a scheduled read and is settled and published in turn, but
+not recorded, because its frame never crossed ``/ingest``.
+
 Acks are decoupled from estimation: the gateway acks every frame it *receives*,
 including frames the scheduler declines. An ack means "received", not
 "estimated" — it is the edge's flow-control signal, not a result.
@@ -391,6 +398,9 @@ class _Board:
     #: The node's monotonic clock at the board's last scheduled read, for the
     #: wall-clock backstop (:data:`BACKSTOP_SLACK`).
     last_scheduled: float
+    #: The capture time of the board's latest queued read: the stabilizer sees each
+    #: board's reads in capture order, so a read made elsewhere may not go behind it.
+    last_read_ts: float = -math.inf
     #: The board's reads in the queue, not counting one that is running.
     waiting: int = 0
     #: Whether one of the board's reads is running.
@@ -418,6 +428,19 @@ class _ScheduledRead:
     rules: Rules
     #: The node's monotonic clock when the read joined the queue.
     queued: float
+    #: A read made elsewhere (:meth:`FrameIngest.publish_read`): settled and
+    #: published, but not read again and not recorded. ``None`` reads ``frame``.
+    made: FrameReading | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class _Work:
+    """Other recognizer work (:meth:`FrameIngest.call`) waiting its turn."""
+
+    #: Runs on the worker thread; returns what hands its result over on the loop.
+    run: Callable[[], Callable[[], None]]
+    #: Gives up on it: the worker stopped first.
+    cancel: Callable[[], None]
 
 
 @dataclass(frozen=True, slots=True)
@@ -478,8 +501,9 @@ class FrameIngest:
         #: with its kind, rules and seconds waited — the gateway records it.
         self._on_drop = on_drop
         self._boards: dict[str, _Board] = {}
-        #: Every board's scheduled reads, oldest first (module docstring, G1).
-        self._queue: deque[_ScheduledRead] = deque()
+        #: Every board's scheduled reads and the other work, oldest first (module
+        #: docstring, G1).
+        self._queue: deque[_ScheduledRead | _Work] = deque()
         #: The one read worker and its wake-up, made on the first scheduled read
         #: after construction or :meth:`close`: the gateway is built before its
         #: event loop runs.
@@ -553,6 +577,31 @@ class FrameIngest:
             self.frames_unscheduled += 1
             return
         board.last_scheduled = now
+        self._enqueue(board, frame, kind, now, made=None)
+
+    def publish_read(self, frame: Frame, reading: FrameReading) -> bool:
+        """Settle and publish ``reading``, made elsewhere, as ``frame``'s board's next
+        read (Auto-frame's last read of a full frame); ``False`` drops it.
+
+        It joins the queue like a scheduled read (its board's ring as it stands, its
+        rules now), so the board's stabilizer still sees one read at a time in
+        capture order. A read no newer than the board's latest queued one is
+        dropped: the stream already says more. Never recorded and never shown to
+        ``on_event``: its frame did not come through ``/ingest``, so no recording
+        holds it. ``frame.seq`` should be the board's latest seen, so the published
+        seqs never go back.
+        """
+        board = self._boards.get(frame.board_id)
+        if board is None:
+            board = self._boards[frame.board_id] = self._new_board()
+        if frame.capture_ts <= board.last_read_ts:
+            return False
+        self._enqueue(board, frame, ReadKind.BURST_END, time.monotonic(), made=reading)
+        return True
+
+    def _enqueue(
+        self, board: _Board, frame: Frame, kind: ReadKind, now: float, *, made: FrameReading | None
+    ) -> None:
         if board.waiting >= READ_BACKLOG:
             self._shed(board)
         self._queue.append(
@@ -563,12 +612,37 @@ class FrameIngest:
                 held=board.ring.snapshot(),
                 rules=self._rules(frame.board_id),
                 queued=now,
+                made=made,
             )
         )
         board.waiting += 1
+        board.last_read_ts = max(board.last_read_ts, frame.capture_ts)
         board.idle.clear()
         self._max_waiting = max(self._max_waiting, len(self._queue))
         self._wake()
+
+    async def call[T](self, work: Callable[[], T]) -> T:
+        """Run ``work`` on the read worker thread, in its turn in the read queue, and
+        return its result (or raise its exception).
+
+        For other work that needs the recognizer, so that the GPU still runs one
+        call at a time: it waits behind every read queued before it, and the reads
+        queued after it wait for it. ``CancelledError`` when the worker stops first.
+        """
+        done: asyncio.Future[T] = asyncio.get_running_loop().create_future()
+
+        def run() -> Callable[[], None]:
+            try:
+                result = work()
+            except Exception as e:  # handed to the caller
+                failed = e
+                return lambda: None if done.done() else done.set_exception(failed)
+            return lambda: None if done.done() else done.set_result(result)
+
+        self._queue.append(_Work(run=run, cancel=done.cancel))
+        self._max_waiting = max(self._max_waiting, len(self._queue))
+        self._wake()
+        return await done
 
     def _backstop(self, board_id: str, board: _Board, now: float) -> bool:
         """Whether to read a frame the policy declined, on the node's own clock.
@@ -594,7 +668,7 @@ class FrameIngest:
     def _shed(self, board: _Board) -> None:
         """Make room in ``board``'s share of the queue: drop its oldest keepalive
         read, or, when every read it has waiting is a burst end, its oldest."""
-        mine = [s for s in self._queue if s.board is board]
+        mine = [s for s in self._queue if isinstance(s, _ScheduledRead) and s.board is board]
         victim = next((s for s in mine if s.kind is ReadKind.KEEPALIVE), mine[0])
         self._queue.remove(victim)
         self._drop(victim, time.monotonic() - victim.queued)
@@ -653,7 +727,11 @@ class FrameIngest:
         board = self._boards.pop(board_id, None)
         if board is None:
             return
-        kept = deque(scheduled for scheduled in self._queue if scheduled.board is not board)
+        kept = deque(
+            item
+            for item in self._queue
+            if not (isinstance(item, _ScheduledRead) and item.board is board)
+        )
         self.frames_forgotten += len(self._queue) - len(kept)
         self._queue = kept
         board.waiting = 0
@@ -672,6 +750,9 @@ class FrameIngest:
         if worker is not None:
             worker.cancel()
             await asyncio.gather(worker, return_exceptions=True)
+        for item in self._queue:
+            if isinstance(item, _Work):
+                item.cancel()
         self._queue.clear()
         boards = list(self._boards.values())
         self._boards.clear()
@@ -705,8 +786,8 @@ class FrameIngest:
         assert self._ready is not None
         self._ready.set()
 
-    async def _next(self, ready: asyncio.Event) -> _ScheduledRead:
-        """The read the recognizer runs next: the oldest one waiting.
+    async def _next(self, ready: asyncio.Event) -> _ScheduledRead | _Work:
+        """The read (or other work) the recognizer runs next: the oldest one waiting.
 
         The one place that takes reads off the queue, so batching would go here
         (take every waiting read, pad to a fixed batch for the GPU arena rule). A
@@ -716,6 +797,8 @@ class FrameIngest:
         while True:
             while self._queue:
                 scheduled = self._queue.popleft()
+                if isinstance(scheduled, _Work):
+                    return scheduled
                 waited = time.monotonic() - scheduled.queued
                 if scheduled.kind is ReadKind.KEEPALIVE and waited > MAX_KEEPALIVE_WAIT_S:
                     self._drop(scheduled, waited)
@@ -733,6 +816,14 @@ class FrameIngest:
         """Estimate every scheduled read, forever, one at a time, oldest first."""
         while True:
             scheduled = await self._next(ready)
+            if isinstance(scheduled, _Work):
+                try:
+                    deliver = await asyncio.to_thread(scheduled.run)
+                except asyncio.CancelledError:
+                    scheduled.cancel()
+                    raise
+                deliver()
+                continue
             board, frame = scheduled.board, scheduled.frame
             try:
                 outcome = await asyncio.to_thread(self._read_and_settle, scheduled)
@@ -754,8 +845,9 @@ class FrameIngest:
     def _read_and_settle(self, scheduled: _ScheduledRead) -> FrameReading | Misoriented:
         """The read and its debounce, on the worker thread."""
         board = scheduled.board
+        reading = self._read(scheduled.frame) if scheduled.made is None else scheduled.made
         return _settle_read(
-            self._read(scheduled.frame), scheduled.frame, board.stabilizer, board.guard,
+            reading, scheduled.frame, board.stabilizer, board.guard,
             scheduled.rules, board.clock, scheduled.held,
         )
 
@@ -782,7 +874,7 @@ class FrameIngest:
         # not take the read worker down with it.
         try:
             self._log_read(event, frame, previous, scheduled.queued)
-            if self._on_event is not None:
+            if self._on_event is not None and scheduled.made is None:
                 self._on_event(outcome, frame, scheduled.rules)
         except Exception:
             log.exception(

@@ -18,11 +18,14 @@ from board_reader_core.control import (
     CropRect,
     ForgetMessage,
     FrameSize,
+    FullFrameMessage,
     HealthMessage,
     PreviewMessage,
     PreviewsMessage,
     RenameMessage,
     ReplacedMessage,
+    ReportMessage,
+    SendFullFrameMessage,
     StateMessage,
     camera_board_id,
     camera_name,
@@ -168,9 +171,28 @@ def test_every_message_down_names_its_type():
     config = CameraConfig(streaming=True)
     assert json.loads(ConfigMessage(config).to_json()) == {"type": "config", "config": config.to_dict()}
     assert json.loads(PreviewsMessage(on=True).to_json()) == {"type": "previews", "on": True}
-    state = json.loads(StateMessage(config, None, phone_connected=False).to_json())
+    state = json.loads(
+        StateMessage(config, None, phone_connected=False, autoframe="framed").to_json()
+    )
     assert state == {"type": "state", "config": config.to_dict(), "report": None,
-                     "phone_connected": False}
+                     "phone_connected": False, "autoframe": "framed"}
+    assert json.loads(SendFullFrameMessage(request=4).to_json()) == {
+        "type": "send_full_frame", "request": 4,
+    }
+
+
+def test_the_phone_answers_a_full_frame_request_with_a_header_and_reports_alike():
+    header = {"type": "full_frame", "request": 4, "capture_ts": 1764000000.25}
+    assert parse_phone_message(json.dumps(header)) == FullFrameMessage(4, 1764000000.25)
+    report = {"type": "report", "report": {"ingest": "idle"}}
+    assert parse_phone_message(json.dumps(report)) == ReportMessage(CameraReport())
+    with pytest.raises(ValueError):
+        parse_phone_message(json.dumps({**header, "request": -1}))
+
+
+def test_auto_frame_is_on_unless_switched_off():
+    assert CameraConfig().auto is True
+    assert CameraConfig.from_dict({"crop": None}).auto is True
     health = json.loads(HealthMessage("chessq", None, 3, 0, None, None, None).to_json())
     assert health["type"] == "health"
     assert (health["frame_age_s"], health["fps"], health["direction"]) == (None, None, None)

@@ -33,6 +33,16 @@ The registry also follows each board's **direction** in the image, from the
 recognizer's reads (:meth:`CameraRegistry.observe_direction`): which side White sits
 on, and whether the camera moved since the angle settled.
 
+And it runs **Auto-frame** for each board (DESIGN D21): it steps the board's
+:class:`~.autoframe.state.AutoFrame` controller on the camera's events (registered,
+streaming, disconnected, a crop set by hand, the switch on /control, a new lens or
+frame size, the node's ~1 s tick) and carries out its actions: it asks the phone for
+a full frame, pushes the crop the node found, and tells /control the status. Finding
+the board needs the recognizer, which ``control`` never imports, so the full frame
+goes to the gateway (``on_full_frame``), which locates it on the read worker and
+hands the result back (:meth:`CameraRegistry.autoframe_result`), together with the
+read to publish when there is one.
+
 The registry is the single source of truth, and it **pushes**: every change is
 posted at once to every socket that cares (the message types and their directions
 are :mod:`board_reader_core.control`'s):
@@ -67,7 +77,7 @@ import statistics
 import time
 from collections import deque
 from collections.abc import Callable, Coroutine, Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from itertools import count
 from pathlib import Path
 from typing import Any, ClassVar, Protocol
@@ -77,6 +87,7 @@ from starlette.websockets import WebSocketDisconnect
 
 from board_reader_core.control import (
     DEFAULT_RULES,
+    MAX_FULL_FRAME_BYTES,
     AssignedMessage,
     BoardDirection,
     CameraBoardId,
@@ -91,13 +102,16 @@ from board_reader_core.control import (
     DeviceId,
     ForgetMessage,
     FrameMessage,
+    FullFrameMessage,
     HealthMessage,
     PhoneDown,
     PreviewMessage,
     PreviewsMessage,
     RefusedMessage,
     ReplacedMessage,
+    ReportMessage,
     Rules,
+    SendFullFrameMessage,
     StateMessage,
     WhiteSide,
     camera_name,
@@ -111,6 +125,28 @@ from board_reader_core.control import (
 from board_reader_core.protocol import BoardName, NamesMessage
 from board_reader_core.wire import decode_jpeg
 from board_reader_core.wiremodel import parse
+
+from board_reader_inference.control.autoframe.actions import (
+    PublishRead,
+    PushCrop,
+    ReportStatus,
+    RequestFullFrame,
+)
+from board_reader_inference.control.autoframe.events import (
+    AutoToggled,
+    CameraRegistered,
+    Disconnected,
+    Event,
+    FullFrameFailed,
+    FullFrameLocated,
+    ManualCropSet,
+    Reframed,
+    StreamingStarted,
+    Tick,
+)
+from board_reader_inference.control.autoframe.machine import status, step
+from board_reader_inference.control.autoframe.state import AutoFrame
+from board_reader_inference.control.autoframe.tuning import TUNING, Tuning
 
 log = logging.getLogger(__name__)
 
@@ -185,7 +221,10 @@ def _parse_saved(raw: object) -> Saved:
         )
     if not isinstance(raw["boards"], dict):
         raise ValueError('"boards" is not an object')
-    boards = {str(board_id): CameraConfig.from_dict(config) for board_id, config in raw["boards"].items()}
+    boards = {
+        str(board_id): CameraConfig.from_dict(_manual_if_cropped(config))
+        for board_id, config in raw["boards"].items()
+    }
     # A file from before the cameras were known by device has no "cameras": none known
     # yet; one from before the names has no "names": none named yet.
     for key in ("cameras", "names"):
@@ -200,6 +239,14 @@ def _parse_saved(raw: object) -> Saved:
     if len(set(names.values())) != len(names):
         raise ValueError("two cameras have one name")
     return Saved(boards, cameras, names)
+
+
+def _manual_if_cropped(config: object) -> object:
+    """A config saved before Auto-frame existed (no ``"auto"``) with a crop: that crop
+    was drawn by hand, so it loads with Auto-frame off rather than being replaced."""
+    if isinstance(config, dict) and "auto" not in config and config.get("crop") is not None:
+        return {**config, "auto": False}
+    return config
 
 
 def load_state(path: Path) -> Saved:
@@ -317,18 +364,41 @@ def _reframed(old: CameraConfig, new: CameraConfig) -> bool:
     return (old.crop, old.device, old.resolution) != (new.crop, new.device, new.resolution)
 
 
+def _new_picture(before: CameraReport | None, after: CameraReport) -> bool:
+    """Whether the camera's whole frame became another picture: a live camera
+    switched lens or frame size (a new resolution, the phone turned upright)."""
+    if before is None or before.frame is None or after.frame is None:
+        return False
+    return (before.device, before.frame) != (after.device, after.frame)
+
+
 # ---- the registry --------------------------------------------------------------------------
 
 
 @dataclass(slots=True)
 class BoardCamera:
-    """One board's camera state; it moves with the board id when a camera is renamed."""
+    """One board's camera state.
+
+    ``autoframe`` is Auto-frame's controller state; its ``auto`` always equals
+    ``config.auto``, which is the persisted copy.
+    """
 
     config: CameraConfig = field(default_factory=CameraConfig)
     report: CameraReport | None = None
     preview: PreviewMessage | None = None
     direction: DirectionTrack = field(default_factory=DirectionTrack)
     watchers: set[Mailbox[ControlDown]] = field(default_factory=set)
+    autoframe: AutoFrame = field(default_factory=AutoFrame)
+
+
+@dataclass(frozen=True, slots=True)
+class FullFrame:
+    """A full frame a camera sent for Auto-frame's ``request``, still a JPEG."""
+
+    board_id: str
+    request: int
+    capture_ts: float
+    jpeg: bytes
 
 
 @dataclass(eq=False, slots=True)
@@ -359,7 +429,11 @@ class CameraRegistry:
 
     ``on_names`` hears the whole :class:`NamesMessage` now and on every change of a
     name (the gateway hands it to ``/viewer``); ``on_forget`` hears the board id of
-    each forgotten camera (the gateway frees that board's read state).
+    each forgotten camera (the gateway frees that board's read state);
+    ``on_full_frame`` hears each full frame Auto-frame asked for (the gateway locates
+    the board in it and answers with :meth:`autoframe_result`). ``clock`` is the
+    monotonic clock Auto-frame's timeouts and retries run on; ``tuning`` its
+    thresholds.
     """
 
     def __init__(
@@ -367,6 +441,9 @@ class CameraRegistry:
         *,
         on_names: Callable[[NamesMessage], None] | None = None,
         on_forget: Callable[[str], None] | None = None,
+        on_full_frame: Callable[[FullFrame], None] | None = None,
+        clock: Callable[[], float] = time.monotonic,
+        tuning: Tuning = TUNING,
     ) -> None:
         self._path = _config_path()
         saved = Saved() if self._path is None else load_state(self._path)
@@ -378,7 +455,7 @@ class CameraRegistry:
                 ", ".join(orphans), "it" if len(orphans) == 1 else "them",
             )
         self._boards: dict[str, BoardCamera] = {
-            board_id: BoardCamera(config=config)
+            board_id: BoardCamera(config=config, autoframe=AutoFrame(auto=config.auto))
             for board_id, config in saved.boards.items()
             if board_id in held
         }
@@ -392,6 +469,9 @@ class CameraRegistry:
         self._lists: set[asyncio.Event] = set()
         self._on_names = on_names
         self._on_forget = on_forget
+        self._on_full_frame = on_full_frame
+        self._clock = clock
+        self._tuning = tuning
         self._announce_names()
 
     def board(self, board_id: str) -> BoardCamera:
@@ -422,6 +502,7 @@ class CameraRegistry:
             config=board.config,
             report=board.report,
             phone_connected=self._phone_on(board_id) is not None,
+            autoframe=status(board.autoframe).value,
         )
 
     def _tell_watchers(self, board_id: str, message: ControlDown | None = None) -> None:
@@ -580,22 +661,51 @@ class CameraRegistry:
         link.mailbox.post(PreviewsMessage(on=bool(board.watchers)))
         self._tell_watchers(board_id)
         self._tell_lists()
+        if previous is not None:
+            # The replaced socket cannot answer the full frame it was asked for.
+            self._step(board_id, Disconnected())
+        self._step(board_id, CameraRegistered())
         return link
 
     def disconnect_phone(self, link: PhoneLink) -> None:
         if not self._current(link):
             return  # replaced: the newer socket is the device's now
         del self._phones[link.device_id]
-        self._tell_watchers(self._cameras[link.device_id])
+        board_id = self._cameras[link.device_id]
+        self._tell_watchers(board_id)
         self._tell_lists()
+        self._step(board_id, Disconnected())
 
     def report(self, link: PhoneLink, report: CameraReport) -> None:
         if not self._current(link):
             return
         board_id = self._cameras[link.device_id]
-        self.board(board_id).report = report
+        board = self.board(board_id)
+        before, board.report = board.report, report
         self._tell_watchers(board_id)
         self._tell_lists()
+        if _new_picture(before, report):
+            self._step(board_id, Reframed())
+        if report.ingest == "streaming" and (before is None or before.ingest != "streaming"):
+            self._step(board_id, StreamingStarted())
+
+    def full_frame(self, link: PhoneLink, header: FullFrameMessage, jpeg: bytes) -> None:
+        """The phone's answer to a full-frame request; handed to ``on_full_frame``.
+
+        An answer to a request that is no longer the one in flight (late, or made
+        stale by a new lens) is dropped here, before it costs a locate.
+        """
+        if len(jpeg) > MAX_FULL_FRAME_BYTES:
+            raise ValueError(f"full frame larger than {MAX_FULL_FRAME_BYTES} bytes")
+        if not self._current(link):
+            return
+        board_id = self._cameras[link.device_id]
+        inflight = self.board(board_id).autoframe.inflight
+        if inflight is None or inflight.request != header.request:
+            log.info("board %s: dropping full frame %d, not the one asked for", board_id, header.request)
+            return
+        if self._on_full_frame is not None:
+            self._on_full_frame(FullFrame(board_id, header.request, header.capture_ts, jpeg))
 
     def preview(self, link: PhoneLink, preview: PreviewMessage) -> None:
         if not self._current(link):
@@ -653,6 +763,20 @@ class CameraRegistry:
             self._tell_phone(board_id, PreviewsMessage(on=False))
 
     def configure(self, board_id: str, config: CameraConfig) -> None:
+        """/control set ``config``. A new crop there is a crop set by hand: it
+        switches Auto-frame off, whatever ``auto`` says; otherwise ``auto`` is the
+        switch."""
+        old = self.board(board_id).config
+        event: ManualCropSet | AutoToggled | None = None
+        if config.crop != old.crop:
+            config, event = replace(config, auto=False), ManualCropSet()
+        elif config.auto != old.auto:
+            event = AutoToggled(on=config.auto)
+        self._set_config(board_id, config)
+        if event is not None:
+            self._step(board_id, event)
+
+    def _set_config(self, board_id: str, config: CameraConfig) -> None:
         board = self.board(board_id)
         if _reframed(board.config, config):
             board.direction = DirectionTrack()
@@ -662,6 +786,45 @@ class CameraRegistry:
             self._save()
         self._tell_phone(board_id, ConfigMessage(config))
         self._tell_watchers(board_id)
+
+    # ---- Auto-frame ------------------------------------------------------------------
+
+    def autoframe_result[R](
+        self, board_id: str, result: FullFrameLocated[R] | FullFrameFailed
+    ) -> list[PublishRead[R]]:
+        """What the gateway found in a full frame of ``board_id``; returns the reads
+        to publish (none, or Auto-frame's last read when it saw the board large
+        enough). Nothing for a board forgotten meanwhile."""
+        if self._holder(board_id) is None:
+            return []
+        return self._step(board_id, result)
+
+    def tick(self) -> None:
+        """Let time pass for every camera: a retry or a timeout may be due."""
+        for board_id in list(self._boards):
+            if self._boards[board_id].autoframe.connected:
+                self._step(board_id, Tick())
+
+    def _step[R](self, board_id: str, event: Event[R]) -> list[PublishRead[R]]:
+        """Step ``board_id``'s Auto-frame on ``event``, carry out its actions and
+        return the reads it wants published."""
+        board = self.board(board_id)
+        board.autoframe, actions = step(board.autoframe, event, self._clock(), self._tuning)
+        if board.autoframe.auto != board.config.auto:
+            self._set_config(board_id, replace(board.config, auto=board.autoframe.auto))
+        published: list[PublishRead[R]] = []
+        for action in actions:
+            match action:
+                case RequestFullFrame(request=request):
+                    self._tell_phone(board_id, SendFullFrameMessage(request))
+                case PushCrop(crop=crop):
+                    # The node's own crop: not a crop set by hand, Auto-frame stays on.
+                    self._set_config(board_id, replace(board.config, crop=crop))
+                case ReportStatus():
+                    self._tell_watchers(board_id)
+                case PublishRead():
+                    published.append(action)
+        return published
 
     def _save(self) -> None:
         if self._path is None:
@@ -825,6 +988,8 @@ def router(
         refuse = _Refusals(f"/cameras/{device_id[:8]}", link.mailbox)
 
         async def receive() -> None:
+            # A full frame's header, waiting for its JPEG (the next binary message).
+            header: FullFrameMessage | None = None
             while True:
                 message = await ws.receive()
                 if message["type"] == "websocket.disconnect":
@@ -832,10 +997,18 @@ def router(
                 try:
                     jpeg = message.get("bytes")
                     if jpeg is not None:
-                        registry.preview(link, _parse_preview(jpeg))
+                        answered, header = header, None
+                        if answered is None:
+                            registry.preview(link, _parse_preview(jpeg))
+                        else:
+                            registry.full_frame(link, answered, jpeg)
                     else:
-                        report = parse_phone_message(message.get("text") or "").report
-                        registry.report(link, report)
+                        header = None
+                        match parse_phone_message(message.get("text") or ""):
+                            case ReportMessage(report=report):
+                                registry.report(link, report)
+                            case FullFrameMessage() as answer:
+                                header = answer
                 except ValueError as e:
                     refuse(str(e))
 

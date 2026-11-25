@@ -22,13 +22,20 @@ describe('the control link', () => {
     const { net, onMessage } = link();
     expect(net.sockets[0]!.url).toMatch(/\/ws\/boards\/phone\/control$/);
     net.sockets[0]!.open();
-    net.sockets[0]!.deliver({ type: 'state', config: DEFAULT_CAMERA_CONFIG, report: null, phone_connected: false });
+    net.sockets[0]!.deliver({
+      type: 'state',
+      config: DEFAULT_CAMERA_CONFIG,
+      report: null,
+      phone_connected: false,
+      autoframe: 'idle'
+    });
     net.sockets[0]!.deliver({ type: 'state', config: 'garbage' }); // dropped, not half-shown
     expect(onMessage).toHaveBeenCalledExactlyOnceWith({
       type: 'state',
       config: DEFAULT_CAMERA_CONFIG,
       report: null,
-      phone_connected: false
+      phone_connected: false,
+      autoframe: 'idle'
     });
   });
 

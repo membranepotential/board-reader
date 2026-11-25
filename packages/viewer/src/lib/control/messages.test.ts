@@ -9,7 +9,7 @@ const REPORT: CameraReport = {
   frame: { width: 1920, height: 1080 },
   ingest: 'streaming'
 };
-const CONFIG = { crop: { x: 0.1, y: 0.2, w: 0.5, h: 0.6 }, device: 'Back Camera', resolution: '1080p', streaming: true, rules: 'standard' };
+const CONFIG = { crop: { x: 0.1, y: 0.2, w: 0.5, h: 0.6 }, device: 'Back Camera', resolution: '1080p', streaming: true, rules: 'standard', auto: false };
 const text = (message: unknown): string => JSON.stringify(message);
 const phoneDown = (raw: string) => parseWire(PhoneDown, raw);
 const controlDown = (raw: string) => parseWire(ControlDown, raw);
@@ -35,15 +35,17 @@ describe('the phone socket, down', () => {
 
 describe('the control socket, down', () => {
   it('reads the state the node holds', () => {
-    const state = { type: 'state', config: CONFIG, report: REPORT, phone_connected: true };
+    const state = { type: 'state', config: CONFIG, report: REPORT, phone_connected: true, autoframe: 'manual' };
     expect(controlDown(text(state))).toEqual({ ok: true, value: state });
-    const fresh = { config: DEFAULT_CAMERA_CONFIG, report: null, phone_connected: false };
+    const fresh = { config: DEFAULT_CAMERA_CONFIG, report: null, phone_connected: false, autoframe: 'idle' };
     expect(controlDown(text({ type: 'state', ...fresh })).ok).toBe(true);
   });
 
   it('refuses a state with a report it cannot read', () => {
     const report = { ...REPORT, ingest: 'streming' };
-    expect(controlDown(text({ type: 'state', config: CONFIG, report, phone_connected: true })).ok).toBe(false);
+    expect(
+      controlDown(text({ type: 'state', config: CONFIG, report, phone_connected: true, autoframe: 'idle' })).ok
+    ).toBe(false);
     expect(controlDown(text({ type: 'state', config: CONFIG, report: null })).ok).toBe(false);
   });
 

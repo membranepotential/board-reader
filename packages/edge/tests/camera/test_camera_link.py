@@ -15,6 +15,7 @@ from board_reader_core.control import (
     CropRect,
     PreviewsMessage,
     ReplacedMessage,
+    SendFullFrameMessage,
 )
 
 from board_reader_edge.camera.link import (
@@ -52,7 +53,8 @@ def test_the_link_applies_the_node_and_stops_when_replaced():
 
 
 async def _link_against_a_fake_node() -> None:
-    """Report on connect, apply assigned/config, send a preview when asked, stop on replaced."""
+    """Report on connect, apply assigned/config, send a preview and a full frame when
+    asked, stop on replaced."""
     config = CameraConfig(crop=CropRect(0.1, 0.1, 0.5, 0.5), streaming=True)
     heard: dict[str, object] = {}
 
@@ -63,6 +65,8 @@ async def _link_against_a_fake_node() -> None:
         await ws.send(ConfigMessage(config).to_json())
         await ws.send(PreviewsMessage(on=True).to_json())
         heard["preview"] = await ws.recv()
+        await ws.send(SendFullFrameMessage(request=7).to_json())
+        heard["full_frame"] = (json.loads(await ws.recv()), await ws.recv())
         await ws.send(ReplacedMessage().to_json())
 
     assigned: list[str] = []
@@ -75,6 +79,7 @@ async def _link_against_a_fake_node() -> None:
             on_assigned=assigned.append,
             on_config=configs.append,
             on_previews=lambda on: (previews.append(on), on and link.offer_preview(b"jpeg")),
+            on_full_frame=lambda request: link.send_full_frame(request, 12.5, b"whole"),
         )
         link.report(CameraReport(ingest="idle"))
         await link.run()  # returns only on `replaced`
@@ -84,4 +89,9 @@ async def _link_against_a_fake_node() -> None:
     assert assigned == ["board-3"]
     assert configs == [config]
     assert heard["preview"] == b"jpeg"
+    # The header, then its JPEG at once: the node pairs them.
+    assert heard["full_frame"] == (
+        {"type": "full_frame", "request": 7, "capture_ts": 12.5},
+        b"whole",
+    )
     assert previews == [True, False]  # off again once the socket is gone

@@ -18,6 +18,8 @@ one consistent config. The thread hands frames to the loop with
 What a non-phone camera does with the config: ``crop`` and ``streaming`` apply;
 ``device`` and ``resolution`` do not (a stream has one picture at one size), so the
 report lists the stream itself as its only lens and states the frame size it delivers.
+When Auto-frame asks for a full frame, the loop answers with the latest sampled
+whole frame, or with the first one once the stream delivers.
 """
 
 from __future__ import annotations
@@ -34,6 +36,7 @@ import cv2
 import numpy as np
 
 from board_reader_core.control import (
+    FULL_FRAME_LONG_SIDE,
     CameraConfig,
     CameraDevice,
     CameraReport,
@@ -57,6 +60,8 @@ SEND_LONG_SIDE = 960
 PREVIEW_LONG_SIDE = 480
 PREVIEW_QUALITY = 60
 PREVIEW_S = 1.5
+#: The full frame Auto-frame reads: sharp enough for a small board in a wide view.
+FULL_FRAME_QUALITY = 90
 
 #: The report's one "lens" id: a stream has no lenses to choose from.
 STREAM_DEVICE_ID = "stream"
@@ -150,6 +155,11 @@ def preview_jpeg(image: np.ndarray) -> bytes:
     return encode_jpeg(fit_long_side(image, PREVIEW_LONG_SIDE), PREVIEW_QUALITY)
 
 
+def full_frame_jpeg(image: np.ndarray) -> bytes:
+    """The whole frame as Auto-frame reads it (``FULL_FRAME_LONG_SIDE`` at most)."""
+    return encode_jpeg(fit_long_side(image, FULL_FRAME_LONG_SIDE), FULL_FRAME_QUALITY)
+
+
 class StreamCamera:
     """One stream as a camera on the node: the control link, the thread, the sockets."""
 
@@ -169,8 +179,11 @@ class StreamCamera:
         self.pipeline = CameraPipeline(device_id, jpeg_quality=jpeg_quality)
         self.preview_s = preview_s
         self.settings = Settings()
-        #: The latest sampled whole frame, for the previews (set by the thread).
-        self.latest: np.ndarray | None = None
+        #: The latest sampled whole frame, for the previews and the full frames
+        #: (set by the thread).
+        self.latest: Captured | None = None
+        #: A full-frame request that came before the first frame.
+        self._full_frame_wanted: int | None = None
         self._frame: FrameSize | None = None
         self._ingest_state: IngestState = "idle"
         self._ingest: IngestLink | None = None
@@ -181,6 +194,7 @@ class StreamCamera:
             on_assigned=self._assigned,
             on_config=self._configured,
             on_previews=self._previews,
+            on_full_frame=self._full_frame,
         )
 
     # ---- the control channel (event loop) ------------------------------------
@@ -216,6 +230,17 @@ class StreamCamera:
         if on:
             self._previews_on.set()
 
+    def _full_frame(self, request: int) -> None:
+        self._full_frame_wanted = request
+        self._answer_full_frame()
+
+    def _answer_full_frame(self) -> None:
+        latest, request = self.latest, self._full_frame_wanted
+        if latest is None or request is None:
+            return
+        self._full_frame_wanted = None
+        self.link.send_full_frame(request, latest.capture_ts, full_frame_jpeg(latest.image))
+
     def _set_ingest_state(self, state: IngestState) -> None:
         self._ingest_state = state
         self.link.report(self.report())
@@ -237,12 +262,13 @@ class StreamCamera:
     def _frame_size(self, size: FrameSize) -> None:
         self._frame = size
         self.link.report(self.report())
+        self._answer_full_frame()  # a request made before the first frame
 
     async def _post_previews(self) -> None:
         while True:
             latest = self.latest
             if self.link.previews_wanted and latest is not None:
-                self.link.offer_preview(preview_jpeg(latest))
+                self.link.offer_preview(preview_jpeg(latest.image))
             try:
                 async with asyncio.timeout(self.preview_s):
                     await self._previews_on.wait()
@@ -260,10 +286,11 @@ class StreamCamera:
         try:
             for captured in self.source.captures():
                 height, width = captured.image.shape[:2]
+                # Before the size callback, which answers a waiting full-frame request.
+                self.latest = captured
                 if size is None or (size.width, size.height) != (width, height):
                     size = FrameSize(width=width, height=height)
                     loop.call_soon_threadsafe(self._frame_size, size)
-                self.latest = captured.image
                 frame = self.pipeline.process(captured, self.settings)
                 if frame is not None:
                     loop.call_soon_threadsafe(self._send, self.pipeline.envelope(frame))

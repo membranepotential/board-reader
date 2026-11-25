@@ -25,9 +25,17 @@ export interface Config {
   resolution: '720p' | '1080p' | '2160p';
   streaming: boolean;
   rules: 'standard' | 'free';
+  auto: boolean;
 }
 
-const DEFAULT_CONFIG: Config = { crop: null, device: null, resolution: '1080p', streaming: false, rules: 'standard' };
+const DEFAULT_CONFIG: Config = {
+  crop: null,
+  device: null,
+  resolution: '1080p',
+  streaming: false,
+  rules: 'standard',
+  auto: true
+};
 
 const PHONE_SOCKET = /\/ws\/cameras\/[^/?]+(\?.*)?$/;
 const LIST_SOCKET = /\/ws\/cameras$/;
@@ -214,7 +222,8 @@ export class FakeCameraNode {
       type: 'state',
       config: this.#config(board),
       report: (holder === undefined ? undefined : this.#reports.get(holder)) ?? null,
-      phone_connected: this.#phoneOn(board) !== undefined
+      phone_connected: this.#phoneOn(board) !== undefined,
+      autoframe: this.#config(board).auto ? 'idle' : 'manual'
     });
   }
 

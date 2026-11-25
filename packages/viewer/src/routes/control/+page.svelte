@@ -42,6 +42,7 @@
   import { ControlLink } from '#lib/control/link.ts';
   import { shortDeviceId } from '#lib/edge/device.ts';
   import { jpegSrc } from '#lib/control/messages.ts';
+  import { AUTOFRAME_COPY } from '#lib/control/autoframe.ts';
   import { WHOLE_FRAME } from '#lib/control/crop.ts';
   import { FRAMING_COPY, framingWarnings } from '#lib/control/framing.ts';
   import { formatAge } from '#lib/control/status.ts';
@@ -467,6 +468,10 @@
       <dt>phone link</dt>
       <dd class:bad={camera !== null && !connected}>
         {camera === null ? '—' : connected ? 'connected' : 'not connected'}
+      </dd>
+      <dt>auto-frame</dt>
+      <dd data-testid="autoframe" data-status={camera?.autoframe} class:bad={camera?.autoframe === 'no-board'}>
+        {camera === null ? '—' : AUTOFRAME_COPY[camera.autoframe]}
       </dd>
       <dt>lens open</dt>
       <dd>{report?.device ?? '—'}</dd>

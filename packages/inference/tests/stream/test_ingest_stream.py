@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import json
 import time
+from dataclasses import replace
 
 import numpy as np
 from starlette.testclient import TestClient
@@ -130,6 +131,82 @@ def test_boards_share_one_estimator_oldest_read_first_one_at_a_time():
     seen, most = asyncio.run(run())
     assert seen == [("SLOW", 1), ("FAST", 1), ("SLOW", 2), ("FAST", 2)]
     assert most == 1
+
+
+def test_other_work_waits_its_turn_in_the_read_queue_one_call_at_a_time():
+    """``call`` (Auto-frame's locate) runs on the read worker between the reads,
+    oldest first: never beside a read, and its result or error comes back."""
+
+    async def run():
+        order: list[str] = []
+        running, most = 0, 0
+
+        def exclusive(name: str, delay: float) -> str:
+            nonlocal running, most
+            running += 1
+            most = max(most, running)
+            try:
+                time.sleep(delay)
+                order.append(name)
+                return name
+            finally:
+                running -= 1
+
+        def estimate(frame: Frame) -> FrameReading:
+            exclusive(f"read {frame.seq}", 0.05)
+            return est.estimate(frame)
+
+        def fails() -> str:
+            raise ValueError("no JPEG")
+
+        est = FakeEstimator()
+        ingest = FrameIngest(estimate, PositionHub())
+        ingest.submit(_frame(seq=1))
+        located = asyncio.create_task(ingest.call(lambda: exclusive("locate", 0.05)))
+        await asyncio.sleep(0)  # the call joins the queue behind read 1
+        ingest.submit(_frame(seq=2))
+        result = await asyncio.wait_for(located, timeout=5.0)
+        try:
+            await ingest.call(fails)
+        except ValueError as e:
+            error = str(e)
+        await asyncio.wait_for(ingest.drain(), timeout=5.0)
+        await ingest.close()
+        return order, most, result, error
+
+    order, most, result, error = asyncio.run(run())
+    assert order == ["read 1", "locate", "read 2"]
+    assert most == 1
+    assert (result, error) == ("locate", "no JPEG")
+
+
+def test_a_read_made_elsewhere_is_settled_and_published_unless_the_stream_is_newer():
+    """Auto-frame's last read joins the board's stream as a read, but never behind a
+    newer queued read (the stabilizer sees capture order), and is not recorded."""
+
+    async def run():
+        est = FakeEstimator()
+        hub = PositionHub()
+        recorded: list[int] = []
+        ingest = FrameIngest(
+            est.estimate, hub, on_event=lambda reading, frame, rules: recorded.append(frame.seq)
+        )
+        made = _frame(seq=0)
+        assert ingest.publish_read(made, est.estimate(made))
+        await asyncio.wait_for(ingest.drain(), timeout=5.0)
+        first = hub.latest("A1")
+        ingest.submit(_frame(seq=5))  # capture_ts 5.0
+        older = replace(_frame(seq=5), capture_ts=4.0)
+        accepted = ingest.publish_read(older, est.estimate(older))
+        await asyncio.wait_for(ingest.drain(), timeout=5.0)
+        await ingest.close()
+        return first, accepted, recorded, ingest.frames_estimated
+
+    first, accepted, recorded, estimated = asyncio.run(run())
+    assert first is not None and first.placement == START_PLACEMENT
+    assert accepted is False
+    assert recorded == [5]  # only the read of a frame that came through /ingest
+    assert estimated == 2
 
 
 def test_sustained_overload_sheds_keepalive_reads_first_and_reports_each_drop():

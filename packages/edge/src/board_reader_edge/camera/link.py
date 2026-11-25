@@ -6,7 +6,9 @@ camera streams as (``assigned``: assigned once, it never changes; a rename on
 ``/control`` only gives it a name), pushes the config the control UI set (``config``)
 and says whether a control page watches (``previews``). The edge sends its
 :class:`~board_reader_core.control.CameraReport` on connect and whenever it changes,
-and a whole-frame preview JPEG (binary) only while previews are wanted.
+and a whole-frame preview JPEG (binary) only while previews are wanted. When
+Auto-frame asks (``send_full_frame``), it sends one whole frame: a
+:class:`~board_reader_core.control.FullFrameMessage` and its JPEG right after it.
 
 The **device id** is what makes the node give this camera the same board id after a
 restart, and what lets ``/ingest`` take frames under that board id: every frame names
@@ -34,6 +36,7 @@ import websockets
 from board_reader_core.control import (
     CameraConfig,
     CameraReport,
+    FullFrameMessage,
     PhoneDown,
     ReportMessage,
     device_id,
@@ -91,6 +94,7 @@ class CameraLink:
         on_assigned: Callable[[str], None],
         on_config: Callable[[CameraConfig], None],
         on_previews: Callable[[bool], None],
+        on_full_frame: Callable[[int], None],
         retry_s: float = 1.0,
         max_retry_s: float = 15.0,
     ) -> None:
@@ -98,12 +102,15 @@ class CameraLink:
         self._on_assigned = on_assigned
         self._on_config = on_config
         self._on_previews = on_previews
+        self._on_full_frame = on_full_frame
         self._retry_s = retry_s
         self._max_retry_s = max_retry_s
         self._report: CameraReport | None = None
         #: The report text last sent on the CURRENT socket; reset on every open.
         self._sent: str | None = None
         self._preview: bytes | None = None
+        #: A full frame waiting to go out: its header and its JPEG.
+        self._full_frame: tuple[FullFrameMessage, bytes] | None = None
         self._previews = False
         self._wake = asyncio.Event()
 
@@ -122,6 +129,12 @@ class CameraLink:
         if self._previews:
             self._preview = jpeg
             self._wake.set()
+
+    def send_full_frame(self, request: int, capture_ts: float, jpeg: bytes) -> None:
+        """The answer to ``send_full_frame`` ``request``: the whole frame captured at
+        ``capture_ts``; a newer answer replaces an unsent one."""
+        self._full_frame = (FullFrameMessage(request=request, capture_ts=capture_ts), jpeg)
+        self._wake.set()
 
     async def run(self) -> None:
         """Hold the link; return only when another socket of this device took over."""
@@ -170,6 +183,8 @@ class CameraLink:
                 self._on_config(message.config)
             case "previews":
                 self._set_previews(message.on)
+            case "send_full_frame":
+                self._on_full_frame(message.request)
             case "replaced":
                 return True
             case "refused":
@@ -185,6 +200,12 @@ class CameraLink:
                 if text != self._sent:
                     await ws.send(text)
                     self._sent = text
+            full, self._full_frame = self._full_frame, None
+            if full is not None:
+                header, jpeg = full
+                # Back to back: the node takes the binary after a header as its frame.
+                await ws.send(header.to_json())
+                await ws.send(jpeg)
             preview, self._preview = self._preview, None
             if preview is not None and self._previews:
                 await ws.send(preview)

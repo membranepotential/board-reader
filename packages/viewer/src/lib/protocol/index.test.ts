@@ -109,7 +109,8 @@ describe('a camera config off the wire', () => {
     device: 'Back Camera',
     resolution: '2160p',
     streaming: true,
-    rules: 'free'
+    rules: 'free',
+    auto: false
   };
 
   it('reads what board_reader_core.control writes', () => {

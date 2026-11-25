@@ -41,7 +41,8 @@ def test_each_socket_union_discriminates_on_the_messages_own_type():
     defs = json_schema()["$defs"]
     for union, members in (
         ("PhoneDown", (control.AssignedMessage, control.ConfigMessage, control.PreviewsMessage,
-                       control.ReplacedMessage, control.RefusedMessage)),
+                       control.SendFullFrameMessage, control.ReplacedMessage,
+                       control.RefusedMessage)),
         ("CamerasDown", (control.CamerasMessage, control.RefusedMessage)),
         ("ControlDown", (control.StateMessage, control.PreviewMessage, control.FrameMessage,
                          control.HealthMessage, control.RefusedMessage)),
@@ -63,7 +64,9 @@ def test_it_states_what_the_node_sends_every_key_present():
     assert {"stability", "status", "clock", "classes"} <= set(event["required"])
     assert "pending" in event["required"]
     assert "settled" not in event["properties"]
-    assert set(defs["CameraConfig"]["required"]) == {"crop", "device", "resolution", "streaming", "rules"}
+    assert set(defs["CameraConfig"]["required"]) == {
+        "crop", "device", "resolution", "streaming", "rules", "auto",
+    }
     # The legacy corners parse in Python only; no edge sends them.
     assert "corners" not in defs["FrameHeader"]["properties"]
 

@@ -6,9 +6,9 @@
  * (`/ws/cameras/<device id>`). So every spec here plays the node on that socket
  * (`FakeControl`): it assigns a board id, pushes a config of its choosing, says
  * whether previews are wanted, and reads what reaches it — the reports, the
- * full-frame previews, and the frames on `/ws/ingest`, decoded down to their JPEG
- * size, which is the only honest proof that the crop the config asked for is the
- * crop sent. Two phones against one stateful node are `cameras.spec.ts`'s.
+ * full-frame previews, the full frames Auto-frame asks for, and the frames on
+ * `/ws/ingest`, decoded down to their JPEG size, which is the only honest proof that
+ * the crop the config asked for is the crop sent. Two phones against one stateful node are `cameras.spec.ts`'s.
  */
 
 import { expect, test, type Page, type WebSocketRoute } from '@playwright/test';
@@ -32,14 +32,22 @@ interface Config {
   resolution: '720p' | '1080p' | '2160p';
   streaming: boolean;
   rules: 'standard' | 'free';
+  auto: boolean;
+}
+
+interface FullFrame {
+  request: number;
+  captureTs: number;
+  size: [number, number];
 }
 
 /** The node's half of the phone's control socket, plus a counting `/ws/ingest`. */
 class FakeControl {
-  config: Config = { crop: null, device: null, resolution: '1080p', streaming: false, rules: 'standard' };
+  config: Config = { crop: null, device: null, resolution: '1080p', streaming: false, rules: 'standard', auto: true };
   watched = false;
   readonly reports: Record<string, unknown>[] = [];
   readonly previews: [number, number][] = [];
+  readonly fullFrames: FullFrame[] = [];
   readonly headers: Record<string, unknown>[] = [];
   readonly frames: [number, number][] = [];
   /** The device id each phone socket connected with, in order. */
@@ -52,10 +60,21 @@ class FakeControl {
     await page.routeWebSocket(PHONE_SOCKET, (ws) => {
       node.socket = ws;
       node.devices.push(new URL(ws.url()).pathname.split('/').at(-1)!);
+      // A full frame's header, waiting for its JPEG: the next binary message.
+      let header: { request: number; capture_ts: number } | null = null;
       ws.onMessage((message) => {
         if (typeof message === 'string') {
-          const parsed = JSON.parse(message) as { type: string; report: Record<string, unknown> };
+          const parsed = JSON.parse(message) as {
+            type: string;
+            report: Record<string, unknown>;
+            request: number;
+            capture_ts: number;
+          };
+          header = parsed.type === 'full_frame' ? parsed : null;
           if (parsed.type === 'report') node.reports.push(parsed.report);
+        } else if (header !== null) {
+          node.fullFrames.push({ request: header.request, captureTs: header.capture_ts, size: jpegSize(message) });
+          header = null;
         } else {
           node.previews.push(jpegSize(message));
         }
@@ -90,6 +109,11 @@ class FakeControl {
   replace(): void {
     this.socket?.send(JSON.stringify({ type: 'replaced' }));
     void this.socket?.close({ code: 1000, reason: 'replaced' });
+  }
+
+  /** Auto-frame wants the whole picture. */
+  askFullFrame(request: number): void {
+    this.socket?.send(JSON.stringify({ type: 'send_full_frame', request }));
   }
 
   /** A control page opened (or the last one closed). */
@@ -217,6 +241,19 @@ test.describe('a dumb camera', () => {
     const sent = node.previews.length;
     await page.waitForTimeout(2000);
     expect(node.previews.length).toBe(sent);
+  });
+
+  test('answers Auto-frame with one whole, uncropped frame, watched or not', async ({ page }) => {
+    const node = await openCamera(page);
+    node.configure({ crop: { x: 0.25, y: 0.25, w: 0.5, h: 0.5 } });
+    const asked = Date.now() / 1000;
+    node.askFullFrame(4);
+    await expect.poll(() => node.fullFrames.length, { timeout: 8_000 }).toBe(1);
+    const [answer] = node.fullFrames;
+    expect(answer!.request).toBe(4);
+    expect(answer!.size).toEqual([FRAME.width, FRAME.height]); // under the 1920 px cap: as filmed
+    expect(answer!.captureTs).toBeGreaterThanOrEqual(asked - 1);
+    expect(node.previews).toHaveLength(0); // nobody watches, and a full frame is no preview
   });
 
   test('streams the configured crop when the config says stream, and stops when it says stop', async ({

@@ -3,8 +3,10 @@
  *
  Three sockets, relayed same-origin by the viewer under `/ws`:
  *
- *  - the phone's, `cameraSocket(deviceId)`: it sends `report` (text) and, only while
- *    the node asks, preview JPEGs (binary); it hears a `PhoneDown`.
+ *  - the phone's, `cameraSocket(deviceId)`: it sends `report` (text), only while
+ *    the node asks, preview JPEGs (binary), and when Auto-frame asks, one full
+ *    frame: a `full_frame` header (text) and its JPEG (binary) right after it; it
+ *    hears a `PhoneDown`.
  *  - the camera list's, `CAMERAS_SOCKET`: it sends `rename` and `forget`; it hears a
  *    `CamerasDown`.
  *  - a control page's, one per board, `controlSocket(id)`: it sends `configure`; it
@@ -20,12 +22,19 @@ import type {
   CameraReport,
   ConfigureMessage,
   ForgetMessage,
+  FullFrameMessage,
   RenameMessage,
   ReportMessage
 } from '#lib/protocol/generated.ts';
 
 export function reportMessage(report: CameraReport): string {
   const message: ReportMessage = { type: 'report', report };
+  return JSON.stringify(message);
+}
+
+/** The header of the full frame Auto-frame asked for; its JPEG follows as binary. */
+export function fullFrameMessage(request: number, captureTs: number): string {
+  const message: FullFrameMessage = { type: 'full_frame', request, capture_ts: captureTs };
   return JSON.stringify(message);
 }
 

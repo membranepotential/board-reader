@@ -15,7 +15,7 @@
  * `board-1`; two phones against one node, and renaming, are `cameras.spec.ts`'s.
  */
 
-import { expect, test, type Page } from '@playwright/test';
+import { expect, test, type Page, type WebSocketRoute } from '@playwright/test';
 import { checkerboardPng } from './helpers/png';
 
 interface Crop {
@@ -31,7 +31,10 @@ interface Config {
   resolution: '720p' | '1080p' | '2160p';
   streaming: boolean;
   rules: 'standard' | 'free';
+  auto: boolean;
 }
+
+type AutoFrameStatus = 'idle' | 'locating' | 'framed' | 'no-board' | 'manual';
 
 interface FrameSize {
   width: number;
@@ -47,8 +50,17 @@ interface Direction {
 const SETTLED: Direction = { degrees: 89, white_side: 'left', camera_moved: false };
 
 class FakeControlNode {
-  config: Config = { crop: { x: 0.2, y: 0.2, w: 0.5, h: 0.6 }, device: null, resolution: '1080p', streaming: false, rules: 'standard' };
+  config: Config = {
+    crop: { x: 0.2, y: 0.2, w: 0.5, h: 0.6 },
+    device: null,
+    resolution: '1080p',
+    streaming: false,
+    rules: 'standard',
+    auto: true
+  };
+  autoframe: AutoFrameStatus = 'framed';
   readonly configures: Config[] = [];
+  socket: WebSocketRoute | null = null;
 
   constructor(readonly frame: FrameSize) {}
 
@@ -65,8 +77,15 @@ class FakeControlNode {
         frame: this.frame,
         ingest: this.config.streaming ? 'streaming' : 'idle'
       },
-      phone_connected: true
+      phone_connected: true,
+      autoframe: this.autoframe
     });
+  }
+
+  /** Auto-frame's status changed on the node: it pushes the state. */
+  setAutoframe(status: AutoFrameStatus): void {
+    this.autoframe = status;
+    this.socket?.send(this.state());
   }
 
   static async install(
@@ -89,6 +108,7 @@ class FakeControlNode {
       ws.send(JSON.stringify({ type: 'cameras', cameras: [camera] }));
     });
     await page.routeWebSocket('**/ws/boards/board-1/control', (ws) => {
+      node.socket = ws;
       ws.onMessage((message) => {
         const parsed = JSON.parse(message as string) as { type: string; config: Config };
         if (parsed.type !== 'configure') return;
@@ -224,6 +244,17 @@ test('the side White sits on is shown, and a moved camera is called out', async 
   await page.reload();
   await expect(page.getByText('White sits at the bottom')).toBeVisible();
   await expect(page.locator('[data-warning="camera-moved"]')).toContainText('The camera moved');
+});
+
+test('Auto-frame says what it is doing for the camera', async ({ page }) => {
+  const node = await FakeControlNode.install(page);
+  await page.goto('/control');
+  const status = page.getByTestId('autoframe');
+  await expect(status).toHaveText('on: the node set the crop');
+  node.setAutoframe('no-board');
+  await expect(status).toHaveText('no board found yet; trying again');
+  node.setAutoframe('manual');
+  await expect(status).toHaveText('off: the crop was set by hand');
 });
 
 test('the QR code that opens /camera on a phone sits next to the camera list', async ({ page }) => {

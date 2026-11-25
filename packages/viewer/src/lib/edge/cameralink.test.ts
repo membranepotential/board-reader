@@ -23,6 +23,7 @@ function link() {
   const onReplaced = vi.fn();
   const onConfig = vi.fn();
   const onPreviews = vi.fn();
+  const onFullFrame = vi.fn();
   const onLink = vi.fn();
   const camera = new CameraLink({
     deviceId: 'kitchen-phone-id',
@@ -31,9 +32,10 @@ function link() {
     onReplaced,
     onConfig,
     onPreviews,
+    onFullFrame,
     onLink
   });
-  return { net, camera, onAssigned, onReplaced, onConfig, onPreviews, onLink };
+  return { net, camera, onAssigned, onReplaced, onConfig, onPreviews, onFullFrame, onLink };
 }
 
 describe('the phone link', () => {
@@ -107,6 +109,21 @@ describe('the phone link', () => {
     net.sockets[0]!.deliver({ type: 'previews', on: false });
     expect(camera.sendPreview(jpeg)).toBe(false);
     expect(net.sockets[0]!.sent.filter((data) => data instanceof Blob)).toHaveLength(1);
+  });
+
+  it('answers a full-frame request with its header, then the JPEG right after it', () => {
+    const { net, camera, onFullFrame } = link();
+    camera.start();
+    net.sockets[0]!.open();
+    net.sockets[0]!.deliver({ type: 'send_full_frame', request: 3 });
+    expect(onFullFrame).toHaveBeenCalledWith(3);
+    const jpeg = new Blob(['whole frame']);
+    // Not gated on previews: Auto-frame asks whether or not anyone watches.
+    expect(camera.sendFullFrame(3, 1764000000.5, jpeg)).toBe(true);
+    expect(net.sockets[0]!.sent).toEqual([
+      JSON.stringify({ type: 'full_frame', request: 3, capture_ts: 1764000000.5 }),
+      jpeg
+    ]);
   });
 
   it('keeps its config across a lost link and reports again on reconnect', () => {

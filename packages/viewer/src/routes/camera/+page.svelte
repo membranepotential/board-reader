@@ -13,7 +13,8 @@
    *    on the control socket whenever it changes — an `$effect`, not a timer.
    *  - the PREVIEW (`PREVIEW_MS`): a small JPEG of the WHOLE frame, so the control UI
    *    can show the field of view and draw the crop on it — sent only while a
-   *    control page watches (the node says `previews` on/off).
+   *    control page watches (the node says `previews` on/off) — and, when the node's
+   *    Auto-frame asks (`send_full_frame`), one full frame to find the board in.
    *
    * The page connects by the phone's DEVICE ID (`#lib/edge/device`, kept in
    * `localStorage`), and the node says which board id it streams as: the same one
@@ -49,6 +50,8 @@
 
   import BlockedNotice from '#lib/components/camera/BlockedNotice.svelte';
   import {
+    FULL_FRAME_LONG_SIDE,
+    FULL_FRAME_QUALITY,
     JPEG_QUALITY,
     PREVIEW_LONG_SIDE,
     PREVIEW_MS,
@@ -137,6 +140,11 @@
   let sendCtx: CanvasRenderingContext2D | null = null;
   let previewCanvas: HTMLCanvasElement | null = null;
   let previewCtx: CanvasRenderingContext2D | null = null;
+  let fullCanvas: HTMLCanvasElement | null = null;
+  let fullCtx: CanvasRenderingContext2D | null = null;
+  /** The full frame Auto-frame asked for and not yet answered; only the latest counts. */
+  let fullFrameWanted: number | null = null;
+  let framing = false;
   let wakeLock: WakeLockSentinel | null = null;
   let frameClock = freshFrameClock(0);
   let encoding = false;
@@ -308,9 +316,16 @@
         trial.note('previews', { on });
         if (on) void postPreview();
       },
+      onFullFrame: (request) => {
+        trial.note('full-frame-wanted', { request });
+        fullFrameWanted = request;
+        void answerFullFrame();
+      },
       onLink: (up, detail) => {
         if (nodeReachable !== up) trial.note('control-link', { up, detail });
         nodeReachable = up;
+        // A request belongs to its socket: the node asks again on the next one.
+        if (!up) fullFrameWanted = null;
       },
       onRefused: (reason) => {
         trial.note('control-refused', { reason });
@@ -354,6 +369,33 @@
     } finally {
       previewing = false;
     }
+  }
+
+  /**
+   * Answer Auto-frame's request with the whole frame, uncropped — now if the camera
+   * is live, else once it is (`onFrameSize`). A request that arrives while one is
+   * being encoded is answered right after it.
+   */
+  async function answerFullFrame(): Promise<void> {
+    const request = fullFrameWanted;
+    if (request === null || link === null || framing || camera.kind !== 'live') return;
+    if (fullCanvas === null || fullCtx === null || video === undefined) return;
+    framing = true;
+    try {
+      const captureTs = Date.now() / 1000;
+      const { w, h } = fitLongSide({ w: camera.frame.width, h: camera.frame.height }, FULL_FRAME_LONG_SIDE);
+      fullCanvas.width = w;
+      fullCanvas.height = h;
+      fullCtx.drawImage(video, 0, 0, w, h);
+      const jpeg = await toBlob(fullCanvas, FULL_FRAME_QUALITY);
+      if (jpeg !== null && fullFrameWanted === request && link?.sendFullFrame(request, captureTs, jpeg)) {
+        fullFrameWanted = null;
+        trial.note('full-frame', { request, width: w, height: h });
+      }
+    } finally {
+      framing = false;
+    }
+    if (fullFrameWanted !== null && fullFrameWanted !== request) void answerFullFrame();
   }
 
   // ---- streaming ----------------------------------------------------------------
@@ -528,8 +570,10 @@
     trial.note('camera-live', { frame: size });
     const first = camera.kind !== 'live';
     camera = { kind: 'live', frame: size };
-    // A config that arrived during bring-up is applied now the camera is live.
+    // A config that arrived during bring-up is applied now the camera is live, and
+    // a full frame asked for meanwhile is sent.
     if (first) reconcileCapture();
+    void answerFullFrame();
   }
 
   // ---- lifecycle ----------------------------------------------------------------
@@ -552,6 +596,8 @@
     motionCtx = motion;
     [sharpCanvas, sharpCtx] = canvas2d();
     [previewCanvas, previewCtx] = canvas2d();
+    fullCanvas = document.createElement('canvas');
+    fullCtx = fullCanvas.getContext('2d');
     sendCanvas = document.createElement('canvas');
     sendCtx = sendCanvas.getContext('2d');
 

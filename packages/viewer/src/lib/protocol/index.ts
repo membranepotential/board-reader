@@ -155,7 +155,8 @@ export const DEFAULT_CAMERA_CONFIG: CameraConfig = {
   device: null,
   resolution: '1080p',
   streaming: false,
-  rules: 'standard'
+  rules: 'standard',
+  auto: true
 };
 
 // ---- the /ingest ack -------------------------------------------------------------

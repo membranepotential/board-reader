@@ -44,8 +44,10 @@ def _roots() -> dict[str, Any]:
         "ViewerMessage": protocol.ViewerMessage,
         # WS /ingest: each header, then its JPEG as the next (binary) message
         "FrameHeader": wire.FrameHeader,
-        # WS /cameras/{device_id}: up (text; previews go up as binary) and down
+        # WS /cameras/{device_id}: up (text; previews and full frames go up as
+        # binary) and down
         "ReportMessage": control.ReportMessage,
+        "FullFrameMessage": control.FullFrameMessage,
         "PhoneDown": control.PhoneDown,
         # WS /cameras: up and down
         "CamerasUp": control.CamerasUp,
