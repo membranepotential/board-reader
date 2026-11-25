@@ -30,6 +30,7 @@ import threading
 
 import numpy as np
 import pytest
+from _socket_reads import receive_json
 from starlette.testclient import TestClient, WebSocketTestSession
 
 from board_reader_core.recording import EVENTS_NAME, Recording
@@ -69,7 +70,7 @@ def _send(ws: WebSocketTestSession, frame: Frame) -> dict:
     header, jpeg = frame.encode()
     ws.send_text(json.dumps(header))
     ws.send_bytes(jpeg)
-    return ws.receive_json()
+    return receive_json(ws)
 
 
 def _stream(client: TestClient, frames: list[Frame]) -> None:

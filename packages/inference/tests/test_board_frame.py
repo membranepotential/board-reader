@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 
+from _socket_reads import receive_json
 from starlette.testclient import TestClient
 
 from board_reader_core.protocol import START_PLACEMENT
@@ -44,9 +45,9 @@ def test_board_frame_round_trips_the_last_ingested_frame():
     client = _client()
     with client.websocket_connect("/ingest") as ingest:
         _send_frame(ingest, "A1", seq=1)
-        ingest.receive_json()
+        receive_json(ingest)
         last_jpeg = _send_frame(ingest, "A1", seq=2)
-        ingest.receive_json()
+        receive_json(ingest)
 
     r = client.get("/boards/A1/frame")
     assert r.status_code == 200
@@ -63,9 +64,9 @@ def test_board_frame_is_independent_per_board():
     client = _client()
     with client.websocket_connect("/ingest") as ingest:
         a1_jpeg = _send_frame(ingest, "A1", seq=1)
-        ingest.receive_json()
+        receive_json(ingest)
         b2_jpeg = _send_frame(ingest, "B2", seq=1)
-        ingest.receive_json()
+        receive_json(ingest)
 
     r_a1 = client.get("/boards/A1/frame")
     r_b2 = client.get("/boards/B2/frame")
@@ -86,7 +87,7 @@ def test_board_frame_never_reports_the_corners_a_legacy_stream_carried():
     client = _client()
     with client.websocket_connect("/ingest") as ingest:
         _send_frame(ingest, "A1", seq=1, corners=QUAD)
-        assert ingest.receive_json() == {"ack": 1, "board_id": "A1"}
+        assert receive_json(ingest) == {"ack": 1, "board_id": "A1"}
 
     r = client.get("/boards/A1/frame")
     assert r.status_code == 200
@@ -107,14 +108,14 @@ def test_a_malformed_frame_is_refused_without_killing_the_socket():
         ingest.send_bytes(Frame(
             board_id="A1", seq=1, capture_ts=1.0, image=render_board()
         ).encode()[1])
-        assert "error" in ingest.receive_json()
+        assert "error" in receive_json(ingest)
 
         good_header = {
             "type": "frame", "board_id": "A1", "seq": 2, "capture_ts": 2.0,
         }
         ingest.send_text(json.dumps(good_header))
         ingest.send_bytes(b"not a jpeg")
-        assert "error" in ingest.receive_json()
+        assert "error" in receive_json(ingest)
 
         _send_frame(ingest, "A1", seq=3, corners=QUAD)
-        assert ingest.receive_json() == {"ack": 3, "board_id": "A1"}
+        assert receive_json(ingest) == {"ack": 3, "board_id": "A1"}

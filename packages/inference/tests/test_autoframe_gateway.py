@@ -11,8 +11,8 @@ from __future__ import annotations
 import json
 from collections.abc import Callable
 
-import anyio
 import numpy as np
+from _socket_reads import receive_text
 from starlette.testclient import TestClient, WebSocketTestSession
 
 from board_reader_core.protocol import START_PLACEMENT, dist_from_placement
@@ -32,8 +32,6 @@ CONTROL = f"{BOARD}/control"
 #: Square, so the fake board below (the middle 60 % of each side) is square in pixels:
 #: a board seen from straight above, which gets the plain 10 % margin on every side.
 FULL_FRAME = encode_jpeg(np.zeros((600, 600, 3), np.uint8))
-#: How long one message may take; the node answers within milliseconds here.
-RECEIVE_S = 5
 
 
 class FramingRecognizer:
@@ -53,24 +51,11 @@ class FramingRecognizer:
         return Recognition(self._dist, grid=Grid(corners, r2=0.99, inliers=64))
 
 
-def _receive_text(ws: WebSocketTestSession) -> str:
-    """``ws.receive_text()``, but failing after :data:`RECEIVE_S` instead of waiting
-    forever for a message the node never sends."""
-
-    async def bounded() -> dict:
-        with anyio.fail_after(RECEIVE_S):
-            return await ws._send_rx.receive()
-
-    message = ws.portal.call(bounded)
-    ws._raise_on_close(message)
-    return message["text"]
-
-
 def _until(ws: WebSocketTestSession, kind: str, done: Callable[[dict], bool] = bool) -> dict:
     """The next message of ``kind`` for which ``done`` holds; a missing one fails the
-    test within :data:`RECEIVE_S` per message instead of hanging it."""
+    test within :data:`_socket_reads.RECEIVE_S` per message instead of hanging it."""
     for _ in range(50):
-        message = json.loads(_receive_text(ws))
+        message = json.loads(receive_text(ws))
         if message["type"] == kind and done(message):
             return message
     raise AssertionError(f"no such {kind} message")

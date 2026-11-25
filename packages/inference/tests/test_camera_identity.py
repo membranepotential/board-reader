@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 
 import numpy as np
+from _socket_reads import receive_text
 from starlette.testclient import TestClient, WebSocketTestSession
 
 from board_reader_core.protocol import START_PLACEMENT, parse_viewer_message
@@ -39,11 +40,11 @@ def _send(ingest: WebSocketTestSession, board_id: str, device_id: str | None, se
     header, jpeg = frame.encode()
     ingest.send_text(json.dumps(header))
     ingest.send_bytes(jpeg)
-    return json.loads(ingest.receive_text())
+    return json.loads(receive_text(ingest))
 
 
 def _assigned(phone: WebSocketTestSession) -> str:
-    assigned = json.loads(phone.receive_text())
+    assigned = json.loads(receive_text(phone))
     assert assigned["type"] == "assigned"
     return assigned["board_id"]
 
@@ -87,13 +88,13 @@ def test_the_live_page_hears_a_rename_as_names_and_a_late_viewer_hears_them_firs
         assert _assigned(phone) == PHONE
         with client.websocket_connect("/viewer") as viewer:
             # A known camera has its default name from the start.
-            assert parse_viewer_message(viewer.receive_text()).to_dict() == {
+            assert parse_viewer_message(receive_text(viewer)).to_dict() == {
                 "type": "names", "names": [{"board_id": PHONE, "name": "board-1"}],
             }
             cameras.send_text(json.dumps({"type": "rename", "device_id": PHONE, "name": "kitchen"}))
-            heard = parse_viewer_message(viewer.receive_text())
+            heard = parse_viewer_message(receive_text(viewer))
             assert heard.to_dict() == {
                 "type": "names", "names": [{"board_id": PHONE, "name": "kitchen"}],
             }
         with client.websocket_connect("/viewer") as late:
-            assert parse_viewer_message(late.receive_text()) == heard
+            assert parse_viewer_message(receive_text(late)) == heard

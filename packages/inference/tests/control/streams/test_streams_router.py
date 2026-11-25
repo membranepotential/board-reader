@@ -9,6 +9,7 @@ import time
 from pathlib import Path
 
 import pytest
+from _socket_reads import receive_text
 from starlette.testclient import TestClient, WebSocketTestSession
 
 from board_reader_inference.control.streams.store import state_file
@@ -28,7 +29,7 @@ def app(tmp_path, monkeypatch):
 
 def next_of(ws: WebSocketTestSession, kind: str) -> dict:
     while True:
-        message = json.loads(ws.receive_text())
+        message = json.loads(receive_text(ws))
         if message["type"] == kind:
             return message
 

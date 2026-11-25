@@ -28,6 +28,7 @@ import time
 
 import numpy as np
 import pytest
+from _socket_reads import receive_json
 
 from board_reader_core.protocol import START_PLACEMENT, PositionEvent
 from board_reader_core.recording import Recording
@@ -374,7 +375,7 @@ def _stream(client, frames: list[Frame]) -> None:
             header, jpeg = frame.encode()
             ws.send_text(json.dumps(header))
             ws.send_bytes(jpeg)
-            ws.receive_json()
+            receive_json(ws)
 
 
 @pytest.mark.parametrize(

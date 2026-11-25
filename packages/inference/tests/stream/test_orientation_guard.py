@@ -14,6 +14,7 @@ import logging
 
 import numpy as np
 import pytest
+from _socket_reads import receive_json
 
 from board_reader_core.protocol import START_PLACEMENT, dist_from_placement
 from board_reader_core.wire import Frame
@@ -153,7 +154,7 @@ def _send(ws, seq: int) -> None:
     header, jpeg = _frame(seq).encode()
     ws.send_text(json.dumps(header))
     ws.send_bytes(jpeg)
-    ws.receive_json()
+    receive_json(ws)
 
 
 def test_a_live_reads_direction_reaches_the_camera_registry(gateway, drain_ingest, monkeypatch):

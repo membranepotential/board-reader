@@ -13,6 +13,7 @@ import time
 
 import numpy as np
 import pytest
+from _socket_reads import receive_json
 from starlette.testclient import TestClient
 
 from board_reader_core.recording import INDEX_NAME, Recording
@@ -59,7 +60,7 @@ def _send(client: TestClient, *frames: Frame) -> list[tuple[dict, bytes]]:
         for header, jpeg in envelopes:
             ws.send_text(json.dumps(header))
             ws.send_bytes(jpeg)
-            ws.receive_json()
+            receive_json(ws)
     return envelopes
 
 
@@ -114,7 +115,7 @@ def test_a_header_with_a_stringly_number_is_refused_and_not_recorded(recorded):
     with client.websocket_connect("/ingest") as ws:
         ws.send_text(json.dumps({**header, "seq": "4", "stability": "0.25"}))
         ws.send_bytes(jpeg)
-        reply = ws.receive_json()
+        reply = receive_json(ws)
 
     assert "error" in reply, reply
     assert not list(root.rglob("*.jpg"))
@@ -222,13 +223,13 @@ def test_a_refused_frame_is_counted_and_the_socket_survives():
         with client.websocket_connect("/ingest") as ws:
             ws.send_text(json.dumps({"type": "frame", "board_id": "A1", "seq": 0}))
             ws.send_bytes(b"not a jpeg")
-            reply = ws.receive_json()
+            reply = receive_json(ws)
             assert "error" in reply
             # The socket is still usable for a good frame afterwards.
             header, jpeg = _frame(1).encode()
             ws.send_text(json.dumps(header))
             ws.send_bytes(jpeg)
-            assert ws.receive_json()["ack"] == 1
+            assert receive_json(ws)["ack"] == 1
 
         health = client.get("/healthz").json()
         assert health["ingest"]["refused"] == 1

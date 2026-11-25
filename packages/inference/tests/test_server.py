@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 
+from _socket_reads import receive_json, receive_text
 from starlette.testclient import TestClient
 
 from board_reader_core.protocol import START_PLACEMENT, dist_from_placement
@@ -46,7 +47,7 @@ def test_ingest_frame_then_board_snapshot_available(gateway, drain_ingest):
     client = gateway(create_app(StubRecognizer(START_PLACEMENT), PositionHub()))
     with client.websocket_connect("/ingest") as ingest:
         _send_frame(ingest, seq=5)
-        ack = ingest.receive_json()
+        ack = receive_json(ingest)
         assert ack == {"ack": 5, "board_id": "A1"}
     drain_ingest(client)
     snap = client.get("/boards/A1")
@@ -66,10 +67,10 @@ def test_end_to_end_ingest_to_viewer_stream(gateway):
         client.websocket_connect("/ingest") as ingest,
     ):
         _send_frame(ingest, seq=1)
-        ingest.receive_json()  # ack
+        receive_json(ingest)  # ack
         # The frame's motion update goes out at submit, before its read publishes.
-        motion = json.loads(viewer.receive_text())
-        event = json.loads(viewer.receive_text())
+        motion = json.loads(receive_text(viewer))
+        event = json.loads(receive_text(viewer))
     assert motion["type"] == "motion"
     assert event["board_id"] == "A1"
     assert event["placement"] == START_PLACEMENT
@@ -104,7 +105,7 @@ def test_a_move_beside_a_resting_hand_is_served_by_the_gateway(gateway, drain_in
     with client.websocket_connect("/ingest") as ingest:
         for seq in range(3):
             _send_frame(ingest, seq=seq)
-            assert ingest.receive_json()["ack"] == seq
+            assert receive_json(ingest)["ack"] == seq
     drain_ingest(client)
     board = client.get("/boards/A1").json()
     assert board["placement"] == e4
@@ -162,11 +163,11 @@ def test_viewer_replays_retained_latest_on_connect(gateway, drain_ingest):
     client = gateway(create_app(StubRecognizer(START_PLACEMENT), PositionHub()))
     with client.websocket_connect("/ingest") as ingest:
         _send_frame(ingest, seq=9)
-        ingest.receive_json()
+        receive_json(ingest)
     drain_ingest(client)
     # A viewer connecting AFTER the frame still gets the retained latest immediately.
     with client.websocket_connect("/viewer") as viewer:
-        event = json.loads(viewer.receive_text())
+        event = json.loads(receive_text(viewer))
     assert event["seq"] == 9
 
 

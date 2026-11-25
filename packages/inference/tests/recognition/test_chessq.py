@@ -14,6 +14,7 @@ from pathlib import Path
 
 import numpy as np
 import pytest
+from _socket_reads import receive_json
 from starlette.testclient import TestClient
 
 from board_reader_core.protocol import (
@@ -292,7 +293,7 @@ def test_ingest_publishes_and_settles_a_chessq_read(gateway, drain_ingest):
     with client.websocket_connect("/ingest") as ws:
         ws.send_text(json.dumps(header))
         ws.send_bytes(jpeg)
-        ws.receive_json()
+        receive_json(ws)
     drain_ingest(client)
     snap = client.get("/boards/A1").json()
     assert snap["placement"] == RUY_LOPEZ

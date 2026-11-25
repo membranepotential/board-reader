@@ -11,6 +11,7 @@ import json
 
 import numpy as np
 import pytest
+from _socket_reads import receive_json, receive_text
 from starlette.testclient import TestClient, WebSocketTestSession
 from starlette.websockets import WebSocketDisconnect
 
@@ -54,7 +55,7 @@ def _until(ws: WebSocketTestSession, kind: str) -> dict:
     """The next message of ``kind``, skipping others (the health tick arrives every
     second on a control socket, so something always arrives and this cannot hang)."""
     for _ in range(50):
-        message = json.loads(ws.receive_text())
+        message = json.loads(receive_text(ws))
         if message["type"] == kind:
             return message
     raise AssertionError(f"no {kind} message")
@@ -65,36 +66,36 @@ CAMERA = f"/cameras/{PHONE}"
 
 def _hello(phone: WebSocketTestSession) -> str:
     """Read what a phone hears on connect; its board id."""
-    assigned = json.loads(phone.receive_text())
+    assigned = json.loads(receive_text(phone))
     assert assigned["type"] == "assigned"
-    assert json.loads(phone.receive_text())["type"] == "config"
-    assert json.loads(phone.receive_text())["type"] == "previews"
-    assert json.loads(phone.receive_text())["type"] == "send_full_frame"
+    assert json.loads(receive_text(phone))["type"] == "config"
+    assert json.loads(receive_text(phone))["type"] == "previews"
+    assert json.loads(receive_text(phone))["type"] == "send_full_frame"
     return assigned["board_id"]
 
 
 def test_a_config_set_on_control_is_pushed_to_the_phone():
     with _client() as client, client.websocket_connect(CAMERA) as phone:
-        assert json.loads(phone.receive_text()) == {
+        assert json.loads(receive_text(phone)) == {
             "type": "assigned", "board_id": PHONE, "name": "board-1",
         }
-        assert json.loads(phone.receive_text())["type"] == "config"
-        assert json.loads(phone.receive_text()) == {"type": "previews", "on": False}
-        assert json.loads(phone.receive_text()) == {"type": "send_full_frame", "request": 0}
+        assert json.loads(receive_text(phone))["type"] == "config"
+        assert json.loads(receive_text(phone)) == {"type": "previews", "on": False}
+        assert json.loads(receive_text(phone)) == {"type": "send_full_frame", "request": 0}
         phone.send_text(json.dumps({"type": "report", "report": REPORT}))
 
         with client.websocket_connect(f"/boards/{PHONE}/control") as control:
             state = _until(control, "state")
             assert state["report"] == REPORT
             assert state["phone_connected"] is True
-            assert json.loads(phone.receive_text()) == {"type": "previews", "on": True}
+            assert json.loads(receive_text(phone)) == {"type": "previews", "on": True}
 
             control.send_text(json.dumps({"type": "configure", "config": CONFIG}))
-            assert json.loads(phone.receive_text()) == {"type": "config", "config": SENT_CONFIG}
+            assert json.loads(receive_text(phone)) == {"type": "config", "config": SENT_CONFIG}
             assert _until(control, "state")["config"] == SENT_CONFIG
 
         # The last page closed: the phone stops spending uplink on previews.
-        assert json.loads(phone.receive_text()) == {"type": "previews", "on": False}
+        assert json.loads(receive_text(phone)) == {"type": "previews", "on": False}
 
 
 def test_a_reconnecting_phone_hears_its_board_and_config_again():
@@ -105,10 +106,10 @@ def test_a_reconnecting_phone_hears_its_board_and_config_again():
             control.send_text(json.dumps({"type": "configure", "config": CONFIG}))
             _until(control, "state")
         with client.websocket_connect(CAMERA) as phone:
-            assert json.loads(phone.receive_text()) == {
+            assert json.loads(receive_text(phone)) == {
                 "type": "assigned", "board_id": PHONE, "name": "board-1",
             }
-            assert json.loads(phone.receive_text()) == {"type": "config", "config": SENT_CONFIG}
+            assert json.loads(receive_text(phone)) == {"type": "config", "config": SENT_CONFIG}
 
 
 def test_a_second_page_of_one_phone_takes_over_and_the_first_is_closed():
@@ -116,9 +117,9 @@ def test_a_second_page_of_one_phone_takes_over_and_the_first_is_closed():
         _hello(first)
         with client.websocket_connect(CAMERA) as second:
             assert _hello(second) == PHONE
-            assert json.loads(first.receive_text()) == {"type": "replaced"}
+            assert json.loads(receive_text(first)) == {"type": "replaced"}
             with pytest.raises(WebSocketDisconnect):
-                first.receive_text()
+                receive_text(first)
 
 
 def test_the_camera_list_shows_each_phone_renames_and_forgets_it():
@@ -132,7 +133,7 @@ def test_the_camera_list_shows_each_phone_renames_and_forgets_it():
                                "report": None, "frame_age_s": None}]
 
             cameras.send_text(json.dumps({"type": "rename", "device_id": PHONE, "name": "left"}))
-            assert json.loads(phone.receive_text()) == {
+            assert json.loads(receive_text(phone)) == {
                 "type": "assigned", "board_id": PHONE, "name": "left",
             }
             cameras.send_text(json.dumps({"type": "rename", "device_id": PHONE, "name": "a/b"}))
@@ -149,13 +150,13 @@ def test_the_camera_list_shows_each_phone_renames_and_forgets_it():
 def test_a_phone_without_a_device_id_is_refused_and_an_outdated_page_told_to_reload():
     with _client() as client:
         with client.websocket_connect("/cameras/x") as phone:
-            assert json.loads(phone.receive_text()) == {
+            assert json.loads(receive_text(phone)) == {
                 "type": "refused", "reason": "'x' is not a device id",
             }
             with pytest.raises(WebSocketDisconnect):
-                phone.receive_text()
+                receive_text(phone)
         with client.websocket_connect("/boards/phone/camera") as old:
-            assert "reload" in json.loads(old.receive_text())["reason"]
+            assert "reload" in json.loads(receive_text(old))["reason"]
         assert client.app.state.cameras.cameras(lambda board_id: None).cameras == ()
 
 
@@ -177,12 +178,12 @@ def test_a_bad_message_is_refused_and_the_socket_stays():
         with client.websocket_connect(CAMERA) as phone:
             _hello(phone)
             phone.send_bytes(b"not a picture")
-            assert json.loads(phone.receive_text()) == {
+            assert json.loads(receive_text(phone)) == {
                 "type": "refused",
                 "reason": "preview is not a JPEG",
             }
             phone.send_text(json.dumps({"type": "report", "report": {"ingest": "flying"}}))
-            assert json.loads(phone.receive_text())["type"] == "refused"
+            assert json.loads(receive_text(phone))["type"] == "refused"
         with client.websocket_connect(f"/boards/{PHONE}/control") as control:
             bad = {"type": "configure", "config": {"crop": {"x": 0.9, "y": 0, "w": 0.5, "h": 0.5}}}
             control.send_text(json.dumps(bad))
@@ -199,7 +200,7 @@ def test_the_health_tick_and_the_last_streamed_frame_reach_the_control_page():
         with client.websocket_connect("/ingest") as ws:
             ws.send_text(json.dumps(header))
             ws.send_bytes(jpeg)
-            ws.receive_json()
+            receive_json(ws)
         with client.websocket_connect("/boards/phone/control") as control:
             health = _until(control, "health")
             assert health["recognizer"] == "stub"

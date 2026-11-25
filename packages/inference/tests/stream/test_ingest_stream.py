@@ -13,6 +13,7 @@ import time
 from dataclasses import replace
 
 import numpy as np
+from _socket_reads import receive_json
 from starlette.testclient import TestClient
 
 from board_reader_core.protocol import START_PLACEMENT, PositionEvent
@@ -386,7 +387,7 @@ def test_ingest_socket_acks_every_frame_promptly_while_the_estimator_is_busy(
             header, jpeg = _frame(seq=seq).encode()
             ws.send_text(json.dumps(header))
             ws.send_bytes(jpeg)
-            assert ws.receive_json() == {"ack": seq, "board_id": "A1"}
+            assert receive_json(ws) == {"ack": seq, "board_id": "A1"}
         acked = time.perf_counter() - started
         # Serialized estimation would cost >= 0.5s; acks must not wait on it at all.
         assert acked < frames * 0.05 / 2
@@ -409,7 +410,7 @@ def test_app_shutdown_stops_the_ingest_workers():
             header, jpeg = _frame(seq=0).encode()
             ws.send_text(json.dumps(header))
             ws.send_bytes(jpeg)
-            ws.receive_json()
+            receive_json(ws)
         assert ingest.frames_received == 1
     assert ingest._boards == {}  # lifespan shutdown cancelled and forgot the workers
 

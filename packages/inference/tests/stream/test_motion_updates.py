@@ -15,6 +15,7 @@ from types import SimpleNamespace
 
 import numpy as np
 import pytest
+from _socket_reads import receive_json, receive_text
 
 from board_reader_core.protocol import MotionUpdate
 from board_reader_core.wire import Frame
@@ -119,9 +120,9 @@ def test_viewer_receives_the_motion_message_in_the_published_schema(gateway):
     ):
         ingest.send_text(json.dumps(header))
         ingest.send_bytes(jpeg)
-        ingest.receive_json()  # ack: submit, and so the broadcast, happened first
-        motion = json.loads(viewer.receive_text())
-        event = json.loads(viewer.receive_text())
+        receive_json(ingest)  # ack: submit, and so the broadcast, happened first
+        motion = json.loads(receive_text(viewer))
+        event = json.loads(receive_text(viewer))
     assert motion == {
         "type": "motion",
         "board_id": "A1",

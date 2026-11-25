@@ -27,6 +27,7 @@ from dataclasses import dataclass
 from functools import cache
 
 import pytest
+from _socket_reads import receive_json
 
 from board_reader_core.protocol import (
     dist_from_placement,
@@ -322,7 +323,7 @@ def test_two_boards_on_one_socket_record_every_frame_under_a_slow_recognizer(
             header, jpeg = frame.encode()
             ws.send_text(json.dumps(header))
             ws.send_bytes(jpeg)
-            ws.receive_json()
+            receive_json(ws)
     drain_ingest(client)
 
     recording = Recording.open(tmp_path / "rec")
