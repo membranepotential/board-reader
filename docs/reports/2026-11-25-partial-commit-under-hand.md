@@ -141,8 +141,31 @@ against `replays/latency3`, both `report.json`): the same 124 reads, raw unchang
 The per-square drop is the reset by hand at seq 39 to 57, where the settled board
 follows the pieces while the truth holds the old position.
 
-Not done: a live take with the changed node (docs/TESTING.md, the resting-hand path,
-step 4).
+## Live check: take 20261125-035108 (2026-11-25)
+
+A game played against the changed node (1.e4 e5 2.Nf3 Nc6 3.Bb5 a6 4.Ba4 Nf6 5.O-O b5
+6.Bb3 Be7 7.Re1 O-O; 156 reads over 247 s, 64 obscured). No truth file; read off
+`events.ndjson` and a contact sheet. The shipped rule reproduces 154 of the 156 recorded
+settled boards from the recorded reads (the other two are the first two reads, where the
+node still held the previous game's board); the old rule reproduces 129.
+
+- **Every settled change is a move of that game.** No phantom, nothing reverted.
+- **8 of the 18 commits landed on an obscured read** (e2-e4, Ng8-f6, both halves of
+  White's castling, Bf8-e7, Rf1-e1, both halves of Black's castling), with a hand in the
+  frame each time. Replayed under the old rule, the same reads show these eight 2.1 to
+  21.7 s later (Ng8-f6 21.7 s, White's castling 15 s).
+- **Wait from the first read that shows a change to its commit:** median 0.6 s, mean
+  1.0 s, max 2.1 s, against median 1.2 s, mean 2.1 s, max 6.9 s on 20261125-024330
+  under the old rule. Two different games, so the replay above is the cleaner number.
+- **What still lags is the schedule, not the gate.** 6 of the 18 commits waited 2.1 s:
+  the change's second read came with the 2 s keepalive, because no burst-end run was
+  scheduled there (every read frame at stability 1.000). In four moves (Nb8-c6, Bf1-b5,
+  Bb5-a4, Ba4-b3) the source square emptied on a clear read and the piece showed on its
+  target one read later, 0.3 to 2.1 s; the old rule does the same.
+- **Castling per piece, as designed:** White's king and rook committed 0.3 s apart.
+  Black moved the rook about 2 s after the king, and its reads flickered under the hand,
+  so the board stood half-castled for 6.9 s (4.2 s under the old rule, starting 4.8 s
+  later).
 
 ## Reproduce
 
