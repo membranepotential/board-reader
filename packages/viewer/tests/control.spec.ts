@@ -13,7 +13,7 @@
  * as the new config and pushes the new state back, the way
  * `control.camera.registry.CameraRegistry` does, including its rule that a crop
  * changed through `configure` is set by hand and switches Auto-frame off. Its
- * camera list names one phone, on `board-1`, so the page shows one card; two
+ * camera list names one phone, `board-1`, so the page shows one card; two
  * phones against one node, and renaming, are `cameras.spec.ts`'s.
  */
 
@@ -118,15 +118,14 @@ class FakeControlNode {
     await page.routeWebSocket(/\/ws\/cameras$/, (ws) => {
       const camera = {
         device_id: 'kitchen-phone-id',
-        board_id: 'board-1',
-        name: null,
+        name: 'board-1',
         connected: true,
         report: null,
         frame_age_s: 0.5
       };
       ws.send(JSON.stringify({ type: 'cameras', cameras: [camera] }));
     });
-    await page.routeWebSocket('**/ws/boards/board-1/control', (ws) => {
+    await page.routeWebSocket('**/ws/boards/kitchen-phone-id/control', (ws) => {
       node.socket = ws;
       ws.onMessage((message) => {
         const parsed = JSON.parse(message as string) as { type: string; config: Config };
@@ -477,7 +476,7 @@ test('Add stream sends the URL and the start, and closes once the node runs it',
         start_s: parsed['start_s'],
         state: 'starting',
         device_id: 'stream-device-one',
-        board_id: null,
+        name: null,
         error: null
       };
       ws.send(JSON.stringify({ type: 'streams', streams: [stream] }));

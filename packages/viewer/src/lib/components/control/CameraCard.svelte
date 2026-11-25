@@ -6,8 +6,9 @@
    * The card talks to its camera's board over that board's socket (`ControlLink`):
    * the node pushes the camera state on connect and on every change, the phone's
    * whole-frame preview, the latest received frame and a health tick, so nothing
-   * here polls. The page keys cards by DEVICE id, and a camera's board id never
-   * changes, so the socket is opened once per card. It closes while the tab is
+   * here polls. The page keys cards by DEVICE id, which is also the camera's board
+   * id, so the socket is opened once per card. The heading shows the camera's name,
+   * with the start of its id as small secondary text; the stats show the whole id. It closes while the tab is
    * hidden, which also tells the phone to stop sending previews nobody sees.
    *
    * The picture shows what the node receives (the cropped frame). Below it, Framing
@@ -35,6 +36,7 @@
   import { WHOLE_FRAME } from '#lib/control/crop.ts';
   import { FRAMING_COPY, framingWarnings } from '#lib/control/framing.ts';
   import { CAMERA_MOVED_COPY } from '#lib/control/direction.ts';
+  import { shortDeviceId } from '#lib/edge/device.ts';
   import Card from '#lib/components/Card.svelte';
     import CameraSettings from './CameraSettings.svelte';
   import CameraStats from './CameraStats.svelte';
@@ -68,7 +70,7 @@
 
   onMount(() => {
     const next = new ControlLink({
-      boardId: entry.board_id,
+      boardId: entry.device_id,
       onMessage: receive,
       onLink: (isUp, detail) => {
         up = isUp;
@@ -142,7 +144,6 @@
     failure = link !== null && link.reframe() ? null : 'not sent: the node is not connected';
   }
 
-  const label = $derived(entry.name ?? entry.board_id);
   const config = $derived(camera?.config ?? null);
   /** The camera's whole frame: what the phone says it delivers, else the preview's size. */
   const frame = $derived(camera?.report?.frame ?? preview ?? null);
@@ -156,11 +157,11 @@
 
 <svelte:document onvisibilitychange={onVisibilityChange} />
 
-<Card class="camera-card" data-testid="camera-card" data-device={entry.device_id} aria-label="camera {label}">
+<Card class="camera-card" data-testid="camera-card" data-device={entry.device_id} aria-label="camera {entry.name}">
   {#snippet heading()}
     <span class="label">
-      {label}
-      {#if entry.name !== null}<span class="board-id">{entry.board_id}</span>{/if}
+      {entry.name}
+      <span class="board-id" title="camera id {entry.device_id}">{shortDeviceId(entry.device_id)}</span>
     </span>
     <span class="chip" class:up={entry.connected}>{entry.connected ? 'connected' : 'not connected'}</span>
   {/snippet}
@@ -182,7 +183,7 @@
         {preview}
         crop={config?.crop ?? null}
         streaming={config?.streaming ?? false}
-        boardId={entry.board_id}
+        name={entry.name}
       />
     {/if}
   </div>
@@ -213,15 +214,15 @@
   {/if}
 
   <section aria-label="settings">
-    <NameField name={entry.name} boardId={entry.board_id} {onrename} />
+    <NameField name={entry.name} {onrename} />
     <CameraSettings {config} report={camera?.report ?? null} {locked} onsend={send} />
   </section>
   <section aria-label="stats">
     <h3>Stats</h3>
-    <CameraStats {camera} {health} />
+    <CameraStats deviceId={entry.device_id} {camera} {health} />
   </section>
   {#if !entry.connected}
-    <button type="button" class="forget" title="drop this camera, its board id and its settings" onclick={onforget}
+    <button type="button" class="forget" title="drop this camera, its name and its settings" onclick={onforget}
       >Forget</button
     >
   {/if}

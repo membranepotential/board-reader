@@ -1,9 +1,9 @@
 /**
  * The phone's end of the camera control channel: one socket, by its device id.
  *
- * The node says which board id the phone streams as and what it is called
- * (`assigned`) — on connect, and again with the new name whenever the control UI
- * renames it; the board id never changes — pushes the config the control UI set — on
+ * The node says which board id the phone streams as (its device id) and what it is
+ * called (`assigned`) — on connect, and again with the new name whenever the control
+ * UI renames it; the board id never changes — pushes the config the control UI set — on
  * connect and on every change — and says whether anyone is watching (`previews`).
  * The phone sends its `CameraReport` on connect and whenever it changes, never on a
  * timer, and a whole-frame preview JPEG only while previews are wanted. When
@@ -30,8 +30,8 @@ import { ReconnectingSocket, type SocketOptions } from '#lib/socket.ts';
 
 export interface CameraLinkOptions extends Partial<SocketOptions> {
   readonly deviceId: string;
-  /** The board id the node says this phone streams as, and its name if it has one. */
-  readonly onAssigned: (boardId: string, name: string | null) => void;
+  /** The board id the node says this phone streams as, and its name. */
+  readonly onAssigned: (boardId: string, name: string) => void;
   /** Another page of this phone took over; this link has stopped. */
   readonly onReplaced: () => void;
   readonly onConfig: (config: CameraConfig) => void;
@@ -72,7 +72,7 @@ export class CameraLink {
           const message = parsed.value;
           switch (message.type) {
             case 'assigned':
-              onAssigned(message.board_id, message.name ?? null);
+              onAssigned(message.board_id, message.name);
               break;
             case 'config':
               onConfig(message.config);

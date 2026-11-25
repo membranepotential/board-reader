@@ -1,7 +1,8 @@
 <script lang="ts">
   /**
    * A camera's name, edited in place on its card. Enter or Save sends it; Escape puts
-   * the node's name back. An empty name, or the board id itself, clears the name.
+   * the node's name back. An empty name asks the node for a default name again
+   * (the lowest free `board-N`).
    *
    * The field shows what the operator types until the node's name CHANGES (the
    * rename went through, or another page renamed it). `known` is derived from the
@@ -11,21 +12,20 @@
    * name stays in the field to be corrected; the refusal shows on the page.
    */
   interface Props {
-    name: string | null;
-    boardId: string;
-    /** Send the rename; `false` when the node is not connected. */
+    name: string;
+    /** Send the rename (`null`: a default name); `false` when the node is not connected. */
     onrename: (name: string | null) => boolean;
   }
 
-  const { name, boardId, onrename }: Props = $props();
+  const { name, onrename }: Props = $props();
 
-  const known = $derived(name ?? '');
+  const known = $derived(name);
   let value = $derived(known);
 
-  /** What the typed value names: `null` clears the name. */
+  /** What the typed value names: `null` asks for a default name. */
   const wanted = $derived.by(() => {
     const typed = value.trim();
-    return typed === '' || typed === boardId ? null : typed;
+    return typed === '' ? null : typed;
   });
   const dirty = $derived(wanted !== name);
 
@@ -42,7 +42,7 @@
 <form class="name" onsubmit={submit}>
   <label>
     name
-    <input bind:value placeholder={boardId} maxlength="32" autocomplete="off" {onkeydown} />
+    <input bind:value placeholder="board-N" maxlength="32" autocomplete="off" {onkeydown} />
   </label>
   <button type="submit" disabled={!dirty}>Save name</button>
 </form>

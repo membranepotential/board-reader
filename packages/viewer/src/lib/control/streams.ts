@@ -1,8 +1,7 @@
 /**
  * The streams the node runs as cameras (`WS /streams`, DESIGN D22), as /control
  * shows them: what each one is doing, in words, and the message that removes one.
- * Removing a stream stops its process and forgets its camera, so its board id is
- * free again.
+ * Removing a stream stops its process and forgets its camera: its name and settings.
  */
 
 import type { RemoveStreamMessage, StreamEntry } from '#lib/protocol/generated.ts';
@@ -23,7 +22,7 @@ export function streamStatus(stream: StreamEntry): StreamStatus {
     case 'starting':
       return { text: 'starting…', tone: 'wait' };
     case 'running':
-      return { text: `running as ${stream.board_id ?? 'a new camera'}`, tone: 'ok' };
+      return { text: `running as ${stream.name ?? 'a new camera'}`, tone: 'ok' };
     case 'crashed':
       return { text: `crashed, starting again: ${stream.error ?? 'no reason given'}`, tone: 'bad' };
     case 'stopped':

@@ -5,7 +5,7 @@
    * It asks the viewer for the addresses a phone can open (`GET /api/camera-links`,
    * best first) once on mount, shows the first as a QR code and as text with a copy
    * button, and lets the operator switch to another one. The links carry no
-   * `?board=`: the node assigns the phone its board.
+   * `?board=`: the phone streams under its own device id.
    */
   import { onMount } from 'svelte';
   import { encode } from 'uqr';

@@ -27,10 +27,11 @@
     /** The config's crop; `null` sends the whole frame. */
     crop: CropRect | null;
     streaming: boolean;
-    boardId: string;
+    /** The camera's name, for the pictures' alt text. */
+    name: string;
   }
 
-  const { frame, preview, crop, streaming, boardId }: Props = $props();
+  const { frame, preview, crop, streaming, name }: Props = $props();
 
   type View =
     | { readonly kind: 'received'; readonly frame: FrameMessage }
@@ -50,7 +51,7 @@
     <img
       class="received"
       src={jpegSrc(view.frame.jpeg)}
-      alt="the latest frame the node received for board {boardId}"
+      alt="the latest frame the node received from camera {name}"
     />
   </div>
 {:else if view.kind === 'preview'}
@@ -59,7 +60,7 @@
     <img
       class="preview-crop"
       src={jpegSrc(shot.jpeg)}
-      alt="the camera's preview, cropped as board {boardId} would be"
+      alt="the preview of camera {name}, cropped as its stream would be"
       style:width="{100 / c.w}%"
       style:height="{100 / c.h}%"
       style:left="{(-c.x / c.w) * 100}%"

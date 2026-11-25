@@ -30,6 +30,7 @@
   import GameDrawer from './GameDrawer.svelte';
   import GamePanel from '#lib/components/game/GamePanel.svelte';
   import { boardShapes } from './shapes';
+  import { shortDeviceId } from '#lib/edge/device.ts';
 
   interface Props {
     board: BoardState;
@@ -56,7 +57,7 @@
       {#if label === board.id}
         board {board.id}
       {:else}
-        {label} <span class="board-id">{board.id}</span>
+        {label} <span class="board-id" title="board {board.id}">{shortDeviceId(board.id)}</span>
       {/if}
     </span>
     <span class="chips">

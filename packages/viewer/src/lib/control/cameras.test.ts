@@ -9,7 +9,6 @@ afterEach(() => vi.unstubAllGlobals());
 
 const ENTRY: CameraEntry = {
   device_id: 'kitchen-phone-id',
-  board_id: 'board-1',
   name: 'kitchen',
   connected: true,
   report: null,
@@ -31,7 +30,7 @@ describe('the camera list link', () => {
     expect(net.sockets[0]!.url).toBe('wss://viewer.test/ws/cameras');
     net.sockets[0]!.open();
     net.sockets[0]!.deliver({ type: 'cameras', cameras: [ENTRY] });
-    net.sockets[0]!.deliver({ type: 'cameras', cameras: [{ ...ENTRY, board_id: 'a/b' }] }); // refused whole
+    net.sockets[0]!.deliver({ type: 'cameras', cameras: [{ ...ENTRY, name: 'a/b' }] }); // refused whole
     expect(onMessage).toHaveBeenCalledExactlyOnceWith({ type: 'cameras', cameras: [ENTRY] });
   });
 

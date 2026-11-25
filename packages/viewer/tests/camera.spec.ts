@@ -4,7 +4,8 @@
  * It has no controls. Which board it streams as, what it films and whether it
  * streams come from the node, which pushes them down the phone's control socket
  * (`/ws/cameras/<device id>`). So every spec here plays the node on that socket
- * (`FakeControl`): it assigns a board id, pushes a config of its choosing, says
+ * (`FakeControl`): it names the board id (the device id) and the camera's name,
+ * pushes a config of its choosing, says
  * whether previews are wanted, and reads what reaches it — the reports, the
  * full-frame previews, the full frames Auto-frame asks for, and the frames on
  * `/ws/ingest`, decoded down to their JPEG size, which is the only honest proof that
@@ -52,14 +53,16 @@ class FakeControl {
   readonly frames: [number, number][] = [];
   /** The device id each phone socket connected with, in order. */
   readonly devices: string[] = [];
-  boardId = 'board-1';
+  /** The board id the phone streams as: its device id, said on connect. */
+  boardId = '';
   private socket: WebSocketRoute | null = null;
 
   static async install(page: Page): Promise<FakeControl> {
     const node = new FakeControl();
     await page.routeWebSocket(PHONE_SOCKET, (ws) => {
       node.socket = ws;
-      node.devices.push(new URL(ws.url()).pathname.split('/').at(-1)!);
+      node.boardId = new URL(ws.url()).pathname.split('/').at(-1)!;
+      node.devices.push(node.boardId);
       // A full frame's header, waiting for its JPEG: the next binary message.
       let header: { request: number; capture_ts: number } | null = null;
       ws.onMessage((message) => {
@@ -80,7 +83,7 @@ class FakeControl {
         }
       });
       // What the node says to a phone that has just connected.
-      ws.send(JSON.stringify({ type: 'assigned', board_id: node.boardId, name: null }));
+      ws.send(JSON.stringify({ type: 'assigned', board_id: node.boardId, name: 'board-1' }));
       ws.send(JSON.stringify({ type: 'config', config: node.config }));
       ws.send(JSON.stringify({ type: 'previews', on: node.watched }));
     });
@@ -141,10 +144,10 @@ test.describe('a dumb camera', () => {
   test('has nothing to press', async ({ page }) => {
     await openCamera(page);
     await expect(page.getByRole('button')).toHaveCount(0);
-    await expect(page.getByTestId('camera-status')).toContainText('board board-1');
+    await expect(page.getByTestId('camera-status')).toContainText('board-1');
   });
 
-  test('keeps its device id across a reload, and streams under its board id when named', async ({
+  test('keeps its device id across a reload, and streams under it as its board id when named', async ({
     page
   }) => {
     const node = await openCamera(page);
@@ -156,15 +159,15 @@ test.describe('a dumb camera', () => {
     expect(node.devices).toEqual([device, device]);
 
     node.configure({ streaming: true });
-    await expect.poll(() => node.headers.at(-1)?.['board_id'], { timeout: 8_000 }).toBe('board-1');
+    await expect.poll(() => node.headers.at(-1)?.['board_id'], { timeout: 8_000 }).toBe(device);
     // Every frame names this phone, so the node can refuse one under another's board.
     expect(node.headers.at(-1)?.['device_id']).toBe(device);
     // Named on /control: the page shows the name; the frames keep the board id.
     node.rename('table');
-    await expect(page.getByTestId('camera-status')).toContainText('table (board board-1)');
+    await expect(page.getByTestId('camera-status')).toContainText('table');
     const sent = node.headers.length;
     await expect.poll(() => node.headers.length, { timeout: 8_000 }).toBeGreaterThan(sent);
-    expect(node.headers.at(-1)?.['board_id']).toBe('board-1');
+    expect(node.headers.at(-1)?.['board_id']).toBe(device);
   });
 
   test('stands down when another page of the same phone takes over', async ({ page }) => {
@@ -267,7 +270,7 @@ test.describe('a dumb camera', () => {
     // Half of 1280x720, under the 960 px send cap: exactly the rectangle.
     expect(node.frames.at(-1)).toEqual([640, 360]);
     const header = node.headers.at(-1)!;
-    expect(header).toMatchObject({ type: 'frame', board_id: 'board-1' });
+    expect(header).toMatchObject({ type: 'frame', board_id: node.boardId });
     expect(header).not.toHaveProperty('corners');
     expect(typeof header['sharpness']).toBe('number');
     await expect.poll(() => node.lastReport?.['ingest']).toBe('streaming');
@@ -307,13 +310,13 @@ test.describe('the motion meter', () => {
     await crossHand(page);
     await expect
       .poll(() => node.headers.find((header) => header['burst_id'] !== null), { timeout: 5_000 })
-      .toMatchObject({ burst_id: 'board-1:b0' });
+      .toMatchObject({ burst_id: `${node.boardId}:b0` });
     // The burst opened below 0.7, but the frame that opened it may not be among the
     // frames sent (the page drops frames while it encodes): wait for one that is.
     const lowest = () =>
       Math.min(
         ...node.headers
-          .filter((header) => header['burst_id'] === 'board-1:b0')
+          .filter((header) => header['burst_id'] === `${node.boardId}:b0`)
           .map((header) => header['stability'] as number)
       );
     await expect.poll(lowest, { timeout: 5_000 }).toBeLessThan(0.7);

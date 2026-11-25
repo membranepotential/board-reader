@@ -1,7 +1,8 @@
 /**
- * Two phones and a control page against one node (`helpers/cameras.ts`): the node
- * assigns each phone its board id, keeps it across a reload and a node restart,
- * names it from /control without changing the id, and forgets a disconnected one.
+ * Two phones and a control page against one node (`helpers/cameras.ts`): each phone
+ * streams under its device id as its board id, gets a default name (`board-N`), keeps
+ * both across a reload and a node restart, is renamed from /control without changing
+ * the id, and a disconnected one is forgotten.
  * /control shows one card per camera. Each phone is its own browser context, so its own `localStorage`, so its
  * own device id, exactly as two phones are.
  */
@@ -24,21 +25,26 @@ async function open(browser: Browser, baseURL: string | undefined, node: FakeCam
 
 const status = (phone: Page) => phone.getByTestId('camera-status');
 const cards = (control: Page) => control.getByTestId('camera-card');
+/** The device id (= board id) of the camera the node calls `name`. */
+const deviceCalled = (node: FakeCameraNode, name: string) => [...node.names].find(([, n]) => n === name)![0];
 
-test('each phone gets its own board, and keeps it across a reload', async ({ browser, baseURL }) => {
+test('each phone gets its own board and default name, and keeps them across a reload', async ({ browser, baseURL }) => {
   const node = new FakeCameraNode();
   const first = await open(browser, baseURL, node, '/camera');
-  await expect(status(first)).toContainText('board board-1');
+  await expect(status(first)).toContainText('board-1');
   const second = await open(browser, baseURL, node, '/camera');
-  await expect(status(second)).toContainText('board board-2');
+  await expect(status(second)).toContainText('board-2');
 
   await first.reload();
   await liveViewfinder(first);
-  await expect(status(first)).toContainText('board board-1');
+  await expect(status(first)).toContainText('board-1');
 
   const control = await open(browser, baseURL, node, '/control');
   await expect(cards(control)).toHaveCount(2);
-  await expect(cards(control).nth(0).locator('h2')).toContainText('board-1');
+  // The name leads; the camera's id shows as small text, whole in the stats.
+  const id = deviceCalled(node, 'board-1');
+  await expect(cards(control).nth(0).locator('h2')).toContainText(`board-1 ${id.slice(0, 8)}`);
+  await expect(cards(control).nth(0).getByTestId('camera-id')).toHaveText(id);
   await expect(cards(control).nth(1).locator('h2')).toContainText('board-2');
   await expect(cards(control).nth(1).locator('h2')).toContainText('connected');
   // No camera table or picker any more: the cards are the list.
@@ -53,7 +59,8 @@ test("a rename in a camera's card names the camera, keeps its board id and survi
   const node = new FakeCameraNode();
   await open(browser, baseURL, node, '/camera');
   const phone = await open(browser, baseURL, node, '/camera');
-  await expect(status(phone)).toContainText('board board-2');
+  await expect(status(phone)).toContainText('board-2');
+  const id = deviceCalled(node, 'board-2');
   const control = await open(browser, baseURL, node, '/control');
 
   const card = cards(control).nth(1);
@@ -61,26 +68,27 @@ test("a rename in a camera's card names the camera, keeps its board id and survi
   await card.getByLabel('name').fill('kitchen table');
   await card.getByRole('button', { name: 'Save name' }).click();
 
-  await expect(status(phone)).toContainText('kitchen table (board board-2)');
-  await expect(card.locator('h2')).toContainText('kitchen table');
-  await expect(card.locator('h2')).toContainText('board-2');
+  await expect(status(phone)).toContainText('kitchen table');
+  await expect(card.locator('h2')).toContainText(`kitchen table ${id.slice(0, 8)}`);
   await expect(card.getByRole('button', { name: 'Save name' })).toBeDisabled();
-  // The frames still name the board id, and now the phone that sends them.
+  // The frames still name the board id, which is the phone's device id.
   await card.getByRole('button', { name: 'Start streaming' }).click();
-  await expect.poll(() => node.headers.at(-1)?.['board_id'], { timeout: 8_000 }).toBe('board-2');
-  expect(node.headers.at(-1)?.['device_id']).toBe([...node.boards].find(([, b]) => b === 'board-2')?.[0]);
+  await expect.poll(() => node.headers.at(-1)?.['board_id'], { timeout: 8_000 }).toBe(id);
+  expect(node.headers.at(-1)?.['device_id']).toBe(id);
 
   node.restart();
   await expect(status(phone)).toContainText('node connected');
-  await expect(status(phone)).toContainText('kitchen table (board board-2)');
+  await expect(status(phone)).toContainText('kitchen table');
 
-  // Another camera's name or board id is refused, and said on /control.
+  // Another camera's name is refused, and said on /control.
   const first = cards(control).nth(0);
-  await first.getByLabel('name').fill('board-2');
+  await first.getByLabel('name').fill('kitchen table');
   await first.getByLabel('name').press('Enter');
-  await expect(control.getByRole('alert')).toContainText('the node refused: board-2 is taken by camera kitchen table');
+  await expect(control.getByRole('alert')).toContainText(
+    'the node refused: kitchen table is taken by camera kitchen table'
+  );
   // The refused name stays in the field to be corrected.
-  await expect(first.getByLabel('name')).toHaveValue('board-2');
+  await expect(first.getByLabel('name')).toHaveValue('kitchen table');
 });
 
 test('a name being typed survives the list the node pushes every second', async ({ browser, baseURL }) => {
@@ -88,7 +96,7 @@ test('a name being typed survives the list the node pushes every second', async 
   await open(browser, baseURL, node, '/camera');
   const control = await open(browser, baseURL, node, '/control');
   const field = cards(control).nth(0).getByLabel('name');
-  await expect(field).toHaveValue('');
+  await expect(field).toHaveValue('board-1');
 
   await field.fill('kitch');
   node.tick();
@@ -114,7 +122,7 @@ test('a disconnected camera can be forgotten from its card after a confirm; a co
   const node = new FakeCameraNode();
   const first = await open(browser, baseURL, node, '/camera');
   const second = await open(browser, baseURL, node, '/camera');
-  await expect(status(second)).toContainText('board board-2');
+  await expect(status(second)).toContainText('board-2');
   const control = await open(browser, baseURL, node, '/control');
   await expect(cards(control)).toHaveCount(2);
 
@@ -132,7 +140,7 @@ test('a disconnected camera can be forgotten from its card after a confirm; a co
   await expect(cards(control)).toHaveCount(1);
   expect(asked).toContain('Forget camera board-1?');
 
-  // Its id is free again: the next new phone gets it.
+  // Its name is free again: the next new phone is called board-1.
   const third = await open(browser, baseURL, node, '/camera');
-  await expect(status(third)).toContainText('board board-1');
+  await expect(status(third)).toContainText('board-1');
 });

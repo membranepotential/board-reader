@@ -2,18 +2,20 @@
   /**
    * A camera's stats, as the node pushes them: the phone link, what the camera
    * delivers, the board direction, and the health tick (frames/s, the last frame's
-   * age, the recognizer, refused frames).
+   * age, the recognizer, refused frames); and the camera's id, which is also the
+   * board id its events and recordings are filed under.
    */
   import type { HealthMessage, StateMessage } from '#lib/protocol/generated.ts';
   import { formatAge } from '#lib/control/status.ts';
   import { whiteSideCopy } from '#lib/control/direction.ts';
 
   interface Props {
+    deviceId: string;
     camera: StateMessage | null;
     health: HealthMessage | null;
   }
 
-  const { camera, health }: Props = $props();
+  const { deviceId, camera, health }: Props = $props();
 
   const report = $derived(camera?.report ?? null);
   const connected = $derived(camera?.phone_connected ?? false);
@@ -60,6 +62,8 @@
       · <span title="frames the node refused for this board">{health.refused} refused</span>
     {/if}
   </dd>
+  <dt>camera id</dt>
+  <dd class="quiet" data-testid="camera-id">{deviceId}</dd>
 </dl>
 
 <style>

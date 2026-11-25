@@ -13,7 +13,7 @@ const RUNNING = {
   start_s: 3600,
   state: 'running',
   device_id: 'stream-device-one',
-  board_id: 'board-2',
+  name: 'board-2',
   error: null
 };
 const CRASHED = {
@@ -23,7 +23,7 @@ const CRASHED = {
   start_s: null,
   state: 'crashed',
   device_id: 'stream-device-two',
-  board_id: null,
+  name: null,
   error: 'exited with code 1: ERROR: Video unavailable'
 };
 

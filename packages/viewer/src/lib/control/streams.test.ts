@@ -9,7 +9,7 @@ const STREAM: StreamEntry = {
   start_s: 3600,
   state: 'running',
   device_id: 'kitchen-stream-id',
-  board_id: 'board-3',
+  name: 'board-3',
   error: null
 };
 
@@ -30,9 +30,9 @@ describe('the streams socket', () => {
 });
 
 describe('a stream, in words', () => {
-  it('names the board a running stream streams as', () => {
+  it('names the camera a running stream registered as', () => {
     expect(streamStatus(STREAM)).toEqual({ text: 'running as board-3', tone: 'ok' });
-    expect(streamStatus({ ...STREAM, state: 'starting', board_id: null }).tone).toBe('wait');
+    expect(streamStatus({ ...STREAM, state: 'starting', name: null }).tone).toBe('wait');
   });
 
   it('says why a stream crashed or stopped', () => {

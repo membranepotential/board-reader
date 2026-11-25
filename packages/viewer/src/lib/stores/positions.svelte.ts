@@ -89,6 +89,9 @@ export interface PositionStreamOptions {
 export const RECONNECT_MIN_MS = 1500;
 export const RECONNECT_MAX_MS = 8000;
 
+/** Compares labels with digit runs as numbers. */
+const NATURAL = new Intl.Collator('en', { numeric: true });
+
 /**
  * One `/ws/viewer` subscription and the boards it has seen.
  *
@@ -125,9 +128,15 @@ export class PositionStream {
     return this.#connection;
   }
 
-  /** Boards in a stable order, so cards never reshuffle as events arrive. */
+  /**
+   * Boards by what people call them (`board-2` before `board-10`), so cards never
+   * reshuffle as events arrive; a camera's board id is a random id, so its order
+   * would mean nothing.
+   */
   get boards(): readonly BoardState[] {
-    return Object.values(this.#boards).sort((a, b) => a.id.localeCompare(b.id));
+    return Object.values(this.#boards).sort(
+      (a, b) => NATURAL.compare(this.label(a.id), this.label(b.id)) || a.id.localeCompare(b.id)
+    );
   }
 
   board(id: string): BoardState | undefined {

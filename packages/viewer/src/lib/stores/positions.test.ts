@@ -203,18 +203,47 @@ describe('PositionStream', () => {
     });
     stream.start();
     const send = (message: unknown) => socket.onmessage?.({ data: JSON.stringify(message) } as MessageEvent);
-    send(positionEvent({ board_id: 'board-1' }));
-    const before = stream.board('board-1');
-    expect(stream.label('board-1')).toBe('board-1');
+    // A camera's board id is its device id; its name is what people read.
+    const id = 'kitchen-phone-id';
+    send(positionEvent({ board_id: id }));
+    const before = stream.board(id);
+    expect(stream.label(id)).toBe(id);
 
-    send({ type: 'names', names: [{ board_id: 'board-1', name: 'kitchen' }] });
-    expect(stream.label('board-1')).toBe('kitchen');
+    send({ type: 'names', names: [{ board_id: id, name: 'board-1' }] });
+    expect(stream.label(id)).toBe('board-1');
+    send({ type: 'names', names: [{ board_id: id, name: 'kitchen' }] });
+    expect(stream.label(id)).toBe('kitchen');
     // A rename is a label: the board, its id and its state are the same object.
-    expect(stream.board('board-1')).toBe(before);
-    expect(stream.boards.map((b) => b.id)).toEqual(['board-1']);
+    expect(stream.board(id)).toBe(before);
+    expect(stream.boards.map((b) => b.id)).toEqual([id]);
 
-    send({ type: 'names', names: [] }); // the name was cleared
-    expect(stream.label('board-1')).toBe('board-1');
+    send({ type: 'names', names: [] }); // the camera was forgotten
+    expect(stream.label(id)).toBe(id);
+    stream.stop();
+  });
+
+  it('orders the boards by their names, board-2 before board-10', () => {
+    let socket: { onmessage: ((m: MessageEvent) => void) | null } = { onmessage: null };
+    const stream = new PositionStream({
+      url: 'ws://test/ws/viewer',
+      clock: () => 0,
+      socketFactory: () => {
+        socket = { onmessage: null };
+        return Object.assign(socket, { close: () => {} }) as unknown as WebSocket;
+      }
+    });
+    stream.start();
+    const send = (message: unknown) => socket.onmessage?.({ data: JSON.stringify(message) } as MessageEvent);
+    for (const id of ['alpha-phone-id', 'zulu-phone-id', 'feed']) send(positionEvent({ board_id: id }));
+    send({
+      type: 'names',
+      names: [
+        { board_id: 'alpha-phone-id', name: 'board-10' },
+        { board_id: 'zulu-phone-id', name: 'board-2' }
+      ]
+    });
+    // A board without a camera (an edge without a device id) goes by its id.
+    expect(stream.boards.map((b) => stream.label(b.id))).toEqual(['board-2', 'board-10', 'feed']);
     stream.stop();
   });
 

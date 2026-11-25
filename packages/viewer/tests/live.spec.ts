@@ -208,16 +208,20 @@ test("a renamed camera's card relabels in place and keeps its game", async ({ pa
   const socket = await FakeViewerSocket.install(page);
   await page.goto('/');
 
-  socket.send(positionEvent({ board_id: 'board-1' }));
+  // A camera's board id is its device id; the card leads with its name and shows
+  // the start of the id as small text.
+  socket.send(positionEvent({ board_id: 'kitchen-phone-id' }));
   const card = page.locator('.board-card');
-  await expect(card.locator('h2 .label')).toHaveText('board board-1');
+  await expect(card.locator('h2 .label')).toHaveText('board kitchen-phone-id');
   await card.evaluate((el) => el.setAttribute('data-kept', 'yes'));
 
-  socket.send({ type: 'names', names: [{ board_id: 'board-1', name: 'kitchen' }] });
-  await expect(card.locator('h2 .label')).toHaveText('kitchen board-1');
+  socket.send({ type: 'names', names: [{ board_id: 'kitchen-phone-id', name: 'board-1' }] });
+  await expect(card.locator('h2 .label')).toHaveText('board-1 kitchen-');
+  socket.send({ type: 'names', names: [{ board_id: 'kitchen-phone-id', name: 'kitchen' }] });
+  await expect(card.locator('h2 .label')).toHaveText('kitchen kitchen-');
   await expect(card).toHaveAttribute('data-kept', 'yes');
   await expect(page.locator('.board-card')).toHaveCount(1);
 
-  socket.send({ type: 'names', names: [] });
-  await expect(card.locator('h2 .label')).toHaveText('board board-1');
+  socket.send({ type: 'names', names: [] }); // the camera was forgotten
+  await expect(card.locator('h2 .label')).toHaveText('board kitchen-phone-id');
 });

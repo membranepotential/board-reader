@@ -49,15 +49,16 @@ describe('the phone link', () => {
     expect(net.sockets[0]!.texts).toEqual([{ type: 'report', report: REPORT }]);
   });
 
-  it('takes the board id the node assigns, and the name /control gives it', () => {
+  it('takes the board id the node says (its device id), and the name /control gives it', () => {
     const { net, camera, onAssigned } = link();
     camera.start();
     net.sockets[0]!.open();
-    net.sockets[0]!.deliver({ type: 'assigned', board_id: 'board-2', name: null });
-    net.sockets[0]!.deliver({ type: 'assigned', board_id: 'board-2', name: 'kitchen' }); // renamed
+    net.sockets[0]!.deliver({ type: 'assigned', board_id: 'kitchen-phone-id', name: 'board-2' });
+    net.sockets[0]!.deliver({ type: 'assigned', board_id: 'kitchen-phone-id', name: 'kitchen' }); // renamed
+    net.sockets[0]!.deliver({ type: 'assigned', board_id: 'board-2', name: 'kitchen' }); // no device id: refused
     expect(onAssigned.mock.calls).toEqual([
-      ['board-2', null],
-      ['board-2', 'kitchen']
+      ['kitchen-phone-id', 'board-2'],
+      ['kitchen-phone-id', 'kitchen']
     ]);
   });
 

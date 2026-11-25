@@ -17,9 +17,10 @@
    *    Auto-frame asks (`send_full_frame`), one full frame to find the board in.
    *
    * The page connects by the phone's DEVICE ID (`#lib/edge/device`, kept in
-   * `localStorage`), and the node says which board id it streams as: the same one
-   * for good (DESIGN D18), and the name the control UI gave it, if any. Every frame
-   * names the device too, so the node refuses a frame under another camera's board.
+   * `localStorage`), and the node says which board id it streams as (that device id,
+   * for good: DESIGN D18) and what the camera is called (`board-N` until /control
+   * renames it). Every frame names the device too, so the node refuses a frame under
+   * another camera's board.
    * `?board=<id>` means nothing any more: the page ignores it with a console note.
    *
    * Same-origin and relative throughout (`#lib/api`), relayed by the viewer:
@@ -80,7 +81,7 @@
   let lensLabel = $state<string | null>(null);
   /** The board id the node says this phone streams as; `null` until it has said. */
   let boardId = $state<string | null>(null);
-  /** The name /control gave this camera; `null` shows the board id alone. */
+  /** What the node says this camera is called; `null` until it has said. */
   let boardName = $state<string | null>(null);
   /** This phone's device id; `null` until mounted (prerendering has no storage). */
   let identity = $state.raw<DeviceIdentity | null>(null);
@@ -160,7 +161,7 @@
   const crop = $derived(config.crop);
   const status = $derived(
     [
-      boardName === null ? `board ${boardId ?? '…'}` : `${boardName} (board ${boardId})`,
+      boardName ?? '…',
       nodeReachable === null ? 'node…' : nodeReachable ? 'node connected' : 'node unreachable',
       ingestState === 'streaming'
         ? `streaming ${fps.toFixed(1)} fps`
@@ -589,7 +590,7 @@
     const self = deviceIdentity(() => window.localStorage, randomDeviceId);
     identity = self;
     if (new URLSearchParams(location.search).has('board')) {
-      console.info('?board= is ignored: the node assigns this phone its board id; name it on /control');
+      console.info('?board= is ignored: this phone streams under its device id; name it on /control');
     }
     const [motionCanvas, motion] = canvas2d();
     motionCanvas.width = MOTION_DRAW_SIDE;

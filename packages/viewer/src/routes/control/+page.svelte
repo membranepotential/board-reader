@@ -119,10 +119,10 @@
   }
 
   function removeStream(stream: StreamEntry): void {
-    const camera = stream.board_id === null ? 'its camera' : `its camera ${stream.board_id}`;
+    const camera = stream.name === null ? 'its camera' : `its camera ${stream.name}`;
     const asked =
       `Remove the stream ${stream.url}? The node stops playing it and forgets ${camera}, ` +
-      'whose board id may go to the next new camera.';
+      'its name and its settings.';
     if (!window.confirm(asked)) return;
     removeFailure = streams !== null && streams.remove(stream.id) ? null : 'not removed: the node is not connected';
   }
@@ -134,10 +134,9 @@
   }
 
   function forget(entry: CameraEntry): void {
-    const label = entry.name ?? entry.board_id;
     const asked =
-      `Forget camera ${label}? Its board id ${entry.board_id} and its settings are dropped, ` +
-      'and the id may go to the next new phone. If this phone comes back, it is a new camera.';
+      `Forget camera ${entry.name}? Its name and its settings are dropped. ` +
+      'If this phone comes back, it is a new camera with a new default name.';
     if (!window.confirm(asked)) return;
     listFailure = list !== null && list.forget(entry.device_id) ? null : 'not forgotten: the node is not connected';
   }
