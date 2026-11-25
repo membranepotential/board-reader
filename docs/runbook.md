@@ -71,7 +71,7 @@ which switches Auto-frame off for that camera until you switch it on again or pr
 and [[TESTING#Option T — Auto-frame: the node frames the camera by itself (DESIGN D21)]]).
 When Auto-frame says "no board found", the board is not in the picture or too small
 in it (under about a sixth of its width); it retries after 3 s, 10 s, then every 30 s.
-The node log names every attempt (`auto-frame <board id>: ...`).
+The node log names every attempt (`auto-frame <camera id> (<name>): ...`).
 A phone streams under the device id it keeps (a UUID) as its board id, for good (DESIGN
 D18); the node calls a new phone the lowest `board-N` no other camera's name uses.
 `/control` lists the phones, renames them (the live page shows the name; the board id

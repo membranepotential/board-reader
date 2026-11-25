@@ -176,7 +176,7 @@ class StreamSupervisor:
         record = StreamRecord(stream_id, url, start_s or None, device_id, time.time())
         stream = self._streams[stream_id] = _Stream(record)
         self._save()
-        log.info("%s: added %s as camera %s", stream_id, url, device_id[:8])
+        log.info("%s: added %s as camera %s", stream_id, url, device_id)
         self._launch(stream)
         return stream_id
 
@@ -297,15 +297,22 @@ class StreamSupervisor:
             e.device_id == device_id and e.connected for e in self._cameras.cameras(_no_age).cameras
         ):
             if self._clock() >= deadline:
-                log.warning("camera %s is still connected; not forgotten", device_id[:8])
+                log.warning(
+                    "camera %s is still connected; not forgotten", self._who(device_id)
+                )
                 return
             await asyncio.sleep(0.05)
         try:
             self._cameras.forget(device_id)
         except ValueError as e:
-            log.warning("cannot forget camera %s: %s", device_id[:8], e)
+            log.warning("cannot forget camera %s: %s", self._who(device_id), e)
 
     # ---- bookkeeping -------------------------------------------------------------
+
+    def _who(self, device_id: str) -> str:
+        """``device_id`` for a log line, followed by its camera's name, if any."""
+        name = self._cameras.name_of(device_id)
+        return device_id if name is None else f"{device_id} ({name})"
 
     def _set(self, stream: _Stream, phase: Phase, error: str | None) -> None:
         stream.phase, stream.error = phase, error

@@ -284,3 +284,11 @@ def test_the_list_names_every_camera_in_name_order_with_its_link_and_frame_age()
     assert listed[0].device_id == devices[-1] and listed[-1].device_id == devices[0]
     assert [e.connected for e in listed[:2]] == [False, True]
     assert listed[-1].frame_age_s == 2.0 and listed[0].frame_age_s is None
+
+
+def test_a_log_line_names_the_camera_by_its_whole_id_and_its_name():
+    registry = CameraRegistry()
+    registry.connect_phone(PHONE)
+    assert registry.log_label(PHONE) == f"{PHONE} (board-1)"
+    # An id no camera holds (`feed --board X`, a replay) has no name to add.
+    assert registry.log_label("bench") == "bench"

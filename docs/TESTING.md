@@ -1213,12 +1213,12 @@ Needs the network (it reads the video) and deno (`sudo pacman -S deno`).
    `uv run board-reader-edge camera "https://www.youtube.com/watch?v=TDx2DGiBGhc" --start 1:00:00`.
    Expected: a log line `video: <the title>`, then `control link up` and
    `streaming as board <camera id>` (the edge's device id).
-3. Open `http://localhost:8080/control`. Expected: a card for the camera, labelled
-   with the video's title, connected, with a 1920×1080 frame and no lens or resolution
+3. Open `http://localhost:8080/control`. Expected: a card for the camera, named
+   `board-N` like any new camera (rename it in its settings), connected, with a 1920×1080 frame and no lens or resolution
    to choose; its picture shows the broadcast (Manual, then **Crop**, shows the whole
    picture).
 4. Do nothing for a few seconds. Expected: Auto-frame (DESIGN D21) sets the crop around
-   the physical board, not the broadcast's 2D board: the node logs `auto-frame <camera id>:
+   the physical board, not the broadcast's 2D board: the node logs `auto-frame <camera id> (board-N):
    board found in <n> reads ... crop {...}`, the edge logs `config: crop {...},
    streaming off`, and `/control` says Auto-frame framed it. On this video at 1:00:00 it
    took 8 reads (R² 0.994) and chose `x 0.228, y 0.555, w 0.278, h 0.241`. The board is
@@ -1264,7 +1264,7 @@ A phone, framed and re-framed without drawing a rectangle. Needs the ChessQ weig
    connecting, the card's Auto-frame says it is looking for the board, then that it
    framed it; the card's picture (the preview, cropped) shows the board with about
    10 % to spare on every side, a little more on top so the far rank's kings fit,
-   and the phone shows the same outline. The node log reads `auto-frame <camera id>:
+   and the phone shows the same outline. The node log reads `auto-frame <camera id> (<name>):
    board found in 2 reads ...`. If the board filled at least half of the last read,
    the live page shows its position at once, before streaming starts.
 3. Start streaming and move a piece. Expected: the live page follows, as in Option J.

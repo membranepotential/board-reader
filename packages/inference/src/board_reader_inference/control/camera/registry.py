@@ -267,6 +267,12 @@ class CameraRegistry:
         """What people call ``board_id``: its camera's name, or the id itself."""
         return self._names.get(board_id, board_id)
 
+    def log_label(self, board_id: str) -> str:
+        """``board_id`` for a log line: the whole id, then its camera's name, if any,
+        so a log can be searched by id and still read by name."""
+        name = self._names.get(board_id)
+        return board_id if name is None else f"{board_id} ({name})"
+
     def names(self) -> NamesMessage:
         """Every camera's name, by board id, in name order."""
         return NamesMessage(
@@ -329,7 +335,7 @@ class CameraRegistry:
         else:
             del self._boards[board_id]
         self._save()
-        log.info("forgot camera %s (%s)", name, device_id[:8])
+        log.info("forgot camera %s (%s)", device_id, name)
         self._tell_watchers(board_id)
         self._tell_lists()
         self._announce_names()
@@ -429,7 +435,11 @@ class CameraRegistry:
         board_id = link.device_id
         inflight = self.board(board_id).autoframe.inflight
         if inflight is None or inflight.request != header.request:
-            log.info("board %s: dropping full frame %d, not the one asked for", board_id, header.request)
+            log.info(
+                "board %s: dropping full frame %d, not the one asked for",
+                self.log_label(board_id),
+                header.request,
+            )
             return
         if self._on_full_frame is not None:
             self._on_full_frame(FullFrame(board_id, header.request, header.capture_ts, jpeg))

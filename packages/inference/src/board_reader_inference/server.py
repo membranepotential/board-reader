@@ -250,7 +250,9 @@ def create_app(
         except Exception:
             # A bad JPEG, or a read that failed (a full card): this preview is lost,
             # the next one may go.
-            log.exception("board %s: locating a preview failed", board_id)
+            log.exception(
+                "board %s: locating a preview failed", cameras.log_label(board_id)
+            )
             cameras.preview_skipped(board_id)
             return
         if isinstance(look, Busy):
@@ -267,19 +269,22 @@ def create_app(
             located = await ingest_.call(work)
         except Exception:
             # A bad JPEG, or a read that failed (a full card): retried like no board.
-            log.exception("board %s: locating the full frame failed", full.board_id)
+            log.exception(
+                "board %s: locating the full frame failed", cameras.log_label(full.board_id)
+            )
             cameras.autoframe_result(full.board_id, FullFrameFailed(full.request))
             return
         found = located.found
         if isinstance(found, NoBoard):
             r2 = "no grid" if found.r2 is None else f"best R^2 {found.r2:.2f}"
             log.info("auto-frame %s: no board in the full frame (%d reads, %s)",
-                     full.board_id, found.reads, r2)
+                     cameras.log_label(full.board_id), found.reads, r2)
             cameras.autoframe_result(full.board_id, FullFrameFailed(full.request))
             return
         log.info(
             "auto-frame %s: board found in %d reads (R^2 %.3f, %.0f%% of the last read), "
-            "crop %s", full.board_id, found.reads, found.grid.r2, 100 * found.board_share,
+            "crop %s", cameras.log_label(full.board_id), found.reads, found.grid.r2,
+            100 * found.board_share,
             found.crop.to_dict(),
         )
         proposal = FrameProposal(
@@ -311,7 +316,10 @@ def create_app(
             recognition.grid,
         )
         if not ingest_.publish_read(frame, reading):
-            log.info("auto-frame %s: its read is older than the stream's; not published", board_id)
+            log.info(
+                "auto-frame %s: its read is older than the stream's; not published",
+                cameras.log_label(board_id),
+            )
 
     cameras = CameraRegistry(
         on_names=hub_.set_names,
