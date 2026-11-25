@@ -2,93 +2,35 @@
   /**
    * board-reader · camera control — the laptop side of the "dumb camera" (DESIGN D11).
    *
-   * The phone (/camera) only films and streams. This page chooses what it films: the
-   * crop rectangle on its full-frame preview, the lens, the resolution, and whether it
-   * streams. The node holds that config per board and pushes it to the phone. The
-   * same config says which chess the board plays (`rules`), which only the node reads.
+   * The phone (/camera) only films and streams; this page chooses what it films. It
+   * shows one card per camera the node knows (`CamerasLink`, `WS /cameras`), connected
+   * or not, keyed by DEVICE id, so forgetting a camera and a new phone taking its board
+   * id never leaves a card on the wrong camera. Each card (`CameraCard`) talks to its
+   * own board over that board's socket.
    *
-   * The CAMERA LIST (`CamerasLink`, `WS /cameras`) shows every phone the node knows,
-   * by its name (or the board id the node assigned it, which never changes), names
-   * one inline, and forgets a disconnected one (after a confirm). The operator picks
-   * a camera there; its controls below talk to its board over that board's socket
-   * (`ControlLink`): the node pushes the camera state on connect and on every change,
-   * the phone's preview, the latest received frame and a health tick, so nothing here
-   * polls. A camera is picked by DEVICE id, so forgetting one and a new phone taking
-   * its board id never leaves the controls on the wrong camera. Both sockets close
-   * while the tab is hidden, which is also what tells the phone to stop sending
-   * previews nobody sees.
-   *
-   * The crop is edited locally and only sent on Save, so a pushed state never yanks
-   * a rectangle out from under the pointer. The lens, resolution, rules and stream
-   * toggle are sent the moment they change. Each `configure` is the whole config, built from
-   * the last one this page knows — applied here at once, so a second change made
-   * before the node's answer arrives builds on the first instead of undoing it.
+   * The top bar adds cameras: "Add camera" opens the QR code a phone scans to open
+   * /camera, "Add stream" a form that asks the node to play a video or live stream as
+   * a camera (`StreamsLink`, `WS /streams`, open only while the form is). The list
+   * socket closes while the tab is hidden, like the cards' sockets.
    */
-  import { onMount } from 'svelte';
+  import { onDestroy, onMount } from 'svelte';
   import { resolve } from '$app/paths';
-  import { RESOLUTION_NAMES, RULES_NAMES, type Resolution, type Rules } from '#lib/protocol/index.ts';
-  import type {
-    CameraConfig,
-    CameraEntry,
-    CamerasDown,
-    ControlDown,
-    CropRect,
-    FrameMessage,
-    HealthMessage,
-    PreviewMessage,
-    StateMessage
-  } from '#lib/protocol/generated.ts';
+  import type { AddStreamMessage, CameraEntry, CamerasDown, StreamsDown } from '#lib/protocol/generated.ts';
   import { CamerasLink } from '#lib/control/cameras.ts';
-  import { ControlLink } from '#lib/control/link.ts';
-  import { shortDeviceId } from '#lib/edge/device.ts';
-  import { jpegSrc } from '#lib/control/messages.ts';
-  import { AUTOFRAME_COPY } from '#lib/control/autoframe.ts';
-  import { WHOLE_FRAME } from '#lib/control/crop.ts';
-  import { FRAMING_COPY, framingWarnings } from '#lib/control/framing.ts';
-  import { formatAge } from '#lib/control/status.ts';
-  import { CAMERA_MOVED_COPY, whiteSideCopy } from '#lib/control/direction.ts';
-  import CropEditor from '#lib/components/control/CropEditor.svelte';
+  import CameraCard from '#lib/components/control/CameraCard.svelte';
   import CameraQr from '#lib/components/control/CameraQr.svelte';
-
-  /** How each setting of `rules` reads in the select. */
-  const RULES_LABEL: Readonly<Record<Rules, string>> = {
-    standard: 'standard chess',
-    free: 'free (extra pieces, variants)'
-  };
+  import AddStreamForm from '#lib/components/control/AddStreamForm.svelte';
+  import Modal from '#lib/components/control/Modal.svelte';
+  import { StreamsLink, type AddStatus } from '#lib/components/control/streams-link.ts';
 
   /** Every camera the node knows; `null` until its first list. */
   let cameras = $state.raw<readonly CameraEntry[] | null>(null);
-  /** The device the operator picked; `null` follows the first connected camera. */
-  let chosen = $state<string | null>(null);
-  /** The device whose new name is being typed, and the name so far. */
-  let renaming = $state<string | null>(null);
-  let newName = $state('');
-  /** The rename this page sent and the list does not show yet. */
-  let sent: { readonly device: string; readonly name: string | null } | null = null;
   /** Why the node refused the last rename or forget, or why the list is down. */
   let listFailure = $state<string | null>(null);
-  let camera = $state.raw<StateMessage | null>(null);
-  let preview = $state.raw<PreviewMessage | null>(null);
-  let received = $state.raw<FrameMessage | null>(null);
-  let health = $state.raw<HealthMessage | null>(null);
-  /** Whether this page's socket to the node is open. */
-  let up = $state(false);
-  /** The rectangle being edited and not yet saved; `null` shows the node's. */
-  let edit = $state<CropRect | null>(null);
-  let failure = $state<string | null>(null);
-  let link: ControlLink | null = null;
+  let modal = $state<'camera' | 'stream' | null>(null);
+  let streamsUp = $state(false);
+  let adding = $state.raw<AddStatus>({ kind: 'idle' });
   let list: CamerasLink | null = null;
-
-  const selected = $derived(
-    cameras?.find((entry) => entry.device_id === chosen) ??
-      cameras?.find((entry) => entry.connected) ??
-      cameras?.[0] ??
-      null
-  );
-  /** The picked camera's board: what its controls talk to. */
-  const boardId = $derived(selected?.board_id ?? null);
-  /** What people call a camera: its name, or its board id. */
-  const labelOf = (entry: CameraEntry): string => entry.name ?? entry.board_id;
 
   onMount(() => {
     const next = new CamerasLink({
@@ -105,449 +47,106 @@
     };
   });
 
-  $effect(() => {
-    const id = boardId;
-    if (id === null) return;
-    // Another board: nothing shown so far is about it.
-    camera = null;
-    preview = null;
-    received = null;
-    health = null;
-    edit = null;
-    const next = new ControlLink({
-      boardId: id,
-      onMessage: receive,
+  /** The streams socket, open while the Add stream form is. */
+  let streams: StreamsLink | null = null;
+
+  function openStreamForm(): void {
+    modal = 'stream';
+    adding = { kind: 'idle' };
+    streams?.stop();
+    streams = new StreamsLink({
+      onMessage: receiveStreams,
       onLink: (isUp, detail) => {
-        up = isUp;
-        failure = isUp ? null : `the node is not reachable (${detail}) — reconnecting…`;
+        streamsUp = isUp;
+        if (!isUp && adding.kind === 'sending') adding = { kind: 'failed', reason: `the node is not reachable (${detail})` };
       }
     });
-    link = next;
-    if (document.visibilityState === 'visible') next.start();
-    return () => {
-      next.stop();
-      if (link === next) link = null;
-      up = false;
-    };
-  });
+    streams.start();
+  }
+
+  function closeModal(): void {
+    modal = null;
+    adding = { kind: 'idle' };
+    streams?.stop();
+    streams = null;
+    streamsUp = false;
+  }
+
+  onDestroy(() => streams?.stop());
 
   function onVisibilityChange(): void {
-    if (document.visibilityState === 'visible') {
-      list?.start();
-      link?.start();
-    } else {
-      list?.stop();
-      link?.stop();
-    }
+    if (document.visibilityState === 'visible') list?.start();
+    else list?.stop();
   }
 
   function receiveList(message: CamerasDown): void {
+    if (message.type === 'refused') listFailure = `the node refused: ${message.reason}`;
+    else cameras = message.cameras;
+  }
+
+  function receiveStreams(message: StreamsDown): void {
+    if (adding.kind !== 'sending') return;
     if (message.type === 'refused') {
-      listFailure = `the node refused: ${message.reason}`;
-      return;
-    }
-    cameras = message.cameras;
-    // A rename is done when the list shows the camera under the name this page SENT.
-    // The node pushes the list about once a second (the frame ages), so comparing
-    // against the field instead closed the form on the first push after Rename,
-    // while the field still held the old name.
-    if (sent === null) return;
-    const entry = message.cameras.find((e) => e.device_id === sent?.device);
-    if (entry === undefined || entry.name === sent.name) {
-      renaming = null;
-      sent = null;
-      listFailure = null;
+      adding = { kind: 'failed', reason: `the node refused: ${message.reason}` };
+    } else if (message.streams.some((stream) => stream.url === (adding.kind === 'sending' ? adding.url : null))) {
+      closeModal();
     }
   }
 
-  function startRename(entry: CameraEntry): void {
-    renaming = entry.device_id;
-    newName = labelOf(entry);
-    sent = null;
-    listFailure = null;
+  function addStream(message: AddStreamMessage): void {
+    adding =
+      streams !== null && streams.add(message)
+        ? { kind: 'sending', url: message.url }
+        : { kind: 'failed', reason: 'not added: the node is not connected' };
   }
 
-  /** An empty name, or the board id itself, clears the name. */
-  function submitRename(entry: CameraEntry): void {
-    const typed = newName.trim();
-    const name = typed === '' || typed === entry.board_id ? null : typed;
-    if (name === entry.name) {
-      renaming = null;
-    } else if (list === null || !list.rename(entry.device_id, name)) {
-      listFailure = 'not renamed: the node is not connected';
-    } else {
-      sent = { device: entry.device_id, name };
-    }
+  function rename(entry: CameraEntry, name: string | null): boolean {
+    const sent = list !== null && list.rename(entry.device_id, name);
+    listFailure = sent ? null : 'not renamed: the node is not connected';
+    return sent;
   }
 
   function forget(entry: CameraEntry): void {
+    const label = entry.name ?? entry.board_id;
     const asked =
-      `Forget camera ${labelOf(entry)}? Its board id ${entry.board_id} and its settings are dropped, ` +
+      `Forget camera ${label}? Its board id ${entry.board_id} and its settings are dropped, ` +
       'and the id may go to the next new phone. If this phone comes back, it is a new camera.';
     if (!window.confirm(asked)) return;
-    if (chosen === entry.device_id) chosen = null;
     listFailure = list !== null && list.forget(entry.device_id) ? null : 'not forgotten: the node is not connected';
   }
-
-  /** How a camera's capture reads in the list: lens, then the frame it delivers. */
-  function captureOf(entry: CameraEntry): string {
-    const report = entry.report;
-    if (report === null) return '—';
-    const parts = [report.device, report.frame === null ? null : `${report.frame.width}×${report.frame.height}`];
-    return parts.filter((part) => part !== null).join(' · ') || '—';
-  }
-
-  function receive(message: ControlDown): void {
-    switch (message.type) {
-      case 'state':
-        camera = message;
-        break;
-      case 'preview':
-        preview = message;
-        break;
-      case 'frame':
-        received = message;
-        break;
-      case 'health':
-        health = message;
-        break;
-      case 'refused':
-        failure = `not saved: ${message.reason}`;
-        break;
-    }
-  }
-
-  function send(patch: Partial<CameraConfig>): boolean {
-    if (camera === null || link === null) return false;
-    const config = { ...camera.config, ...patch };
-    if (!link.configure(config)) {
-      failure = 'not saved: the node is not connected';
-      return false;
-    }
-    camera = { ...camera, config };
-    failure = null;
-    return true;
-  }
-
-  function saveCrop(crop: CropRect | null): void {
-    if (send({ crop })) edit = null;
-  }
-
-  function reframe(): void {
-    if (link === null || !link.reframe()) failure = 'not sent: the node is not connected';
-    else failure = null;
-  }
-
-  const config = $derived(camera?.config ?? null);
-  const report = $derived(camera?.report ?? null);
-  /** The camera's frame: what the phone says it delivers, else the preview's size. */
-  const frame = $derived(report?.frame ?? preview ?? null);
-  const shownCrop = $derived(edit ?? config?.crop ?? null);
-  const warnings = $derived(framingWarnings(shownCrop, frame));
-  const connected = $derived(camera?.phone_connected ?? false);
-  const portrait = $derived(frame !== null && frame.height > frame.width);
-  const locked = $derived(config === null || !up);
-  const direction = $derived(health?.direction ?? null);
 </script>
 
 <svelte:document onvisibilitychange={onVisibilityChange} />
 
 <header>
   <h1>board-reader · camera control</h1>
-  {#if boardId !== null}
-    <span class="board">
-      {#if selected !== null && selected.name !== null}
-        camera <strong>{selected.name}</strong> · board {boardId}
-      {:else}
-        board <strong>{boardId}</strong>
-      {/if}
-    </span>
-    <span class="chip" class:up={connected}>
-      {camera === null ? 'connecting…' : connected ? 'phone connected' : 'phone not connected'}
-    </span>
-  {/if}
-  <span class="spacer"></span>
-  <a href={resolve('/')}>live positions</a>
+  <button type="button" class="primary" onclick={() => (modal = 'camera')}>Add camera</button>
+  <button type="button" onclick={openStreamForm}>Add stream</button>
+  <a class="live" href={resolve('/')}>live positions</a>
 </header>
 
-{#if failure !== null}
-  <p class="failure" role="alert">{failure}</p>
+{#if listFailure !== null}
+  <p class="failure" role="alert">{listFailure}</p>
 {/if}
 
-<section class="cameras" aria-label="Cameras">
-  <div class="list">
-    <h2>Cameras</h2>
-    {#if cameras === null}
-      <p class="hint">asking the node for its cameras…</p>
-    {:else if cameras.length === 0}
-      <p class="hint">no camera yet — scan the code with a phone, or open /camera on it</p>
-    {:else}
-      <table>
-        <thead>
-          <tr>
-            <th>camera</th>
-            <th>board</th>
-            <th>device</th>
-            <th>link</th>
-            <th>stream</th>
-            <th>last frame</th>
-            <th>lens · frame</th>
-            <th><span class="visually-hidden">actions</span></th>
-          </tr>
-        </thead>
-        <tbody>
-          {#each cameras as entry (entry.device_id)}
-            <tr
-              class:picked={entry.device_id === selected?.device_id}
-              data-testid="camera-row"
-              data-device={entry.device_id}
-            >
-              <td class="name">
-                {#if renaming === entry.device_id}
-                  <form
-                    onsubmit={(e) => {
-                      e.preventDefault();
-                      submitRename(entry);
-                    }}
-                  >
-                    <input
-                      aria-label="name for camera {shortDeviceId(entry.device_id)}"
-                      placeholder={entry.board_id}
-                      bind:value={newName}
-                      size="14"
-                      maxlength="32"
-                    />
-                    <button type="submit" class="primary">Save</button>
-                    <button type="button" onclick={() => (renaming = null)}>Cancel</button>
-                  </form>
-                {:else}
-                  <button
-                    type="button"
-                    class="pick"
-                    aria-pressed={entry.device_id === selected?.device_id}
-                    onclick={() => (chosen = entry.device_id)}>{labelOf(entry)}</button
-                  >
-                  <button type="button" class="rename" onclick={() => startRename(entry)}>Rename</button>
-                {/if}
-              </td>
-              <td class="board-id">{entry.board_id}</td>
-              <td class="device">{shortDeviceId(entry.device_id)}</td>
-              <td class:bad={!entry.connected}>{entry.connected ? 'connected' : 'not connected'}</td>
-              <td>{entry.report?.ingest ?? '—'}</td>
-              <td>{formatAge(entry.frame_age_s)}</td>
-              <td>{captureOf(entry)}</td>
-              <td>
-                <button
-                  type="button"
-                  class="forget"
-                  disabled={entry.connected}
-                  title={entry.connected
-                    ? 'a connected camera cannot be forgotten: close its /camera page first'
-                    : 'drop this camera, its board id and its settings'}
-                  onclick={() => forget(entry)}>Forget</button
-                >
-              </td>
-            </tr>
-          {/each}
-        </tbody>
-      </table>
-      <p class="hint">A connected camera cannot be forgotten: close its /camera page first.</p>
-    {/if}
-    {#if listFailure !== null}
-      <p class="warn" role="alert">{listFailure}</p>
-    {/if}
-  </div>
-  <aside class="add">
-    <h2>Add a camera: scan this</h2>
-    <CameraQr />
-  </aside>
-</section>
-
 <main>
-  <section class="views">
-    <figure>
-      <figcaption>The phone's whole view — drag the rectangle to choose what it sends</figcaption>
-      {#if camera !== null && frame !== null}
-        <CropEditor
-          src={preview === null ? null : jpegSrc(preview.jpeg)}
-          {frame}
-          rect={shownCrop ?? WHOLE_FRAME}
-          whole={shownCrop === null}
-          onchange={(next) => (edit = next)}
-        />
-        <div class="actions">
-          <button
-            type="button"
-            class="primary"
-            disabled={edit === null || !up}
-            onclick={() => saveCrop(edit)}>Save crop</button
-          >
-          <button type="button" disabled={edit === null} onclick={() => (edit = null)}>Discard</button>
-          <button
-            type="button"
-            disabled={!up || (config?.crop === null && edit === null)}
-            onclick={() => saveCrop(null)}>Send whole frame</button
-          >
-          {#if edit !== null}<span class="dirty">unsaved</span>{/if}
-          {#if edit !== null && config?.auto}
-            <span class="hint" data-testid="save-turns-auto-off">saving switches Auto-frame off</span>
-          {/if}
-        </div>
-      {:else}
-        <div class="placeholder">
-          {boardId === null ? 'no camera yet — scan the code above with a phone' : 'no picture from this camera yet'}
-        </div>
-      {/if}
-      <p class="hint">
-        Draw the rectangle around the board with a small margin: the board should reach past
-        both dashed guides (at least half the width). Landscape reads best.
-      </p>
-      {#each warnings as warning (warning.kind)}
-        <p class="warn" data-warning={warning.kind}>{FRAMING_COPY[warning.kind]}</p>
-      {/each}
-      {#if direction?.camera_moved}
-        <p class="moved" role="alert" data-warning="camera-moved">{CAMERA_MOVED_COPY}</p>
-      {/if}
-    </figure>
-
-    <figure>
-      <figcaption>What the node receives</figcaption>
-      {#if received !== null}
-        <img
-          class="received"
-          src={jpegSrc(received.jpeg)}
-          alt="the latest frame the node received for board {boardId}"
-        />
-      {:else}
-        <div class="placeholder">no frame received yet</div>
-      {/if}
-    </figure>
-  </section>
-
-  <section class="panel">
-    <h2>Camera</h2>
-    <!-- A stream has one picture at one size: nothing to choose. -->
-    {#if report?.kind !== 'stream'}
-      <label>
-        lens
-        <select
-          value={config?.device ?? ''}
-          disabled={locked}
-          onchange={(e) => send({ device: e.currentTarget.value || null })}
-        >
-          <option value="">phone's default rear camera</option>
-          {#each report?.devices ?? [] as device (device.id)}
-            <option value={device.label}>{device.label}</option>
-          {/each}
-          {#if config?.device && !report?.devices.some((d) => d.label === config.device)}
-            <option value={config.device}>{config.device} (not reported)</option>
-          {/if}
-        </select>
-      </label>
-      <label>
-        resolution
-        <select
-          value={config?.resolution}
-          disabled={locked}
-          onchange={(e) => send({ resolution: e.currentTarget.value as Resolution })}
-        >
-          {#each RESOLUTION_NAMES as name (name)}
-            <option value={name}>{name}</option>
-          {/each}
-        </select>
-      </label>
-    {/if}
-    <label>
-      rules
-      <select
-        value={config?.rules}
-        disabled={locked}
-        onchange={(e) => send({ rules: e.currentTarget.value as Rules })}
-      >
-        {#each RULES_NAMES as name (name)}
-          <option value={name}>{RULES_LABEL[name]}</option>
-        {/each}
-      </select>
-      <span class="hint">
-        {config?.rules === 'free'
-          ? 'the settled board shows whatever the reads agree on'
-          : 'a settle that would make the board impossible waits'}
-      </span>
-    </label>
-    <button
-      type="button"
-      class="stream"
-      class:on={config?.streaming}
-      disabled={locked}
-      onclick={() => send({ streaming: !config?.streaming })}
-    >
-      {config?.streaming ? 'Stop streaming' : 'Start streaming'}
-    </button>
-
-    <h2>Auto-frame</h2>
-    <p
-      class="autoframe"
-      data-testid="autoframe"
-      data-status={camera?.autoframe}
-      class:bad={camera?.autoframe === 'no-board' || camera?.autoframe === 'not-visible'}
-    >
-      {camera === null ? '—' : AUTOFRAME_COPY[camera.autoframe]}
-    </p>
-    {#if camera?.autoframe === 'framed' && !camera.watching}
-      <p class="hint" data-testid="drift-off">
-        The board is small in the picture, so a moved camera is not noticed: press Re-frame now
-        after moving it.
-      </p>
-    {/if}
-    <label class="check">
-      <input
-        type="checkbox"
-        checked={config?.auto ?? false}
-        disabled={locked}
-        onchange={(e) => send({ auto: e.currentTarget.checked })}
-      />
-      frame the board automatically
-    </label>
-    <button type="button" disabled={locked || !connected} onclick={reframe}>Re-frame now</button>
-
-    <h2>Status</h2>
-    <dl>
-      <dt>phone link</dt>
-      <dd class:bad={camera !== null && !connected}>
-        {camera === null ? '—' : connected ? 'connected' : 'not connected'}
-      </dd>
-      <dt>lens open</dt>
-      <dd>{report?.device ?? '—'}</dd>
-      <dt>frame delivered</dt>
-      <dd class:bad={portrait}>
-        {report?.frame ? `${report.frame.width}×${report.frame.height}` : '—'}
-        {#if portrait}(portrait){/if}
-      </dd>
-      <dt>phone stream</dt>
-      <dd>{report?.ingest ?? '—'}</dd>
-      <dt>board direction</dt>
-      <dd class="direction" class:bad={direction?.camera_moved}>
-        {#if direction === null}
-          —
-        {:else}
-          {whiteSideCopy(direction.white_side)}
-          <span class="degrees">({Math.round(direction.degrees)}°)</span>
-        {/if}
-      </dd>
-      <dt>frames/s received</dt>
-      <dd>{health?.fps == null ? '—' : health.fps.toFixed(1)}</dd>
-      <dt>last frame</dt>
-      <dd>{health === null ? '—' : formatAge(health.frame_age_s)}</dd>
-      <dt>recognizer</dt>
-      <dd class:bad={health?.fallback}>
-        {health?.recognizer ?? '—'}
-        {#if health?.fallback}<span class="fallback">({health.fallback})</span>{/if}
-      </dd>
-      <dt>frames refused (node)</dt>
-      <dd class:bad={(health?.refused ?? 0) > 0}>{health?.refused ?? '—'}</dd>
-    </dl>
-  </section>
+  {#if cameras === null}
+    <p class="hint">asking the node for its cameras…</p>
+  {:else if cameras.length === 0}
+    <p class="hint">no camera yet — press Add camera and scan the code with a phone, or Add stream</p>
+  {:else}
+    {#each cameras as entry (entry.device_id)}
+      <CameraCard {entry} onrename={(name) => rename(entry, name)} onforget={() => forget(entry)} />
+    {/each}
+  {/if}
 </main>
+
+<Modal open={modal === 'camera'} title="Add a camera: scan this with a phone" onclose={closeModal}>
+  <CameraQr />
+</Modal>
+<Modal open={modal === 'stream'} title="Add a video or live stream" onclose={closeModal}>
+  <AddStreamForm ready={streamsUp} status={adding} onadd={addStream} />
+</Modal>
 
 <style>
   header {
@@ -555,193 +154,18 @@
     border-bottom: 1px solid #272b33;
     display: flex;
     flex-wrap: wrap;
-    align-items: baseline;
-    gap: 14px;
+    align-items: center;
+    gap: 10px 14px;
   }
   h1 {
     font-size: 17px;
-    margin: 0;
+    margin: 0 8px 0 0;
     font-weight: 600;
   }
-  h2 {
+  .live {
+    margin-left: auto;
     font-size: 13px;
-    font-weight: 600;
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
-    color: #9aa3ad;
-    margin: 0;
-  }
-  .spacer {
-    flex: 1;
-  }
-  a {
     color: #6aa8ff;
-    font-size: 13px;
-  }
-  .board {
-    font-size: 13px;
-    color: #9aa3ad;
-  }
-  .board strong {
-    color: #e6e6e6;
-  }
-  .cameras {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 22px;
-    padding: 20px 20px 0;
-    align-items: flex-start;
-  }
-  .list {
-    flex: 1 1 520px;
-    min-width: 0;
-    overflow-x: auto;
-  }
-  .add {
-    flex: 0 1 260px;
-  }
-  .cameras h2 {
-    margin-bottom: 8px;
-  }
-  table {
-    border-collapse: collapse;
-    font-size: 13px;
-    width: 100%;
-  }
-  th {
-    text-align: left;
-    font-weight: 500;
-    color: #7d8590;
-    padding: 4px 10px 4px 0;
-  }
-  td {
-    padding: 6px 10px 6px 0;
-    border-top: 1px solid #272b33;
-    vertical-align: top;
-    font-variant-numeric: tabular-nums;
-  }
-  td.bad {
-    color: #ff8f8f;
-  }
-  td.device,
-  td.board-id {
-    color: #7d8590;
-    font-family: ui-monospace, monospace;
-  }
-  td.name form {
-    display: flex;
-    gap: 6px;
-    align-items: center;
-  }
-  tr.picked td {
-    background: #1b2230;
-  }
-  button.pick {
-    font-weight: 600;
-    background: none;
-    border: none;
-    padding: 2px 0;
-    color: #6aa8ff;
-  }
-  tr.picked button.pick {
-    color: #e6e6e6;
-  }
-  button.rename,
-  button.forget {
-    padding: 2px 8px;
-    margin-left: 6px;
-    font-size: 12px;
-  }
-  button.forget:disabled {
-    opacity: 0.45;
-    cursor: not-allowed;
-  }
-  .visually-hidden {
-    position: absolute;
-    width: 1px;
-    height: 1px;
-    overflow: hidden;
-    clip-path: inset(50%);
-    white-space: nowrap;
-  }
-  input,
-  select {
-    font: inherit;
-    font-size: 13px;
-    background: #232833;
-    color: #e6e6e6;
-    border: 1px solid #2f3540;
-    border-radius: 6px;
-    padding: 3px 6px;
-  }
-  .chip {
-    font-size: 13px;
-    padding: 2px 8px;
-    border-radius: 10px;
-    background: #3a2020;
-    color: #ff9a9a;
-  }
-  .chip.up {
-    background: #1f3a24;
-    color: #97e0a6;
-  }
-  .failure {
-    margin: 0;
-    padding: 8px 20px;
-    background: #3a2020;
-    color: #ff9a9a;
-    font-size: 13px;
-  }
-
-  main {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 22px;
-    padding: 20px;
-    align-items: flex-start;
-  }
-  .views {
-    flex: 1 1 640px;
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
-    gap: 22px;
-    min-width: 0;
-  }
-  figure {
-    margin: 0;
-    min-width: 0;
-  }
-  figcaption {
-    font-size: 13px;
-    color: #9aa3ad;
-    margin-bottom: 8px;
-  }
-  .received {
-    display: block;
-    max-width: 100%;
-    max-height: 70vh;
-    background: #0f1216;
-    border: 1px solid #272b33;
-    border-radius: 6px;
-  }
-  .placeholder {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    min-height: 200px;
-    border: 1px dashed #2f3540;
-    border-radius: 6px;
-    color: #7d8590;
-    font-size: 13px;
-    text-align: center;
-    padding: 12px;
-  }
-  .actions {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: center;
-    gap: 8px;
-    margin-top: 10px;
   }
   button {
     font: inherit;
@@ -753,102 +177,29 @@
     color: #e6e6e6;
     cursor: pointer;
   }
-  button:disabled {
-    opacity: 0.5;
-    cursor: default;
-  }
   button.primary {
     background: #2a6ef0;
     border-color: #2a6ef0;
     color: #fff;
   }
-  .dirty {
-    font-size: 12px;
-    color: #ffcf33;
-  }
-  .hint {
-    color: #9aa3ad;
-    font-size: 13px;
-    margin: 10px 0 6px;
-  }
-  .warn {
-    color: #ffcf33;
-    font-size: 13px;
-    margin: 6px 0;
-  }
-  .moved {
-    margin: 10px 0;
-    padding: 8px 10px;
-    border: 1px solid #5a2a2a;
-    border-radius: 6px;
-    background: #3a2020;
-    color: #ff9a9a;
-    font-size: 13px;
-    font-weight: 600;
-  }
-
-  .panel {
-    flex: 0 1 300px;
-    display: flex;
-    flex-direction: column;
-    gap: 12px;
-    background: #1b1f26;
-    border: 1px solid #272b33;
-    border-radius: 8px;
-    padding: 14px;
-  }
-  .panel label {
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
-    font-size: 13px;
-    color: #9aa3ad;
-  }
-  .hint {
-    font-size: 12px;
-    color: #6f7782;
-  }
-  .stream {
-    font-weight: 600;
-    padding: 10px;
-  }
-  .autoframe {
+  .failure {
     margin: 0;
+    padding: 8px 20px;
+    background: #3a2020;
+    color: #ff9a9a;
     font-size: 13px;
   }
-  .autoframe.bad {
-    color: #ff8f8f;
-  }
-  .panel label.check {
-    flex-direction: row;
-    align-items: center;
-    gap: 8px;
-    color: inherit;
-  }
-  .stream.on {
-    background: #3a2020;
-    border-color: #5a2a2a;
-    color: #ff9a9a;
-  }
-  dl {
+  /* The live page's grid: cards side by side, as many as fit. */
+  main {
     display: grid;
-    grid-template-columns: auto 1fr;
-    gap: 4px 12px;
-    margin: 0;
-    font-size: 13px;
+    grid-template-columns: repeat(auto-fill, minmax(min(100%, 420px), 1fr));
+    gap: 22px;
+    padding: 20px;
+    align-items: start;
   }
-  dt {
-    color: #7d8590;
-  }
-  dd {
-    margin: 0;
-    font-variant-numeric: tabular-nums;
-  }
-  dd.bad {
-    color: #ff8f8f;
-  }
-  .fallback,
-  .degrees {
+  .hint {
     color: #9aa3ad;
+    font-size: 13px;
+    margin: 0 0 10px;
   }
 </style>

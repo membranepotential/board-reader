@@ -204,8 +204,8 @@ export class FakeCameraNode {
     this.#controls.add(control);
     ws.onClose(() => this.#controls.delete(control));
     ws.onMessage((message) => {
-      const parsed = JSON.parse(message as string) as { config: Config };
-      this.configure(board, parsed.config);
+      const parsed = JSON.parse(message as string) as { type: string; config: Config };
+      if (parsed.type === 'configure') this.configure(board, parsed.config);
     });
     ws.send(this.#state(board));
   }
