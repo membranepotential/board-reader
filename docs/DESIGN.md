@@ -699,7 +699,10 @@ plus 1.8 ms to fit the grid.
 - **`locate.autoframe(read, frame)`** proposes the crop for a whole full-resolution
   frame: read it, read its rough box grown by 50 % (coarse to fine), and when that
   grid is untrusted read five 60 % tiles and refine the best. The crop is the final
-  box plus 10 %, snapped like the `/control` editor; with no trusted grid the answer
+  box plus 10 %, its top raised further until a king (1.9 squares) on the far rank
+  fits, from the grid's perspective (a top-down board gets 10 %; the probe's
+  follow-up measured no accuracy cost and no cut piece tops), snapped like the
+  `/control` editor; with no trusted grid the answer
   is "no board found". 2 reads normally, up to 8 with the tiles. (Applying it was the
   user's click at first; D21 applies it.)
 - **`locate.locate_preview(read, preview)`**, one read of the phone's 480 px preview,

@@ -13,6 +13,8 @@ import cv2
 import numpy as np
 import pytest
 
+from board_reader_core.control import CropRect
+
 from board_reader_inference.recognition.chessq import INPUT_PX
 from board_reader_inference.recognition.locate import (
     BOARD_CORNERS,
@@ -49,7 +51,9 @@ def _attention(quad: np.ndarray, width: int, height: int, sigma: float = 0.7) ->
 
 
 def _grid(quad: np.ndarray, width: int, height: int) -> Grid | None:
-    return fit_grid(square_centroids(_attention(quad, width, height), width, height), width, height)
+    return fit_grid(
+        square_centroids(_attention(quad, width, height), width, height), width, height
+    )
 
 
 def _corner_error(grid: Grid, quad: np.ndarray, width: int, height: int) -> float:
@@ -105,7 +109,9 @@ def test_the_r2_gate_rejects_a_grid_whose_squares_scatter():
 def test_within_moves_a_grid_from_a_crop_into_the_frame():
     grid = Grid(np.array([[0, 0], [1, 0], [1, 1], [0, 1]], np.float32), 0.99, 64)
     moved = grid.within(0.2, 0.1, 0.5, 0.4)
-    np.testing.assert_allclose(moved.corners, [[0.2, 0.1], [0.7, 0.1], [0.7, 0.5], [0.2, 0.5]])
+    np.testing.assert_allclose(
+        moved.corners, [[0.2, 0.1], [0.7, 0.1], [0.7, 0.5], [0.2, 0.5]]
+    )
     assert (moved.r2, moved.inliers) == (0.99, 64)
 
 
@@ -113,22 +119,59 @@ def _square(x0: float, y0: float, x1: float, y1: float) -> Grid:
     return Grid(np.array([[x0, y0], [x1, y0], [x1, y1], [x0, y1]], np.float32), 0.99, 64)
 
 
-def test_the_proposed_crop_is_the_box_plus_ten_percent_snapped():
-    crop = proposed_crop(_square(0.3, 0.2, 0.7, 0.6))
+def test_a_top_down_board_gets_the_box_plus_ten_percent_snapped():
+    """Seen from straight above, a piece shows no height: 10 % on every side."""
+    crop = proposed_crop(_square(0.3, 0.2, 0.7, 0.6), 1000, 1000)
     assert (crop.x, crop.y, crop.w, crop.h) == pytest.approx((0.26, 0.16, 0.48, 0.48))
     for edge in (crop.x, crop.y, crop.w, crop.h):
         assert edge * 10_000 == pytest.approx(round(edge * 10_000), abs=1e-6)
 
 
+#: A board seen at a low angle on a 1920 x 1080 frame, a8 h8 h1 a1: the far side
+#: (a8-h8) is narrower and on top, the ranks are foreshortened.
+_LOW = np.array([[0.35, 0.30], [0.65, 0.30], [0.75, 0.60], [0.25, 0.60]], np.float32)
+
+
+def _margins(crop: CropRect, grid: Grid) -> tuple[float, float, float, float]:
+    """The crop's margins left, top, right, bottom, in fractions of the frame."""
+    x0, y0, x1, y1 = grid.box
+    return x0 - crop.x, y0 - crop.y, crop.x + crop.w - x1, crop.y + crop.h - y1
+
+
+def test_a_low_board_gets_room_on_top_for_a_far_rank_king():
+    """A far-rank square is 74 px wide and its rank 26 px deep, so the camera's
+    elevation has a sine of 0.35: a king (1.9 squares) shows 1.9 * 74 * 0.94 =
+    132 px tall, from a base 12 px inside the edge, so it tops out 120 px (0.11
+    of the frame) above the board. The other sides keep 10 % of the box."""
+    grid = Grid(_LOW, 0.99, 64)
+    left, top, right, bottom = _margins(proposed_crop(grid, 1920, 1080), grid)
+    assert (left, right, bottom) == pytest.approx((0.05, 0.05, 0.03), abs=1e-4)
+    assert top == pytest.approx(0.11, abs=0.004)
+    assert top > 2 * bottom
+
+
+@pytest.mark.parametrize("turn", [1, 2, 3])
+def test_the_top_margin_does_not_depend_on_which_side_is_the_far_rank(turn: int):
+    """White to the left, the right or at the far side: the same quad in the image
+    gives the same crop, whichever chess side lies on top."""
+    rotated = Grid(np.roll(_LOW, turn, axis=0), 0.99, 64)
+    assert proposed_crop(rotated, 1920, 1080) == proposed_crop(
+        Grid(_LOW, 0.99, 64), 1920, 1080
+    )
+
+
 def test_the_proposed_crop_stays_inside_the_frame():
-    """A board running off the right edge: the crop ends at the frame's edge."""
-    crop = proposed_crop(_square(0.6, -0.05, 1.08, 0.5))
+    """A board running off the right edge: the crop ends at the frame's edge. A low
+    board near the top: the king's room stops at the frame's top."""
+    crop = proposed_crop(_square(0.6, -0.05, 1.08, 0.5), 1000, 1000)
     assert crop.x + crop.w <= 1 and crop.y == 0
     assert crop.x == pytest.approx(0.552)
+    near_top = proposed_crop(Grid(_LOW - [0, 0.25], 0.99, 64), 1920, 1080)
+    assert near_top.y == 0 and near_top.y + near_top.h <= 1
 
 
 def test_a_tiny_box_still_proposes_the_smallest_crop():
-    crop = proposed_crop(_square(0.5, 0.5, 0.51, 0.51))
+    crop = proposed_crop(_square(0.5, 0.5, 0.51, 0.51), 1000, 1000)
     assert crop.w == crop.h == 0.05
 
 
@@ -174,8 +217,12 @@ class _FakeChessQ:
 def _board(x0: float, y0: float, side: float, aspect: float) -> np.ndarray:
     """A square board ``side`` of the frame's width wide, top-left at (x0, y0)."""
     return np.array(
-        [[x0, y0], [x0 + side, y0], [x0 + side, y0 + side * aspect],
-         [x0, y0 + side * aspect]],
+        [
+            [x0, y0],
+            [x0 + side, y0],
+            [x0 + side, y0 + side * aspect],
+            [x0, y0 + side * aspect],
+        ],
         np.float32,
     )
 

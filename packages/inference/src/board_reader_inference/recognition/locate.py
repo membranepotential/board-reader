@@ -26,8 +26,8 @@ API, for the control loop that frames a camera:
   whole full-resolution frame. It calls ``read`` (a recognizer's ``read``) 2 to 8
   times: the whole frame, then its rough board box grown by :data:`GROW` on every
   side. When that grid is untrusted, it reads five tiles and refines the best one.
-  :class:`Proposal` carries the crop (the final grid's box plus :data:`MARGIN`,
-  snapped like the /control editor), the grid in the frame's fractions, the number
+  :class:`Proposal` carries the crop (:func:`proposed_crop`, snapped like the
+  /control editor), the grid in the frame's fractions, the number
   of reads, and the last read's :class:`~.recognizer.Recognition`. The caller may
   publish that read as a position read when :attr:`Proposal.dominant` holds (the
   board fills at least :data:`BOARD_DOMINANT` of that read's width,
@@ -38,8 +38,11 @@ API, for the control loop that frames a camera:
   trusted grid fits. One read, no coarse to fine: for comparing the board's
   position with the current crop (camera moved?). How well a single pass works at
   480 px is measured separately; this is the place to change if it does not.
-* :func:`proposed_crop` ``(grid) -> CropRect``: the crop Auto-frame proposes for a
-  grid in a frame's fractions. Use it to re-frame from a grid you already have.
+* :func:`proposed_crop` ``(grid, width, height) -> CropRect``: the crop Auto-frame
+  proposes for a grid in the fractions of a ``width`` x ``height`` frame: the
+  board's box plus :data:`MARGIN`, and on top as much more as a king on the far
+  rank needs (:data:`KING_SQUARES`). Use it to re-frame from a grid you already
+  have.
 """
 
 from __future__ import annotations
@@ -67,6 +70,13 @@ MIN_R2 = 0.90
 #: The proposed crop: the board's box grown by this share of its own width and
 #: height on every side (the probe measured 10 %; take 10 % or more).
 MARGIN = 0.10
+
+#: A king's height in squares, for the crop's top edge. The grid is the board's
+#: playing surface, so a far-rank piece rises above it toward the top of the
+#: image. A FIDE tournament set has a 95 mm king on 50-65 mm squares (1.5-1.9);
+#: the probe's outdoor set needs about 1.75, so take the top of the range. Up to
+#: 1.9 it cost no accuracy (docs/reports/2026-11-25-autocrop-probe.md, top margin).
+KING_SQUARES = 1.9
 
 #: Coarse to fine: the rough box of the first read, grown by this share on every
 #: side, is read again. It puts the board at about half of that read's width.
@@ -208,21 +218,48 @@ def fit_grid(centroids: np.ndarray, width: int, height: int) -> Grid | None:
     return Grid(corners.astype(np.float32), r2, inliers)
 
 
-def proposed_crop(grid: Grid) -> CropRect:
-    """The crop for ``grid`` (fractions of the frame): its box grown by
-    :data:`MARGIN` on every side, inside the frame, edges snapped to whole
-    :data:`CROP_UNITS` and both sides at least ``MIN_CROP_SIDE``, exactly as the
-    /control editor builds a rectangle (``lib/control/crop.ts``)."""
+def proposed_crop(grid: Grid, width: int, height: int) -> CropRect:
+    """The crop for ``grid`` (fractions of a ``width`` x ``height`` frame): its box
+    grown by :data:`MARGIN` on every side, and its top raised further to hold a
+    king on any square (:func:`_king_top`), inside the frame, edges snapped to
+    whole :data:`CROP_UNITS` and both sides at least ``MIN_CROP_SIDE``, exactly as
+    the /control editor builds a rectangle (``lib/control/crop.ts``)."""
     x0, y0, x1, y1 = grid.box
     mx, my = MARGIN * (x1 - x0), MARGIN * (y1 - y0)
     left, right = _span(x0 - mx, x1 + mx)
-    top, bottom = _span(y0 - my, y1 + my)
+    top, bottom = _span(min(y0 - my, _king_top(grid, width / height)), y1 + my)
     return CropRect(
         x=left / CROP_UNITS,
         y=top / CROP_UNITS,
         w=(right - left) / CROP_UNITS,
         h=(bottom - top) / CROP_UNITS,
     )
+
+
+def _king_top(grid: Grid, aspect: float) -> float:
+    """The highest point, in fractions of the frame's height, that the top of a
+    king (:data:`KING_SQUARES`) standing on the centre of any square reaches.
+
+    Locally the camera sees the board in weak perspective: the homography's
+    Jacobian at a square's centre has singular values ``s1 >= s2``, where ``s1``
+    is a square's side seen face on and ``s2 / s1`` is the sine of the camera's
+    elevation. A vertical post of height ``k`` squares then shows as
+    ``k * s1 * cos(elevation)`` along the foreshortened direction (the second
+    left singular vector), and the king rises by that length's vertical part. A
+    top-down camera sees no rise; a low one sees nearly the king's full height.
+    The fit works in units of the frame's height, so x is scaled by ``aspect``.
+    """
+    corners = grid.corners * np.array([aspect, 1], np.float32)
+    h = cv2.getPerspectiveTransform(BOARD_CORNERS, corners.astype(np.float32))
+    u, v = SQUARE_CENTRES[:, 0].astype(np.float64), SQUARE_CENTRES[:, 1].astype(np.float64)
+    p = h @ np.stack([u, v, np.ones_like(u)])  # (3, 64)
+    points = (p[:2] / p[2]).T  # (64, 2): x, y
+    # d(x, y) / d(u, v) per square, (64, 2, 2): (h[r, c] - point[r] * h[2, c]) / w.
+    jacobian = (h[:2, :2] - points[:, :, None] * h[2, :2]) / p[2][:, None, None]
+    left, s, _ = np.linalg.svd(jacobian)
+    cos = np.sqrt(np.clip(1 - (s[:, 1] / s[:, 0]) ** 2, 0, 1))
+    rise = KING_SQUARES * s[:, 0] * cos * np.abs(left[:, 1, 1])
+    return float((points[:, 1] - rise).min())
 
 
 def _span(lo: float, hi: float) -> tuple[int, int]:
@@ -306,7 +343,11 @@ def autoframe(read: ImageRead, frame: np.ndarray) -> Proposal | NoBoard:
         assert local is not None  # the read's own grid, before within()
         x0, _, x1, _ = local.box
         return Proposal(
-            proposed_crop(last.grid), last.grid, len(looks), last.recognition, x1 - x0
+            proposed_crop(last.grid, width, height),
+            last.grid,
+            len(looks),
+            last.recognition,
+            x1 - x0,
         )
 
     first = look((0, 0, width, height))

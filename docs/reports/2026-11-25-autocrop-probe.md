@@ -400,3 +400,57 @@ flock /tmp/claude-1000/br-gpu.lock uv run python autocrop_preview.py drift $AUTO
 CUDA_VISIBLE_DEVICES= uv run python autocrop_preview.py cost $AUTOCROP_SCRATCH/prev
 uv run python autocrop_preview_analyze.py $AUTOCROP_SCRATCH/prev   # R² gate: MIN_R2
 ```
+
+## Follow-up: room on top for the far rank (2026-11-25)
+
+**Problem.** The user saw Auto-frame cut off the tops of far-rank pieces. The grid is
+the board's playing surface, and pieces on the far rank stand up toward the top of
+the image, so the box plus 10 % can end inside them.
+
+**Change.** `locate.proposed_crop(grid, width, height)` keeps 10 % on the left, right
+and bottom, and raises the top edge until a king of `KING_SQUARES` = 1.9 squares on
+any square fits. Per square, the homography's Jacobian at the square's centre gives a
+local weak-perspective camera: its larger singular value `s1` is a square's side seen
+face on, `s2 / s1` the sine of the camera's elevation, and a vertical post of `k`
+squares shows `k * s1 * cos(elevation)` long along the foreshortened direction. On a
+synthetic pinhole camera at 20–90° elevation and 0–90° yaw, this estimate lies within
+0.002 of the frame's height of the projected king top. A top-down board keeps the old
+crop.
+
+**Measured** (`tools/probes/autocrop_topmargin.py`, the production `autoframe` with
+the fp32 `-attn` file, then one read per variant of the final grid's crop; images and
+canvases as above). `KING_SQUARES = 0` is the old crop. Per-square % / perfect boards,
+truth-labelled images only. A crop *cuts* a piece when the piece's top (Staunton
+heights, estimated from the truth outline) lies more than 0.15 squares above the
+crop's top edge and inside the delivered image.
+
+| images | old (10 %) | K = 1.5 | K = 1.7 | **K = 1.9** | crops cutting a piece, old → 1.9 |
+|---|---|---|---|---|---|
+| as-is, n=120 | 99.06 / 89 | 99.13 / 91 | 99.13 / 91 | **99.14 / 92** | 14 (20 pieces) → 0 |
+| room-35, n=21 | 97.92 / 14 | 97.92 / 14 | 97.99 / 14 | **97.99 / 14** | 3 → 0 |
+| room-25, n=21 | 97.99 / 14 | 97.92 / 14 | 97.99 / 14 | **97.92 / 14** | 3 → 0 |
+| room-15, n=21 | 97.99 / 14 | 97.92 / 14 | 97.99 / 14 | **97.92 / 14** | 2 → 0 |
+
+- **No accuracy cost.** Every variant reads within one square of the old crop on the
+  canvases, and as-is it gains 3 perfect boards (outdoor stills whose back rank the
+  old crop cut, 60 → 64 correct on `img_0748`).
+- **The crop stays landscape.** At 1.9 the top margin is 13 % of the box height at
+  the median and 20 % at p90 (canvases); the crop grows 2 % taller at the median and
+  9 % at most. ChessQ's square resize therefore squashes no more than before.
+- **Why 1.9, not 1.7.** The overlays (old crop red, new green) show every cut of the
+  old crop removed: the outdoor stills' back-rank kings, queens and bishops, and the
+  dark live take 221950's far pieces. On the outdoor tournament set (`img_0755`,
+  `img_0758`) the king's cross touches the 1.7 crop's top edge, so that set needs
+  about 1.75 squares. 1.9, the top of FIDE's 95 mm king on 50–65 mm squares, leaves
+  about 0.15 squares to spare at no measured cost.
+- **Caveat.** The cut count uses the same geometry as the change (with the truth
+  outline instead of the fitted grid), so it confirms the fitted grid's estimate, not
+  the geometry. The overlays are the independent check: 13 viewed, none cut at 1.7
+  or 1.9. No uncropped phone frame exists (see Gaps), so a crop whose top the
+  delivered image already cut cannot gain anything here.
+
+```bash
+cd tools/probes
+AUTOCROP_SCRATCH=<scratch> flock /tmp/claude-1000/br-gpu.lock uv run python \
+  autocrop_topmargin.py ../../models/chessq/cq-vit-s-644-v6-seed1-onnx-fp32-attn.onnx <scratch>/top
+```

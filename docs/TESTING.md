@@ -1251,7 +1251,8 @@ A phone, framed and re-framed without drawing a rectangle. Needs the ChessQ weig
 2. Open `http://localhost:8080/control`. Expected: within a few seconds of the phone
    connecting, the card's Auto-frame says it is looking for the board, then that it
    framed it; the card's picture (the preview, cropped) shows the board with about
-   10 % to spare on every side, and the phone shows the same outline. The node log reads `auto-frame board-N:
+   10 % to spare on every side, a little more on top so the far rank's kings fit,
+   and the phone shows the same outline. The node log reads `auto-frame board-N:
    board found in 2 reads ...`. If the board filled at least half of the last read,
    the live page shows its position at once, before streaming starts.
 3. Start streaming and move a piece. Expected: the live page follows, as in Option J.
