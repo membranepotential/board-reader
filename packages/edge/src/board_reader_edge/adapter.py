@@ -183,9 +183,9 @@ class RecordingReplay:
         as they arrived.
     throttle:
         Pace output to the recording's own capture time, i.e. re-run it at the
-        speed it happened. Worth preferring for a faithful re-run: the gateway's
-        latest-wins pre-filter drops frames as a function of arrival rate, so a
-        flat-out replay makes it drop more than the original run did.
+        speed it happened. Worth preferring for a faithful re-run: the node reads
+        the same frames either way, but a flat-out replay can push its read queue
+        into the overload rule, which drops keepalive reads the original run read.
     """
 
     def __init__(

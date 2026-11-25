@@ -51,8 +51,7 @@ def cmd_serve(args: argparse.Namespace) -> int:
     os.environ.setdefault("BR_CAMERA_CONFIG", DEFAULT_CAMERA_CONFIG)
 
     # Every served run schedules its reads (D3/D4): the node estimates at the end
-    # of each move plus a 2 s keepalive floor, rather than every frame that
-    # survives the ingest inbox. ~12x fewer estimates on the swept takes for
+    # of each move plus a 2 s keepalive floor, rather than every frame. ~12x fewer estimates on the swept takes for
     # -0.9 pp prior per-square — see docs/reports/2026-08-27-move-trigger-sweep.md.
     # `BR_SCHEDULE=every-frame` is the way back; any policy spec
     # `replay --policy` accepts works here, so a sweep's finding and the node's

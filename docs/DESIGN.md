@@ -72,6 +72,10 @@ Where a decision changed, its text below is today's, and the old one is in
     truth, eval, replay and the viewer all use the chess frame (rank 8 first, file a
     first, as in FEN).
 16. *(Superseded: the DINOv2-S backbone. There is no in-house backbone; see #7.)*
+17. **Load changes latency, never results** (D17). Several boards or a burst of frames
+    delay a board's events. Which frames it reads, its settled boards and every
+    timestamp stay those of an idle node, unless a sustained overload drops reads; each
+    such drop is counted and recorded.
 
 ---
 
@@ -487,6 +491,45 @@ Mahalanobis distance of the query embeddings (its threshold needs calibration pe
 setup and blocked the recovery reads on the dark live take); plain-CV hand signals
 (they fire on every move and on auto-exposure, and wood is skin-coloured).
 
+### D17 — Load changes when a board's events publish, never what they say (2026-11-25)
+
+**Status:** accepted (user, 2026-11-25: "real-time latency can increase, but the
+ultimate results and timestamps should not").
+
+**Context.** The node asked the read scheduler at drain time, on whatever frame each
+board's latest-wins inbox still held, and ran one worker per board against one shared
+recognizer with no order. Under load (several boards, a slow model, a burst of frames)
+it therefore read other frames than an idle node: three boards under a slow model read
+8 of 17 frames per board, lost settled changes and moved `changed_utc` by up to 1.5 s
+([multiboard report](reports/2026-11-25-multiboard-spikes.md)).
+
+**Decision.**
+- **Decide at arrival.** `FrameIngest.submit` asks the policy (`observe`, then `due`) on
+  every arriving frame in order, as replay does, and a scheduled frame is queued with
+  the board's ring snapshot and `rules` taken right then. A board's read frames, settled
+  boards, `utc` and `changed_utc` are then a function of its own frames alone.
+- **One read queue, oldest first, one recognizer call at a time** across all boards.
+  Each board's reads stay in arrival order, the worst wait is the shortest, and the GPU
+  session holds one call's activations. The scheduler bounds each board's demand
+  (three burst-end reads per move, one keepalive per 2 s), so no board starves.
+- **Only a sustained overload drops reads, keepalive reads first.** A keepalive read
+  that waited 5 s is dropped. A board with 32 reads waiting sheds its oldest keepalive
+  read, and a burst-end read only if nothing else is waiting. `due` returns a `ReadKind`
+  so the node can tell the two apart. Every drop is counted on `/healthz`, logged, and
+  written to `events.ndjson`. `/healthz` `ingest.queue` shows depth and waits.
+
+**Evidence.** `test_multiboard_load.py`: three loaded boards publish, per board, exactly
+their solo lines. Two gate takes at once on the GTX 1650 publish exactly their
+`latency3` replays at 1x and 4x speed (queue wait at 4x: mean 2.1 s, max 4.1 s). At 8x,
+a 2x overload, only keepalive reads drop (44), each recorded. The gate is identical to
+`latency3`, line for line.
+
+**Rejected.** Latest-wins per board in the shared queue (a later burst-end read replaces
+an earlier one: the bug itself); round-robin across boards (same mean wait, a larger
+worst wait); the inbox's sharpness preference (it acted only when the node was behind,
+so results depended on load); batching (not needed yet; it would go into
+`FrameIngest._next`, padded to one batch shape).
+
 ### D18 — The node names the cameras; a phone keeps a device id (2026-11-25)
 
 **Status:** accepted (user, 2026-11-25).
@@ -603,19 +646,20 @@ the wire. `core` imports neither. `tests/test_layer_separation.py` enforces it.
 2. The forwarder decides whether to send (always during a burst and for the 1 s tail
    after it, at the keepalive rate at rest), JPEG-encodes the crop and stamps
    `capture_ts` and `seq`.
-3. The node's `/ingest` handler acks the frame ("received", the edge's flow control),
-   lets the read scheduler observe its header, sends a motion update to `/viewer`
-   (§5; at most 5/s per board, always on a change), and puts the frame in the board's
-   **latest-wins inbox**. Of two waiting frames the inbox keeps the sharper one.
-4. The board's worker takes the frame and asks the scheduler whether it is due. The
-   default policy is `burst-end:keepalive_s=2,burst_end_reads=3,spacing_s=0.3,exit_hold_s=0.3`:
+3. The node's `/ingest` handler records the frame, acks it ("received", the edge's
+   flow control), pushes its grey copy to the board's ring, and sends a motion update
+   to `/viewer` (§5; at most 5/s per board, always on a change).
+4. The board's read scheduler sees the header and decides at once whether the frame
+   is due (D17). The default policy is `burst-end:keepalive_s=2,burst_end_reads=3,spacing_s=0.3,exit_hold_s=0.3`:
    a burst ends after 0.3 s of calm (the edge's own hold is 0.7 s), then three
    reads 0.3 s apart, and a read whenever 2 s of capture
    time passed without one (the keepalive floor; 3 s until the
    [live latency report](reports/2026-11-24-live-latency.md), 1 s let hands settle). A wall-clock backstop covers a frozen
    `capture_ts`. `BR_SCHEDULE` overrides the policy.
-5. A due frame goes to `Recognizer.read` in a worker thread, giving a chess-frame
-   `square_dist` and the board's direction, then a `PositionEvent`.
+5. A due frame joins the node's one read queue with the board's ring snapshot and
+   rules (D17). One worker serves it oldest first, one `Recognizer.read` at a time in a
+   worker thread, giving a chess-frame `square_dist` and the board's direction, then a
+   `PositionEvent`.
 6. The orientation guard drops the read if the board points more than 45° from its
    recent reads (D10). Otherwise `BoardStabilizer` settles the read, under the board's
    `rules` setting (D14), and the event goes out with the settled board as its
@@ -861,8 +905,8 @@ in code and tests, so they stay; the status is as of 2026-11-24.
 | | D4 time sync (chrony/NTP) | not started |
 | **E** Calibration | E1–E3 | **removed** (D10) |
 | **F** Clock | F1 clock region, F2 which side runs, F3 digit OCR (later) | not started (M6) |
-| **G** Node orchestration | G1 gateway + per-board inbox + pre-filter, G2 shared estimator worker, G3 Docker image | done (latest-wins inbox with sharpness preference and the read scheduler; one worker per board on one recognizer; amd64 image, CPU in compose) |
-| | G4 scaling tests (boards per node, latency budget) | not started (M4) |
+| **G** Node orchestration | G1 gateway + read queue, G2 shared estimator worker, G3 Docker image | done (the read scheduler decides at arrival; one queue for all boards, oldest first, one recognizer call at a time, D17; amd64 image, CPU in compose) |
+| | G4 scaling tests (boards per node, latency budget) | started: `test_multiboard_load.py` pins loaded == solo; two gate takes at once on the GTX 1650 ([multiboard report](reports/2026-11-25-multiboard-spikes.md)). Boards per node on the Jetson unmeasured (M4) |
 | **H** Consumers | H1 viewer, H2 recorder + replay | done |
 | | H3 reference move reconstructor + PGN/Lichess export (optional, application layer) | not built; `/snapshot` assembles Lichess links in the page |
 | **I** Cross-cutting | I1 sim harness, I3 metrics (`/healthz`, eval, gate), I4 docs and runbook | done, maintained |
@@ -915,6 +959,11 @@ What is open now, in rough order:
   board wrong at once. None was seen (zero rotation errors in the framing run). On the
   stream the orientation guard drops a read whose direction turns more than 45° (D10);
   offline the rotation diagnostics in `eval` and `eval-session` remain.
+- **Latency grows with boards.** One recognizer call at a time (D17): a read waits
+  ~0.24 s on the GTX 1650 for each read queued before it, so every board finishing a
+  move at once delays the last board's change by ~0.7 s per board, and past ~4 reads/s
+  of sustained demand the node drops keepalive reads (counted, recorded). Results stay
+  the same until that point. Boards per node on the Jetson are unmeasured.
 - **Jetson/Pi latency is unmeasured.** ~205 ms per read on a GTX 1650 (fp32, CUDA) and
   ~660 ms on the laptop CPU (int8). A Pi CPU would be far slower; ChessCam's smaller
   model is the fallback.

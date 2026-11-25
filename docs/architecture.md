@@ -147,12 +147,15 @@ uses), then pass a `MotionMeter` (32×32 grayscale differencing → stability) a
 with hysteresis, and the burst rate kept for `tail_s` = 1 s after a burst so the node's
 burst-end reads find fresh frames). There is no detection and no rectification on any edge.
 
-On the **gateway**, the `/ingest` handler acks each frame on receipt and hands it to a
-per-board **latest-wins inbox** (one un-estimated frame; a newer one displaces it) whose
-worker runs the recognizer off the event loop. A burst is therefore estimated at whatever
-rate the model sustains — skipping the stale end of the burst, never the freshest frame —
-and a slow model can't stall viewers, HTTP, or the socket. An ack means *received*, not
-*estimated*. Before the inbox, every frame also becomes a **motion update** on
+On the **gateway**, the `/ingest` handler acks each frame on receipt and hands it to
+`FrameIngest.submit`, where the board's read scheduler decides on that frame at once. A
+scheduled frame joins **one read queue** for all boards, with its board's held frames
+and rules taken at arrival; one worker serves the queue oldest first, one recognizer
+call at a time, off the event loop (DESIGN D17). A slow model or many boards therefore
+delay a board's events but never change which frames it reads or what they settle to,
+and they can't stall viewers, HTTP, or the socket. Only a sustained overload drops
+reads, keepalive reads first, each one counted on `/healthz` and recorded. An ack means
+*received*, not *estimated*. Every frame also becomes a **motion update** on
 `/viewer` (`{"type": "motion", board_id, moving, stability, ts}`, at most 5/s per board,
 always on a change of `moving`), so the live view can show a hand on the board between
 the sparse reads. It is display state: never retained, recorded or replayed.
@@ -162,9 +165,8 @@ session — `manifest.json` + an append-only `frames.ndjson` + the JPEGs exactly
 received (`board_reader_core.recording`). It sits at `/ingest` deliberately: that is
 the one socket *every* edge crosses, so the CLI feed, a Pi and the phone `/camera`
 page are all recorded without any of them knowing, and a future edge is recorded the
-day it is written. It also sits **before** the latest-wins inbox — a recording is the
-*input* to a run, not a log of what the recognizer got round to, so replaying it can
-reproduce the drops rather than inherit them.
+day it is written. It also sits **before** the scheduler and the read queue — a
+recording is the *input* to a run, not a log of what the recognizer got round to.
 
 `board-reader-edge feed --recording <dir>` puts a session back on the wire, re-sending
 the stored bytes verbatim (no JPEG round trip, which would perturb the very pixels a

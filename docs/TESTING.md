@@ -129,7 +129,8 @@ What's covered today — the main files (`git ls-files 'packages/*/tests/*.py'
 | Hub | `packages/inference/tests/stream/test_hub.py` | retained-latest, fan-out, overflow |
 | Gateway | `packages/inference/tests/test_server.py` | ingest → viewer over WS (in-process) |
 | **Read scheduling** | `packages/inference/tests/stream/test_schedule.py` | **burst detection matches the forwarder's hysteresis; the keepalive floor survives a dead, stuck, absent or NaN meter and a backwards clock; no config spelling switches it off; a new move cancels the last one's owed reads; spec strings round-trip** |
-| **Scheduling, live** | `packages/inference/tests/stream/test_ingest_schedule.py` | **the policy is observed on every arriving frame and asked at the drain, so a burst-end read gets `prefer_frame`'s sharper contender; per-board isolation; a frozen `capture_ts` falls back to the node's own keepalive; `BR_SCHEDULE` reaches the socket and `every-frame` restores the old gateway** |
+| **Scheduling, live** | `packages/inference/tests/stream/test_ingest_schedule.py` | **the policy decides on every arriving frame, so a busy estimator delays a burst-end read but never moves it to another frame; per-board isolation; a frozen `capture_ts` falls back to the node's own keepalive; `BR_SCHEDULE` reaches the socket and `every-frame` restores the old gateway** |
+| **Several boards and spikes** | `packages/inference/tests/test_multiboard_load.py` | **three boards flooded or in clumps into a slow recognizer publish, per board, exactly the lines each publishes alone (read frames, settled boards, `utc`, `changed_utc`); the recognizer serves the oldest scheduled read first; a sustained overload drops only keepalive reads and counts each; a drop line is skipped by scoring; two boards on one socket record every frame** |
 | **Camera control** | `packages/core/tests/test_control.py`, `packages/inference/tests/control/test_camera.py` | **the config, report and socket messages refuse malformed input; the registry pushes a config to every phone and every control page, previews are wanted exactly while a page watches, a reconnecting phone hears its config again; with `BR_CAMERA_CONFIG` set the configs survive a restart (written atomically), a corrupt file is ignored with a warning, unset writes nothing, and `serve` sets the default; the board direction is the median of the latest reads, names the nearest side, flags a moved camera once the angle settled and resets on a new crop, lens or resolution; over the real sockets a config reaches the phone, a preview and the last streamed frame reach the page, a health tick arrives with the direction, and a bad message is refused without closing the socket** |
 | Viewer | Vitest, not this suite: `packages/viewer/server/*.test.ts`, `src/routes/api/**/server.test.ts` (see *Frontend* below) | the `/api` relay forwards verbatim and names an unreachable node; the `/ws` relay; the cached TLS certificate; the banner; the client log |
 | **Layer split** | `tests/test_layer_separation.py` | edge/inference never import each other |
@@ -551,11 +552,6 @@ What to check beyond the steps:
 - Stability ~1.0 and ~1 fps with the board at rest; a burst the moment a hand enters
   the rectangle — and **no** burst for a hand moving outside it, since motion is
   measured on the crop only.
-- Shake the phone gently in its holder while streaming: every frame carries an
-  edge-measured `sharpness` (tenengrad on the sent crop), and when the estimator is
-  behind, the node's inbox keeps the *sharpest* frame of the last second
-  (`ingest.prefer_frame`). Verifiable in a recording: `frames.ndjson` headers carry
-  `sharpness`, `events.ndjson` carries the chosen `frame_seq`.
 - Restart the inference node mid-session (stop `make dev` with Ctrl-C, run it again).
   Expected: the phone's status line says `node unreachable`, then `node connected`, and
   the phone resumes streaming with the same crop, lens and resolution, with nothing
@@ -673,10 +669,11 @@ That second recording is the reproduction claim — a run whose input can be
 re-fed is a run you can bisect a recognition regression against.
 
 > [!note] Why `--throttle` matters here
-> The gateway's latest-wins pre-filter drops frames as a function of *arrival
-> rate*. A flat-out replay arrives far faster than the camera did, so it drops
-> more and reproduces an easier run than the recorded one. Recording happens
-> **before** the pre-filter, so the recording itself is complete either way.
+> The node reads the same frames at any arrival rate (DESIGN D17), but a flat-out
+> replay arrives far faster than the camera did, so its read queue can reach the
+> overload rule (keepalive reads dropped after 5 s of waiting, counted on
+> `/healthz` `ingest.dropped`), which the recorded run never saw. Recording
+> happens **before** the scheduler, so the recording itself is complete either way.
 >
 > `--adaptive`, `--roi`, `--loop` and `--jpeg-quality` are
 > refused with `--recording`: a recording already holds the edge's *output*, and
@@ -947,16 +944,15 @@ component, no `/` and no `..` — the replay's symlinks hop a fixed two levels).
 command prints the `eval-session` line to run.
 
 > [!warning] Replay vs replay, never replay vs the recorded run
-> The live gateway's latest-wins inbox is a **quality** filter, not just a
-> staleness one: `ingest.prefer_frame` keeps the *sharper* of two contenders
-> within a one-second window, because a handheld phone smears half its frames. A
-> live run's recorded score is therefore measured on a blur-filtered subset of
-> its own frames, while a replay reads every frame the policy asks for — blurry
-> ones included. **A replay-vs-recorded raw delta is not a code result**: the two
-> numbers come from different frame populations and the replayed one is
-> systematically pessimistic. Treat it as directional at most. (Takes recorded
-> before 2026-11-24 have a second gap: the old stack's calibration swapped the
-> reader mid-take, which a replay cannot reproduce.)
+> Runs recorded before 2026-11-25 went through a latest-wins inbox that kept the
+> *sharper* of two contenders (`prefer_frame`) and decided reads at drain, so a
+> live run's recorded score was measured on other frames than a replay reads.
+> **For those runs a replay-vs-recorded raw delta is not a code result**: treat it
+> as directional at most. Since D17 the live node reads the frames a replay reads,
+> unless it dropped some under overload (`read_dropped` lines in
+> `events.ndjson`). (Takes recorded before 2026-11-24 have a second gap: the old
+> stack's calibration swapped the reader mid-take, which a replay cannot
+> reproduce.)
 >
 > The comparison that means something is **two replays of the same recording**:
 > same frames, same order, same freeze — so a difference between them is a
@@ -1121,6 +1117,29 @@ at the bottom, and it stays put once scrolled up. New reads never close the PGN 
    decodes `3.d3`).
 
 Automated: `src/lib/game/*.test.ts` (Vitest) and `tests/game.spec.ts` (Playwright).
+
+### Option R — Several boards on one node (DESIGN D17)
+
+Load makes events later, never different. To see it:
+
+1. Run the node with the real model: `make dev`. Expected: `/healthz` shows
+   `recognizer.name` `chessq`.
+2. In two more terminals, stream two synthetic games at once:
+   `uv run board-reader-edge feed --game --adaptive --loop --throttle --board B1` and
+   the same with `--board B2`. Expected: both boards appear on the live page and both
+   update. (ChessQ misreads the synthetic renders; the boards' positions are not the
+   point here, the queue is.)
+3. Open `http://localhost:8000/healthz`. Expected: `ingest.queue.served` climbs,
+   `ingest.queue.wait_max_s` stays well under a second for two boards, and
+   `ingest.dropped` and `ingest.dropped_burst_end` stay at 0.
+4. Optional: add a third and a fourth board. Expected: `wait_mean_s` grows, the boards
+   still follow their games, and `dropped` stays at 0 until the queue waits reach
+   5 s. Then only keepalive reads drop, and each drop is a WARNING in the node's log
+   and a `read_dropped` line in the session's `events.ndjson`.
+
+Automated: `packages/inference/tests/test_multiboard_load.py`. The real-data check (two
+gate takes at once against their `latency3` replays) is in
+[the multiboard report](reports/2026-11-25-multiboard-spikes.md).
 
 ---
 

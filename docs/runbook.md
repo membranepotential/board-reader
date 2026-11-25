@@ -134,9 +134,9 @@ Scoring a session (`eval-session`) writes `<recording>/report.json` every time, 
 no number from a run exists without the artifact behind it.
 
 `--recording` re-sends the stored bytes verbatim, so the replayed run sees the same
-pixels the original did. Prefer `--throttle`: the gateway's latest-wins pre-filter
-drops frames as a function of *arrival rate*, so a flat-out replay makes it drop
-more than the recorded run did. Anything that would reprocess the stream
+pixels the original did. Prefer `--throttle`: a flat-out replay reads the same
+frames, but it can push the read queue into its overload rule (keepalive reads
+dropped after 5 s of waiting), which the recorded run never saw. Anything that would reprocess the stream
 (`--adaptive`, `--roi`, `--loop`, `--jpeg-quality`) is refused
 with `--recording` rather than silently changing what goes on the wire.
 
