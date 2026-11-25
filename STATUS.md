@@ -7,8 +7,13 @@ _reconciled: 2026-11-24 @ `480a5ea`_ · decisions: [docs/DESIGN.md](docs/DESIGN.
 A camera reads a live OTB board and streams timestamped **piece placements + per-square
 confidences**. No moves, no legality, no PGN — those belong to the downstream application layer.
 
-## Now (1 agent)
+## Now (4 agents, files partitioned)
 
+- **camera identity** — device id on the phone → auto board id (no `phone` default), /control overview +
+  persistent rename, duplicate guard — running (agent A; control.py, camera.py, /camera, /control).
+- **QR code** — viewer route with external URLs (never localhost) + `CameraQr` component — running (agent B).
+- **multi-board + spikes** — load test: results and timestamps independent of load; fix what differs —
+  running (agent C; stream/, /ingest handler).
 - **auto-crop probe** — ChessQ attention grid vs classical line detection (+ both) → proposed crop; board
   83–15 % of the frame; where each runs (phone/Pi/node) — running (measure only; tools/probes/autocrop_*).
 
