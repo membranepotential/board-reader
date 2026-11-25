@@ -169,14 +169,20 @@ only when it changed, previews only while wanted, the config kept across a lost 
 and the control page's link — all plain TypeScript, run in `node`, no DOM.
 
 `camera.spec.ts` plays the node's half of the control channel: on the phone's
-`/ws/boards/{id}/camera` socket it pushes a config of its choosing and switches
-previews on and off, and it decodes the JPEGs that reach `/ws/ingest`, so "the crop
-the config asked for is the crop sent" is measured in pixels.
+`/ws/cameras/<device id>` socket it assigns a board id, renames it, pushes a config
+of its choosing, switches previews on and off and replaces the socket, and it decodes
+the JPEGs that reach `/ws/ingest`, so "the crop the config asked for is the crop sent"
+is measured in pixels.
 It also sends a drawn hand across the board and checks that a burst reaches the wire,
 and that changing the crop alone does not open one.
 `control.spec.ts` drives `/control` against a simulated node on its
 `/ws/boards/{id}/control` socket, including the side White sits on and the
-camera-moved warning, both from the health tick.
+camera-moved warning, both from the health tick, and checks the QR code beside the
+camera list. `cameras.spec.ts` puts two phones (two browser contexts, so two device
+ids) and a control page on one stateful fake node (`tests/helpers/cameras.ts`):
+assignment, a reload and a node restart keeping the id, a rename on `/control`, and a
+`?board=` another camera holds being refused. The node's own registry and its config
+file are `packages/inference/tests/control/test_camera.py`'s.
 
 `pnpm test:e2e` drives the pages in a real Chromium (`tests/*.spec.ts`), against
 the **built** app — `vite build`, then the real viewer server
@@ -504,12 +510,16 @@ node packages/viewer/server/main.ts --host 0.0.0.0 --port 8080 --tls-port 8443
 2. On the phone, open `https://<lan-ip>:8443/camera` and accept the certificate warning
    once. Expected: the camera permission prompt.
 3. Allow the camera. Expected: the picture fills the screen, and the status line at the
-   bottom reads `board phone · node connected · not streaming · 1920×1080 · <lens>`.
+   bottom reads `board board-1 · node connected · not streaming · 1920×1080 · <lens>`,
+   and names the phone's camera id (`camera` and its first eight characters). The node assigned `board-1`;
+   this phone gets it back after a reload and after a node restart.
 4. Mount the phone over the board, in **landscape**. If it is upright, the status line
    adds `portrait: turn the phone sideways` (it still streams; upright framing costs
    about a quarter of perfect boards, [[operating-envelope#Framing]]).
 5. On the laptop, open `http://localhost:8080/control` (or the **camera control** link on
-   the live page). Expected: the chip reads `phone connected`, and within ~2 s the
+   the live page). Expected: the **Cameras** list names `board-1` with the phone's camera
+   id and `connected`, the header reads `board board-1` and `phone connected`, and
+   within ~2 s the
    phone's whole view appears as a preview, with the phone's lenses in the **lens** list
    and its size under **frame delivered** in the Status panel. The phone sends previews
    only while a `/control` page is open (or not hidden); close the tab and they stop.
@@ -560,8 +570,32 @@ What to check beyond the steps:
   board and press **Save crop**. Expected: the warning disappears, and the direction
   settles again on the new angle (a new lens or resolution does the same; starting or
   stopping the stream does not).
-- Two boards: open `/camera?board=left` on one phone and `/control?board=left` on the
-  laptop (or type the id into the **board** field). Each board keeps its own config.
+- Two phones (DESIGN D18):
+  1. With the first phone streaming as `board-1`, scan the QR code under **Add a camera**
+     on `/control` with a second phone (or type the `/camera` URL), and allow the camera.
+     Expected: the second phone's status line reads `board board-2`, and the **Cameras**
+     list shows two rows, both `connected`.
+  2. Click `board-2` in the list. Expected: the header reads `board board-2`, the preview
+     is the second phone's view, and every control below now sets that phone.
+  3. Press **Rename** on the `board-2` row, type `left`, press **Save**. Expected: the
+     row reads `left` within a second, the second phone's status line reads
+     `board left` with no reload, and its crop and stream setting are unchanged.
+  4. Reload the second phone's page. Expected: it comes back as `board left`.
+  5. Restart the node (Ctrl-C `make dev`, run it again). Expected: both phones say
+     `node unreachable`, then `node connected` as `board-1` and `left`, and the list
+     shows both again (`data/camera-config.json` keeps the pairs under `"cameras"`).
+  6. Press **Rename** on the `left` row and type `board-1`. Expected: `not renamed:
+     board-1 is taken by camera …` under the row; nothing changes.
+  7. On the second phone, open `/camera?board=board-1`. Expected: its status line says
+     `board-1 is taken by camera …; this phone streams as left`, it keeps streaming as
+     `left`, and its row on `/control` says `asked for board-1, which another camera
+     holds`.
+  8. Open `/camera` in a second tab on the first phone. Expected: the older tab says
+     `another /camera page on this phone took over` and stops streaming; the new tab
+     streams as `board-1`.
+  On the live page a rename starts a new card for the new id (its PGN drawer starts
+  empty); the old card goes stale. Recordings and events keep the id they were made
+  under.
 
 **Camera stall recovery.** Phone cameras die quietly (backgrounding, a call,
 another app taking the lens); the page must come back on its own. Things to try

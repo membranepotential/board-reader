@@ -311,11 +311,13 @@ held over a board is the worst place to set that up.
   per board and is its single source of truth. It persists each board's config to
   `BR_CAMERA_CONFIG` (`serve` sets `data/camera-config.json`; empty keeps it in memory
   only), so a restart keeps the framing. The contract is `board_reader_core.control`.
-- **The channel is two WebSockets per board, and nothing polls** (2026-11-24).
-  `WS /boards/{id}/camera` is the phone's: the node pushes the config on connect and
-  on every change, and says `previews` on or off; the phone sends its report on
-  connect and whenever it changes, and a whole-frame preview JPEG (binary) every
-  1.5 s, only while previews are on. `WS /boards/{id}/control` is each control page's:
+- **The channel is pushed over WebSockets, and nothing polls** (2026-11-24; the
+  phone's socket is keyed by device since D18). `WS /cameras/{device_id}` is the
+  phone's: the node says which board id the phone streams as (`assigned`), pushes that
+  board's config on connect and on every change, and says `previews` on or off; the
+  phone sends its report on connect and whenever it changes, and a whole-frame preview
+  JPEG (binary) every 1.5 s, only while previews are on. `WS /cameras` is the control
+  UI's list of every known camera (D18). `WS /boards/{id}/control` is each control page's:
   the node pushes the state (config, last report, phone connected) on connect and on
   every change, the latest preview and received frame, and a health tick once a
   second, which carries the board's direction (D10) as the side White sits on and
@@ -485,6 +487,48 @@ Mahalanobis distance of the query embeddings (its threshold needs calibration pe
 setup and blocked the recovery reads on the dark live take); plain-CV hand signals
 (they fire on every move and on auto-exposure, and wood is skin-coloured).
 
+### D18 — The node names the cameras; a phone keeps a device id (2026-11-25)
+
+**Status:** accepted (user, 2026-11-25).
+
+**Context.** Every phone streamed as `board=phone` unless its URL said otherwise, so a
+second phone silently streamed into the first one's board, and an operator had to type
+matching `?board=` ids into two pages. The board id is what every event, recording,
+live card and PGN drawer is keyed by, so it must stay put across a reload.
+
+**Decision.**
+- **A phone is known by a device id**: a random id (`crypto.randomUUID`) its browser
+  makes on the first visit and keeps in `localStorage`. Where storage is unavailable
+  (a private window), the id lives as long as the page, and the page says so.
+- **The node assigns the board id.** `WS /cameras/{device_id}` replaces
+  `/boards/{id}/camera`; the node answers `assigned` with the device's board id, and
+  the phone names it on every `/ingest` frame. A new device gets the lowest free
+  `board-N` (an id with a saved config is not handed out, so a stale config never
+  starts a new phone streaming). The device -> board pairs persist in
+  `BR_CAMERA_CONFIG` beside the configs; a file from before has none and still loads.
+- **/control lists and renames the cameras.** `WS /cameras` pushes every known camera
+  (board id, device, link, last report, frame age) on connect, on change and once a
+  second for the ages, and takes `rename`. A rename moves the board's config to the new
+  id, persists, and pushes `assigned` to the phone, which switches its frames without
+  a reload. Events and recordings made under the old id stay as they are; the live page
+  then shows a new card for the new id and the old one goes stale.
+- **Board ids stay unique among the known cameras.** A rename, or a phone's
+  `?board=<id>` (kept as an explicit request), to an id another camera holds is
+  refused; the phone then streams under its own id, and both `/camera` and `/control`
+  say so. A camera's board id must be a plain URL path segment (`CameraBoardId`: up to
+  32 letters, digits, `.`, `_`, `-`), because the per-board routes carry it.
+- **One socket per device.** A newer socket of the same device replaces the older,
+  which hears `replaced`, stops streaming and does not reconnect: two pages of one phone
+  would otherwise stream under one board, or take the link from each other forever.
+- A `/camera` page from before this change still opens `/boards/{id}/camera`; the node
+  answers that it is out of date and must be reloaded.
+
+**Rejected.** Board ids chosen on the phone (`?board=` as the main way): two pages to
+keep in step, and nothing stops two phones from choosing one id. Assigning by
+connection order without a device id: a reload or a node restart reshuffles the ids. A
+hello message on a board-less socket instead of the device in the path: one more
+message to order before anything else may be sent, for nothing the path cannot carry.
+
 ---
 
 ## Superseded decisions
@@ -611,11 +655,13 @@ number is an edge bug the node must not hide. The `control` message kind is rese
 **Egress (WebSocket `/viewer`).** Position events as JSON (§5), the latest per board
 on connect, interleaved with motion updates (§5, display only, never retained).
 
-**Camera control (WebSockets `/boards/{id}/camera` and `/boards/{id}/control`).** The
-phone's and the control pages' sockets for one board's camera (D11); the messages are
-`board_reader_core.control`'s. Every text message names itself with `type`, and each
-socket's direction is one discriminated union in the JSON Schema (`ReportMessage` and
-`PhoneDown` on the phone's, `ConfigureMessage` and `ControlDown` on a control page's).
+**Camera control (WebSockets `/cameras/{device_id}`, `/cameras` and
+`/boards/{id}/control`).** The phone's socket by its device id, the control UI's list
+of cameras, and a control page's socket for one board's camera (D11, D18); the
+messages are `board_reader_core.control`'s. Every text message names itself with
+`type`, and each socket's direction is one discriminated union in the JSON Schema
+(`ReportMessage` and `PhoneDown` on the phone's, `RenameMessage` and `CamerasDown` on
+the list's, `ConfigureMessage` and `ControlDown` on a control page's).
 
 **HTTP.**
 

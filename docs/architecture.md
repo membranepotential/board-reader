@@ -42,7 +42,7 @@ flowchart LR
   camphone[phone: /camera page<br/>the browser edge] -->|"WS /ws/ingest (relay)"| vw[viewer server]
   vw -->|WS /ingest| gw
   laptop[laptop: /control page] <-.->|"WS /ws/boards/{id}/control<br/>configure up; state, preview, frame, health down"| vw
-  camphone <-.->|"WS /ws/boards/{id}/camera<br/>report + preview up; config down"| vw
+  camphone <-.->|"WS /ws/cameras/{device}<br/>report + preview up; board id + config down"| vw
   vw <-.->|camera control sockets| gw
   phone[phone: /snapshot page] -->|"POST /api/estimate: photo (relay)"| vw
   vw -->|POST /estimate| gw
@@ -72,8 +72,16 @@ status line and **no controls at all**. Everything about what it films is set fr
 **control UI** on the laptop (`GET /control` on the viewer), held per board on the
 inference node, and pushed to the phone, which applies it:
 
-- **The control channel is pushed over two sockets per board; nothing polls.** The
-  phone holds `WS /boards/{id}/camera` open from the moment the page loads. It sends
+- **The node names the cameras** (DESIGN D18). The phone keeps a random device id in
+  `localStorage` and holds `WS /cameras/{device_id}` open from the moment the page
+  loads; the node answers with the board id the phone streams as (`assigned`): the
+  lowest free `board-N` for a new device, the same one after a reload or a node restart,
+  a new one the moment `/control` renames it. `?board=<id>` asks for an id, refused
+  while another camera holds it. `/control` lists every known camera over `WS /cameras`
+  (board id, short device id, link, stream, last frame, lens and frame), renames one
+  inline, and shows a QR code that opens `/camera` on a phone.
+- **The control channel is pushed over WebSockets; nothing polls.** The
+  phone's socket is open from the moment the page loads. It sends
   its `CameraReport` — the lenses `enumerateDevices` lists, the label of the one open,
   the frame size it delivers and the state of its stream — on connect and whenever it
   changes. The node pushes that board's `CameraConfig` on connect and on every change:
@@ -127,7 +135,7 @@ now streams anyway; it says so in its status line, and the control UI warns.
 Because
 `getUserMedia` demands a secure context and phones balk at a second self-signed origin,
 the page talks *only* to the viewer's own origin: the viewer relays the node's sockets
-under `/ws/` (`/ws/ingest`, `/ws/viewer`, `/ws/boards/{id}/camera`,
+under `/ws/` (`/ws/ingest`, `/ws/viewer`, `/ws/cameras/{device}`, `/ws/cameras`,
 `/ws/boards/{id}/control`) and its HTTP API under `/api/` to the inference node (pure network
 glue — it imports nothing of the Python packages), and `--tls-port` serves the whole
 thing over a cached self-signed certificate.
@@ -183,7 +191,8 @@ See [[recognition-pipeline]].
 | `POST /labels/{upload}` · `GET /uploads` · `GET /uploads/{id}/photo` | ground-truth labels for retained photos (`BR_SAVE_UPLOADS`), in the chess frame |
 | `GET /boards/{id}` | latest retained event for a board |
 | `GET /boards/{id}/frame` | latest raw JPEG ingested for a board (video-like preview) |
-| `WS /boards/{id}/camera` | the phone's camera control socket: report and previews up, config and `previews` on/off down |
+| `WS /cameras/{device_id}` | the phone's camera control socket (`?board=` asks for an id): report and previews up; its board id, config, `previews` on/off and `replaced` down |
+| `WS /cameras` | the control UI's list of every known camera, pushed on change and once a second; `rename` up |
 | `WS /boards/{id}/control` | a control page's socket: `configure` up; state, preview, received frame and a 1 Hz health tick down |
 | `GET /healthz` | liveness (+ `ingest` counters, `misoriented` among them: reads the orientation guard dropped; `recognizer`: name, model, `fallback` when the stub serves; `recording`: session path, frames, bytes) — see the warning in [[runbook#Verifying a restart]] |
 
@@ -194,8 +203,8 @@ See [[recognition-pipeline]].
 | `GET /` | live-position UI (chessground), one card per board |
 | `GET /snapshot` | the phone page: capture → read → output (a photo → a position, correctable and labelable) |
 | `GET /camera` | the phone page: a dumb camera that streams what the control UI configured (the browser edge) |
-| `GET /control` | the laptop page: crop rectangle on the phone's full-frame preview, lens, resolution, the board's settle `rules`, start/stop, health |
-| `WS /ws/<path>` | same-origin relays to the inference node's sockets (`ingest`, `viewer`, `boards/{id}/camera`, `boards/{id}/control`) |
+| `GET /control` | the laptop page: the list of cameras (rename inline) and a QR code for `/camera`; for the picked camera, the crop rectangle on its full-frame preview, lens, resolution, the board's settle `rules`, start/stop, health |
+| `WS /ws/<path>` | same-origin relays to the inference node's sockets (`ingest`, `viewer`, `cameras/{device}`, `cameras`, `boards/{id}/control`) |
 | `/api/<path>` | same-origin relay of the inference node's whole HTTP API |
 
 The snapshot page's correction panel is where a wrong square gets fixed — the privileged
@@ -207,7 +216,7 @@ operator can see *what the recognizer was torn between* rather than just that it
 The viewer serves the prerendered pages through adapter-node's handler and relays the
 node same-origin: the HTTP API through the catch-all route `/api/[...path]`, every
 socket through `server/ws.ts` (`/ws/<path>` → `/<path>`, so `/ws/ingest`, `/ws/viewer`,
-`/ws/boards/{id}/camera` and `/ws/boards/{id}/control` need no viewer change).
+`/ws/cameras/{device}`, `/ws/cameras` and `/ws/boards/{id}/control` need no viewer change).
 `--tls-port` serves the same app over a cached self-signed certificate. The SvelteKit 3
 app builds to `packages/viewer/build/` (`make ui`). `BR_INFERENCE_WS` /
 `BR_INFERENCE_HTTP` address the *viewer's* hop to the node and never reach the browser.
@@ -235,8 +244,8 @@ L1→L2 wire framing — and the differences between the copies were the bugs.
 | `lib/protocol/` | the wire contract. `generated.ts` holds a zod validator and a readonly type per message (L3 position events and motion on `/ws/viewer`, L1→L2 headers on `/ws/ingest`, the camera control messages), generated from the pydantic models by `make protocol` (`tools/gen_protocol.py`) and checked for drift by `tests/test_protocol_ts.py`; `checks.ts` holds the TS twins of the schema's `x-check` rules; `index.ts` holds `parseWire` (the one place untrusted wire data becomes a typed value), the class vocabulary and board frame, and the node's HTTP replies and `/ingest` acks, which core does not model |
 | `lib/api.ts` | same-origin, always-relative URL construction (`/api/…`, `/ws/…`) — nothing here ever names an origin, which is what keeps the pages working unchanged on a LAN, over https, and behind a tunnel |
 | `lib/board/fen.ts` | FEN field 1 ⇄ 8×8 grid, clamped and re-emitted so a malformed placement can't shift the grid the diff and chessground both index into |
-| `lib/edge/{motion,ingest,sharpness,cameralink}.ts` | the `/camera` page's browser edge: a JS mirror of `board_reader_edge`'s `MotionMeter`/`AdaptiveForwarder`, the two-message (JSON header + JPEG) `/ws/ingest` sender, the focus score, and the phone's camera control socket |
-| `lib/control/{messages,link}.ts` · `lib/socket.ts` | the camera control channel's upward messages (built on the generated types), the control page's socket, and the reconnecting socket both clients share |
+| `lib/edge/{motion,ingest,sharpness,cameralink,device}.ts` | the `/camera` page's browser edge: a JS mirror of `board_reader_edge`'s `MotionMeter`/`AdaptiveForwarder`, the two-message (JSON header + JPEG) `/ws/ingest` sender, the focus score, the phone's camera control socket, and its device id |
+| `lib/control/{messages,link,cameras}.ts` · `lib/socket.ts` | the camera control channel's upward messages (built on the generated types), the control page's socket, the camera list's socket, and the reconnecting socket the clients share |
 | `lib/stores/{positions.svelte,liveness}.ts` | the live position stream as Svelte 5 state — deliberately not a state machine over positions (DESIGN D1): the only history kept is the previous grid, and only to diff a changed square |
 
 `src/routes/` holds the four pages (`+page.svelte` for `/`, `camera/+page.svelte`,

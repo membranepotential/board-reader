@@ -58,8 +58,14 @@ uv run board-reader-edge feed --video clip.mp4 --throttle   # or a real clip
 camera page has no controls: open `/control` on the laptop to draw the board's rectangle
 on the phone's preview, pick the lens and resolution, and start or stop the stream
 (DESIGN D11; the full walkthrough is [[TESTING#Option J — Phone live camera, configured from the laptop (DESIGN D11)]]).
-The camera config lives in the inference node's memory, so after a node restart set it
-again on `/control`. By hand:
+The node assigns each phone its board id (`board-1`, `board-2`, ...; DESIGN D18) by a
+device id the phone keeps, and `/control` lists the phones, renames them, and shows a
+QR code that opens `/camera`. `serve` keeps each board's config and each phone's board
+id in `data/camera-config.json` (`BR_CAMERA_CONFIG`; empty keeps them in memory only),
+so a restart gives every phone its id and framing back. A phone in a private window
+keeps no id, and each reload makes it a new camera (its status line says so); rename
+it on `/control`. A phone page opened before the update says it is out of date: reload
+it. By hand:
 
 ```bash
 BR_CHESSQ=models/chessq/cq-vit-s-644-v6-seed1-onnx-fp32.onnx \
@@ -168,7 +174,7 @@ or newer runs the TypeScript directly), serving the build `make ui` writes to
 
 | Variable | Effect |
 |---|---|
-| `BR_INFERENCE_WS` | The node's `/viewer` socket URL; its origin is where the viewer relays every `/ws/<path>` socket (`/ws/ingest`, `/ws/viewer`, `/ws/boards/{id}/camera`, `/ws/boards/{id}/control`, and any the node adds). |
+| `BR_INFERENCE_WS` | The node's `/viewer` socket URL; its origin is where the viewer relays every `/ws/<path>` socket (`/ws/ingest`, `/ws/viewer`, `/ws/cameras/{device}`, `/ws/cameras`, `/ws/boards/{id}/control`, and any the node adds). |
 | `BR_INFERENCE_HTTP` | Where the *viewer* forwards `/api/<path>` requests. |
 | `BR_CLIENT_LOG_DIR` | Where the phone's trial notes (`POST /api/client-log`) are appended, one NDJSON file per viewer start (default `client-logs`; empty drops them). |
 | `BR_PUBLIC_URL` | An origin that serves the viewer over TLS from outside the LAN, such as a Cloudflare quick tunnel (`/tunnel` skill): `BR_PUBLIC_URL=https://<name>.trycloudflare.com make dev`. The camera QR code on `/control` (`GET /api/camera-links`) offers its `/camera` first, before the LAN, hostname and `localhost` addresses on the TLS port. Only the origin is kept. |
