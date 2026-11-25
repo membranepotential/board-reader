@@ -7,18 +7,16 @@ _reconciled: 2026-11-24 @ `480a5ea`_ · decisions: [docs/DESIGN.md](docs/DESIGN.
 A camera reads a live OTB board and streams timestamped **piece placements + per-square
 confidences**. No moves, no legality, no PGN — those belong to the downstream application layer.
 
-## Now (2 agents, files partitioned)
+## Now (1 agent)
 
-- **latency round 3, build** — node hold 0.7 → 0.3 s, settle 0.5 → 0.3 s (report `0ada93d`: take 2 median
-  1.66 → 0.94 s, 0 leaks; needs the energy gate); gate vs `energy` — running (agent).
-- **auto-crop probe** — ChessQ attention centroids → board grid → proposed crop; board 83–15 % of the frame,
-  single pass vs coarse-to-fine — running (measure only; tools/probes/autocrop_*).
+- **auto-crop probe** — ChessQ attention grid vs classical line detection (+ both) → proposed crop; board
+  83–15 % of the frame; where each runs (phone/Pi/node) — running (measure only; tools/probes/autocrop_*).
 
 ## Done (2026-11-24 — the ChessQ rebuild; plan: [docs/plans/2026-11-24-simplify-around-chessq.md](docs/plans/2026-11-24-simplify-around-chessq.md))
 
 - **ChessQ is the core recognizer** (Lite V6, fp32 ONNX on CUDA ~0.2 s/read; int8 on CPU); old stack
   deleted (≈ −26k lines: DINOv2/bank/crops/corners/training/RunPod). Labels + truth in the chess frame.
-- **Gate: 7 takes**, base `energy`: 341/361 raw, 312/361 settled perfect, 0 hand leaks. Take 2
+- **Gate: 7 takes**, base `latency3`: 374/405 raw, 350/405 settled perfect, 0 hand leaks. Take 2
   (`20261124-221950`) has truth (72/86 settled), kept out of the gate (staged non-moves).
 - **Latency:** phone motion thumbnail area-averaged; forwarder tail 1 s, burst-end 3 reads × 0.3 s,
   settle 0.5 s, keepalive 2 s. Live take median move→settle ~2 s.
@@ -29,15 +27,17 @@ confidences**. No moves, no legality, no PGN — those belong to the downstream 
   WS relay + TLS); live card: motion chip + pending rings, no confidence bars, no rotate button.
 - **One wire contract** (D13): pydantic models in core → JSON Schema → `lib/protocol/generated.ts`
   (zod 4), rebuilt by every `make ui`/`dev`/`test-front`; drift + shared-sample tests; strict headers.
-- **Inference regrouped** into recognition/ stream/ control/ measurement/; tests mirror src.
+- **Inference regrouped** into recognition/ stream/ control/ measurement/; tests mirror src. `serve` honours
+  `BR_RECORD_DIR` (`3be7f47`).
 - **Priors → guard** (`5d0cdb2`..`61e1822`): decoder + `prior` field gone; count guard in `stream/rules.py`
   (python-chess); per-board `rules: standard|free`; one placement per event + `pending`.
 - **`changed_utc`** (`acfcb8b`, `9fb7671`): back-dated by pixels over unread frames; lag behind the true
   change, median: gate 1.46 → 1.35 s, take 2 0.94 → 0.57 s (rest = hand still on the piece).
+- **Latency round 3** (`8eac6f6`): node hold 0.3 s, settle 0.3 s (needs the energy gate); gate base
+  `latency3` 350/405 settled, 0 leaks; take 2 median move→settle 1.66 → 0.94 s.
 - **Energy gate** (`138d941`, D16): obscured reads (ChessQ frame energy > −12.4) never commit; take 2
   resting hand 9 wrong boards → 0, whole take 80 → 88/94; gate 314 → 312/361; "hand?" chip.
 - **PGN panel** (`81408ac`): beam Viterbi over legal positions → live PGN, copy, Lichess link; 7/7 games exact.
-- **Small fixes:** `serve` honours `BR_RECORD_DIR` (`3be7f47`); `MOVING_BELOW` removed.
 - **Docs + rules:** DESIGN.md rewritten; learnings → path-scoped `.claude/rules/` (store frozen);
   big data archived to the HDD (`/run/media/felix/archive/board-reader/`, symlinked).
 

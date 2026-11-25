@@ -855,8 +855,11 @@ What is open now, in rough order:
   30 swept configs leaked one in round 2; the shipped 0.3 s hold and 0.3 s window leak
   6 on the gate with the gate off, none with it on), and so would a stuck motion meter; the
   08-13 take settling all its boards is the guard. A hand resting still over the board
-  reads as rest and can settle under any window
-  ([latency round 2](reports/2026-11-24-latency-round2.md)).
+  reads as rest to the motion meter; without D16 it could settle under any window
+  ([latency round 2](reports/2026-11-24-latency-round2.md)). With D16 its reads are
+  obscured and commit nothing (take 2's resting stretch: 0 wrong boards), as long as the
+  frame energy flags it: a hand that covers squares without a half-covered edge square
+  in view is the remaining risk.
 - **Framing (D11).** The board must fill ≥ ~50 % of the sent width; 35 % collapses
   perfect boards and portrait costs about a quarter of them. Wide framing was measured
   with synthetic padding only, and real distractors (people, other boards) are untested.
