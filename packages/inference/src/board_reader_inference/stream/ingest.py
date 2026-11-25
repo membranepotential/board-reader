@@ -43,7 +43,9 @@ stall, and the ingest socket backs up behind the model.
 
 **Work between reads.** :meth:`FrameIngest.call` runs other work that needs the
 recognizer (Auto-frame locating the board in a full frame, 2 to 8 reads) on the same
-worker, in the same queue, oldest first, so the GPU still runs one call at a time.
+worker, in the same queue, oldest first, so the GPU still runs one call at a time;
+:meth:`FrameIngest.call_spare` runs skippable work (Auto-frame's look at a preview)
+only when no read waits, behind everything else.
 :meth:`FrameIngest.publish_read` puts a read made that way into its board's stream:
 it joins the queue like a scheduled read and is settled and published in turn, but
 not recorded, because its frame never crossed ``/ingest``.
@@ -429,6 +431,11 @@ class _ScheduledRead:
 
 
 @dataclass(frozen=True, slots=True)
+class Busy:
+    """Reads were waiting, so spare work was skipped (:meth:`FrameIngest.call_spare`)."""
+
+
+@dataclass(frozen=True, slots=True)
 class _Work:
     """Other recognizer work (:meth:`FrameIngest.call`) waiting its turn."""
 
@@ -436,6 +443,8 @@ class _Work:
     run: Callable[[], Callable[[], None]]
     #: Gives up on it: the worker stopped first.
     cancel: Callable[[], None]
+    #: Spare work (:meth:`FrameIngest.call_spare`): it waits behind everything else.
+    spare: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -624,6 +633,21 @@ class FrameIngest:
         call at a time: it waits behind every read queued before it, and the reads
         queued after it wait for it. ``CancelledError`` when the worker stops first.
         """
+        return await self._call(work, spare=False)
+
+    async def call_spare[T](self, work: Callable[[], T]) -> T | Busy:
+        """Run ``work`` on the read worker only when it has nothing else to do;
+        :class:`Busy` (and ``work`` never runs) when a read is waiting right now.
+
+        For work that may be skipped, Auto-frame's look at a preview: it never
+        delays a read, because every read and every :meth:`call` queued after it
+        still goes first. Raises what ``work`` raises, like :meth:`call`.
+        """
+        if any(isinstance(item, _ScheduledRead) for item in self._queue):
+            return Busy()
+        return await self._call(work, spare=True)
+
+    async def _call[T](self, work: Callable[[], T], *, spare: bool) -> T:
         done: asyncio.Future[T] = asyncio.get_running_loop().create_future()
 
         def run() -> Callable[[], None]:
@@ -634,7 +658,7 @@ class FrameIngest:
                 return lambda: None if done.done() else done.set_exception(failed)
             return lambda: None if done.done() else done.set_result(result)
 
-        self._queue.append(_Work(run=run, cancel=done.cancel))
+        self._queue.append(_Work(run=run, cancel=done.cancel, spare=spare))
         self._max_waiting = max(self._max_waiting, len(self._queue))
         self._wake()
         return await done
@@ -781,6 +805,14 @@ class FrameIngest:
         assert self._ready is not None
         self._ready.set()
 
+    def _take(self) -> _ScheduledRead | _Work:
+        """The oldest item waiting that is not spare work, else the oldest spare."""
+        item = next(
+            (i for i in self._queue if not (isinstance(i, _Work) and i.spare)), self._queue[0]
+        )
+        self._queue.remove(item)
+        return item
+
     async def _next(self, ready: asyncio.Event) -> _ScheduledRead | _Work:
         """The read (or other work) the recognizer runs next: the oldest one waiting.
 
@@ -791,7 +823,7 @@ class FrameIngest:
         """
         while True:
             while self._queue:
-                scheduled = self._queue.popleft()
+                scheduled = self._take()
                 if isinstance(scheduled, _Work):
                     return scheduled
                 waited = time.monotonic() - scheduled.queued

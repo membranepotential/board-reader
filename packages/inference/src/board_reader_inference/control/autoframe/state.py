@@ -26,15 +26,6 @@ class Backoff:
 
 
 @dataclass(frozen=True)
-class Drifting:
-    """``run`` previews in a row lay off the anchor and settled; ``last`` is the
-    latest of them."""
-
-    last: Located
-    run: int
-
-
-@dataclass(frozen=True)
 class AutoFrame:
     """Auto-frame's state for one board's camera. Start from ``AutoFrame()`` (or
     ``AutoFrame(auto=False)`` for a camera whose crop was set by hand)."""
@@ -51,4 +42,10 @@ class AutoFrame:
     backoff: Backoff | None = None
     #: The board the pushed crop was built from.
     anchor: Located | None = None
-    drifting: Drifting | None = None
+    #: Counted previews in a row whose board lay off the anchor.
+    drifting: int = 0
+    #: Watched previews in a row that did not count (no trusted board), capped at
+    #: :attr:`~.tuning.Tuning.unseen_previews`.
+    unseen: int = 0
+    #: When the latest watched preview was located; paces the next one.
+    last_preview: float | None = None

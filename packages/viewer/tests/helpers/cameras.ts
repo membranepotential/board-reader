@@ -223,7 +223,8 @@ export class FakeCameraNode {
       config: this.#config(board),
       report: (holder === undefined ? undefined : this.#reports.get(holder)) ?? null,
       phone_connected: this.#phoneOn(board) !== undefined,
-      autoframe: this.#config(board).auto ? 'idle' : 'manual'
+      autoframe: this.#config(board).auto ? 'idle' : 'manual',
+      watching: false
     });
   }
 

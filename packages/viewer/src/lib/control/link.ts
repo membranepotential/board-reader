@@ -12,7 +12,7 @@ import { controlSocket, wsUrl } from '#lib/api.ts';
 import { parseWire } from '#lib/protocol/index.ts';
 import { ControlDown, type CameraConfig } from '#lib/protocol/generated.ts';
 import { ReconnectingSocket, type SocketOptions } from '#lib/socket.ts';
-import { configureMessage } from './messages';
+import { configureMessage, reframeMessage } from './messages';
 
 export interface ControlLinkOptions extends Partial<SocketOptions> {
   readonly boardId: string;
@@ -56,5 +56,10 @@ export class ControlLink {
   /** `false` when the node is not connected: nothing was sent. */
   configure(config: CameraConfig): boolean {
     return this.socket.send(configureMessage(config));
+  }
+
+  /** Ask Auto-frame to find the board again now; `false` when not connected. */
+  reframe(): boolean {
+    return this.socket.send(reframeMessage());
   }
 }

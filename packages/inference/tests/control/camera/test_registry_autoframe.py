@@ -11,6 +11,8 @@ from board_reader_core.control import (
     CropRect,
     FrameSize,
     FullFrameMessage,
+    PreviewMessage,
+    PreviewsMessage,
     SendFullFrameMessage,
     StateMessage,
 )
@@ -21,7 +23,7 @@ from board_reader_inference.control.autoframe.events import (
     FullFrameLocated,
 )
 from board_reader_inference.control.autoframe.geometry import FrameProposal, Located
-from board_reader_inference.control.camera.records import FullFrame
+from board_reader_inference.control.camera.records import FullFrame, PhoneLink
 from board_reader_inference.control.camera.registry import CameraRegistry
 
 REPORT = {
@@ -75,7 +77,7 @@ def test_a_new_camera_is_asked_for_a_full_frame_and_framed_from_it():
     framed = CameraConfig(crop=FOUND_CROP)
     assert phone.mailbox.take_nowait() == [ConfigMessage(framed)]
     assert page.take_nowait() == [
-        StateMessage(framed, None, phone_connected=True, autoframe="framed")
+        StateMessage(framed, None, phone_connected=True, autoframe="framed", watching=False)
     ]
 
 
@@ -135,3 +137,76 @@ def test_a_new_lens_or_frame_size_asks_for_a_new_full_frame():
     upright = FrameSize(width=1080, height=1920)
     registry.report(phone, replace(report, frame=upright))
     assert phone.mailbox.take_nowait() == [SendFullFrameMessage(1)]
+
+
+# ---- the previews: a moved camera ----------------------------------------------------
+
+#: A board 0.4 of the frame wide: large enough to be watched on the previews.
+WIDE = Located(corners=((0.3, 0.3), (0.7, 0.3), (0.7, 0.8), (0.3, 0.8)), r2=0.99)
+MOVED = Located(corners=((0.35, 0.3), (0.75, 0.3), (0.75, 0.8), (0.35, 0.8)), r2=0.99)
+PREVIEW = PreviewMessage(jpeg=b"preview", width=480, height=270)
+
+
+def _watched() -> tuple[CameraRegistry, Clock, list[str], PhoneLink]:
+    """A camera framed on ``WIDE``, with every preview handed out recorded."""
+    clock = Clock()
+    handed: list[str] = []
+    registry = CameraRegistry(
+        on_preview=lambda board_id, preview: handed.append(board_id), clock=clock
+    )
+    phone = registry.connect_phone(PHONE)
+    registry.full_frame(phone, FullFrameMessage(0, 50.0), b"jpeg")
+    registry.autoframe_result(
+        "board-1", FullFrameLocated(0, FrameProposal(FOUND_CROP, WIDE, None), 50.0)
+    )
+    return registry, clock, handed, phone
+
+
+def test_previews_stay_on_while_auto_frame_watches_with_no_control_page_open():
+    registry, _, _, phone = _watched()
+    assert PreviewsMessage(on=True) in phone.mailbox.take_nowait()
+    registry.configure("board-1", CameraConfig(crop=CropRect(0.1, 0.1, 0.5, 0.5)))
+    assert PreviewsMessage(on=False) in phone.mailbox.take_nowait()  # manual: not watched
+
+
+def test_a_preview_is_located_one_at_a_time_and_paced():
+    registry, clock, handed, phone = _watched()
+    registry.preview(phone, PREVIEW)
+    registry.preview(phone, PREVIEW)  # the first is still being located
+    assert handed == ["board-1"]
+    registry.preview_result("board-1", WIDE, 16 / 9)
+    clock.now += 1.5
+    registry.preview(phone, PREVIEW)  # sooner than preview_every
+    assert handed == ["board-1"]
+    clock.now += 1.5
+    registry.preview(phone, PREVIEW)
+    assert handed == ["board-1", "board-1"]
+    registry.preview_skipped("board-1")  # the read queue was busy: the next may go
+    registry.preview(phone, PREVIEW)
+    assert len(handed) == 3
+
+
+def test_two_previews_off_the_crop_ask_for_a_new_full_frame():
+    registry, clock, _, phone = _watched()
+    phone.mailbox.take_nowait()
+    clock.now += 10.0  # past the re-frame rate limit
+    for _ in range(2):
+        registry.preview(phone, PREVIEW)
+        registry.preview_result("board-1", MOVED, 16 / 9)
+        clock.now += 3.0
+    assert SendFullFrameMessage(1) in phone.mailbox.take_nowait()
+
+
+def test_re_frame_now_asks_again_and_switches_a_manual_camera_back_on():
+    registry, _, _, phone = _watched()
+    registry.reframe("board-1")
+    assert SendFullFrameMessage(1) in phone.mailbox.take_nowait()
+    registry.full_frame(phone, FullFrameMessage(1, 60.0), b"jpeg")
+    registry.autoframe_result(
+        "board-1", FullFrameLocated(1, FrameProposal(FOUND_CROP, WIDE, None), 60.0)
+    )
+    registry.configure("board-1", CameraConfig(crop=CropRect(0.1, 0.1, 0.5, 0.5)))
+    assert registry.board("board-1").config.auto is False
+    registry.reframe("board-1")
+    assert registry.board("board-1").config.auto is True
+    assert SendFullFrameMessage(2) in phone.mailbox.take_nowait()

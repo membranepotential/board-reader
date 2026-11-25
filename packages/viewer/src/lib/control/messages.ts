@@ -9,8 +9,8 @@
  *    hears a `PhoneDown`.
  *  - the camera list's, `CAMERAS_SOCKET`: it sends `rename` and `forget`; it hears a
  *    `CamerasDown`.
- *  - a control page's, one per board, `controlSocket(id)`: it sends `configure`; it
- *    hears a `ControlDown`.
+ *  - a control page's, one per board, `controlSocket(id)`: it sends `configure` and
+ *    `reframe`; it hears a `ControlDown`.
  *
  * Every text message is a JSON object whose `type` names it. The message types and
  * the validators for what comes down are generated from the Python models
@@ -23,6 +23,7 @@ import type {
   ConfigureMessage,
   ForgetMessage,
   FullFrameMessage,
+  ReframeMessage,
   RenameMessage,
   ReportMessage
 } from '#lib/protocol/generated.ts';
@@ -40,6 +41,12 @@ export function fullFrameMessage(request: number, captureTs: number): string {
 
 export function configureMessage(config: CameraConfig): string {
   const message: ConfigureMessage = { type: 'configure', config };
+  return JSON.stringify(message);
+}
+
+/** "Re-frame now": the node finds the board again, switching Auto-frame on. */
+export function reframeMessage(): string {
+  const message: ReframeMessage = { type: 'reframe' };
   return JSON.stringify(message);
 }
 

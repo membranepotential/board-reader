@@ -50,7 +50,8 @@ names it:
     second (for the frame ages); :class:`RefusedMessage`.
 
 ``WS /boards/{id}/control`` — a control page.
-  * up: :class:`ConfigureMessage`, the whole new config.
+  * up: :class:`ConfigureMessage`, the whole new config; :class:`ReframeMessage`,
+    "re-frame now" (:data:`ControlUp`).
   * down: :class:`StateMessage` on connect and on every change of config, report or
     phone link; :class:`PreviewMessage` and :class:`FrameMessage` (images as
     base64); :class:`HealthMessage` about once a second; :class:`RefusedMessage`.
@@ -294,9 +295,21 @@ class ConfigureMessage(Message):
     config: CameraConfig
 
 
-def parse_control_message(text: str) -> ConfigureMessage:
+@message
+class ReframeMessage(Message):
+    """Control page -> node: find the board again now (Auto-frame), and switch
+    Auto-frame on if a crop set by hand had switched it off."""
+
+    type: Literal["reframe"] = tag("reframe")
+
+
+#: What a control page sends.
+ControlUp = Annotated[ConfigureMessage | ReframeMessage, Field(discriminator="type")]
+
+
+def parse_control_message(text: str) -> ConfigureMessage | ReframeMessage:
     """One text message from a control page's socket; ``ValueError`` says why not."""
-    return parse(ConfigureMessage, text)
+    return parse(ControlUp, text)
 
 
 @message
@@ -342,9 +355,11 @@ class RefusedMessage(Message):
 
 #: What Auto-frame is doing for one camera, as /control shows it: nothing yet
 #: (``idle``), waiting for the full frame or reading it (``locating``), the crop is
-#: set (``framed``), the last full frame showed no board and a retry waits
-#: (``no-board``), or off because the crop was set by hand (``manual``).
-AutoFrameStatus = Literal["idle", "locating", "framed", "no-board", "manual"]
+#: set (``framed``), framed but the recent previews showed no board
+#: (``not-visible``: a person in view, a camera knocked away), the last full frame
+#: showed no board and a retry waits (``no-board``), or off because the crop was
+#: set by hand (``manual``).
+AutoFrameStatus = Literal["idle", "locating", "framed", "not-visible", "no-board", "manual"]
 
 
 @message
@@ -353,7 +368,10 @@ class StateMessage(Message):
 
     ``report`` is the phone's last report (kept after it disconnects, so the lens
     list survives a reload); ``phone_connected`` says whether its socket is open;
-    ``autoframe`` what Auto-frame is doing (:data:`AutoFrameStatus`).
+    ``autoframe`` what Auto-frame is doing (:data:`AutoFrameStatus`); ``watching``
+    whether the node watches the camera's previews for a move, which it does once
+    framed and only while the board fills enough of the picture to be found on a
+    preview.
     """
 
     type: Literal["state"] = tag("state")
@@ -361,6 +379,7 @@ class StateMessage(Message):
     report: CameraReport | None
     phone_connected: StrictBool
     autoframe: AutoFrameStatus
+    watching: StrictBool
 
 
 def _from_base64(value: object) -> object:

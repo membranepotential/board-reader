@@ -9,17 +9,20 @@ large enough (``Proposal.dominant``), that read goes into the position stream as
 ordinary read, stamped with the full frame's ``capture_ts``.
 
 **Drift.** After a crop is pushed, the phone's whole-frame previews (480 px, every
-1.5 s) are located too (``locate_preview``). Each trusted preview's board is compared
-with the board the crop was built from (the **anchor**, the full-frame locate's
-corners): the displacement is the symmetric Hausdorff distance between the two
-corner sets, in pixels, over the anchor's width in pixels (:func:`displacement`).
-It ignores corner labels, because a read that turns the board by a quarter
-relabels the same four points. The camera has moved when :attr:`Tuning.drift_previews`
-consecutive trusted previews are each farther than :attr:`Tuning.drift` from the
-anchor and each within :attr:`Tuning.settle` of the one before, that is, the camera
-came to rest somewhere else; then the node asks for a full frame again. A preview
-whose R^2 is below :attr:`Tuning.min_r2` (a hand, a person in the way) neither
-counts nor breaks a run: it behaves exactly like a :class:`Tick`.
+1.5 s) are located too (``locate_preview``), at most one per
+:attr:`Tuning.preview_every` (:func:`wants_preview`), and only while the board is
+large enough in the frame to be found on a preview (:func:`watching`). A preview
+counts when its grid's R^2 is at least :attr:`Tuning.preview_min_r2`; its board is
+then compared with the board the crop was built from (the **anchor**, the
+full-frame locate's corners): the displacement is the symmetric Hausdorff distance
+between the two corner sets, in pixels, over the anchor's width in pixels
+(:func:`displacement`). It ignores corner labels, because a read that turns the
+board by a quarter relabels the same four points. The camera has moved when
+:attr:`Tuning.drift_previews` counted previews in a row are each farther than
+:attr:`Tuning.drift` from the anchor; then the node asks for a full frame again. A
+preview that does not count (a hand, a person in the way) neither adds to the run
+nor breaks it; :attr:`Tuning.unseen_previews` of them in a row say "board not
+visible" and re-frame nothing.
 
 **Robustness.**
 
@@ -72,13 +75,39 @@ from board_reader_inference.control.autoframe.geometry import Located, displacem
 from board_reader_inference.control.autoframe.state import (
     AutoFrame,
     Backoff,
-    Drifting,
     InFlight,
 )
 from board_reader_inference.control.autoframe.tuning import TUNING, Tuning
 
 
-def status(state: AutoFrame) -> Status:
+def watching(state: AutoFrame, tuning: Tuning = TUNING) -> bool:
+    """Whether the previews are watched for a camera move: framed, nothing asked
+    for, and the board wide enough in the frame to be found on a preview."""
+    anchor = state.anchor
+    return (
+        state.auto
+        and state.connected
+        and anchor is not None
+        and state.inflight is None
+        and state.want is None
+        and state.backoff is None
+        and _width(anchor) >= tuning.min_preview_share
+    )
+
+
+def wants_preview(state: AutoFrame, now: float, tuning: Tuning = TUNING) -> bool:
+    """Whether a preview arriving at ``now`` is worth locating (one ChessQ read)."""
+    last = state.last_preview
+    return watching(state, tuning) and (last is None or now - last >= tuning.preview_every)
+
+
+def _width(board: Located) -> float:
+    """The board's width as a share of the frame's."""
+    xs = [x for x, _ in board.corners]
+    return max(xs) - min(xs)
+
+
+def status(state: AutoFrame, tuning: Tuning = TUNING) -> Status:
     """What /control shows for ``state``."""
     if not state.auto:
         return Status.MANUAL
@@ -91,7 +120,7 @@ def status(state: AutoFrame) -> Status:
     if state.want is not None:
         return Status.LOCATING
     if state.anchor is not None:
-        return Status.FRAMED
+        return Status.NOT_VISIBLE if state.unseen >= tuning.unseen_previews else Status.FRAMED
     return Status.IDLE
 
 
@@ -103,11 +132,11 @@ def step[R](
 ) -> tuple[AutoFrame, list[Action[R]]]:
     """Apply ``event`` at ``now`` (monotonic seconds): the next state and what the
     node must do. A timed-out request expires first; a due request fires last."""
-    before = status(state)
+    before = status(state, tuning)
     state = _expire(state, now, tuning)
     state, actions = _apply(state, event, now, tuning)
     state, fired = _fire(state, now, tuning)
-    after = status(state)
+    after = status(state, tuning)
     report: list[Action[R]] = [ReportStatus(after)] if after != before else []
     return state, [*actions, *fired, *report]
 
@@ -128,7 +157,9 @@ def _apply[R](
                 return state, []
             if not _accepts(answered):
                 return answered, []
-            framed = replace(answered, backoff=None, anchor=proposal.board, drifting=None)
+            framed = replace(
+                answered, backoff=None, anchor=proposal.board, drifting=0, unseen=0
+            )
             actions: list[Action[R]] = [PushCrop(proposal.crop)]
             if proposal.read is not None:
                 actions.append(PublishRead(proposal.read, ts))
@@ -142,7 +173,7 @@ def _apply[R](
             assert state.inflight is not None  # _answered matched it
             return _failed(answered, state.inflight.why, now, tuning), []
         case PreviewLocated(board=board, aspect=aspect):
-            return _preview(state, board, aspect, tuning), []
+            return _preview(state, board, aspect, now, tuning), []
         case ManualCropSet() | AutoToggled(on=False):
             return _manual(state), []
         case AutoToggled(on=True):
@@ -157,7 +188,7 @@ def _apply[R](
 
 def _fresh(state: AutoFrame) -> AutoFrame:
     """Want a full frame from scratch: the frame or the intent is new."""
-    return replace(state, want=Why.FRESH, backoff=None, anchor=None, drifting=None)
+    return replace(state, want=Why.FRESH, backoff=None, anchor=None, drifting=0, unseen=0)
 
 
 def _manual(state: AutoFrame) -> AutoFrame:
@@ -206,30 +237,22 @@ def _expire(state: AutoFrame, now: float, tuning: Tuning) -> AutoFrame:
 
 
 def _preview(
-    state: AutoFrame, board: Located | None, aspect: float, tuning: Tuning
+    state: AutoFrame, board: Located | None, aspect: float, now: float, tuning: Tuning
 ) -> AutoFrame:
-    anchor = state.anchor
-    watching = (
-        state.auto
-        and state.connected
-        and anchor is not None
-        and state.inflight is None
-        and state.want is None
-        and state.backoff is None
-    )
-    if not watching or board is None or board.r2 < tuning.min_r2:
+    if not watching(state, tuning):
         return state
+    anchor = state.anchor
     assert anchor is not None  # watching
+    seen = replace(state, last_preview=now)
+    if board is None or board.r2 < tuning.preview_min_r2:
+        return replace(seen, unseen=min(seen.unseen + 1, tuning.unseen_previews))
+    seen = replace(seen, unseen=0)
     if displacement(anchor, board, aspect) <= tuning.drift:
-        return replace(state, drifting=None)
-    previous = state.drifting
-    settled = (
-        previous is not None and displacement(previous.last, board, aspect) <= tuning.settle
-    )
-    run = previous.run + 1 if settled and previous is not None else 1
+        return replace(seen, drifting=0)
+    run = seen.drifting + 1
     if run >= tuning.drift_previews:
-        return replace(state, want=Why.DRIFT, drifting=None)
-    return replace(state, drifting=Drifting(board, run))
+        return replace(seen, want=Why.DRIFT, drifting=0)
+    return replace(seen, drifting=run)
 
 
 def _fire[R](

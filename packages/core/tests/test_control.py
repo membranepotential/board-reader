@@ -175,10 +175,11 @@ def test_every_message_down_names_its_type():
     assert json.loads(ConfigMessage(config).to_json()) == {"type": "config", "config": config.to_dict()}
     assert json.loads(PreviewsMessage(on=True).to_json()) == {"type": "previews", "on": True}
     state = json.loads(
-        StateMessage(config, None, phone_connected=False, autoframe="framed").to_json()
+        StateMessage(config, None, phone_connected=False, autoframe="framed", watching=False).to_json()
     )
     assert state == {"type": "state", "config": config.to_dict(), "report": None,
-                     "phone_connected": False, "autoframe": "framed"}
+                     "phone_connected": False, "autoframe": "framed",
+                     "watching": False}
     assert json.loads(SendFullFrameMessage(request=4).to_json()) == {
         "type": "send_full_frame", "request": 4,
     }

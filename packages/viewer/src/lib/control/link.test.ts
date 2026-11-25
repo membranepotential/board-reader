@@ -27,7 +27,8 @@ describe('the control link', () => {
       config: DEFAULT_CAMERA_CONFIG,
       report: null,
       phone_connected: false,
-      autoframe: 'idle'
+      autoframe: 'idle',
+      watching: false
     });
     net.sockets[0]!.deliver({ type: 'state', config: 'garbage' }); // dropped, not half-shown
     expect(onMessage).toHaveBeenCalledExactlyOnceWith({
@@ -35,7 +36,8 @@ describe('the control link', () => {
       config: DEFAULT_CAMERA_CONFIG,
       report: null,
       phone_connected: false,
-      autoframe: 'idle'
+      autoframe: 'idle',
+      watching: false
     });
   });
 
@@ -46,6 +48,14 @@ describe('the control link', () => {
     net.sockets[0]!.open();
     expect(control.configure(config)).toBe(true);
     expect(net.sockets[0]!.texts).toEqual([{ type: 'configure', config }]);
+  });
+
+  it('asks the node to re-frame', () => {
+    const { net, control } = link();
+    expect(control.reframe()).toBe(false);
+    net.sockets[0]!.open();
+    expect(control.reframe()).toBe(true);
+    expect(net.sockets[0]!.texts).toEqual([{ type: 'reframe' }]);
   });
 
   it('reconnects after the node went away', () => {

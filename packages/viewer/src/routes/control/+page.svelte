@@ -223,6 +223,11 @@
     if (send({ crop })) edit = null;
   }
 
+  function reframe(): void {
+    if (link === null || !link.reframe()) failure = 'not sent: the node is not connected';
+    else failure = null;
+  }
+
   const config = $derived(camera?.config ?? null);
   const report = $derived(camera?.report ?? null);
   /** The camera's frame: what the phone says it delivers, else the preview's size. */
@@ -374,6 +379,9 @@
             onclick={() => saveCrop(null)}>Send whole frame</button
           >
           {#if edit !== null}<span class="dirty">unsaved</span>{/if}
+          {#if edit !== null && config?.auto}
+            <span class="hint" data-testid="save-turns-auto-off">saving switches Auto-frame off</span>
+          {/if}
         </div>
       {:else}
         <div class="placeholder">
@@ -466,15 +474,37 @@
       {config?.streaming ? 'Stop streaming' : 'Start streaming'}
     </button>
 
+    <h2>Auto-frame</h2>
+    <p
+      class="autoframe"
+      data-testid="autoframe"
+      data-status={camera?.autoframe}
+      class:bad={camera?.autoframe === 'no-board' || camera?.autoframe === 'not-visible'}
+    >
+      {camera === null ? '—' : AUTOFRAME_COPY[camera.autoframe]}
+    </p>
+    {#if camera?.autoframe === 'framed' && !camera.watching}
+      <p class="hint" data-testid="drift-off">
+        The board is small in the picture, so a moved camera is not noticed: press Re-frame now
+        after moving it.
+      </p>
+    {/if}
+    <label class="check">
+      <input
+        type="checkbox"
+        checked={config?.auto ?? false}
+        disabled={locked}
+        onchange={(e) => send({ auto: e.currentTarget.checked })}
+      />
+      frame the board automatically
+    </label>
+    <button type="button" disabled={locked || !connected} onclick={reframe}>Re-frame now</button>
+
     <h2>Status</h2>
     <dl>
       <dt>phone link</dt>
       <dd class:bad={camera !== null && !connected}>
         {camera === null ? '—' : connected ? 'connected' : 'not connected'}
-      </dd>
-      <dt>auto-frame</dt>
-      <dd data-testid="autoframe" data-status={camera?.autoframe} class:bad={camera?.autoframe === 'no-board'}>
-        {camera === null ? '—' : AUTOFRAME_COPY[camera.autoframe]}
       </dd>
       <dt>lens open</dt>
       <dd>{report?.device ?? '—'}</dd>
@@ -771,6 +801,19 @@
   .stream {
     font-weight: 600;
     padding: 10px;
+  }
+  .autoframe {
+    margin: 0;
+    font-size: 13px;
+  }
+  .autoframe.bad {
+    color: #ff8f8f;
+  }
+  .panel label.check {
+    flex-direction: row;
+    align-items: center;
+    gap: 8px;
+    color: inherit;
   }
   .stream.on {
     background: #3a2020;

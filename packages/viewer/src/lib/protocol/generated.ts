@@ -412,6 +412,18 @@ export const PreviewsMessage = z.strictObject({
 export type PreviewsMessage = Immutable<z.infer<typeof PreviewsMessage>>;
 
 /**
+ * Control page -> node: find the board again now (Auto-frame), and switch
+ * Auto-frame on if a crop set by hand had switched it off.
+ */
+export const ReframeMessage = z.strictObject({
+  type: z.literal('reframe')
+});
+export type ReframeMessage = Immutable<z.infer<typeof ReframeMessage>>;
+
+export const ControlUp = z.discriminatedUnion('type', [ConfigureMessage, ReframeMessage]);
+export type ControlUp = Immutable<z.infer<typeof ControlUp>>;
+
+/**
  * Node -> either client: one message was refused; the socket stays open.
  */
 export const RefusedMessage = z.strictObject({
@@ -488,7 +500,10 @@ export type PhoneDown = Immutable<z.infer<typeof PhoneDown>>;
  *
  * `report` is the phone's last report (kept after it disconnects, so the lens
  * list survives a reload); `phone_connected` says whether its socket is open;
- * `autoframe` what Auto-frame is doing (`AutoFrameStatus`).
+ * `autoframe` what Auto-frame is doing (`AutoFrameStatus`); `watching`
+ * whether the node watches the camera's previews for a move, which it does once
+ * framed and only while the board fills enough of the picture to be found on a
+ * preview.
  */
 export const StateMessage = z.strictObject({
   config: CameraConfig,
@@ -498,9 +513,11 @@ export const StateMessage = z.strictObject({
     'idle',
     'locating',
     'framed',
+    'not-visible',
     'no-board',
     'manual'
   ]),
+  watching: z.boolean(),
   type: z.literal('state')
 });
 export type StateMessage = Immutable<z.infer<typeof StateMessage>>;

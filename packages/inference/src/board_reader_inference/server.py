@@ -37,7 +37,7 @@ import json
 import logging
 import os
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Coroutine
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -46,7 +46,7 @@ from fastapi import FastAPI, Query, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
 
-from board_reader_core.control import Rules
+from board_reader_core.control import PreviewMessage, Rules
 from board_reader_core.protocol import PositionEvent
 from board_reader_core.recording import FrameRecorder
 from board_reader_core.wire import Frame, decode_jpeg
@@ -56,18 +56,17 @@ from board_reader_inference.control.autoframe.events import (
     FullFrameLocated,
 )
 from board_reader_inference.control.autoframe.geometry import FrameProposal, Located
-from board_reader_inference.control.autoframe.tuning import Tuning
 from board_reader_inference.control.camera.health import NodeStatus, StreamedFrame
 from board_reader_inference.control.camera.records import FullFrame
 from board_reader_inference.control.camera.registry import CameraRegistry
 from board_reader_inference.control.camera.router import router as camera_router
 from board_reader_inference.measurement.labels import READ_FRAME
 from board_reader_inference.recognition.locate import (
-    MIN_R2,
     Grid,
     NoBoard,
     Proposal,
     autoframe,
+    locate_preview,
 )
 from board_reader_inference.recognition.recognizer import (
     FrameReading,
@@ -79,7 +78,7 @@ from board_reader_inference.recognition.recognizer import (
     frame_reader,
 )
 from board_reader_inference.stream.hub import PositionHub
-from board_reader_inference.stream.ingest import FrameIngest, drop_line, event_line
+from board_reader_inference.stream.ingest import Busy, FrameIngest, drop_line, event_line
 from board_reader_inference.stream.schedule.parse import parse_policy
 from board_reader_inference.stream.schedule.policies import EveryFrame
 from board_reader_inference.stream.schedule.seam import FramePolicy, ReadKind
@@ -186,6 +185,14 @@ class _Located:
 
 
 @dataclass(frozen=True, slots=True)
+class _PreviewLook:
+    """Where ``locate_preview`` found the board in a preview (``None``: no trusted
+    board)."""
+
+    board: Located | None
+
+
+@dataclass(frozen=True, slots=True)
 class _Retained:
     """The latest frame ``/ingest`` accepted for one board, kept for previews."""
 
@@ -208,15 +215,41 @@ def create_app(
     def _forget_board(board_id: str) -> None:
         ingest_.forget(board_id)
         latest_frames.pop(board_id, None)
+        hub_.forget(board_id)
 
     # Auto-frame (D21): each full frame a camera sends is located on the read
     # worker, between the reads, and the result goes back to the registry.
     locating: set[asyncio.Task[None]] = set()
 
     def _on_full_frame(full: FullFrame) -> None:
-        task = asyncio.get_running_loop().create_task(_locate(full))
+        _spawn(_locate(full))
+
+    def _on_preview(board_id: str, preview: PreviewMessage) -> None:
+        _spawn(_locate_preview(board_id, preview))
+
+    def _spawn(locate: Coroutine[None, None, None]) -> None:
+        task = asyncio.get_running_loop().create_task(locate)
         locating.add(task)
         task.add_done_callback(locating.discard)
+
+    async def _locate_preview(board_id: str, preview: PreviewMessage) -> None:
+        """One preview, located for a camera move only when the read worker has
+        nothing else to do (one ChessQ read; it never delays a read)."""
+
+        def work() -> _PreviewLook:
+            grid = locate_preview(recognizer_.read, decode_jpeg(preview.jpeg))
+            return _PreviewLook(None if grid is None else _located(grid))
+
+        try:
+            look = await ingest_.call_spare(work)
+        except ValueError as e:
+            log.warning("board %s: the preview is no JPEG: %s", board_id, e)
+            cameras.preview_skipped(board_id)
+            return
+        if isinstance(look, Busy):
+            cameras.preview_skipped(board_id)
+        else:
+            cameras.preview_result(board_id, look.board, preview.width / preview.height)
 
     async def _locate(full: FullFrame) -> None:
         def work() -> _Located:
@@ -276,7 +309,7 @@ def create_app(
         on_names=hub_.set_names,
         on_forget=_forget_board,
         on_full_frame=_on_full_frame,
-        tuning=Tuning(min_r2=MIN_R2),
+        on_preview=_on_preview,
     )
     #: /ingest frames refused because their board id is another camera's (D18).
     frames_not_owned = 0

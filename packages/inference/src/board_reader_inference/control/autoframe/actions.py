@@ -23,6 +23,8 @@ class Status(StrEnum):
     IDLE = "idle"
     LOCATING = "locating"
     FRAMED = "framed"
+    #: Framed, but the last previews showed no trusted board for a while.
+    NOT_VISIBLE = "not-visible"
     NO_BOARD = "no-board"
     MANUAL = "manual"
 

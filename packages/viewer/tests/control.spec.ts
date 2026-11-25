@@ -34,7 +34,7 @@ interface Config {
   auto: boolean;
 }
 
-type AutoFrameStatus = 'idle' | 'locating' | 'framed' | 'no-board' | 'manual';
+type AutoFrameStatus = 'idle' | 'locating' | 'framed' | 'not-visible' | 'no-board' | 'manual';
 
 interface FrameSize {
   width: number;
@@ -59,8 +59,10 @@ class FakeControlNode {
     auto: true
   };
   autoframe: AutoFrameStatus = 'framed';
+  watching = true;
   kind: 'phone' | 'stream' = 'phone';
   readonly configures: Config[] = [];
+  reframes = 0;
   socket: WebSocketRoute | null = null;
 
   constructor(readonly frame: FrameSize) {}
@@ -80,7 +82,8 @@ class FakeControlNode {
         kind: this.kind
       },
       phone_connected: true,
-      autoframe: this.autoframe
+      autoframe: this.autoframe,
+      watching: this.watching
     });
   }
 
@@ -113,6 +116,7 @@ class FakeControlNode {
       node.socket = ws;
       ws.onMessage((message) => {
         const parsed = JSON.parse(message as string) as { type: string; config: Config };
+        if (parsed.type === 'reframe') node.reframes += 1;
         if (parsed.type !== 'configure') return;
         node.config = parsed.config;
         node.configures.push(parsed.config);
@@ -257,6 +261,27 @@ test('Auto-frame says what it is doing for the camera', async ({ page }) => {
   await expect(status).toHaveText('no board found yet; trying again');
   node.setAutoframe('manual');
   await expect(status).toHaveText('off: the crop was set by hand');
+});
+
+test('the Auto-frame switch and Re-frame now reach the node', async ({ page }) => {
+  const node = await FakeControlNode.install(page);
+  await page.goto('/control');
+  const auto = page.getByLabel('frame the board automatically');
+  await expect(auto).toBeChecked();
+  await expect(page.getByTestId('drift-off')).toBeHidden();
+  await auto.uncheck();
+  await expect.poll(() => node.configures.at(-1)?.auto).toBe(false);
+  await page.getByRole('button', { name: 'Re-frame now' }).click();
+  await expect.poll(() => node.reframes).toBe(1);
+});
+
+test('a board too small to watch on the previews says a move goes unnoticed', async ({ page }) => {
+  const node = await FakeControlNode.install(page);
+  await page.goto('/control');
+  await expect(page.getByTestId('autoframe')).toHaveText('on: the node set the crop');
+  node.watching = false;
+  node.setAutoframe('framed');
+  await expect(page.getByTestId('drift-off')).toBeVisible();
 });
 
 test('a stream offers no lens and no resolution to choose', async ({ page }) => {

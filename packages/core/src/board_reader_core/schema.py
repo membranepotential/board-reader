@@ -54,6 +54,7 @@ def _roots() -> dict[str, Any]:
         "CamerasDown": control.CamerasDown,
         # WS /boards/{id}/control: up and down
         "ConfigureMessage": control.ConfigureMessage,
+        "ControlUp": control.ControlUp,
         "ControlDown": control.ControlDown,
     }
 

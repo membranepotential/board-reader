@@ -28,10 +28,12 @@ from fastapi import APIRouter, WebSocket
 
 from board_reader_core.control import (
     CamerasDown,
+    ConfigureMessage,
     ForgetMessage,
     FrameMessage,
     FullFrameMessage,
     HealthMessage,
+    ReframeMessage,
     RefusedMessage,
     ReportMessage,
     parse_cameras_message,
@@ -172,7 +174,11 @@ def router(
                     refuse("the control socket takes JSON text messages only")
                     continue
                 try:
-                    registry.configure(board_id, parse_control_message(text).config)
+                    match parse_control_message(text):
+                        case ConfigureMessage(config=config):
+                            registry.configure(board_id, config)
+                        case ReframeMessage():
+                            registry.reframe(board_id)
                 except ValueError as e:
                     refuse(str(e))
 

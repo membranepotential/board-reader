@@ -25,7 +25,7 @@ from board_reader_inference.recognition.recognizer import (
 )
 from board_reader_inference.server import create_app
 from board_reader_inference.stream.hub import PositionHub
-from board_reader_inference.stream.ingest import READ_BACKLOG, FrameIngest
+from board_reader_inference.stream.ingest import READ_BACKLOG, Busy, FrameIngest
 from board_reader_inference.stream.schedule.seam import ReadKind
 
 
@@ -178,6 +178,41 @@ def test_other_work_waits_its_turn_in_the_read_queue_one_call_at_a_time():
     assert order == ["read 1", "locate", "read 2"]
     assert most == 1
     assert (result, error) == ("locate", "no JPEG")
+
+
+def test_spare_work_never_goes_ahead_of_a_read_and_is_skipped_while_reads_wait():
+    """``call_spare`` (Auto-frame's look at a preview) waits behind every read, even
+    one queued after it, and does not run at all while a read is waiting."""
+
+    async def run():
+        order: list[str] = []
+
+        def estimate(frame: Frame) -> FrameReading:
+            time.sleep(0.05)
+            order.append(f"read {frame.seq}")
+            return est.estimate(frame)
+
+        def spare() -> str:
+            order.append("spare")
+            return "looked"
+
+        est = FakeEstimator()
+        ingest = FrameIngest(estimate, PositionHub())
+        ingest.submit(_frame(seq=1))
+        await asyncio.sleep(0.01)  # read 1 is running, nothing waits
+        looked = asyncio.create_task(ingest.call_spare(spare))
+        await asyncio.sleep(0)
+        ingest.submit(_frame(seq=2))  # queued after the spare work, read before it
+        skipped = await ingest.call_spare(spare)  # read 2 is waiting
+        result = await asyncio.wait_for(looked, timeout=5.0)
+        await asyncio.wait_for(ingest.drain(), timeout=5.0)
+        await ingest.close()
+        return order, result, skipped
+
+    order, result, skipped = asyncio.run(run())
+    assert order == ["read 1", "read 2", "spare"]
+    assert result == "looked"
+    assert isinstance(skipped, Busy)
 
 
 def test_a_read_made_elsewhere_is_settled_and_published_unless_the_stream_is_newer():

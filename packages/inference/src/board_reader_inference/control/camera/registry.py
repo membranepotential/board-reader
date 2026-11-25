@@ -91,11 +91,18 @@ from board_reader_inference.control.autoframe.events import (
     FullFrameFailed,
     FullFrameLocated,
     ManualCropSet,
+    PreviewLocated,
     Reframed,
     StreamingStarted,
     Tick,
 )
-from board_reader_inference.control.autoframe.machine import status, step
+from board_reader_inference.control.autoframe.geometry import Located
+from board_reader_inference.control.autoframe.machine import (
+    status,
+    step,
+    wants_preview,
+    watching,
+)
 from board_reader_inference.control.autoframe.state import AutoFrame
 from board_reader_inference.control.autoframe.tuning import TUNING, Tuning
 from board_reader_inference.control.camera.direction import DirectionTrack
@@ -149,9 +156,10 @@ class CameraRegistry:
     name (the gateway hands it to ``/viewer``); ``on_forget`` hears the board id of
     each forgotten camera (the gateway frees that board's read state);
     ``on_full_frame`` hears each full frame Auto-frame asked for (the gateway locates
-    the board in it and answers with :meth:`autoframe_result`). ``clock`` is the
-    monotonic clock Auto-frame's timeouts and retries run on; ``tuning`` its
-    thresholds.
+    the board in it and answers with :meth:`autoframe_result`); ``on_preview`` hears
+    each preview worth locating for a camera move (the gateway answers with
+    :meth:`preview_result`). ``clock`` is the monotonic clock Auto-frame's timeouts,
+    retries and preview pacing run on; ``tuning`` its thresholds.
     """
 
     def __init__(
@@ -160,6 +168,7 @@ class CameraRegistry:
         on_names: Callable[[NamesMessage], None] | None = None,
         on_forget: Callable[[str], None] | None = None,
         on_full_frame: Callable[[FullFrame], None] | None = None,
+        on_preview: Callable[[str, PreviewMessage], None] | None = None,
         clock: Callable[[], float] = time.monotonic,
         tuning: Tuning = TUNING,
     ) -> None:
@@ -188,6 +197,7 @@ class CameraRegistry:
         self._on_names = on_names
         self._on_forget = on_forget
         self._on_full_frame = on_full_frame
+        self._on_preview = on_preview
         self._clock = clock
         self._tuning = tuning
         self._announce_names()
@@ -220,7 +230,8 @@ class CameraRegistry:
             config=board.config,
             report=board.report,
             phone_connected=self._phone_on(board_id) is not None,
-            autoframe=status(board.autoframe).value,
+            autoframe=status(board.autoframe, self._tuning).value,
+            watching=watching(board.autoframe, self._tuning),
         )
 
     def _tell_watchers(self, board_id: str, message: ControlDown | None = None) -> None:
@@ -376,7 +387,8 @@ class CameraRegistry:
         board = self.board(board_id)
         link.mailbox.post(AssignedMessage(board_id, self._names.get(device_id)))
         link.mailbox.post(ConfigMessage(board.config))
-        link.mailbox.post(PreviewsMessage(on=bool(board.watchers)))
+        board.previews = self._previews_wanted(board)
+        link.mailbox.post(PreviewsMessage(on=board.previews))
         self._tell_watchers(board_id)
         self._tell_lists()
         if previous is not None:
@@ -429,8 +441,16 @@ class CameraRegistry:
         if not self._current(link):
             return
         board_id = self._cameras[link.device_id]
-        self.board(board_id).preview = preview
+        board = self.board(board_id)
+        board.preview = preview
         self._tell_watchers(board_id, preview)
+        if (
+            self._on_preview is not None
+            and not board.locating_preview
+            and wants_preview(board.autoframe, self._clock(), self._tuning)
+        ):
+            board.locating_preview = True
+            self._on_preview(board_id, preview)
 
     # ---- the camera lists --------------------------------------------------------
 
@@ -470,15 +490,13 @@ class CameraRegistry:
         mailbox.post(self._state(board_id))
         if board.preview is not None:
             mailbox.post(board.preview)
-        if len(board.watchers) == 1:
-            self._tell_phone(board_id, PreviewsMessage(on=True))
+        self._sync_previews(board_id)
         return mailbox
 
     def disconnect_watcher(self, board_id: str, mailbox: Mailbox[ControlDown]) -> None:
         board = self.board(board_id)
         board.watchers.discard(mailbox)
-        if not board.watchers:
-            self._tell_phone(board_id, PreviewsMessage(on=False))
+        self._sync_previews(board_id)
 
     def configure(self, board_id: str, config: CameraConfig) -> None:
         """/control set ``config``. A new crop there is a crop set by hand: it
@@ -517,6 +535,43 @@ class CameraRegistry:
             return []
         return self._step(board_id, result)
 
+    def reframe(self, board_id: str) -> None:
+        """/control asked to find the board again now; Auto-frame is switched on
+        first if a crop set by hand had switched it off."""
+        if self.board(board_id).config.auto:
+            self._step(board_id, Reframed())
+        else:
+            self.configure(board_id, replace(self.board(board_id).config, auto=True))
+
+    def preview_result(self, board_id: str, board: Located | None, aspect: float) -> None:
+        """Where the gateway found the board in the preview :meth:`preview` handed
+        it (``None``: no trusted board); ``aspect`` is the preview's width over its
+        height."""
+        camera = self._boards.get(board_id)
+        if camera is None or self._holder(board_id) is None:
+            return  # forgotten meanwhile
+        camera.locating_preview = False
+        self._step(board_id, PreviewLocated(board, aspect))
+
+    def preview_skipped(self, board_id: str) -> None:
+        """The gateway located nothing for the preview (the read queue was busy):
+        the next preview may go."""
+        camera = self._boards.get(board_id)
+        if camera is not None:
+            camera.locating_preview = False
+
+    def _previews_wanted(self, board: BoardCamera) -> bool:
+        """Previews are wanted while a control page watches or Auto-frame watches
+        for a camera move."""
+        return bool(board.watchers) or watching(board.autoframe, self._tuning)
+
+    def _sync_previews(self, board_id: str) -> None:
+        board = self.board(board_id)
+        wanted = self._previews_wanted(board)
+        if wanted != board.previews:
+            board.previews = wanted
+            self._tell_phone(board_id, PreviewsMessage(on=wanted))
+
     def tick(self) -> None:
         """Let time pass for every camera: a retry or a timeout may be due."""
         for board_id in list(self._boards):
@@ -542,6 +597,7 @@ class CameraRegistry:
                     self._tell_watchers(board_id)
                 case PublishRead():
                     published.append(action)
+        self._sync_previews(board_id)
         return published
 
     def _save(self) -> None:

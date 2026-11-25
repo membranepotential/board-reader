@@ -7,10 +7,11 @@ import random
 from collections.abc import Callable, Sequence
 from dataclasses import replace
 from enum import Enum, auto
+from typing import get_args
 
 import pytest
 
-from board_reader_core.control import CropRect
+from board_reader_core.control import AutoFrameStatus, CropRect
 
 from board_reader_inference.control.autoframe.actions import (
     Action,
@@ -35,13 +36,19 @@ from board_reader_inference.control.autoframe.events import (
     Tick,
 )
 from board_reader_inference.control.autoframe.geometry import FrameProposal, Located, Quad
-from board_reader_inference.control.autoframe.machine import status, step
+from board_reader_inference.control.autoframe.machine import (
+    status,
+    step,
+    wants_preview,
+    watching,
+)
 from board_reader_inference.control.autoframe.state import AutoFrame
 from board_reader_inference.control.autoframe.tuning import TUNING
 
 ASPECT = 16 / 9
-#: A board 0.3 of the frame wide; 0.01 of the frame is 3.3 % of its width.
-HOME = Located(((0.30, 0.30), (0.60, 0.30), (0.60, 0.80), (0.30, 0.80)), 0.97)
+#: A board 0.4 of the frame wide (wide enough to watch on a preview); 0.01 of the
+#: frame is 2.5 % of its width.
+HOME = Located(((0.30, 0.30), (0.70, 0.30), (0.70, 0.80), (0.30, 0.80)), 0.97)
 CROP = CropRect(0.27, 0.25, 0.36, 0.6)
 
 
@@ -89,6 +96,10 @@ FRAMED: list[tuple[float, Event[str]]] = [
 
 def previews(start: float, *boards: Located | None) -> list[tuple[float, Event[str]]]:
     return [(start + 1.5 * i, PreviewLocated(b, ASPECT)) for i, b in enumerate(boards)]
+
+
+def test_every_status_is_one_the_wire_carries():
+    assert {s.value for s in Status} == set(get_args(AutoFrameStatus))
 
 
 # --- framing --------------------------------------------------------------------
@@ -139,13 +150,14 @@ def test_a_new_lens_drops_the_in_flight_answer_and_asks_again():
 
 # --- drift ----------------------------------------------------------------------
 
-AWAY = moved(HOME, 0.03)  # 10 % of the board's width
+AWAY = moved(HOME, 0.03)  # 7.5 % of the board's width
 
 
 @pytest.mark.parametrize(
     ("boards", "reframes"),
     [
-        pytest.param([AWAY, moved(AWAY, 0.001)], True, id="two settled previews away"),
+        pytest.param([AWAY, moved(AWAY, 0.001)], True, id="two previews away"),
+        pytest.param([AWAY, moved(AWAY, 0.03)], True, id="two previews away, still moving"),
         pytest.param([AWAY], False, id="one preview away"),
         pytest.param([moved(HOME, 0.005), moved(HOME, -0.005)], False, id="still jitter"),
         pytest.param(
@@ -160,10 +172,17 @@ AWAY = moved(HOME, 0.03)  # 10 % of the board's width
             id="a hand between two previews away",
         ),
         pytest.param([AWAY, HOME, AWAY], False, id="back home breaks the run"),
-        pytest.param([AWAY, moved(AWAY, 0.03)], False, id="camera still moving"),
+        pytest.param(
+            [moved(HOME, 0.012), moved(HOME, 0.012)], False, id="3 % stays inside the margin"
+        ),
+        pytest.param(
+            [moved(AWAY, 0, r2=0.95), moved(AWAY, 0, r2=0.95)],
+            False,
+            id="R^2 0.95 does not count for drift",
+        ),
     ],
 )
-def test_drift_needs_two_trusted_settled_previews_away_from_the_crop(boards, reframes):
+def test_drift_needs_two_counted_previews_away_from_the_crop(boards, reframes):
     _, out = run([*FRAMED, *previews(20.0, *boards), (40.0, Tick())])
     assert [r.why for _, r in requests(out)][1:] == ([Why.DRIFT] if reframes else [])
 
@@ -187,6 +206,31 @@ def test_a_drift_re_frame_pushes_the_new_crop_and_anchors_there():
     assert PushCrop(new_crop) in [a for _, a in out]
     assert state.anchor == AWAY
     assert len(requests(out)) == 2
+
+
+def test_a_long_run_of_uncounted_previews_says_the_board_is_not_visible():
+    state, out = run([*FRAMED, *previews(20.0, *[None] * TUNING.unseen_previews)])
+    assert status(state) is Status.NOT_VISIBLE
+    assert ReportStatus(Status.NOT_VISIBLE) in [a for _, a in out]
+    assert len(requests(out)) == 1  # it never re-frames
+    state, out = run(previews(40.0, HOME), state)
+    assert status(state) is Status.FRAMED
+
+
+def test_a_board_too_small_for_the_preview_is_not_watched():
+    small = Located(((0.40, 0.40), (0.70, 0.40), (0.70, 0.80), (0.40, 0.80)), 0.99)
+    state, _ = run([(0.0, CameraRegistered()), (1.0, FullFrameLocated(0, proposal(small), 0.5))])
+    assert status(state) is Status.FRAMED
+    assert not watching(state)
+    assert not wants_preview(state, 10.0)
+
+
+def test_previews_are_located_at_most_every_few_seconds():
+    state, _ = run(FRAMED)
+    assert wants_preview(state, 2.0)
+    state, _ = run([(2.0, PreviewLocated(HOME, ASPECT))], state)
+    assert not wants_preview(state, 2.0 + TUNING.preview_every - 0.1)
+    assert wants_preview(state, 2.0 + TUNING.preview_every)
 
 
 # --- failures -------------------------------------------------------------------
@@ -389,9 +433,13 @@ def _check(step_fn: Step, seed: int, events: int = 400) -> tuple[set[Broken], se
                     open_request = None
                 else:
                     paths.add(Path.LATE_ANSWER)
-            case PreviewLocated(board=board) if board is None or board.r2 < TUNING.min_r2:
+            case PreviewLocated(board=board) if (
+                board is None or board.r2 < TUNING.preview_min_r2
+            ):
                 paths.add(Path.UNTRUSTED_PREVIEW)
-                if step_fn(state, event, now) != step_fn(state, Tick(), now):
+                if _drift_view(step_fn(state, event, now)) != _drift_view(
+                    step_fn(state, Tick(), now)
+                ):
                     broken.add(Broken.UNTRUSTED_TRIGGER)
             case _:
                 pass
@@ -432,6 +480,14 @@ def _check(step_fn: Step, seed: int, events: int = 400) -> tuple[set[Broken], se
     return broken, paths
 
 
+def _drift_view(stepped: tuple[AutoFrame, list[Action[str]]]) -> tuple[object, ...]:
+    """What an uncounted preview must leave as a tick leaves it: the drift run, what
+    is wanted, and the requests. (It does count towards "not visible".)"""
+    state, actions = stepped
+    sent = [a for a in actions if isinstance(a, RequestFullFrame)]
+    return state.drifting, state.want, state.inflight, sent
+
+
 SEEDS = range(40)
 
 
@@ -466,7 +522,7 @@ def _tuned(**changes: object) -> Step:
             _tuned(min_reframe_interval=0.0), Broken.RATE_LIMIT, id="no rate limit"
         ),
         pytest.param(
-            _tuned(min_r2=0.0), Broken.UNTRUSTED_TRIGGER, id="trusts every preview"
+            _tuned(preview_min_r2=0.0), Broken.UNTRUSTED_TRIGGER, id="trusts every preview"
         ),
         pytest.param(_tuned(backoff=(3.0, 10.0, 30.0, 60.0)), Broken.BACKOFF, id="no cap"),
     ],

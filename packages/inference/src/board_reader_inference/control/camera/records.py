@@ -31,6 +31,10 @@ class BoardCamera:
     direction: DirectionTrack = field(default_factory=DirectionTrack)
     watchers: set[Mailbox[ControlDown]] = field(default_factory=set)
     autoframe: AutoFrame = field(default_factory=AutoFrame)
+    #: What the phone was last told about previews (``PreviewsMessage``).
+    previews: bool = False
+    #: A preview is being located for Auto-frame; the next waits for its result.
+    locating_preview: bool = False
 
 
 @dataclass(frozen=True, slots=True)

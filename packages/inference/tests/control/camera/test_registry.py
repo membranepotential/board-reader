@@ -65,7 +65,7 @@ def test_a_newer_socket_of_one_phone_replaces_the_older():
     registry.disconnect_phone(old)
     watcher = registry.connect_watcher("board-1")
     assert watcher.take_nowait() == [
-        StateMessage(CameraConfig(), None, phone_connected=True, autoframe="locating")
+        StateMessage(CameraConfig(), None, phone_connected=True, autoframe="locating", watching=False)
     ]
 
 
@@ -81,7 +81,7 @@ def test_a_config_change_reaches_the_boards_phone_and_every_watcher():
     assert phone.mailbox.take_nowait() == [ConfigMessage(config)]
     for watcher in watchers:
         assert watcher.take_nowait() == [
-            StateMessage(config, None, phone_connected=True, autoframe="manual")
+            StateMessage(config, None, phone_connected=True, autoframe="manual", watching=False)
         ]
 
 
@@ -104,7 +104,7 @@ def test_a_watcher_hears_the_phone_come_and_go_and_its_reports():
     registry = CameraRegistry()
     watcher = registry.connect_watcher("board-1")
     assert watcher.take_nowait() == [
-        StateMessage(CameraConfig(), None, phone_connected=False, autoframe="idle")
+        StateMessage(CameraConfig(), None, phone_connected=False, autoframe="idle", watching=False)
     ]
 
     phone = registry.connect_phone(PHONE)
@@ -112,13 +112,13 @@ def test_a_watcher_hears_the_phone_come_and_go_and_its_reports():
     registry.report(phone, report)
     # Latest state wins: the connect and the report collapse into one message.
     assert watcher.take_nowait() == [
-        StateMessage(CameraConfig(), report, phone_connected=True, autoframe="locating")
+        StateMessage(CameraConfig(), report, phone_connected=True, autoframe="locating", watching=False)
     ]
 
     registry.disconnect_phone(phone)
     # The report outlives the phone, so the lens list survives a reload.
     assert watcher.take_nowait() == [
-        StateMessage(CameraConfig(), report, phone_connected=False, autoframe="idle")
+        StateMessage(CameraConfig(), report, phone_connected=False, autoframe="idle", watching=False)
     ]
 
 
@@ -217,7 +217,7 @@ def test_forgetting_a_disconnected_camera_frees_its_id_and_config():
     assert heard[-1] == NamesMessage(names=())
     # The open page stays, on a board with nothing configured.
     assert page.take_nowait() == [
-        StateMessage(CameraConfig(), None, phone_connected=False, autoframe="idle")
+        StateMessage(CameraConfig(), None, phone_connected=False, autoframe="idle", watching=False)
     ]
     # The device that comes back is a new camera: the lowest free id, no config.
     assert registry.connect_phone(OTHER).mailbox.take_nowait()[:2] == [

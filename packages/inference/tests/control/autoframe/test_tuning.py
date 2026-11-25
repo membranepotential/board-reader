@@ -10,7 +10,9 @@ from board_reader_inference.control.autoframe.tuning import Tuning
 @pytest.mark.parametrize(
     "bad",
     [
-        {"min_r2": 1.5},
+        {"preview_min_r2": 1.5},
+        {"min_preview_share": -0.1},
+        {"unseen_previews": 0},
         {"drift": 0.0},
         {"drift_previews": 0},
         {"full_frame_timeout": 0.0},

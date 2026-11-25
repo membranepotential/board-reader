@@ -36,16 +36,17 @@ describe('the phone socket, down', () => {
 
 describe('the control socket, down', () => {
   it('reads the state the node holds', () => {
-    const state = { type: 'state', config: CONFIG, report: REPORT, phone_connected: true, autoframe: 'manual' };
+    const state = { type: 'state', config: CONFIG, report: REPORT, phone_connected: true, autoframe: 'manual', watching: false };
     expect(controlDown(text(state))).toEqual({ ok: true, value: state });
-    const fresh = { config: DEFAULT_CAMERA_CONFIG, report: null, phone_connected: false, autoframe: 'idle' };
+    const fresh = { config: DEFAULT_CAMERA_CONFIG, report: null, phone_connected: false, autoframe: 'idle', watching: false };
     expect(controlDown(text({ type: 'state', ...fresh })).ok).toBe(true);
   });
 
   it('refuses a state with a report it cannot read', () => {
     const report = { ...REPORT, ingest: 'streming' };
     expect(
-      controlDown(text({ type: 'state', config: CONFIG, report, phone_connected: true, autoframe: 'idle' })).ok
+      controlDown(text({ type: 'state', config: CONFIG, report, phone_connected: true, autoframe: 'idle', watching: false }))
+        .ok
     ).toBe(false);
     expect(controlDown(text({ type: 'state', config: CONFIG, report: null })).ok).toBe(false);
   });

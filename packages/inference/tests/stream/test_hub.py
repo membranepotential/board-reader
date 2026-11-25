@@ -66,6 +66,23 @@ def test_late_subscriber_gets_retained_snapshot_first():
     asyncio.run(run())
 
 
+def test_a_forgotten_board_is_not_shown_to_a_new_subscriber():
+    async def run():
+        hub = PositionHub()
+        await hub.publish(_event("board-1", 3))
+        await hub.publish(_event("board-2", 4))
+        hub.forget("board-1")
+        hub.forget("board-9")  # never seen: nothing to drop
+        stream = hub.subscribe()
+        first = await anext(stream)
+        await stream.aclose()
+        return hub.latest("board-1"), first
+
+    latest, first = asyncio.run(run())
+    assert latest is None
+    assert first.board_id == "board-2"
+
+
 def test_subscriber_count_tracks_lifecycle():
     async def run():
         hub = PositionHub()
