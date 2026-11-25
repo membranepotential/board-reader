@@ -1182,11 +1182,17 @@ Needs the network (it reads the video) and deno (`sudo pacman -S deno`).
    Expected: a log line `video: <the title>`, then `control link up` and
    `streaming as board board-N`.
 3. Open `http://localhost:8080/control`. Expected: the camera in the list, labelled
-   with the video's title, connected, with a 1920×1080 frame; its preview shows the
-   broadcast's whole picture.
-4. Draw the crop around the physical board (not the broadcast's 2D board) and turn
-   streaming on. Expected: the edge logs `config: crop {...}, streaming on`, and
-   `/control`'s received frame shows only the board.
+   with the video's title, connected, with a 1920×1080 frame and no lens or resolution
+   to choose; its preview shows the broadcast's whole picture.
+4. Do nothing for a few seconds. Expected: Auto-frame (DESIGN D21) sets the crop around
+   the physical board, not the broadcast's 2D board: the node logs `auto-frame board-N:
+   board found in <n> reads ... crop {...}`, the edge logs `config: crop {...},
+   streaming off`, and `/control` says Auto-frame framed it. On this video at 1:00:00 it
+   took 8 reads (R² 0.994) and chose `x 0.228, y 0.555, w 0.278, h 0.241`. The board is
+   about a quarter of the picture's width, so `/control` also says a camera move goes
+   unnoticed (too small to watch on the previews). Turn streaming on. Expected: the edge
+   logs `config: crop {...}, streaming on`, and `/control`'s received frame shows only
+   the board.
 5. Open `http://localhost:8080`. Expected: a card for `board-N` whose position follows
    the game; a move on the board opens a burst and the card updates within a few
    seconds. `/healthz` shows `ingest.received` climbing and `not_owned` at 0.
@@ -1196,6 +1202,37 @@ Needs the network (it reads the video) and deno (`sudo pacman -S deno`).
 7. Optional, a live stream: `uv run board-reader-edge camera "https://www.youtube.com/@<channel>/live"`
    with `--state /tmp/live-id`. Expected: `live stream: <title>`, a second camera
    (`board-N+1`) on `/control`, and `--start` refused for it.
+
+### Option T — Auto-frame: the node frames the camera by itself (DESIGN D21)
+
+A phone, framed and re-framed without drawing a rectangle. Needs the ChessQ weights
+(`make models`): the stub finds no board, so it only ever says "no board found".
+
+1. Run `make dev`. On the phone, open `/camera` (Option J, steps 2-3) and point it at
+   the board from where it will stay, landscape, with the board at least half the
+   picture's width. Do not touch `/control`'s rectangle.
+2. Open `http://localhost:8080/control`. Expected: within a few seconds of the phone
+   connecting, Auto-frame says it is looking for the board, then that it framed it; the
+   rectangle on the preview sits around the board with about 10 % to spare on every
+   side, and the phone shows the same outline. The node log reads `auto-frame board-N:
+   board found in 2 reads ...`. If the board filled at least half of the last read,
+   the live page shows its position at once, before streaming starts.
+3. Start streaming and move a piece. Expected: the live page follows, as in Option J.
+4. Move the phone a little (a few centimetres, or turn it slightly) and hold it still.
+   Expected: within about 6 s (two counted previews 3 s apart; at most one re-frame per
+   10 s) the node asks for a new full frame, the status says it is looking, then
+   framed, and the rectangle follows the board. A hand over the board, or a person
+   walking past, re-frames nothing; covering the board for 15 s or more says the board
+   is not visible.
+5. Close `/control` and repeat step 4. Expected: the same. Auto-frame keeps the phone's
+   previews on while it watches, whether or not a control page is open.
+6. On `/control`, drag the rectangle somewhere else and save it. Expected: Auto-frame
+   says it is off (the crop was set by hand), and moving the phone no longer re-frames.
+7. Switch Auto-frame back on, or press **Re-frame now**. Expected: a new full frame is
+   asked for at once and the rectangle goes back around the board.
+8. Point the phone away from the board and reload `/camera`. Expected: "no board
+   found", retried after 3 s, 10 s, then every 30 s; point it back and the next retry
+   frames it.
 
 ---
 

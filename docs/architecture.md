@@ -118,9 +118,14 @@ inference node, and pushed to the phone, which applies it:
   ([[recognition-pipeline#Framing: the board must fill the frame]]) — which is why the
   control UI warns about a missing, too-wide or upright rectangle, and an upright phone.
 - **A full-frame preview** (480 px long side, every 1.5 s) goes up the phone's socket
-  as a binary message, **only while a `/control` page is connected** to that board: the
-  node says `previews` on when the first page connects and off when the last one
-  leaves. The node forwards it to every page, which draws the rectangle on the camera's
+  as a binary message, **only while a `/control` page is connected** to that board or
+  Auto-frame watches the camera for a move (DESIGN D21): the node says `previews` on
+  and off as that changes. Auto-frame locates at most one preview every 3 s, on the read
+  worker and only when no read waits.
+- **A full frame** goes up once when the node asks (`send_full_frame`: the camera
+  registered, started streaming, or moved): a `full_frame` header, then the uncropped
+  JPEG (long side ≤ 1920 px). The node finds the board in it and pushes the crop
+  (DESIGN D21). The node forwards it to every page, which draws the rectangle on the camera's
   whole field of view, beside the cropped frame the node actually received (pushed on
   the health tick whenever a new one arrived). Images reach the page as base64 inside
   the JSON message, shown as a `data:` URL.

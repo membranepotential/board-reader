@@ -62,9 +62,16 @@ uv run board-reader-edge feed --video clip.mp4 --throttle   # or a real clip
 ```
 
 **The phone flow** — `make dev`, then open `/snapshot` or `/camera` on the phone. The
-camera page has no controls: open `/control` on the laptop to draw the board's rectangle
-on the phone's preview, pick the lens and resolution, and start or stop the stream
-(DESIGN D11; the full walkthrough is [[TESTING#Option J — Phone live camera, configured from the laptop (DESIGN D11)]]).
+camera page has no controls, and the node frames the camera by itself (Auto-frame,
+DESIGN D21): on connect it asks the phone for one whole frame, finds the board and sets
+the rectangle, and sets it again when the phone moves. Open `/control` on the laptop to
+start or stop the stream, pick the lens and resolution, or draw the rectangle by hand,
+which switches Auto-frame off for that camera until you switch it on again or press
+**Re-frame now** (DESIGN D11; the walkthroughs are [[TESTING#Option J — Phone live camera, configured from the laptop (DESIGN D11)]]
+and [[TESTING#Option T — Auto-frame: the node frames the camera by itself (DESIGN D21)]]).
+When Auto-frame says "no board found", the board is not in the picture or too small
+in it (under about a sixth of its width); it retries after 3 s, 10 s, then every 30 s.
+The node log names every attempt (`auto-frame board-N: ...`).
 The node assigns each phone its board id (`board-1`, `board-2`, ...; DESIGN D18) by a
 device id the phone keeps, for good; `/control` lists the phones, names them (the live
 page shows the name; the board id stays), forgets one that is no longer used, and shows
@@ -93,8 +100,9 @@ uv run board-reader-edge camera "https://www.youtube.com/@<channel>/live"   # a 
 uv run board-reader-edge camera rtsp://cam.local/stream                     # any FFmpeg URL or a file
 ```
 
-It appears on `/control` like a phone, named by the stream's title: draw the crop on
-its preview and turn streaming on. A video plays once at real time from `--start`
+It appears on `/control` like a phone, named by the stream's title, and Auto-frame sets
+its crop (a broadcast's board is usually too small in the picture to watch for camera
+moves: after a cut to another angle, press **Re-frame now**); turn streaming on. A video plays once at real time from `--start`
 (seconds or `h:m:s`) whether or not it streams; a live stream reconnects when it drops.
 The device id sits in `~/.local/state/board-reader/edge-device-id`, so the camera keeps
 its board id across restarts; run a second camera with its own `--state <file>`.

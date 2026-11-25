@@ -310,7 +310,9 @@ held over a board is the worst place to set that up.
 - **The phone only films and streams.** `/camera` is a viewfinder with a status line
   and no controls.
 - **The laptop configures it** from `/control`: the crop rectangle drawn on the phone's
-  full-frame preview, the lens, the capture resolution, and streaming on or off.
+  full-frame preview, the lens, the capture resolution, and streaming on or off. Since
+  D21 the node draws the rectangle itself (Auto-frame) unless a crop drawn on
+  `/control` switched that off.
 - **The config is pushed to the edge and applied there.** The inference node holds it
   per board and is its single source of truth. It persists each board's config to
   `BR_CAMERA_CONFIG` (`serve` sets `data/camera-config.json`; empty keeps it in memory
@@ -325,8 +327,9 @@ held over a board is the worst place to set that up.
   the node pushes the state (config, last report, phone connected) on connect and on
   every change, the latest preview and received frame, and a health tick once a
   second, which carries the board's direction (D10) as the side White sits on and
-  `camera_moved` when the settled direction moved more than 15°; the page sends `configure` with the whole config. Previews are on exactly
-  while at least one control page is connected. Each socket's outbox keeps only the
+  `camera_moved` when the settled direction moved more than 15°; the page sends `configure` with the whole config, or `reframe` (D21). Previews are on
+  while at least one control page is connected, and while Auto-frame watches the
+  camera for a move (D21). Each socket's outbox keeps only the
   latest message of each type, so a slow client can make the node buffer nothing.
 - **The edge crops, meters and forwards.** It crops to the rectangle, measures motion
   (`stability`) and sharpness on the crop, and forwards adaptively (D4). The L1→L2
@@ -608,8 +611,11 @@ camera list. A Pi needs the same channel the phone has (§8, roadmap item 3).
   its report and, while a control page watches, a whole-frame preview every 1.5 s. Its
   frames name the device id on `/ingest`, like the phone's.
 - **What does not apply is reported, not faked.** A stream has one picture at one size:
-  the report lists the stream (its title) as the only lens and states the frame size it
-  delivers; `device` and `resolution` in the config are ignored.
+  the report says `kind: "stream"` (a phone's says `"phone"`), lists the stream (its
+  title) as the only lens and states the frame size it delivers; `device` and
+  `resolution` in the config are ignored, and `/control` offers neither for it. It
+  answers Auto-frame's `send_full_frame` (D21) with its latest whole frame, or its
+  first once it has one.
 - **The same edge pipeline as the phone.** Frames are sampled at the phone's 20 fps
   (`CAPTURE_FPS`, which the motion meter is tuned to), cut to the crop, metered every
   frame, forwarded by the same `AdaptiveForwarder` (D4) and shrunk to the phone's
@@ -634,8 +640,8 @@ Cropping a stream on the node: ruled out by D11 for the same reasons as for the 
 ### D20 — ChessQ locates the board itself: Auto-frame's recognition side (2026-11-25)
 
 **Status:** accepted for the recognition side (probe:
-[the auto-frame probe](reports/2026-11-25-autocrop-probe.md)). The control loop that asks the phone for a full
-frame, proposes the crop on `/control` and re-frames on a camera move is open work.
+[the auto-frame probe](reports/2026-11-25-autocrop-probe.md)). The control loop is D21, which
+also makes the crop the node's to apply, not a proposal for the user to click.
 
 **Context.** The phone's crop is drawn by hand on `/control` (D11), and ChessQ reads
 well only when the board fills at least half of the read's width
@@ -663,17 +669,82 @@ plus 1.8 ms to fit the grid.
   frame: read it, read its rough box grown by 50 % (coarse to fine), and when that
   grid is untrusted read five 60 % tiles and refine the best. The crop is the final
   box plus 10 %, snapped like the `/control` editor; with no trusted grid the answer
-  is "no board found". It proposes only: applying the crop stays the user's click
-  (D11). 2 reads normally, up to 8 with the tiles.
+  is "no board found". 2 reads normally, up to 8 with the tiles. (Applying it was the
+  user's click at first; D21 applies it.)
 - **`locate.locate_preview(read, preview)`**, one read of the phone's 480 px preview,
-  gives the board's position in the full frame for a camera-moved check. Whether one
-  pass suffices at 480 px, and the drift thresholds, are measured separately.
+  gives the board's position in the full frame for a camera-moved check. One pass
+  suffices for a board at 50 % of the frame's width (96 % found); the drift rule is
+  D21's.
 
 **Rejected.** The classical x-corner detector: it fires on 53–67 % of frames at a
 board of 35–25 % of the width and on 0 % at 15 %, misses the dark live board, and
 costs 0.4–25 s of CPU. A single pass as the proposer: at 25 % it proposes bad grids
 with R² up to 0.95. A second model to locate the board: ChessQ's own attention costs
 2 ms a read.
+
+### D21 — Auto-frame: the node frames each camera by itself, and again when it moves (2026-11-25)
+
+**Status:** accepted (user, 2026-11-25: fully automatic; drift on the existing
+previews, the phone keeps cropping). Measurements:
+[the auto-frame probe](reports/2026-11-25-autocrop-probe.md), including its follow-up on the
+preview.
+
+**Context.** D20 made ChessQ locate the board in any frame. The crop was still drawn by
+hand on `/control` (D11), and redrawn by hand after every camera move.
+
+**Decision.**
+- **A new camera is framed without a click.** When a camera registers (or starts
+  streaming without a crop of the node's), the node sends `send_full_frame`; the phone
+  or the Python edge answers with one uncropped frame (long side at most 1920 px,
+  JPEG q90) as a `full_frame` header and its JPEG on the camera socket. The node
+  locates the board (`locate.autoframe`), pushes the crop through the normal config
+  path, and publishes the locate's last read as an ordinary read when the board filled
+  at least half of it (`Proposal.dominant`), at the full frame's `capture_ts` under
+  the board's latest seq. A full frame that shows no board is retried after 3, 10,
+  then every 30 s; one unanswered for 15 s counts as failed.
+- **A moved camera is re-framed.** While framed, the node keeps the camera's previews
+  on (480 px, every 1.5 s, also with no `/control` open) and locates at most one every
+  3 s (`locate_preview`, one read). A preview counts when its grid has R² ≥ 0.97. Two
+  counted previews in a row more than 5 % of the board's width from the board the crop
+  was built from (the max corner displacement) ask for a new full frame, at most once
+  every 10 s. A preview that does not count neither adds to that run nor breaks it;
+  ten in a row say "not visible" and re-frame nothing. A board under 35 % of the
+  frame's width is not watched (a 480 px preview cannot locate it reliably: 66 % found
+  at 35 %, 23 % at 25 %); `/control` says that a move then goes unnoticed. Measured: 0
+  false fires in 421 still previews (11 minutes, a thin sample: it bounds the rate
+  only below about 1 in 140 previews), and every move of 6 % or more of the board's
+  width caught within 3 previews; a move of 3-5 % mostly stays inside the crop's 10 %
+  margin.
+- **A crop drawn on `/control` switches Auto-frame off** for that camera
+  (`CameraConfig.auto`, persisted; a crop saved before Auto-frame existed loads as
+  manual). The switch turns it back on; `reframe` ("re-frame now") finds the board
+  again at once and switches it on. The node's own crop push never switches it off.
+  `/control` sees the status in `StateMessage.autoframe` (`idle`, `locating`,
+  `framed`, `not-visible`, `no-board`, `manual`), whether moves are watched
+  (`watching`), and the crop it chose as the config's `crop`.
+- **Where each part runs.** The decisions are one pure controller per board
+  (`control/autoframe/`, events in, actions out), stepped by the camera registry
+  (`control/camera/registry.py`) on the camera's events and a 1 s tick. Locating
+  needs the recognizer, which `control` never imports, so the gateway (`server.py`)
+  does it on the one read worker (D17): a full frame through `FrameIngest.call`, in
+  turn with the reads; a preview through `FrameIngest.call_spare`, only when no read
+  waits and behind everything queued after it, so it never delays a burst-end read.
+  The published read joins the board's stream through `FrameIngest.publish_read`
+  (settled by the same stabilizer, one read at a time; dropped when the stream already
+  has a newer read; never recorded, because its frame did not cross `/ingest`).
+- **Replay is untouched.** Replay never runs the registry, so a recorded take replays
+  exactly as before (`make gate GATE_NAME=autoframe`, identical to `latency3`).
+
+**Cost.** A full frame: 2-8 ChessQ reads (~0.4-1.6 s on the GTX 1650), once per
+camera and per move. The previews: one read per camera every 3 s (~6 % of the GPU),
+none while reads wait.
+
+**Rejected.** Proposing the crop for a click (D20 as first written): the user asked for
+no setup. Asking the phone for full frames to detect drift: an extra upload each time,
+while the phone already sends whole-frame previews. A "settle" rule (the camera came
+to rest before re-framing): not part of the measured rule, and a moving camera re-asks
+anyway after the rate limit. Re-framing on the board direction's `camera_moved` (D11):
+it sees a rotation, not a shift or a zoom.
 
 ## Superseded decisions
 
