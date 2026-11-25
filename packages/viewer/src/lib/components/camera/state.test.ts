@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { DEFAULT_CAMERA_CONFIG } from '#lib/protocol/index.ts';
 import type { CameraConfig } from '#lib/protocol/generated.ts';
 import {
-  boardIdFrom,
+  askedBoardFrom,
   cropBox,
   fitLongSide,
   freshFrameClock,
@@ -29,10 +29,10 @@ function config(overrides: Partial<CameraConfig>): CameraConfig {
 }
 
 describe('the board id', () => {
-  it('comes from ?board= and defaults to the phone', () => {
-    expect(boardIdFrom('?board=left')).toBe('left');
-    expect(boardIdFrom('')).toBe('phone');
-    expect(boardIdFrom('?board=%20%20')).toBe('phone');
+  it('is asked for by ?board=, and otherwise left to the node', () => {
+    expect(askedBoardFrom('?board=left')).toBe('left');
+    expect(askedBoardFrom('')).toBeNull();
+    expect(askedBoardFrom('?board=%20%20')).toBeNull();
   });
 });
 

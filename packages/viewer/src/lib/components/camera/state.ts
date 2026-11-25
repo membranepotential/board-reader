@@ -1,9 +1,9 @@
 /**
  * The /camera page's state and the pure decisions it makes.
  *
- * The phone is only a camera (DESIGN D10, "dumb camera"). It has no controls: the
+ * The phone is only a camera (DESIGN D11, "dumb camera"). It has no controls: the
  * control UI on the laptop chooses the lens, the resolution, the crop rectangle and
- * whether to stream, and the phone hears that config on its report poll and applies
+ * whether to stream, and the node pushes that config to the phone, which applies
  * it. What is left here is small on purpose:
  *
  *  - `CameraState` — the camera is idle, being asked for, live (with the frame size
@@ -34,11 +34,12 @@ export const PREVIEW_MS = 1500;
 export const TICK_MS = 200;
 export const RATE_WINDOW_MS = 3000;
 
-export const DEFAULT_BOARD_ID = 'phone';
-
-/** `?board=<id>` names the board; the phone and the control UI both read it. */
-export function boardIdFrom(search: string): string {
-  return new URLSearchParams(search).get('board')?.trim() || DEFAULT_BOARD_ID;
+/**
+ * The board id `?board=<id>` asks the node for, or `null` to take the one the node
+ * assigns (the phone's own, kept across reloads). The node checks it.
+ */
+export function askedBoardFrom(search: string): string | null {
+  return new URLSearchParams(search).get('board')?.trim() || null;
 }
 
 // ---- the camera --------------------------------------------------------------

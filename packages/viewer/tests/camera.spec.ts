@@ -1,13 +1,14 @@
 /**
  * The `/camera` page — the phone as a dumb camera (DESIGN D11).
  *
- * It has no controls. What it films and whether it streams comes from the node's
- * camera config, which the node pushes down the phone's control socket. So every
- * spec here plays the node on that socket (`FakeControl`): it pushes a config of its
- * choosing, says whether previews are wanted, and reads what reaches it — the
- * reports, the full-frame previews, and the frames on `/ws/ingest`, decoded down to
- * their JPEG size, which is the only honest proof that the crop the config asked
- * for is the crop sent.
+ * It has no controls. Which board it streams as, what it films and whether it
+ * streams come from the node, which pushes them down the phone's control socket
+ * (`/ws/cameras/<device id>`). So every spec here plays the node on that socket
+ * (`FakeControl`): it assigns a board id, pushes a config of its choosing, says
+ * whether previews are wanted, and reads what reaches it — the reports, the
+ * full-frame previews, and the frames on `/ws/ingest`, decoded down to their JPEG
+ * size, which is the only honest proof that the crop the config asked for is the
+ * crop sent. Two phones against one stateful node are `cameras.spec.ts`'s.
  */
 
 import { expect, test, type Page, type WebSocketRoute } from '@playwright/test';
@@ -21,6 +22,9 @@ import {
   jpegSize,
   liveViewfinder
 } from './helpers/camera';
+
+/** The phone's control socket, by device id, with an optional `?board=`. */
+const PHONE_SOCKET = /\/ws\/cameras\/[^/?]+(\?.*)?$/;
 
 interface Config {
   crop: { x: number; y: number; w: number; h: number } | null;
@@ -38,12 +42,16 @@ class FakeControl {
   readonly previews: [number, number][] = [];
   readonly headers: Record<string, unknown>[] = [];
   readonly frames: [number, number][] = [];
+  /** The device id each phone socket connected with, in order. */
+  readonly devices: string[] = [];
+  boardId = 'board-1';
   private socket: WebSocketRoute | null = null;
 
   static async install(page: Page): Promise<FakeControl> {
     const node = new FakeControl();
-    await page.routeWebSocket('**/ws/boards/*/camera', (ws) => {
+    await page.routeWebSocket(PHONE_SOCKET, (ws) => {
       node.socket = ws;
+      node.devices.push(new URL(ws.url()).pathname.split('/').at(-1)!);
       ws.onMessage((message) => {
         if (typeof message === 'string') {
           const parsed = JSON.parse(message) as { type: string; report: Record<string, unknown> };
@@ -53,6 +61,7 @@ class FakeControl {
         }
       });
       // What the node says to a phone that has just connected.
+      ws.send(JSON.stringify({ type: 'assigned', board_id: node.boardId }));
       ws.send(JSON.stringify({ type: 'config', config: node.config }));
       ws.send(JSON.stringify({ type: 'previews', on: node.watched }));
     });
@@ -72,6 +81,18 @@ class FakeControl {
     this.socket?.send(JSON.stringify({ type: 'config', config: this.config }));
   }
 
+  /** The control UI renamed this camera: the node tells the phone at once. */
+  rename(boardId: string): void {
+    this.boardId = boardId;
+    this.socket?.send(JSON.stringify({ type: 'assigned', board_id: boardId }));
+  }
+
+  /** Another page of this phone connected: the node says so, then closes this one. */
+  replace(): void {
+    this.socket?.send(JSON.stringify({ type: 'replaced' }));
+    void this.socket?.close({ code: 1000, reason: 'replaced' });
+  }
+
   /** A control page opened (or the last one closed). */
   watch(on: boolean): void {
     this.watched = on;
@@ -83,10 +104,10 @@ class FakeControl {
   }
 }
 
-async function openCamera(page: Page, board?: string): Promise<FakeControl> {
+async function openCamera(page: Page): Promise<FakeControl> {
   const node = await FakeControl.install(page);
   await drawnBoardCamera(page);
-  await page.goto(board === undefined ? '/camera' : `/camera?board=${board}`);
+  await page.goto('/camera');
   await liveViewfinder(page);
   return node;
 }
@@ -97,11 +118,55 @@ test.describe('a dumb camera', () => {
   test('has nothing to press', async ({ page }) => {
     await openCamera(page);
     await expect(page.getByRole('button')).toHaveCount(0);
-    await expect(page.getByTestId('camera-status')).toContainText('board phone');
+    await expect(page.getByTestId('camera-status')).toContainText('board board-1');
+  });
+
+  test('keeps its device id across a reload, and streams under the board id the node renames it to', async ({
+    page
+  }) => {
+    const node = await openCamera(page);
+    const device = node.devices[0]!;
+    await expect(page.getByTestId('device-id')).toHaveText(`camera ${device.slice(0, 8)}`);
+    await expect(page.getByTestId('session-id')).toHaveCount(0);
+    await page.reload();
+    await liveViewfinder(page);
+    expect(node.devices).toEqual([device, device]);
+
+    node.configure({ streaming: true });
+    await expect.poll(() => node.headers.at(-1)?.['board_id'], { timeout: 8_000 }).toBe('board-1');
+    // Renamed on /control: the next frames name the new board, with no reload.
+    node.rename('table');
+    await expect(page.getByTestId('camera-status')).toContainText('board table');
+    await expect.poll(() => node.headers.at(-1)?.['board_id'], { timeout: 8_000 }).toBe('table');
+  });
+
+  test('stands down when another page of the same phone takes over', async ({ page }) => {
+    const node = await openCamera(page);
+    node.configure({ streaming: true });
+    await expect.poll(() => node.frames.length, { timeout: 8_000 }).toBeGreaterThan(0);
+    node.replace();
+    await expect(page.getByTestId('replaced')).toBeVisible();
+    await page.waitForTimeout(500); // one in the encoder may still land
+    const sent = node.frames.length;
+    await page.waitForTimeout(1500);
+    expect(node.frames.length).toBe(sent);
+    expect(node.devices).toHaveLength(1); // it did not reconnect to take the camera back
+  });
+
+  test('says when the browser keeps no id, so a reload makes a new camera', async ({ page }) => {
+    await page.addInitScript(() => {
+      Object.defineProperty(window, 'localStorage', {
+        get: () => {
+          throw new DOMException('blocked', 'SecurityError');
+        }
+      });
+    });
+    await openCamera(page);
+    await expect(page.getByTestId('session-id')).toBeVisible();
   });
 
   test('reports its lenses, the frame it delivers and that it is not streaming', async ({ page }) => {
-    const node = await openCamera(page, 'left');
+    const node = await openCamera(page);
     await expect.poll(() => node.lastReport?.['frame']).toEqual(FRAME);
     expect(node.lastReport).toMatchObject({
       device: 'Back Camera',
@@ -161,7 +226,7 @@ test.describe('a dumb camera', () => {
     // Half of 1280x720, under the 960 px send cap: exactly the rectangle.
     expect(node.frames.at(-1)).toEqual([640, 360]);
     const header = node.headers.at(-1)!;
-    expect(header).toMatchObject({ type: 'frame', board_id: 'phone' });
+    expect(header).toMatchObject({ type: 'frame', board_id: 'board-1' });
     expect(header).not.toHaveProperty('corners');
     expect(typeof header['sharpness']).toBe('number');
     await expect.poll(() => node.lastReport?.['ingest']).toBe('streaming');
@@ -201,8 +266,8 @@ test.describe('the motion meter', () => {
     await crossHand(page);
     await expect
       .poll(() => node.headers.find((header) => header['burst_id'] !== null), { timeout: 5_000 })
-      .toMatchObject({ burst_id: 'phone:b0' });
-    const burst = node.headers.filter((header) => header['burst_id'] === 'phone:b0');
+      .toMatchObject({ burst_id: 'board-1:b0' });
+    const burst = node.headers.filter((header) => header['burst_id'] === 'board-1:b0');
     expect(Math.min(...burst.map((header) => header['stability'] as number))).toBeLessThan(0.7);
   });
 });

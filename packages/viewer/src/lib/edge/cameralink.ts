@@ -1,10 +1,15 @@
 /**
- * The phone's end of the camera control channel: one socket for its board.
+ * The phone's end of the camera control channel: one socket, by its device id.
  *
- * The node pushes the config the control UI set — on connect and on every change —
- * and says whether anyone is watching (`previews`). The phone sends its
- * `CameraReport` on connect and whenever it changes, never on a timer, and a
- * whole-frame preview JPEG only while previews are wanted.
+ * The node says which board id the phone streams as (`assigned`) — on connect and
+ * whenever the control UI renames it — pushes the config the control UI set — on
+ * connect and on every change — and says whether anyone is watching (`previews`).
+ * The phone sends its `CameraReport` on connect and whenever it changes, never on a
+ * timer, and a whole-frame preview JPEG only while previews are wanted.
+ *
+ * A device has one socket: when another page of the same phone connects, the node
+ * says `replaced` to this one, which then stops for good rather than reconnect and
+ * take the camera back, which would make two pages swap it forever.
  *
  * The frames themselves stay on `/ws/ingest` (`ingest.ts`): its two-message framing
  * and its recording are left exactly as every edge and every replay knows them.
@@ -21,7 +26,13 @@ import { PhoneDown, type CameraConfig, type CameraReport } from '#lib/protocol/g
 import { ReconnectingSocket, type SocketOptions } from '#lib/socket.ts';
 
 export interface CameraLinkOptions extends Partial<SocketOptions> {
-  readonly boardId: string;
+  readonly deviceId: string;
+  /** The board id this page asks for (`?board=`); `null` takes the node's. */
+  readonly board: string | null;
+  /** The board id the node says this phone streams as. */
+  readonly onAssigned: (boardId: string) => void;
+  /** Another page of this phone took over; this link has stopped. */
+  readonly onReplaced: () => void;
   readonly onConfig: (config: CameraConfig) => void;
   readonly onPreviews: (on: boolean) => void;
   /** The link opened (`up`) or was lost, with the reason to show. */
@@ -37,9 +48,10 @@ export class CameraLink {
   private previews = false;
 
   constructor(private readonly options: CameraLinkOptions) {
-    const { boardId, onConfig, onPreviews, onLink, onRefused, ...socket } = options;
+    const { deviceId, board, onAssigned, onReplaced, onConfig, onPreviews, onLink, onRefused, ...socket } =
+      options;
     this.socket = new ReconnectingSocket(
-      { ...socket, url: socket.url ?? wsUrl(cameraSocket(boardId)) },
+      { ...socket, url: socket.url ?? wsUrl(cameraSocket(deviceId, board)) },
       {
         onOpen: () => {
           this.sent = null;
@@ -55,9 +67,24 @@ export class CameraLink {
           const parsed = parseWire(PhoneDown, text);
           if (!parsed.ok) return; // a newer node's message; not ours to mind
           const message = parsed.value;
-          if (message.type === 'config') onConfig(message.config);
-          else if (message.type === 'previews') this.setPreviews(message.on);
-          else onRefused?.(message.reason);
+          switch (message.type) {
+            case 'assigned':
+              onAssigned(message.board_id);
+              break;
+            case 'config':
+              onConfig(message.config);
+              break;
+            case 'previews':
+              this.setPreviews(message.on);
+              break;
+            case 'replaced':
+              this.stop();
+              onReplaced();
+              break;
+            case 'refused':
+              onRefused?.(message.reason);
+              break;
+          }
         }
       }
     );

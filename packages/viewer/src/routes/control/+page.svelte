@@ -7,10 +7,14 @@
    * streams. The node holds that config per board and pushes it to the phone. The
    * same config says which chess the board plays (`rules`), which only the node reads.
    *
-   * One socket per board (`ControlLink`): the node pushes the camera state on connect
-   * and on every change, the phone's preview, the latest received frame and a health
-   * tick, so nothing here polls. The socket closes while the tab is hidden, which is
-   * also what tells the phone to stop sending previews nobody sees.
+   * The CAMERA LIST (`CamerasLink`, `WS /cameras`) names every phone the node knows,
+   * by the board id the node assigned it, and renames one inline. The operator picks
+   * a camera there; its controls below talk to its board over that board's socket
+   * (`ControlLink`): the node pushes the camera state on connect and on every change,
+   * the phone's preview, the latest received frame and a health tick, so nothing here
+   * polls. A camera is picked by DEVICE id, so a rename moves the controls to the new
+   * board id with it. Both sockets close while the tab is hidden, which is also what
+   * tells the phone to stop sending previews nobody sees.
    *
    * The crop is edited locally and only sent on Save, so a pushed state never yanks
    * a rectangle out from under the pointer. The lens, resolution, rules and stream
@@ -23,6 +27,8 @@
   import { RESOLUTION_NAMES, RULES_NAMES, type Resolution, type Rules } from '#lib/protocol/index.ts';
   import type {
     CameraConfig,
+    CameraEntry,
+    CamerasDown,
     ControlDown,
     CropRect,
     FrameMessage,
@@ -30,14 +36,16 @@
     PreviewMessage,
     StateMessage
   } from '#lib/protocol/generated.ts';
-  import { DEFAULT_BOARD_ID, boardIdFrom } from '#lib/components/camera/state.ts';
+  import { CamerasLink } from '#lib/control/cameras.ts';
   import { ControlLink } from '#lib/control/link.ts';
+  import { shortDeviceId } from '#lib/edge/device.ts';
   import { jpegSrc } from '#lib/control/messages.ts';
   import { WHOLE_FRAME } from '#lib/control/crop.ts';
   import { FRAMING_COPY, framingWarnings } from '#lib/control/framing.ts';
   import { formatAge } from '#lib/control/status.ts';
   import { CAMERA_MOVED_COPY, whiteSideCopy } from '#lib/control/direction.ts';
   import CropEditor from '#lib/components/control/CropEditor.svelte';
+  import CameraQr from '#lib/components/control/CameraQr.svelte';
 
   /** How each setting of `rules` reads in the select. */
   const RULES_LABEL: Readonly<Record<Rules, string>> = {
@@ -45,8 +53,14 @@
     free: 'free (extra pieces, variants)'
   };
 
-  /** `null` until mounted: the board comes from `?board=`, which prerendering cannot read. */
-  let boardId = $state<string | null>(null);
+  /** Every camera the node knows; `null` until its first list. */
+  let cameras = $state.raw<readonly CameraEntry[] | null>(null);
+  /** The device the operator picked; `null` follows the first connected camera. */
+  let chosen = $state<string | null>(null);
+  /** The device whose new board id is being typed, and the name so far. */
+  let renaming = $state<string | null>(null);
+  let newName = $state('');
+  let renameFailure = $state<string | null>(null);
   let camera = $state.raw<StateMessage | null>(null);
   let preview = $state.raw<PreviewMessage | null>(null);
   let received = $state.raw<FrameMessage | null>(null);
@@ -57,14 +71,41 @@
   let edit = $state<CropRect | null>(null);
   let failure = $state<string | null>(null);
   let link: ControlLink | null = null;
+  let list: CamerasLink | null = null;
+
+  const selected = $derived(
+    cameras?.find((entry) => entry.device_id === chosen) ??
+      cameras?.find((entry) => entry.connected) ??
+      cameras?.[0] ??
+      null
+  );
+  /** The picked camera's board: what its controls talk to. */
+  const boardId = $derived(selected?.board_id ?? null);
 
   onMount(() => {
-    boardId = boardIdFrom(location.search);
+    const next = new CamerasLink({
+      onMessage: receiveList,
+      onLink: (isUp, detail) => {
+        if (!isUp) renameFailure = `the node is not reachable (${detail}) — reconnecting…`;
+      }
+    });
+    list = next;
+    if (document.visibilityState === 'visible') next.start();
+    return () => {
+      next.stop();
+      list = null;
+    };
   });
 
   $effect(() => {
     const id = boardId;
     if (id === null) return;
+    // Another board: nothing shown so far is about it.
+    camera = null;
+    preview = null;
+    received = null;
+    health = null;
+    edit = null;
     const next = new ControlLink({
       boardId: id,
       onMessage: receive,
@@ -83,8 +124,50 @@
   });
 
   function onVisibilityChange(): void {
-    if (document.visibilityState === 'visible') link?.start();
-    else link?.stop();
+    if (document.visibilityState === 'visible') {
+      list?.start();
+      link?.start();
+    } else {
+      list?.stop();
+      link?.stop();
+    }
+  }
+
+  function receiveList(message: CamerasDown): void {
+    if (message.type === 'refused') {
+      renameFailure = `not renamed: ${message.reason}`;
+      return;
+    }
+    cameras = message.cameras;
+    // A rename is done when the list shows the camera under its new id.
+    const entry = message.cameras.find((e) => e.device_id === renaming);
+    if (renaming !== null && (entry === undefined || entry.board_id === newName.trim())) {
+      renaming = null;
+      renameFailure = null;
+    }
+  }
+
+  function startRename(entry: CameraEntry): void {
+    renaming = entry.device_id;
+    newName = entry.board_id;
+    renameFailure = null;
+  }
+
+  function submitRename(device: string, current: string): void {
+    const name = newName.trim();
+    if (name === current) {
+      renaming = null;
+    } else if (list === null || !list.rename(device, name)) {
+      renameFailure = 'not renamed: the node is not connected';
+    }
+  }
+
+  /** How a camera's capture reads in the list: lens, then the frame it delivers. */
+  function captureOf(entry: CameraEntry): string {
+    const report = entry.report;
+    if (report === null) return '—';
+    const parts = [report.device, report.frame === null ? null : `${report.frame.width}×${report.frame.height}`];
+    return parts.filter((part) => part !== null).join(' · ') || '—';
   }
 
   function receive(message: ControlDown): void {
@@ -123,20 +206,6 @@
     if (send({ crop })) edit = null;
   }
 
-  function chooseBoard(raw: string): void {
-    const next = raw.trim() || DEFAULT_BOARD_ID;
-    if (next === boardId) return;
-    boardId = next;
-    camera = null;
-    preview = null;
-    received = null;
-    health = null;
-    edit = null;
-    const url = new URL(location.href);
-    url.searchParams.set('board', next);
-    history.replaceState(history.state, '', url);
-  }
-
   const config = $derived(camera?.config ?? null);
   const report = $derived(camera?.report ?? null);
   /** The camera's frame: what the phone says it delivers, else the preview's size. */
@@ -153,17 +222,12 @@
 
 <header>
   <h1>board-reader · camera control</h1>
-  <label class="board">
-    board
-    <input
-      value={boardId ?? DEFAULT_BOARD_ID}
-      size="10"
-      onchange={(e) => chooseBoard(e.currentTarget.value)}
-    />
-  </label>
-  <span class="chip" class:up={connected}>
-    {camera === null ? 'connecting…' : connected ? 'phone connected' : 'phone not connected'}
-  </span>
+  {#if boardId !== null}
+    <span class="board">board <strong>{boardId}</strong></span>
+    <span class="chip" class:up={connected}>
+      {camera === null ? 'connecting…' : connected ? 'phone connected' : 'phone not connected'}
+    </span>
+  {/if}
   <span class="spacer"></span>
   <a href={resolve('/')}>live positions</a>
 </header>
@@ -171,6 +235,84 @@
 {#if failure !== null}
   <p class="failure" role="alert">{failure}</p>
 {/if}
+
+<section class="cameras" aria-label="Cameras">
+  <div class="list">
+    <h2>Cameras</h2>
+    {#if cameras === null}
+      <p class="hint">asking the node for its cameras…</p>
+    {:else if cameras.length === 0}
+      <p class="hint">no camera yet — scan the code with a phone, or open /camera on it</p>
+    {:else}
+      <table>
+        <thead>
+          <tr>
+            <th>board</th>
+            <th>camera</th>
+            <th>link</th>
+            <th>stream</th>
+            <th>last frame</th>
+            <th>lens · frame</th>
+          </tr>
+        </thead>
+        <tbody>
+          {#each cameras as entry (entry.device_id)}
+            <tr
+              class:picked={entry.device_id === selected?.device_id}
+              data-testid="camera-row"
+              data-device={entry.device_id}
+            >
+              <td class="name">
+                {#if renaming === entry.device_id}
+                  <form
+                    onsubmit={(e) => {
+                      e.preventDefault();
+                      submitRename(entry.device_id, entry.board_id);
+                    }}
+                  >
+                    <input
+                      aria-label="new board id for camera {shortDeviceId(entry.device_id)}"
+                      bind:value={newName}
+                      size="12"
+                      maxlength="32"
+                    />
+                    <button type="submit" class="primary">Save</button>
+                    <button type="button" onclick={() => (renaming = null)}>Cancel</button>
+                  </form>
+                  {#if renameFailure !== null}
+                    <p class="warn" role="alert">{renameFailure}</p>
+                  {/if}
+                {:else}
+                  <button
+                    type="button"
+                    class="pick"
+                    aria-pressed={entry.device_id === selected?.device_id}
+                    onclick={() => (chosen = entry.device_id)}>{entry.board_id}</button
+                  >
+                  <button type="button" class="rename" onclick={() => startRename(entry)}>Rename</button>
+                {/if}
+                {#if entry.refused_board !== null}
+                  <p class="warn" data-warning="refused-board">
+                    asked for {entry.refused_board}, which another camera holds
+                  </p>
+                {/if}
+              </td>
+              <td class="device">{shortDeviceId(entry.device_id)}</td>
+              <td class:bad={!entry.connected}>{entry.connected ? 'connected' : 'not connected'}</td>
+              <td>{entry.report?.ingest ?? '—'}</td>
+              <td>{formatAge(entry.frame_age_s)}</td>
+              <td>{captureOf(entry)}</td>
+            </tr>
+          {/each}
+        </tbody>
+      </table>
+    {/if}
+  </div>
+  <aside class="add">
+    <h2>Add a camera: scan this</h2>
+    <CameraQr />
+  </aside>
+</section>
 
 <main>
   <section class="views">
@@ -200,7 +342,9 @@
           {#if edit !== null}<span class="dirty">unsaved</span>{/if}
         </div>
       {:else}
-        <div class="placeholder">no camera yet — open /camera on the phone</div>
+        <div class="placeholder">
+          {boardId === null ? 'no camera yet — scan the code above with a phone' : 'no picture from this camera yet'}
+        </div>
       {/if}
       <p class="hint">
         Draw the rectangle around the board with a small margin: the board should reach past
@@ -356,6 +500,74 @@
   .board {
     font-size: 13px;
     color: #9aa3ad;
+  }
+  .board strong {
+    color: #e6e6e6;
+  }
+  .cameras {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 22px;
+    padding: 20px 20px 0;
+    align-items: flex-start;
+  }
+  .list {
+    flex: 1 1 520px;
+    min-width: 0;
+    overflow-x: auto;
+  }
+  .add {
+    flex: 0 1 260px;
+  }
+  .cameras h2 {
+    margin-bottom: 8px;
+  }
+  table {
+    border-collapse: collapse;
+    font-size: 13px;
+    width: 100%;
+  }
+  th {
+    text-align: left;
+    font-weight: 500;
+    color: #7d8590;
+    padding: 4px 10px 4px 0;
+  }
+  td {
+    padding: 6px 10px 6px 0;
+    border-top: 1px solid #272b33;
+    vertical-align: top;
+    font-variant-numeric: tabular-nums;
+  }
+  td.bad {
+    color: #ff8f8f;
+  }
+  td.device {
+    color: #7d8590;
+    font-family: ui-monospace, monospace;
+  }
+  td.name form {
+    display: flex;
+    gap: 6px;
+    align-items: center;
+  }
+  tr.picked td {
+    background: #1b2230;
+  }
+  button.pick {
+    font-weight: 600;
+    background: none;
+    border: none;
+    padding: 2px 0;
+    color: #6aa8ff;
+  }
+  tr.picked button.pick {
+    color: #e6e6e6;
+  }
+  button.rename {
+    padding: 2px 8px;
+    margin-left: 6px;
+    font-size: 12px;
   }
   input,
   select {

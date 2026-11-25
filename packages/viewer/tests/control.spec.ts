@@ -11,7 +11,8 @@
  * The node is a stateful fake on the control socket: it pushes its state, a
  * preview, a received frame and a health tick on connect, and takes a `configure`
  * as the new config and pushes the new state back, the way
- * `control.camera.CameraRegistry` does.
+ * `control.camera.CameraRegistry` does. Its camera list names one phone, on
+ * `board-1`; two phones against one node, and renaming, are `cameras.spec.ts`'s.
  */
 
 import { expect, test, type Page } from '@playwright/test';
@@ -76,7 +77,18 @@ class FakeControlNode {
     const node = new FakeControlNode(frame);
     // A PNG under a JPEG data URL still draws: browsers sniff the bytes.
     const picture = checkerboardPng(320, 180).toString('base64');
-    await page.routeWebSocket('**/ws/boards/phone/control', (ws) => {
+    await page.routeWebSocket(/\/ws\/cameras$/, (ws) => {
+      const camera = {
+        device_id: 'kitchen-phone-id',
+        board_id: 'board-1',
+        connected: true,
+        report: null,
+        frame_age_s: 0.5,
+        refused_board: null
+      };
+      ws.send(JSON.stringify({ type: 'cameras', cameras: [camera] }));
+    });
+    await page.routeWebSocket('**/ws/boards/board-1/control', (ws) => {
       ws.onMessage((message) => {
         const parsed = JSON.parse(message as string) as { type: string; config: Config };
         if (parsed.type !== 'configure') return;
@@ -212,4 +224,15 @@ test('the side White sits on is shown, and a moved camera is called out', async 
   await page.reload();
   await expect(page.getByText('White sits at the bottom')).toBeVisible();
   await expect(page.locator('[data-warning="camera-moved"]')).toContainText('The camera moved');
+});
+
+test('the QR code that opens /camera on a phone sits next to the camera list', async ({ page }) => {
+  await FakeControlNode.install(page);
+  await page.route('**/api/camera-links', (route) =>
+    route.fulfill({ json: { links: [{ url: 'https://192.168.1.7:8443/camera', via: 'lan' }] } })
+  );
+  await page.goto('/control');
+  const add = page.getByRole('complementary').filter({ hasText: 'Add a camera' });
+  await expect(add.locator('svg path')).toHaveCount(1);
+  await expect(add).toContainText('/camera');
 });

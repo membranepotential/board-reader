@@ -15,6 +15,11 @@
    *    can show the field of view and draw the crop on it — sent only while a
    *    control page watches (the node says `previews` on/off).
    *
+   * The page connects by the phone's DEVICE ID (`#lib/edge/device`, kept in
+   * `localStorage`), and the node says which board id it streams as: the same one
+   * after a reload, a new one only if the control UI renames it (then at once, no
+   * reload). `?board=<id>` asks for an id; one another camera holds is refused.
+   *
    * Same-origin and relative throughout (`#lib/api`), relayed by the viewer:
    * `getUserMedia` needs a secure context, and one origin means one certificate.
    *
@@ -37,12 +42,12 @@
   import { tenengrad, toGray } from '#lib/edge/sharpness.ts';
   import { TrialLog } from '#lib/edge/triallog.ts';
   import { Heartbeat } from '#lib/edge/heartbeat.ts';
+  import { deviceIdentity, randomDeviceId, shortDeviceId, type DeviceIdentity } from '#lib/edge/device.ts';
   import { DEFAULT_CAMERA_CONFIG } from '#lib/protocol/index.ts';
   import type { CameraConfig, CameraDevice, CameraReport } from '#lib/protocol/generated.ts';
 
   import BlockedNotice from '#lib/components/camera/BlockedNotice.svelte';
   import {
-    DEFAULT_BOARD_ID,
     JPEG_QUALITY,
     PREVIEW_LONG_SIDE,
     PREVIEW_MS,
@@ -50,7 +55,7 @@
     SEND_LONG_SIDE,
     SHARPNESS_LONG_SIDE,
     TICK_MS,
-    boardIdFrom,
+    askedBoardFrom,
     cropBox,
     fitLongSide,
     freshFrameClock,
@@ -70,7 +75,12 @@
   let config = $state.raw<CameraConfig>(DEFAULT_CAMERA_CONFIG);
   let lenses = $state.raw<readonly CameraDevice[]>([]);
   let lensLabel = $state<string | null>(null);
-  let boardId = $state(DEFAULT_BOARD_ID);
+  /** The board id the node says this phone streams as; `null` until it has said. */
+  let boardId = $state<string | null>(null);
+  /** This phone's device id; `null` until mounted (prerendering has no storage). */
+  let identity = $state.raw<DeviceIdentity | null>(null);
+  /** Another page of this phone took over the camera link: this one stands down. */
+  let replaced = $state(false);
   /** Whether the control socket is open — the phone's link to its config. */
   let nodeReachable = $state<boolean | null>(null);
   let ingestState = $state<IngestState>('idle');
@@ -129,7 +139,7 @@
   let frameClock = freshFrameClock(0);
   let encoding = false;
   let previewing = false;
-  /** Created on mount: the board comes from `?board=`, which prerendering cannot read. */
+  /** Created on mount: the device id and `?board=` are not readable while prerendering. */
   let link: CameraLink | null = null;
   let stamps: number[] = [];
 
@@ -140,7 +150,7 @@
   const crop = $derived(config.crop);
   const status = $derived(
     [
-      `board ${boardId}`,
+      `board ${boardId ?? '…'}`,
       nodeReachable === null ? 'node…' : nodeReachable ? 'node connected' : 'node unreachable',
       ingestState === 'streaming'
         ? `streaming ${fps.toFixed(1)} fps`
@@ -212,12 +222,16 @@
     const thumbnail = grabThumbnail(box);
     if (thumbnail === null) return;
     rebaseMeterOn(box);
+    // Read once, before the send path awaits: a rename mid-encode must not split a
+    // frame from the decision it was made under.
+    const board = boardId;
     // The meter sees EVERY sampled frame, streaming or not — dropping frames
     // upstream would make stability lie.
-    const decision = streaming
-      ? forwarder.decide(thumbnail, { boardId, captureTs })
-      : (meter.update(thumbnail), null);
-    if (decision === null || !ingest.connected) return;
+    const decision =
+      streaming && board !== null
+        ? forwarder.decide(thumbnail, { boardId: board, captureTs })
+        : (meter.update(thumbnail), null);
+    if (decision === null || board === null || !ingest.connected) return;
     // A frame still in the encoder, or a link already behind, means another frame
     // would only make the reading staler (DESIGN D3/D4).
     if (encoding || ingest.behind) {
@@ -225,7 +239,7 @@
       return;
     }
     encoding = true;
-    void sendFrame(decision, captureTs, box).finally(() => {
+    void sendFrame(decision, board, captureTs, box).finally(() => {
       encoding = false;
     });
   }
@@ -240,7 +254,12 @@
     return tenengrad({ data: toGray(data, new Float32Array(w * h)), width: w, height: h });
   }
 
-  async function sendFrame(decision: ForwardDecision, captureTs: number, box: PixelBox): Promise<void> {
+  async function sendFrame(
+    decision: ForwardDecision,
+    board: string,
+    captureTs: number,
+    box: PixelBox
+  ): Promise<void> {
     if (sendCanvas === null || sendCtx === null || video === undefined) return;
     const { w, h } = fitLongSide(box, SEND_LONG_SIDE);
     sendCanvas.width = w;
@@ -250,7 +269,7 @@
     const jpeg = await toBlob(sendCanvas, JPEG_QUALITY);
     if (jpeg === null) return;
     const outcome = ingest.sendFrame({
-      boardId,
+      boardId: board,
       captureTs,
       stability: decision.stability,
       ...(sharpness === null ? {} : { sharpness }),
@@ -267,9 +286,20 @@
 
   // ---- the control channel ------------------------------------------------------
 
-  function connectControl(id: string): CameraLink {
+  function connectControl(deviceId: string, board: string | null): CameraLink {
     return new CameraLink({
-      boardId: id,
+      deviceId,
+      board,
+      onAssigned: (id) => {
+        if (id !== boardId) trial.note('assigned', { board: id });
+        boardId = id;
+      },
+      onReplaced: () => {
+        trial.note('replaced');
+        replaced = true;
+        nodeReachable = false;
+        setStreaming(false);
+      },
       onConfig: applyConfig,
       onPreviews: (on) => {
         trial.note('previews', { on });
@@ -281,7 +311,7 @@
       },
       onRefused: (reason) => {
         trial.note('control-refused', { reason });
-        message = `the node refused a message: ${reason}`;
+        message = `the node refused: ${reason}`;
       }
     });
   }
@@ -508,7 +538,9 @@
 
   onMount(() => {
     port = location.port || (location.protocol === 'https:' ? '443' : '80');
-    boardId = boardIdFrom(location.search);
+    const self = deviceIdentity(() => window.localStorage, randomDeviceId);
+    identity = self;
+    const asked = askedBoardFrom(location.search);
     const [motionCanvas, motion] = canvas2d();
     motionCanvas.width = MOTION_DRAW_SIDE;
     motionCanvas.height = MOTION_DRAW_SIDE;
@@ -519,14 +551,14 @@
     sendCtx = sendCanvas.getContext('2d');
 
     trial.start();
-    trial.note('page-open', { ua: navigator.userAgent, board: boardId });
+    trial.note('page-open', { ua: navigator.userAgent, device: self.id, kept: self.kept, asked });
     void startCamera();
     const timers = [
       setInterval(frameTick, Math.round(1000 / CAPTURE_FPS)),
       setInterval(paintStatus, TICK_MS),
       setInterval(() => void postPreview(), PREVIEW_MS)
     ];
-    link = connectControl(boardId);
+    link = connectControl(self.id, asked);
     link.report(report);
     link.start();
 
@@ -614,8 +646,21 @@
     </div>
     <div class="status" data-testid="camera-status">
       <span class:up={ingestState === 'streaming'}>{status}</span>
+      {#if identity !== null}
+        <span class="device" data-testid="device-id">camera {shortDeviceId(identity.id)}</span>
+      {/if}
       {#if portrait}
         <span class="warn">portrait: turn the phone sideways</span>
+      {/if}
+      {#if identity !== null && !identity.kept}
+        <span class="warn" data-testid="session-id">
+          this browser keeps no data: a reload makes this phone a new camera
+        </span>
+      {/if}
+      {#if replaced}
+        <span class="warn" data-testid="replaced">
+          another /camera page on this phone took over — reload this one to use it here
+        </span>
       {/if}
       {#if message !== null}
         <span class="warn">{message}</span>
@@ -688,5 +733,9 @@
 
   .status .warn {
     color: #ffcf33;
+  }
+
+  .status .device {
+    color: #6f7782;
   }
 </style>

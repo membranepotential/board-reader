@@ -17,23 +17,55 @@ const LIVE: CameraReport = {
 beforeEach(() => vi.stubGlobal('location', { href: 'https://viewer.test/page' }));
 afterEach(() => vi.unstubAllGlobals());
 
-function link() {
+function link(board: string | null = null) {
   const net = fakeNetwork();
+  const onAssigned = vi.fn();
+  const onReplaced = vi.fn();
   const onConfig = vi.fn();
   const onPreviews = vi.fn();
   const onLink = vi.fn();
-  const camera = new CameraLink({ boardId: 'left board', ...net.options, onConfig, onPreviews, onLink });
-  return { net, camera, onConfig, onPreviews, onLink };
+  const camera = new CameraLink({
+    deviceId: 'kitchen-phone-id',
+    board,
+    ...net.options,
+    onAssigned,
+    onReplaced,
+    onConfig,
+    onPreviews,
+    onLink
+  });
+  return { net, camera, onAssigned, onReplaced, onConfig, onPreviews, onLink };
 }
 
 describe('the phone link', () => {
-  it('connects to its board and sends the report on connect', () => {
+  it('connects by its device id and sends the report on connect', () => {
     const { net, camera } = link();
     camera.report(REPORT); // before the socket opened: kept, not lost
     camera.start();
-    expect(net.sockets[0]!.url).toMatch(/\/ws\/boards\/left%20board\/camera$/);
+    expect(net.sockets[0]!.url).toMatch(/\/ws\/cameras\/kitchen-phone-id$/);
     net.sockets[0]!.open();
     expect(net.sockets[0]!.texts).toEqual([{ type: 'report', report: REPORT }]);
+  });
+
+  it('asks for the board the page names, and takes the one the node assigns', () => {
+    const { net, camera, onAssigned } = link('left');
+    camera.start();
+    expect(net.sockets[0]!.url).toMatch(/\/ws\/cameras\/kitchen-phone-id\?board=left$/);
+    net.sockets[0]!.open();
+    net.sockets[0]!.deliver({ type: 'assigned', board_id: 'board-2' });
+    net.sockets[0]!.deliver({ type: 'assigned', board_id: 'table' }); // renamed on /control
+    expect(onAssigned.mock.calls).toEqual([['board-2'], ['table']]);
+  });
+
+  it('stops for good when another page of this phone takes over', () => {
+    const { net, camera, onReplaced, onLink } = link();
+    camera.start();
+    net.sockets[0]!.open();
+    net.sockets[0]!.deliver({ type: 'replaced' });
+    expect(onReplaced).toHaveBeenCalledOnce();
+    net.sockets[0]!.close(1000, 'replaced');
+    expect(net.timers).toHaveLength(0); // no reconnect to take the camera back
+    expect(onLink).not.toHaveBeenCalledWith(false, expect.anything());
   });
 
   it('sends a report only when it changed', () => {
