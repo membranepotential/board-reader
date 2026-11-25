@@ -63,6 +63,8 @@
   /** The device whose new name is being typed, and the name so far. */
   let renaming = $state<string | null>(null);
   let newName = $state('');
+  /** The rename this page sent and the list does not show yet. */
+  let sent: { readonly device: string; readonly name: string | null } | null = null;
   /** Why the node refused the last rename or forget, or why the list is down. */
   let listFailure = $state<string | null>(null);
   let camera = $state.raw<StateMessage | null>(null);
@@ -145,10 +147,15 @@
       return;
     }
     cameras = message.cameras;
-    // A rename is done when the list shows the camera under its new name.
-    const entry = message.cameras.find((e) => e.device_id === renaming);
-    if (renaming !== null && (entry === undefined || labelOf(entry) === (newName.trim() || entry.board_id))) {
+    // A rename is done when the list shows the camera under the name this page SENT.
+    // The node pushes the list about once a second (the frame ages), so comparing
+    // against the field instead closed the form on the first push after Rename,
+    // while the field still held the old name.
+    if (sent === null) return;
+    const entry = message.cameras.find((e) => e.device_id === sent?.device);
+    if (entry === undefined || entry.name === sent.name) {
       renaming = null;
+      sent = null;
       listFailure = null;
     }
   }
@@ -156,6 +163,7 @@
   function startRename(entry: CameraEntry): void {
     renaming = entry.device_id;
     newName = labelOf(entry);
+    sent = null;
     listFailure = null;
   }
 
@@ -167,6 +175,8 @@
       renaming = null;
     } else if (list === null || !list.rename(entry.device_id, name)) {
       listFailure = 'not renamed: the node is not connected';
+    } else {
+      sent = { device: entry.device_id, name };
     }
   }
 

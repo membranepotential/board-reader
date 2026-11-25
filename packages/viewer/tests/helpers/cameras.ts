@@ -78,6 +78,14 @@ export class FakeCameraNode {
     this.#tellControls(board);
   }
 
+  /**
+   * The node's about-once-a-second list push (the frame ages): the same cameras
+   * again, so a page must not treat it as an answer to anything it asked.
+   */
+  tick(): void {
+    this.#tellLists();
+  }
+
   /** Stop and start: every socket drops, the pages reconnect to what was saved. */
   restart(): void {
     const sockets = [...this.#phones.values(), ...this.#lists, ...[...this.#controls].map((c) => c.ws)];

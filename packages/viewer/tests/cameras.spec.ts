@@ -110,3 +110,20 @@ test('a disconnected camera can be forgotten after a confirm; a connected one ca
   const third = await open(browser, baseURL, node, '/camera');
   await expect(status(third)).toContainText('board board-1');
 });
+
+test('a name being typed survives the list the node pushes every second', async ({ browser, baseURL }) => {
+  const node = new FakeCameraNode();
+  await open(browser, baseURL, node, '/camera');
+  const control = await open(browser, baseURL, node, '/control');
+  const row = rows(control).nth(0);
+  await row.getByRole('button', { name: 'Rename' }).click();
+  const field = row.getByRole('textbox');
+  await field.fill('kitch');
+  node.tick();
+  await control.waitForTimeout(300);
+  await expect(field).toHaveValue('kitch');
+  await field.fill('board-1');
+  node.tick();
+  await control.waitForTimeout(300);
+  await expect(field).toBeVisible();
+});
