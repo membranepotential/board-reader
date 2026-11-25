@@ -76,6 +76,32 @@ uv run board-reader-inference serve --host 0.0.0.0
 Take a photo, and the position appears. No taps required: ChessQ finds the board
 and its orientation in the whole frame (DESIGN D10), so corners are not needed.
 
+**A YouTube broadcast (or any stream) as a camera** (DESIGN D19). With a node running
+(`make dev`):
+
+```bash
+uv run board-reader-edge camera "https://www.youtube.com/watch?v=TDx2DGiBGhc" --start 1:00:00
+uv run board-reader-edge camera "https://www.youtube.com/@<channel>/live"   # a live stream
+uv run board-reader-edge camera rtsp://cam.local/stream                     # any FFmpeg URL or a file
+```
+
+It appears on `/control` like a phone, named by the stream's title: draw the crop on
+its preview and turn streaming on. A video plays once at real time from `--start`
+(seconds or `h:m:s`) whether or not it streams; a live stream reconnects when it drops.
+The device id sits in `~/.local/state/board-reader/edge-device-id`, so the camera keeps
+its board id across restarts; run a second camera with its own `--state <file>`.
+`--node ws://host:8000` points it at another node. Lens and resolution on `/control`
+do nothing for a stream; `--max-height 720` makes it pick a smaller format (1080p30
+costs about half a core here).
+
+Needs **deno** for YouTube (`sudo pacman -S deno`): yt-dlp runs its challenge scripts
+(the `yt-dlp-ejs` package) in it, and without it formats go missing. No ffmpeg binary
+is needed; the opencv wheel's FFmpeg reads YouTube's https and HLS formats. yt-dlp
+has its own seasoning date in `pyproject.toml` (`exclude-newer-package`), because
+YouTube breaks old releases within weeks: when the command says yt-dlp could not
+resolve a page that plays in a browser, bump that date and the floor in
+`packages/edge/pyproject.toml`, then `uv sync`.
+
 **What the compose demo reads (D3, measured 2026-11-24).** The compose edge streams
 `core.sim` synthetic renders (letters on coloured squares), and ChessQ does **not**
 read them: on the 14 positions of `SAMPLE_GAME_PLACEMENTS` it scores 0/14 perfect

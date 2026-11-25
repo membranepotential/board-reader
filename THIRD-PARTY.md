@@ -102,6 +102,11 @@ All Python runtime dependencies but python-chess (§5) are permissive:
 | fastapi, pydantic | MIT |
 | starlette, uvicorn, websockets, httpx | BSD-3-Clause |
 | cryptography | Apache-2.0 OR BSD-3-Clause |
+| yt-dlp (edge only) | Unlicense |
+| yt-dlp-ejs (edge only) | Unlicense AND MIT AND ISC |
+
+The edge's `camera` command also runs **deno** (MIT), a system program yt-dlp calls to
+answer YouTube's JS challenges; it is installed separately and never bundled.
 
 The **LGPLv2.1 FFmpeg** inside the opencv wheels is the one obligation here, and it only
 bites when distributing binaries (e.g. the Docker image): LGPL permits this as shipped —

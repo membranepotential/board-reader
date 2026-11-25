@@ -122,6 +122,7 @@ What's covered today — the main files (`git ls-files 'packages/*/tests/*.py'
 | **Settle + guard** | `packages/inference/tests/stream/test_stabilize.py`, `test_rules.py` | **the per-square debounce behind a streamed event's `placement`; under `standard` rules a settle never makes the board more impossible (≤1 king per colour, ≤16 pieces, the promotion budget), under `free` it settles whatever the reads agree on** |
 | **Recording format** | `packages/core/tests/test_recording.py` | **byte-exact round trip, corners survive, truncated session still replays, size cap** |
 | **Ingress recording** | `packages/inference/tests/test_recording_ingest.py` | **every `/ingest` frame lands on disk (incl. pre-filter drops); off unless asked; a write failure never breaks the stream** |
+| **Edge camera** | `packages/edge/tests/camera/test_camera_{link,stream,run}.py` | **the device id kept in its state file; the control socket against a fake node (report, assigned, config, previews, `replaced`); yt-dlp resolution (faked), 20 fps sampling, real-time VOD pacing from `--start`, live reconnects; crop, meter rebase and the frames on `/ingest` under the assigned board id with the device id** |
 | **Replay (edge)** | `packages/edge/tests/test_recording_replay.py` | **replays the recorded bytes without re-encoding, paces by capture time, refuses to reprocess** |
 | **Replay (inference)** | `packages/inference/tests/measurement/test_replay.py` | **driven by the recorded clock, byte-identical events on a re-run, the frame policy is asked** |
 | **Labels + eval** | `test_labels.py`, `test_server_labels.py`, `test_evaluate.py`, `test_trial.py`, `test_calibration.py` | **chess-frame labels, `eval`, `eval-session`, temperature scaling** |
@@ -1140,6 +1141,32 @@ Load makes events later, never different. To see it:
 Automated: `packages/inference/tests/test_multiboard_load.py`. The real-data check (two
 gate takes at once against their `latency3` replays) is in
 [the multiboard report](reports/2026-11-25-multiboard-spikes.md).
+
+### Option S — A YouTube broadcast as a camera (DESIGN D19)
+
+The Python edge as a camera on the control channel, framed from `/control` like a phone.
+Needs the network (it reads the video) and deno (`sudo pacman -S deno`).
+
+1. Run the node with the real model: `make dev`.
+2. In a second terminal:
+   `uv run board-reader-edge camera "https://www.youtube.com/watch?v=TDx2DGiBGhc" --start 1:00:00`.
+   Expected: a log line `video: <the title>`, then `control link up` and
+   `streaming as board board-N`.
+3. Open `http://localhost:8080/control`. Expected: the camera in the list, labelled
+   with the video's title, connected, with a 1920×1080 frame; its preview shows the
+   broadcast's whole picture.
+4. Draw the crop around the physical board (not the broadcast's 2D board) and turn
+   streaming on. Expected: the edge logs `config: crop {...}, streaming on`, and
+   `/control`'s received frame shows only the board.
+5. Open `http://localhost:8080`. Expected: a card for `board-N` whose position follows
+   the game; a move on the board opens a burst and the card updates within a few
+   seconds. `/healthz` shows `ingest.received` climbing and `not_owned` at 0.
+6. Stop the command (Ctrl-C) and start it again. Expected: the same `board-N`, and the
+   crop and streaming come back on their own (the device id is kept in
+   `~/.local/state/board-reader/edge-device-id`, the config on the node).
+7. Optional, a live stream: `uv run board-reader-edge camera "https://www.youtube.com/@<channel>/live"`
+   with `--state /tmp/live-id`. Expected: `live stream: <title>`, a second camera
+   (`board-N+1`) on `/control`, and `--start` refused for it.
 
 ---
 

@@ -332,8 +332,9 @@ held over a board is the worst place to set that up.
   (`stability`) and sharpness on the crop, and forwards adaptively (D4). The L1→L2
   wire (§4.5) is unchanged; frames arrive already cropped.
 - **Portrait is reported, not blocked.** `/control` warns.
-- **The Python edge** takes a static `--roi x,y,w,h` (the same `CropRect`). Wiring it
-  to the control channel is open work (§8).
+- **The Python edge** is a camera like the phone in `board-reader-edge camera` (D19):
+  same socket, same report, previews and config. `feed` keeps a static
+  `--roi x,y,w,h` (the same `CropRect`) and no control channel, for scripts and tests.
 
 **Rejected.** Cropping on the node from whole frames: it changes the wire contract and
 takes motion measurement off the crop. An operator rectangle on the phone: the phone is
@@ -572,6 +573,43 @@ connection order without a device id: a reload or a node restart reshuffles the 
 hello message on a board-less socket instead of the device in the path: one more
 message to order before anything else may be sent, for nothing the path cannot carry.
 
+### D19 — A stream is a camera too: the Python edge on the control channel (2026-11-25)
+
+**Status:** accepted (user asked for YouTube as a camera source, 2026-11-25).
+
+**Context.** The Python edge took only a static `--roi` and a fixed `--board`, so a
+broadcast or a Pi camera could not be framed from `/control` and did not show up in its
+camera list. A Pi needs the same channel the phone has (§8, roadmap item 3).
+
+**Decision.**
+- **`board-reader-edge camera <source>` speaks the phone's protocol** (D11, D18): it
+  keeps a device id in a state file (`$XDG_STATE_HOME/board-reader/edge-device-id`, or
+  `--state`; one file per camera), connects `WS /cameras/{device_id}`, streams under the
+  board id the node assigns, applies `crop` and `streaming` from the pushed config, sends
+  its report and, while a control page watches, a whole-frame preview every 1.5 s. Its
+  frames name the device id on `/ingest`, like the phone's.
+- **What does not apply is reported, not faked.** A stream has one picture at one size:
+  the report lists the stream (its title) as the only lens and states the frame size it
+  delivers; `device` and `resolution` in the config are ignored.
+- **The same edge pipeline as the phone.** Frames are sampled at the phone's 20 fps
+  (`CAPTURE_FPS`, which the motion meter is tuned to), cut to the crop, metered every
+  frame, forwarded by the same `AdaptiveForwarder` (D4) and shrunk to the phone's
+  960 px send size. A new crop or frame size rebases the meter, as on the phone.
+- **The source** is a page yt-dlp resolves (one format, at most 1080 lines, H.264
+  first) or a URL or file OpenCV opens, read with OpenCV's FFmpeg backend (YouTube's
+  progressive https formats and its live HLS both open in the opencv wheel; no ffmpeg
+  binary needed). A **video** plays once at real time from `--start`, and its
+  `capture_ts` is its own timeline mapped onto wall time when playback (re)starts. A
+  **live** stream is read as it arrives and reconnects on a drop, with `capture_ts` the
+  wall time at decode. Every reopen resolves the page again, because the media URL
+  expires.
+- `feed` stays as it was: fixed board, static `--roi`, no control channel.
+
+**Rejected.** A `feed --url` with a static crop: nothing on `/control`, and the crop
+would be guessed by hand again. Piping `ffmpeg` into the edge: OpenCV's bundled FFmpeg
+already reads both YouTube kinds, so it would add a system dependency for nothing.
+Cropping a stream on the node: ruled out by D11 for the same reasons as for the phone.
+
 ---
 
 ## Superseded decisions
@@ -632,7 +670,7 @@ commit whose DESIGN.md carried every section with its dated amendments.
 | Package | Role | Main modules |
 |---|---|---|
 | `board-reader-core` | the shared contract | `protocol` (L3 events, §5), `wire` (L1→L2 frames, §4.5), `control` (camera config and report), `wiremodel` (how those are modelled) and `schema` (their JSON Schema, D13), `recording` (session directories), `sim` (synthetic renders, §6) |
-| `board-reader-edge` | the Python edge ("Pi") | `source` (camera, video, images, synthetic game, recording), `motion` (stability), `forwarder` (adaptive rate), `client` (WebSocket), `adapter` (pacing), `cli` (`feed`) |
+| `board-reader-edge` | the Python edge ("Pi") | `source` (camera, video, images, synthetic game, recording), `motion` (stability), `forwarder` (adaptive rate), `client` (WebSocket), `adapter` (pacing), `camera/` (the control link, the stream source, the run loop: D19), `cli` (`feed`, `camera`) |
 | `board-reader-inference` | the inference node ("Jetson") | at the root `server` (FastAPI gateway), `cli`, `positions` (headless `/viewer` client); `recognition/`: `recognizer` + `chessq` + `onnxrt` (the read); `stream/`: `ingest` (inbox + workers), `schedule` (read policy), `stabilize` (debounce), `rules` (its guard's conditions), `hub`; `control/`: `camera` (the camera control channel); `measurement/`: `replay` / `evaluate` / `trial`, `labels`, `calibration` (temperature scaling for eval only) |
 | `packages/viewer` (Node) | the viewer: a SvelteKit app whose pages are prerendered, with `/api/*` and `/api/client-log` as routes, served by `server/main.ts`, which adds the `/ws/*` relay and the TLS port (D12) | `src/routes/api`, `server/{main,ws,tls}.ts`; pages `/`, `/camera`, `/control`, `/snapshot` |
 
@@ -842,7 +880,7 @@ move-aware temporal consistency exists anywhere ([architecture.md](architecture.
 
 | Real component | Simulated as |
 |---|---|
-| Camera + Pi edge | a **phone** on `/camera` (https, so `getUserMedia` works), or the **Python edge** `board-reader-edge feed` from a video, an image folder, a recording or a synthetic game |
+| Camera + Pi edge | a **phone** on `/camera` (https, so `getUserMedia` works), the **Python edge** `board-reader-edge camera <url>` (a YouTube broadcast or any stream, configured from `/control`, D19), or `board-reader-edge feed` from a video, an image folder, a recording or a synthetic game |
 | Jetson | the laptop (`make dev`, CUDA) or a `linux/amd64` container (`docker compose up`, CPU) |
 | Transport | WebSocket on localhost/LAN; the viewer relays everything, so one origin serves all pages |
 | Viewer | `/` (live board), `/control` (camera setup), `/snapshot` (one photo → board → correct → label) |
@@ -921,7 +959,7 @@ What is open now, in rough order:
    and stability are baked into recordings.
 2. **More varied recordings:** a second physical set, a second camera, other lighting,
    mid-game positions. The gate is seven takes of one set (§9).
-3. **The Python edge on the control channel:** today it takes a static `--roi`.
+3. ~~**The Python edge on the control channel**~~: done, `board-reader-edge camera` (D19).
 4. **The ChessCam v2 hedge:** a second recognizer behind the seam, for the licence risk
    and for Pi/Jetson latency.
 5. **Fully on-phone app** (idea): run recognition in the phone's browser. See

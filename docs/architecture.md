@@ -14,7 +14,7 @@ import rules below are enforced by a test, not by convention.
 | Package (`import`) | Role | May import |
 |---|---|---|
 | `board-reader-core` (`board_reader_core`) | the shared contract: L3 protocol, L1→L2 wire, camera control contract (pydantic models, with their JSON Schema in `schema`), recording format, sim helpers | numpy, opencv, pydantic |
-| `board-reader-edge` (`board_reader_edge`) | the **edge** node ("Pi", L1): capture, static crop, forward | core only |
+| `board-reader-edge` (`board_reader_edge`) | the **edge** node ("Pi", L1): capture, crop (static or from `/control`), forward | core only (plus yt-dlp for `camera`) |
 | `board-reader-inference` (`board_reader_inference`) | the **inference** node (L2): stateless recognizer + gateway | core only |
 | `packages/viewer` (Node) | the viewer: a SvelteKit app whose pages are prerendered, with `/api/*` and `/api/client-log` as routes, served by `server/main.ts`, which adds the `/ws/*` relay and the TLS port — `src/routes/api`, `server/{main,ws,tls}.ts`; pages `/`, `/camera`, `/control`, `/snapshot` | nothing |
 
@@ -39,6 +39,7 @@ The gateway accepts frames two ways, for two different jobs.
 flowchart LR
   cam[camera] --> edge[edge node]
   edge -->|WS /ingest: JSON header + JPEG| gw[inference gateway]
+  edge <-.->|"WS /cameras/{device} (edge camera)<br/>report + preview up; board id + config down"| gw
   camphone[phone: /camera page<br/>the browser edge] -->|"WS /ws/ingest (relay)"| vw[viewer server]
   vw -->|WS /ingest| gw
   laptop[laptop: /control page] <-.->|"WS /ws/boards/{id}/control<br/>configure up; state, preview, frame, health down"| vw
@@ -146,6 +147,17 @@ uses), then pass a `MotionMeter` (32×32 grayscale differencing → stability) a
 `AdaptiveForwarder` (DESIGN D4: ~1 fps keepalive at rest, ~12 fps burst through motion,
 with hysteresis, and the burst rate kept for `tail_s` = 1 s after a burst so the node's
 burst-end reads find fresh frames). There is no detection and no rectification on any edge.
+
+**`board-reader-edge camera <source>`** (DESIGN D19) is the Python edge as a camera on
+the control channel, the phone's twin. `camera/link.py` keeps the device id in a state
+file and holds `WS /cameras/{device_id}` on the node (report, previews, `assigned`,
+`config`, `replaced`). `camera/stream.py` resolves the source (yt-dlp for a web page,
+one format of at most 1080 lines; OpenCV directly for a file or `rtsp://`), reads it with
+OpenCV's FFmpeg backend and samples it at the phone's 20 fps; a video plays at real time
+from `--start`, a live stream reconnects. `camera/run.py` runs the capture, crop, meter,
+forwarder and encode on a camera thread, and the two sockets and the previews on the
+event loop; the frames go out on `/ingest` (latest wins, `client.IngestLink`) under the
+assigned board id with the device id in the header.
 
 On the **gateway**, the `/ingest` handler acks each frame on receipt and hands it to
 `FrameIngest.submit`, where the board's read scheduler decides on that frame at once. A
