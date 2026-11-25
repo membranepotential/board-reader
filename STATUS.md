@@ -13,6 +13,8 @@ confidences**. No moves, no legality, no PGN — those belong to the downstream 
   probe: [report](docs/reports/2026-11-25-partial-commit-under-hand.md)) — building (main session) — next: `make gate`.
 - **auto-frame top margin** — back-rank piece tops get cut; perspective-aware top margin in
   `locate.proposed_crop`, measured with the autocrop probe — running (agent T).
+- **device id = board id** — the camera's UUID is its board id; `board-N` only the default name;
+  drop the device→board table (D18 amended) — running (agent I).
 - **file splits DONE** (Sonnet): snapshot page `84ecbc0`, `measurement/{trial,evaluate}/` `a815f91`, `control/camera/`
   `878f80a`, `stream/schedule/` `bbef6b2`; gate identical. Next round: `replay.py`, `ingest.py`, `server.py`,
   /control + /camera pages, core `control.py`, `camera/registry.py` (573: extract the auto-frame driver).
@@ -43,8 +45,7 @@ confidences**. No moves, no legality, no PGN — those belong to the downstream 
 ## Next
 
 1. **Resting-hand re-test** (you): rest a hand on the board mid-game; no wrong board, "hand?" chip shows.
-2. **Motion meter over the board only** — 45/60 gate moves wait for the 2 s idle read (the meter sees
-   the hand at the clock); crop-aware meter or the hand signal (report `0ada93d`).
+2. **Motion meter over the board only** — 45/60 gate moves wait for the 2 s idle read (report `0ada93d`).
 3. **Record more varied games** — second set, second camera, other light. All gate takes are one
    set; the settle defaults are fitted to it.
 4. **Model the remaining HTTP replies in core** (`/estimate`, `/uploads`, `/labels`, the `/ingest`
