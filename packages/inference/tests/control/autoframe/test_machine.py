@@ -1,4 +1,4 @@
-"""Auto-frame's decisions (control/autoframe.py): scripted scenarios, then a seeded
+"""Auto-frame's decisions (control/autoframe/machine.py): scripted scenarios, then a seeded
 property test over random event streams that also proves it can fail."""
 
 from __future__ import annotations
@@ -12,35 +12,32 @@ import pytest
 
 from board_reader_core.control import CropRect
 
-from board_reader_inference.control.autoframe import (
-    TUNING,
+from board_reader_inference.control.autoframe.actions import (
     Action,
-    AutoFrame,
+    PublishRead,
+    PushCrop,
+    ReportStatus,
+    RequestFullFrame,
+    Status,
+    Why,
+)
+from board_reader_inference.control.autoframe.events import (
     AutoToggled,
     CameraRegistered,
     Disconnected,
     Event,
-    FrameProposal,
     FullFrameFailed,
     FullFrameLocated,
-    Located,
     ManualCropSet,
     PreviewLocated,
-    PublishRead,
-    PushCrop,
-    Quad,
     Reframed,
-    ReportStatus,
-    RequestFullFrame,
-    Status,
     StreamingStarted,
     Tick,
-    Tuning,
-    Why,
-    displacement,
-    status,
-    step,
 )
+from board_reader_inference.control.autoframe.geometry import FrameProposal, Located, Quad
+from board_reader_inference.control.autoframe.machine import status, step
+from board_reader_inference.control.autoframe.state import AutoFrame
+from board_reader_inference.control.autoframe.tuning import TUNING
 
 ASPECT = 16 / 9
 #: A board 0.3 of the frame wide; 0.01 of the frame is 3.3 % of its width.
@@ -286,32 +283,6 @@ def test_an_answer_from_before_a_disconnect_matches_nothing_after_it():
 
 
 # --- displacement and tuning ----------------------------------------------------
-
-
-def test_displacement_ignores_corner_labels_and_counts_pixels():
-    a8, h8, h1, a1 = HOME.corners
-    turned = Located((h8, h1, a1, a8), 0.95)  # the same board read a quarter turn off
-    assert displacement(HOME, turned, ASPECT) == 0
-    # 0.03 of the frame's width is 10 % of a board 0.3 wide, whatever the aspect.
-    assert displacement(HOME, moved(HOME, 0.03), ASPECT) == pytest.approx(0.1)
-    # 0.03 of its height is 0.03 / (0.3 * 16/9) of the board's width.
-    assert displacement(HOME, moved(HOME, 0, 0.03), ASPECT) == pytest.approx(0.05625)
-
-
-@pytest.mark.parametrize(
-    "bad",
-    [
-        {"min_r2": 1.5},
-        {"drift": 0.0},
-        {"drift_previews": 0},
-        {"full_frame_timeout": 0.0},
-        {"backoff": ()},
-        {"backoff": (10.0, 3.0)},
-    ],
-)
-def test_tuning_refuses_nonsense(bad):
-    with pytest.raises(ValueError):
-        Tuning(**bad)
 
 
 # --- property -------------------------------------------------------------------

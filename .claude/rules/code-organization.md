@@ -10,7 +10,7 @@ paths:
 - Organize `board_reader_inference` like this, and put a new module into the group whose concern it serves:
   - `recognition/` — what turns pixels into a distribution, and where the board lies: `recognizer.py`, `chessq.py`, `onnxrt.py`, `locate.py`.
   - `stream/` — the live read path after recognition: `ingest.py`, `schedule.py`, `stabilize.py`, `rules.py`, `hub.py`.
-  - `control/` — the camera control channel: `camera.py`.
+  - `control/` — the camera control channel: `camera.py`, and the `autoframe/` package (Auto-frame's pure controller: `tuning`, `geometry`, `events`, `actions`, `state`, `machine`).
   - `measurement/` — replay, scoring and labels: `replay.py`, `trial.py`, `evaluate.py`, `labels.py`, `calibration.py`.
   - the root — `server.py` (the app factory), `cli.py`, and `positions.py` (the headless `/viewer` client).
 - Move modules with `git mv` in one change that also updates every import, `pyproject.toml` entry points, the `paths:` globs in `.claude/rules/`, doc links, and the learnings store's scopes (`learnings rescope`, so `learnings audit` stays at 0), because a move is what breaks those references, not an edit. Add no re-export shims for old import paths; update the callers instead.
