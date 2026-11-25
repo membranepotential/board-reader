@@ -9,6 +9,8 @@ confidences**. No moves, no legality, no PGN — those belong to the downstream 
 
 ## Now (1 agent)
 
+- **partial commit under a hand** — an obscured read commits a balanced piece group (D16 amended;
+  probe: [report](docs/reports/2026-11-25-partial-commit-under-hand.md)) — building (main session) — next: `make gate`.
 - **file splits DONE** (Sonnet): snapshot page `84ecbc0`, `measurement/{trial,evaluate}/` `a815f91`, `control/camera/`
   `878f80a`, `stream/schedule/` `bbef6b2`; gate identical. Next round: `replay.py`, `ingest.py`, `server.py`,
   /control + /camera pages, core `control.py`, `camera/registry.py` (573: extract the auto-frame driver).
