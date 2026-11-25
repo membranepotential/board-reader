@@ -94,8 +94,8 @@ make ui                       # build the SvelteKit app -> packages/viewer/build
 make dev                      # ChessQ V6 fp32 on the GPU; `make dev-cpu` serves int8 on the CPU
 
 # Or by hand, without Docker (two terminals):
-BR_CHESSQ=models/chessq/cq-vit-s-644-v6-seed1-onnx-fp32.onnx \
-  uv run board-reader-inference serve          # gateway on :8000 (int8 file on a CPU)
+BR_CHESSQ=models/chessq/cq-vit-s-644-v6-seed1-onnx-fp32-attn.onnx \
+  uv run board-reader-inference serve          # gateway on :8000 (the int8 -attn file on a CPU)
 uv run board-reader-edge feed                  # synthetic feed -> :8000
 node packages/viewer/server/main.ts --port 8080   # UI on :8080 -> open it (after `make ui`)
 
