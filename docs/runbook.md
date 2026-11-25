@@ -12,11 +12,11 @@ see [[TESTING]].
 
 ```bash
 uv sync                                   # the whole workspace + dev tools
-make models                               # the ChessQ weights (pinned, SHA-256 checked) + fp32 export
+make models                               # the ChessQ weights (pinned, SHA-256 checked) + fp32 export + -attn copies
 make test                                 # must be green before any commit
 ```
 
-`make models` does two things. First it reads the release descriptors committed
+`make models` does three things. First it reads the release descriptors committed
 under `models/chessq/` and downloads the author's int8 ONNX and FP16 safetensors
 from the pinned Hugging Face revision; a file whose SHA-256 already matches is left
 alone, and a download that does not match replaces nothing. Then
@@ -28,8 +28,15 @@ the package's own prediction on a few drawn boards, and writes
 library versions, export SHA-256). The export is byte-reproducible under the lock,
 so the committed descriptor names the exact bytes; an export that is already
 current is left alone. The first run installs that environment (~1 GB) once.
+Last, `tools/chessq_export/attention.py` writes the files the node serves:
+`cq-vit-s-644-v6-seed1-onnx-fp32-attn.onnx` and `…-onnx-int8-r1-attn.onnx`, the same
+graphs with one more output, the square attention Auto-frame locates the board with
+(DESIGN D20). It checks that `logits` and `direction` stay bit-identical to the source
+file and writes `<release>-attn.json` (source and copy SHA-256); a copy that is
+current is left alone (`ok ... (sha256 verified against its descriptor)`).
 
-**Which file serves.** One release, two files, chosen by hardware: on a GPU the fp32
+**Which file serves.** One release, two files, chosen by hardware, each as its
+`-attn` copy: on a GPU the fp32
 export (~205 ms per read on the GTX 1650), on a CPU the author's int8 (~660 ms,
 against ~990 ms for fp32 on the CPU). The int8 file runs *slower* on CUDA (600+ ms)
 because its integer matmuls have no CUDA kernels. Both read every gate frame
@@ -69,7 +76,7 @@ the old ones on `/control`. A phone page opened before the update says it is out
 it. By hand:
 
 ```bash
-BR_CHESSQ=models/chessq/cq-vit-s-644-v6-seed1-onnx-fp32.onnx \
+BR_CHESSQ=models/chessq/cq-vit-s-644-v6-seed1-onnx-fp32-attn.onnx \
 BR_SAVE_UPLOADS=data/uploads \
 uv run board-reader-inference serve --host 0.0.0.0
 ```

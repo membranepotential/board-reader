@@ -65,10 +65,11 @@ whole, whatever the Apache-2.0 source allows on its own.
 - **Weights:** `make models` downloads two release files from the pinned revision
   into the git-ignored `models/chessq/` — the int8 ONNX (served on a CPU) and the FP16
   safetensors — and checks size and SHA-256 against their release descriptors. It
-  then exports the safetensors to an fp32 ONNX (served on a GPU) beside them. The
-  export is a derivative of the weights and carries the **same PolyForm
-  Noncommercial licence**. None of the three is ever committed, attached to a
-  release or baked into an image.
+  then exports the safetensors to an fp32 ONNX beside them, and writes a `-attn`
+  copy of the fp32 export and of the int8 ONNX (the files it serves: the same graph
+  plus an attention output). The export and the copies are derivatives of the
+  weights and carry the **same PolyForm Noncommercial licence**. None of these files
+  is ever committed, attached to a release or baked into an image.
 - **Export tool:** `tools/chessq_export` loads the safetensors with the author's
   [`chessqueries`](https://github.com/JSeytre/chessqueries) package (PolyForm
   Noncommercial 1.0.0 too), pinned to one commit in its own uv project. It is a
@@ -76,8 +77,8 @@ whole, whatever the Apache-2.0 source allows on its own.
   imports it or PyTorch.
 - **Descriptors:** the two release descriptors
   (`models/chessq/cq-vit-s-644-v6-seed1-onnx-int8-r1.json`,
-  `…-safetensors-fp16-r1.json`) and our export's descriptor
-  (`…-onnx-fp32.json`) **are** committed — metadata only (download URL at a pinned
+  `…-safetensors-fp16-r1.json`) and the descriptors of the files we build
+  (`…-onnx-fp32.json`, `…-onnx-fp32-attn.json`, `…-onnx-int8-r1-attn.json`) **are** committed — metadata only (download URL at a pinned
   revision, size, SHA-256, input/output contract, the licence name; for the export
   also its source, the package commit and the export's SHA-256), and `make models`
   needs them on a fresh clone.

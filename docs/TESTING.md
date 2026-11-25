@@ -1034,17 +1034,21 @@ frame and finds the board and its orientation itself (DESIGN D10). Both entry
 points set it: `make dev` to the fp32 export (GPU), `make dev-cpu` and compose to
 the author's int8 file (CPU). The weights are not in the repo; `make models`
 fetches the int8 ONNX and the FP16 safetensors from the pinned revision their
-committed descriptors name, checks the SHA-256, and exports the fp32 ONNX.
+committed descriptors name, checks the SHA-256, exports the fp32 ONNX, and writes
+the `-attn` copies of the fp32 and int8 files that both entry points serve (DESIGN D20).
 
 0. Run `make models`. Expected: `ok cq-vit-s-644-v6-seed1-onnx-int8-r1.onnx
    (sha256 verified)` and the same for the `.safetensors` when the files are already
    there, `fetched ...` otherwise; then either `exported cq-vit-s-644-v6-seed1-onnx-fp32.onnx
    (... 192/192 squares agree with the package ...)` or, when it is current,
    `ok cq-vit-s-644-v6-seed1-onnx-fp32.onnx (export sha256 verified against its
-   descriptor)`. Run it again: every line says `ok`, nothing is downloaded or
-   exported, and `git status` shows no change to `models/chessq/*.json`.
+   descriptor)`; last `built cq-vit-s-644-v6-seed1-onnx-fp32-attn.onnx (...
+   logits/direction bit-identical to ...)` and the same for the int8 file, or `ok
+   ...-attn.onnx (sha256 verified against its descriptor)` when current. Run it
+   again: every line says `ok`, nothing is downloaded, exported or built, and `git
+   status` shows no change to `models/chessq/*.json`.
 1. Start the stack: `make dev`. Expected: `recognition ChessQ Lite V6
-   (models/chessq/cq-vit-s-644-v6-seed1-onnx-fp32.onnx)`, and the inference log
+   (models/chessq/cq-vit-s-644-v6-seed1-onnx-fp32-attn.onnx)`, and the inference log
    prints `serving ChessQ from BR_CHESSQ=...`. `make dev-cpu` names the int8 file
    instead.
 2. Run `curl -s localhost:8000/healthz`. Expected: a `"recognizer": {"name":
@@ -1063,12 +1067,22 @@ committed descriptors name, checks the SHA-256, and exports the fp32 ONNX.
    board-reader-inference replay recordings/20260828-111421 --policy burst-end
    --name cq-v6 --score`. Expected: the manifest's `estimator` is
    `ChessQRecognizer` and its `env` lists `BR_CHESSQ`.
+5. Auto-frame on a still (DESIGN D20; the `/control` button is not built yet):
+   `uv run python -c "import cv2; from board_reader_inference.recognition.chessq import
+   ChessQRecognizer as Q; from board_reader_inference.recognition.locate import
+   autoframe; print(autoframe(Q('models/chessq/cq-vit-s-644-v6-seed1-onnx-fp32-attn.onnx').read,
+   cv2.imread('data/eval/heldout-20260831/IMG_0763.JPEG')))"`. Expected: a
+   `Proposal(crop=CropRect(x=0.1429, y=0.0843, w=0.8447, h=0.8051), ..., reads=2,
+   ...)`: the board plus a tenth on every side. A photo with no board prints
+   `NoBoard(reads=6..8, r2=...)`.
 
-Automated: `packages/inference/tests/recognition/test_chessq.py` and `test_recognizer.py` (fake
-model and the stub; the one real-weights test is `gpu`-marked and runs under `make
+Automated: `packages/inference/tests/recognition/test_chessq.py`, `test_recognizer.py` and
+`test_locate.py` (fake model, the stub, and the grid fit and Auto-frame on synthetic
+attention maps; the one real-weights test is `gpu`-marked and runs under `make
 test-gpu`, skipping when the weights or the held-out still are absent),
 `tests/test_fetch_models.py` and `tests/test_chessq_export.py` (`make models`:
-the downloads, the export's source check and descriptor) and
+the downloads, the export's source check and descriptor, the `-attn` copies'
+descriptors) and
 `tests/test_deploy_parity.py` (both entry points serve ChessQ V6, fp32 exactly where
 a GPU is declared, and nothing of the old stack). The e2e stream test
 uses `tests/_sim_recognizer.py` instead, because ChessQ does not read sim renders.

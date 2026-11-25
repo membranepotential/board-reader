@@ -631,6 +631,50 @@ Cropping a stream on the node: ruled out by D11 for the same reasons as for the 
 
 ---
 
+### D20 — ChessQ locates the board itself: Auto-frame's recognition side (2026-11-25)
+
+**Status:** accepted for the recognition side (probe:
+[the auto-frame probe](reports/2026-11-25-autocrop-probe.md)). The control loop that asks the phone for a full
+frame, proposes the crop on `/control` and re-frames on a camera move is open work.
+
+**Context.** The phone's crop is drawn by hand on `/control` (D11), and ChessQ reads
+well only when the board fills at least half of the read's width
+([the framing report](reports/2026-11-24-chessq-framing.md)). The probe found that three of ChessQ's decoder
+cross-attention heads (L1H0, L2H0, L3H0) put each square query's attention on its
+square, so the model already knows where the board is.
+
+**Decision.**
+- **The served model files carry that attention.** `make models` writes a `-attn`
+  copy of each served release file (our fp32 export and the author's int8) with one
+  more output, `square_attention` (1, 3, 64, 46, 46), and serves the copies
+  (`BR_CHESSQ_GPU`/`_CPU`, compose). Nothing else in the graph changes: the build
+  checks that `logits` and `direction` are bit-identical on the CPU, and records the
+  copy's SHA-256 beside its source's. The copies are derived here from the official
+  files, never fetched from a re-host. On the GPU the fp32 copy replays the seven gate takes exactly as the plain file did
+(`make gate GATE_NAME=heads`: all 496 published events identical to `latency3`,
+374/405 raw and 350/405 settled perfect), at 197.5 against 195.6 ms per model run,
+plus 1.8 ms to fit the grid.
+- **Every read carries the board's grid** (`Recognition.grid`, `FrameReading.grid`)
+  from the same model run: the 64 attention centroids, an LMedS homography, the four
+  corners in fractions of the frame read, and R² over all 64 squares. A grid is
+  trusted at R² ≥ 0.90; in the probe every bad final grid was below. The grid stays
+  inside the node for now: it is not on the wire.
+- **`locate.autoframe(read, frame)`** proposes the crop for a whole full-resolution
+  frame: read it, read its rough box grown by 50 % (coarse to fine), and when that
+  grid is untrusted read five 60 % tiles and refine the best. The crop is the final
+  box plus 10 %, snapped like the `/control` editor; with no trusted grid the answer
+  is "no board found". It proposes only: applying the crop stays the user's click
+  (D11). 2 reads normally, up to 8 with the tiles.
+- **`locate.locate_preview(read, preview)`**, one read of the phone's 480 px preview,
+  gives the board's position in the full frame for a camera-moved check. Whether one
+  pass suffices at 480 px, and the drift thresholds, are measured separately.
+
+**Rejected.** The classical x-corner detector: it fires on 53–67 % of frames at a
+board of 35–25 % of the width and on 0 % at 15 %, misses the dark live board, and
+costs 0.4–25 s of CPU. A single pass as the proposer: at 25 % it proposes bad grids
+with R² up to 0.95. A second model to locate the board: ChessQ's own attention costs
+2 ms a read.
+
 ## Superseded decisions
 
 Each entry: what it was, what replaced it, the evidence, and where its full text lives.
