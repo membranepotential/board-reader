@@ -17,34 +17,19 @@ confidences**. No moves, no legality, no PGN — those belong to the downstream 
 - **auto-crop probe** — ChessQ attention grid vs classical line detection (+ both) → proposed crop; board
   83–15 % of the frame; where each runs (phone/Pi/node) — running (measure only; tools/probes/autocrop_*).
 
-## Done (2026-11-24 — the ChessQ rebuild; plan: [docs/plans/2026-11-24-simplify-around-chessq.md](docs/plans/2026-11-24-simplify-around-chessq.md))
+## Done (2026-11-24/25 — the ChessQ rebuild; plan: [docs/plans/2026-11-24-simplify-around-chessq.md](docs/plans/2026-11-24-simplify-around-chessq.md))
 
-- **ChessQ is the core recognizer** (Lite V6, fp32 ONNX on CUDA ~0.2 s/read; int8 on CPU); old stack
-  deleted (≈ −26k lines: DINOv2/bank/crops/corners/training/RunPod). Labels + truth in the chess frame.
-- **Gate: 7 takes**, base `latency3`: 374/405 raw, 350/405 settled perfect, 0 hand leaks. Take 2
-  (`20261124-221950`) has truth (72/86 settled), kept out of the gate (staged non-moves).
-- **Latency:** phone motion thumbnail area-averaged; forwarder tail 1 s, burst-end 3 reads × 0.3 s,
-  settle 0.5 s, keepalive 2 s. Live take median move→settle ~2 s.
-- **Dumb-camera phone** (D11): `/camera` only films; `/control` sets crop, lens, resolution,
-  start/stop over two WebSockets; config persisted on the node; "White sits on …" + camera-moved warning.
-  Live take 2 (`recordings/20261124-221950`, 597 frames): user verdict good.
-- **Viewer** (D12): SvelteKit 3.3 on Node in `packages/viewer` (`/api` routes; `server/` only for the
-  WS relay + TLS); live card: motion chip + pending rings, no confidence bars, no rotate button.
-- **One wire contract** (D13): pydantic models in core → JSON Schema → `lib/protocol/generated.ts`
-  (zod 4), rebuilt by every `make ui`/`dev`/`test-front`; drift + shared-sample tests; strict headers.
-- **Inference regrouped** into recognition/ stream/ control/ measurement/; tests mirror src. `serve` honours
-  `BR_RECORD_DIR` (`3be7f47`).
-- **Priors → guard** (`5d0cdb2`..`61e1822`): decoder + `prior` field gone; count guard in `stream/rules.py`
-  (python-chess); per-board `rules: standard|free`; one placement per event + `pending`.
-- **`changed_utc`** (`acfcb8b`, `9fb7671`): back-dated by pixels over unread frames; lag behind the true
-  change, median: gate 1.46 → 1.35 s, take 2 0.94 → 0.57 s (rest = hand still on the piece).
-- **Latency round 3** (`8eac6f6`): node hold 0.3 s, settle 0.3 s (needs the energy gate); gate base
-  `latency3` 350/405 settled, 0 leaks; take 2 median move→settle 1.66 → 0.94 s.
-- **Energy gate** (`138d941`, D16): obscured reads (ChessQ frame energy > −12.4) never commit; take 2
-  resting hand 9 wrong boards → 0, whole take 80 → 88/94; gate 314 → 312/361; "hand?" chip.
-- **PGN panel** (`81408ac`): beam Viterbi over legal positions → live PGN, copy, Lichess link; 7/7 games exact.
-- **Docs + rules:** DESIGN.md rewritten; learnings → path-scoped `.claude/rules/` (store frozen);
-  big data archived to the HDD (`/run/media/felix/archive/board-reader/`, symlinked).
+- **ChessQ is the core recognizer** (Lite V6, fp32 CUDA ~0.2 s/read; int8 CPU); old stack deleted (≈ −26k
+  lines). Gate: 7 takes, base `latency3` 374/405 raw, 350/405 settled, 0 hand leaks; take 2 has truth.
+- **Latency:** area-averaged phone meter, 1 s tail; node hold 0.3 s, settle 0.3 s (`8eac6f6`, needs the
+  energy gate); take 2 median move→settle 1.66 → 0.94 s.
+- **Energy gate** (D16, `138d941`): obscured reads never commit; resting hand 9 wrong boards → 0.
+- **Event** (D15): one settled placement + `pending` + `changed_utc` (pixel back-dated, `9fb7671`: take 2
+  0.57 s after the true change); priors → python-chess count guard + `rules: standard|free`.
+- **Dumb-camera phone** (D11) + `/control` over WebSockets; **viewer** (D12) SvelteKit on Node; **one wire
+  contract** (D13) pydantic → generated zod TS; **PGN drawer** (`81408ac`, `b58968a`): 7/7 games exact.
+- **Docs + rules:** DESIGN rewritten; learnings → `.claude/rules/`; inference regrouped; big data on the HDD
+  (`/run/media/felix/archive/board-reader/`, symlinked).
 
 ## Next
 
