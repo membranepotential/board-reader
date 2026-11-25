@@ -50,6 +50,12 @@ def cmd_serve(args: argparse.Namespace) -> int:
     # `BR_CAMERA_CONFIG=` (empty) keeps the configs in memory only.
     os.environ.setdefault("BR_CAMERA_CONFIG", DEFAULT_CAMERA_CONFIG)
 
+    # The streams /control adds run as `board-reader-edge camera` processes that
+    # connect back to this node (D22), on loopback when it listens on every address.
+    loopback = args.host in ("0.0.0.0", "::", "")
+    host = "127.0.0.1" if loopback else f"[{args.host}]" if ":" in args.host else args.host
+    os.environ.setdefault("BR_NODE_URL", f"ws://{host}:{args.port}")
+
     # Every served run schedules its reads (D3/D4): the node estimates at the end
     # of each move plus a 2 s keepalive floor, rather than every frame. ~12x fewer estimates on the swept takes for
     # -0.9 pp prior per-square — see docs/reports/2026-08-27-move-trigger-sweep.md.

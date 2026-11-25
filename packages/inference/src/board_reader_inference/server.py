@@ -57,9 +57,14 @@ from board_reader_inference.control.autoframe.events import (
 )
 from board_reader_inference.control.autoframe.geometry import FrameProposal, Located
 from board_reader_inference.control.camera.health import NodeStatus, StreamedFrame
+from board_reader_inference.control.camera.persistence import config_path
 from board_reader_inference.control.camera.records import FullFrame
 from board_reader_inference.control.camera.registry import CameraRegistry
 from board_reader_inference.control.camera.router import router as camera_router
+from board_reader_inference.control.streams.command import edge_command, node_url
+from board_reader_inference.control.streams.router import router as streams_router
+from board_reader_inference.control.streams.store import streams_path
+from board_reader_inference.control.streams.supervisor import StreamSupervisor
 from board_reader_inference.measurement.labels import READ_FRAME
 from board_reader_inference.recognition.locate import (
     Grid,
@@ -314,6 +319,15 @@ def create_app(
         on_full_frame=_on_full_frame,
         on_preview=_on_preview,
     )
+    # The node's own streams (D22): each a `board-reader-edge camera` process that
+    # registers as a camera above; the list is kept beside the camera config.
+    camera_config = config_path()
+    supervisor = StreamSupervisor(
+        cameras,
+        command=edge_command(),
+        node=node_url(),
+        streams_file=None if camera_config is None else streams_path(camera_config),
+    )
     #: /ingest frames refused because their board id is another camera's (D18).
     frames_not_owned = 0
 
@@ -391,10 +405,12 @@ def create_app(
     @contextlib.asynccontextmanager
     async def lifespan(app_: FastAPI):
         ticks = asyncio.create_task(_tick_autoframe(), name="autoframe-ticks")
+        supervisor.start()
         try:
             async with ingest_.lifespan(app_):
                 yield
         finally:
+            await supervisor.stop()
             ticks.cancel()
             for task in (ticks, *locating):
                 task.cancel()
@@ -521,6 +537,7 @@ def create_app(
 
     app.state.cameras = cameras
     app.include_router(camera_router(cameras, _node_status))
+    app.include_router(streams_router(supervisor))
 
     # One-shot HTTP ingress for the phone snapshot page (viewer /snapshot): the
     # body is the photo as shot, and the recognizer finds the board in it.
