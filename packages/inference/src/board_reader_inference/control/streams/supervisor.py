@@ -269,7 +269,7 @@ class StreamSupervisor:
                 await _end(process, self._grace_s)
             if code == 0:
                 log.info("%s: the stream ended", record.id)
-                self._set(stream, "stopped", stream.error)
+                self._set(stream, "stopped", None)
                 return
             failures = 1 if self._clock() - started >= self._backoff.healthy_s else failures + 1
             delay = self._backoff.delay(failures)
