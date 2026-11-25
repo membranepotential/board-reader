@@ -8,7 +8,8 @@
  * (`tls.ts`), which `/camera` on a phone needs. Node runs it by stripping its types.
  *
  * Environment: BR_INFERENCE_HTTP / BR_INFERENCE_WS (the node), BR_CLIENT_LOG_DIR
- * (the phone's notes; default `client-logs`, empty drops them). It logs its banner and
+ * (the phone's notes; default `client-logs`, empty drops them), BR_PUBLIC_URL (a
+ * tunnel's origin, offered first in /control's camera QR code). It logs its banner and
  * one line per error, nothing per request.
  */
 
@@ -53,11 +54,18 @@ if (!existsSync(build)) {
       '  run `make ui`, or from packages/viewer/ui: pnpm install --frozen-lockfile && pnpm build'
   );
 }
-const { handler } = (await import(build.href)) as { handler: http.RequestListener };
 
 const lan = await localIPv4Addresses();
 const tlsPort = args['tls-port'] === undefined ? undefined : port(args['tls-port']);
 const cert = tlsPort === undefined ? undefined : await ensureCertificate(cacheDir(), subjectNames(lan));
+// The route behind /control's QR code (`/api/camera-links`) offers only addresses the
+// phone can open over TLS: this port, under a name the certificate covers.
+if (cert !== undefined && tlsPort !== undefined) {
+  process.env['BR_VIEWER_TLS_PORT'] = String(tlsPort);
+  process.env['BR_VIEWER_TLS_NAMES'] = cert.names.join(',');
+}
+
+const { handler } = (await import(build.href)) as { handler: http.RequestListener };
 const upgrade = relayUpgrade(wsOrigin(process.env), (line) => console.error(line));
 
 const listen = (server: http.Server, at: number): Promise<void> =>

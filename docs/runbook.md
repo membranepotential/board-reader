@@ -171,6 +171,7 @@ or newer runs the TypeScript directly), serving the build `make ui` writes to
 | `BR_INFERENCE_WS` | The node's `/viewer` socket URL; its origin is where the viewer relays every `/ws/<path>` socket (`/ws/ingest`, `/ws/viewer`, `/ws/boards/{id}/camera`, `/ws/boards/{id}/control`, and any the node adds). |
 | `BR_INFERENCE_HTTP` | Where the *viewer* forwards `/api/<path>` requests. |
 | `BR_CLIENT_LOG_DIR` | Where the phone's trial notes (`POST /api/client-log`) are appended, one NDJSON file per viewer start (default `client-logs`; empty drops them). |
+| `BR_PUBLIC_URL` | An origin that serves the viewer over TLS from outside the LAN, such as a Cloudflare quick tunnel (`/tunnel` skill): `BR_PUBLIC_URL=https://<name>.trycloudflare.com make dev`. The camera QR code on `/control` (`GET /api/camera-links`) offers its `/camera` first, before the LAN, hostname and `localhost` addresses on the TLS port. Only the origin is kept. |
 
 The viewer logs its startup banner and one line per relay or server error, nothing per
 request. `pnpm dev` in `packages/viewer` (Vite, hot reload) relays `/api` and `/ws` to

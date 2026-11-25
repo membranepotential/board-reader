@@ -486,6 +486,18 @@ node packages/viewer/server/main.ts --host 0.0.0.0 --port 8080 --tls-port 8443
 #    http://localhost:8080/camera — localhost is a secure context, no cert.)
 ```
 
+**Open /camera from the QR code on /control** (instead of typing the URL):
+
+1. Run `make dev`, and connect the phone to the same Wi-Fi as the laptop.
+2. On the laptop, open `http://localhost:8080/control`. Expected: a QR code with
+   `https://<lan-ip>:8443/camera` under it, and a list of the other addresses (the
+   hostname, `localhost`) to switch to. With a tunnel up and `BR_PUBLIC_URL` set, the
+   tunnel's `/camera` comes first.
+3. Scan the code with the phone's camera app and open the link. Expected: the
+   self-signed certificate warning (accept it once), then the camera permission prompt.
+4. If the note reads that only this machine's own address is known, the laptop has no
+   LAN address the certificate covers: check the Wi-Fi, or set `BR_PUBLIC_URL`.
+
 **The session, step by step:**
 
 1. Run `make dev` on the laptop. Expected: it prints the camera, snapshot and live URLs.
