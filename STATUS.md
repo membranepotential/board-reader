@@ -43,9 +43,8 @@ confidences**. No moves, no legality, no PGN — those belong to the downstream 
 2. **Auto-frame button** (build per `9de171f`): node reads full frame → proposes crop on /control.
 3. **Motion meter over the board only** — 45/60 gate moves wait for the 2 s idle read (the meter sees
    the hand at the clock); crop-aware meter or the hand signal (report `0ada93d`).
-3. **Record more varied games** — second set, second camera, other light. All gate takes are one
+4. **Record more varied games** — second set, second camera, other light. All gate takes are one
    set; the settle defaults are fitted to it.
-4. **Python edge on the control channel** (today: static `--roi`) — needed for a Pi/Jetson camera.
 5. **Model the remaining HTTP replies in core** (`/estimate`, `/uploads`, `/labels`, the `/ingest`
    ack) so they are generated too.
 6. **Idea, parked:** fully on-phone portable app — [docs/on-phone-app.md](docs/on-phone-app.md).
