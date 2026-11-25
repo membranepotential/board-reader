@@ -1,0 +1,117 @@
+# Partial commit under a hand: may an obscured read commit a complete move? (2026-11-25)
+
+**Question.** In the live trial 20261125-024330 the board did not update until the
+hand had left the frame. Can the node update the unobstructed part of the board while
+a hand is still in view?
+
+**Answer.** Yes, in simulation. The energy gate (DESIGN D16) blocks every commit while
+a read is obscured. A narrower rule keeps most of its protection: an obscured read may
+commit a **balanced piece group**, and nothing else. On the trial that raised the
+question, 9 moves show 0.3 to 12.7 s earlier. On the seven gate takes the settled
+row goes from 350 to 353 of 405 perfect. The cost is one phantom board, held for 1 s,
+in nine takes. This is an offline simulation over recorded reads; nothing is shipped,
+and `make gate` has not run on it.
+
+## What happened in the trial
+
+`events.ndjson` of 20261125-024330: 273 reads, 56 obscured, 55 of them during the
+140 s of play. A contact sheet of twelve obscured reads shows the cause: a hand rests
+at the far edge of the board, over one to four squares, or its fingers only touch the
+far rim. The moved piece's squares are in plain view, and the reads show the move
+correctly and repeatedly:
+
+| move | first read that shows it | committed | obscured reads in between |
+|---|---|---|---|
+| Ng8-g6 | 54.7 s | 60.8 s (g8 empty), 64.2 s (g6) | 5 |
+| c2-c4 | 74.6 s | 79.2 s | 4 |
+| Nb1-c3 | 86.1 s | 89.2 s | 5 |
+| Bf8-b4 (set down) | 92.7 s | 99.5 s | 7 |
+| Bf1-d3 | 126.3 s | 139.6 s | 9 |
+
+So the schedule did read the board; the gate held the commits. The gate works as
+designed: it judges the frame, not the square.
+
+## The rule
+
+A square is *ripe* when it has read the same new class across the settle window (0.3 s,
+2 reads), as today. On an obscured read, group the ripe squares by piece: the squares
+that lose piece P to "empty", and the squares that gain P (from empty or by capturing).
+A group is **balanced** when both counts are equal. Balanced groups commit, if the
+commit does not raise the board's excess (the existing guard). Everything else waits
+for a clear read, as today.
+
+Why this shape: a covered piece reads as empty, so a hand produces losses without
+gains, which never balance. A move, a capture and castling balance. A piece lifted and
+still in the hand does not balance, so no half-moved board commits on an obscured read.
+En passant and promotion do not balance either and wait for a clear read.
+
+This differs from the rejected "hold squares with high energy" of the
+[hand signal probe](2026-11-24-hand-signal-probe.md): that variant trusted the
+per-square energy to say which squares are covered (it cannot: a covered square looks
+normal) and committed half-moves.
+
+## Results
+
+`tools/probes/partial_commit_sim.py` re-runs `BoardStabilizer` over the recorded reads
+of each take's `replays/latency3` (raw board, capture time, obscured flag). `base`
+reproduces every recorded settled board (the seven gate takes: 350/405, as in the
+gate table; the trial: 273/273). `off` is the gate switched off.
+
+"Not-lag wrong" counts settled boards that are neither the truth nor the previous
+truth. Lag is the time from a truth boundary to the first settled board that equals it.
+
+| take | base | off | balanced |
+|---|---|---|---|
+| 193308 | 53/55, 2 wrong | 53/55, 2 | 53/55, 2 |
+| 163352 | 20/25, 0 | 20/25, 1 | 20/25, 0 |
+| 170333 | 61/69, 1 | 61/69, 1 | 61/69, 1 |
+| 172736 | 112/126, 5 | 109/126, 8 | 112/126, 5 |
+| 175539 | 11/15, 2 | 11/15, 2 | 11/15, 2 |
+| 181802 | 54/67, 9 | 55/67, 7 | 55/67, 7 |
+| 111421 | 39/48, 3 | 40/48, 5 | 41/48, 4 |
+| **seven gate takes** | **350/405, 22, mean lag 2.67 s** | 349/405, 26, 2.60 s | **353/405, 21, 2.60 s** |
+| 221950 (resting hand) | 91/96, 4, mean lag 1.99 s | 76/96, 20, 2.30 s | 90/96, 6, 0.93 s |
+
+No gate take loses a perfect board. The reads where `balanced` scores worse than `base`:
+
+- **111421 seq 117** (1 read): Bf1-c4 committed on an obscured read while the truth
+  still holds the bishop on f1. Not checked by eye; it is the next move, so most likely
+  the commit leads the truth boundary.
+- **221950 seq 39 to 57** (5 reads): the pieces are being put back to the starting
+  position by hand. `balanced` follows piece by piece; the truth file has one boundary
+  at seq 68, when the hands are gone. Checked on the frames: each committed board is
+  what stood on the board.
+- **221950 seq 382** (1 read): a real phantom. With a hand over the centre, b8 reads
+  empty and the pawn on d5 reads as a black knight, both for two reads: one loss and
+  one gain of `n`, so the group balances. The next clear read, 1.0 s later, reverts it.
+
+The resting-hand stretch of 221950 (rows 510 to 572) stays free of wrong boards.
+
+On the trial 20261125-024330 (no truth; commit timelines printed by the script and
+read by eye): every commit `balanced` makes on an obscured read is a move that was
+played. Earlier than `base`: Ng8-g6 5.8 s (and as one move, not as an empty g8 first),
+c2-c4 4.3 s, Nb1-c3 2.8 s, Qd1-c2 1.9 s, O-O 0.6 s, Ng1-f3 0.3 s, e2-e3 2.1 s,
+Bf1-d3 12.7 s, d7-d6 3.7 s. Not helped: a piece set down from the hand (Bb4: its
+source square emptied earlier, on a clear read) and White's castling, where the king
+committed 3.1 s before the rook: the rook's two squares were not ripe together on
+any obscured read.
+
+## Limits
+
+- **A simulation, not a gate run.** The schedule and the reads are the recorded ones;
+  only the debounce differs. Per the measurement rules the shipped number must come
+  from `make gate` through a changed `BoardStabilizer`.
+- **One phantom in nine takes is not zero.** A hand that hides a piece while another
+  square reads as the same piece balances by accident. Untested ways to close it: ask
+  more reads of an obscured commit than of a clear one, or refuse groups that touch a
+  square with a high square energy (needs the per-square energy on `Recognition`).
+- **A second lost piece of the same kind blocks the group.** A hand over a pawn holds
+  back every pawn move until it leaves. That is today's behaviour, not a regression.
+- **The balance test counts pieces, nothing more.** It consults no move rules, like the
+  count guard (D14).
+
+## Reproduce
+
+```bash
+uv run python tools/probes/partial_commit_sim.py            # the tables + the trial's commit timelines
+```
