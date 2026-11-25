@@ -28,7 +28,7 @@ paths:
 
 ## Replays and the gate
 
-- For a refactor that must not change behaviour, diff each take's `replays/<name>/events.ndjson` against the base line by line on (`frame_seq`, `placement`, `pending`) and the evidence digest (whose top row is the read), because that is stronger than `gate_table`'s totals. Delete intermediate replay dirs afterwards; keep `cq-v6`, `tkr-shipped` (it can only be rescored by `eval-session`, never replayed), `sp03-settle05-7` and the gate base `guard-only`.
+- For a refactor that must not change behaviour, diff each take's `replays/<name>/events.ndjson` against the base line by line on (`frame_seq`, `placement`, `pending`) and the evidence digest (whose top row is the read), because that is stronger than `gate_table`'s totals. Delete intermediate replay dirs afterwards; keep `cq-v6`, `tkr-shipped` (it can only be rescored by `eval-session`, never replayed), `sp03-settle05-7`, `guard-only`, `energy` and the gate base `latency3`.
 - Read `manifest.replay` (which recognizer was built) before diffing two replay dirs, because their env blocks can look identical while the built stack differed.
 - Design settle and schedule changes offline: read every frame of a take once and cache (seq, `square_dist`), run `replay.replay()` with a memoized `FrameRead` per schedule (~1 s per take, byte-identical to a real replay), then re-run `BoardStabilizer` over that replay's raw placements per settle config. The sanity check: today's stabilizer must reproduce the recorded settled row of every `report.json` to the digit.
 - Replay the held-out takes 163352, 170333 and 172736 with `--restamp-stability`, because their motion meter was broken and every schedule collapses to the keepalive otherwise.

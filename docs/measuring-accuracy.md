@@ -164,7 +164,8 @@ DESIGN D14.)
 
 **The replay gate.** `make gate GATE_NAME=<new>` replays the seven gate takes
 through `BR_CHESSQ` with the schedule `serve` ships (`schedule.DEFAULT_POLICY_SPEC`),
-scores each, and prints `tools/gate_table.py`'s table against `guard-only`: raw
+scores each, and prints `tools/gate_table.py`'s table against `latency3` (the Makefile's
+`GATE_BASE`, [[2026-11-25-latency-round3]]: 374/405 raw, 350/405 settled perfect): raw
 per-square and raw / settled perfect boards per take, with a pooled total.
 The seven takes are the four of [[2026-11-24-chessq-v6-replay-gate]] and the three
 held-out takes 20260827-163352, -170333 and -172736, whose truth

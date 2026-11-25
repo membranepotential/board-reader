@@ -250,3 +250,34 @@ uv run python tools/probes/latency3_sim.py $S/cache explain 0.7 3 0.3 0.5 2 1   
 
 The cache was deleted after the measurement. It is cheap to rebuild and specific to
 ChessQ V6.
+
+## Follow-up: the build and the real gate (2026-11-25)
+
+The build shipped the recommendation on the node alone: `DEFAULT_POLICY_SPEC` gained
+`exit_hold_s=0.3` and `SETTLE_SECONDS` went to 0.3 s. The phone and the Python edge keep
+their 0.7 s hold. The coupling to the energy gate is documented, not enforced: the
+runbook entry for `BR_OBSCURED_ENERGY` says that `off` needs round 2's 0.5 s window and
+0.7 s node hold set by hand. `latency3` is the new gate base.
+
+`make gate GATE_NAME=latency3` against `energy` matches the projection on every number.
+Leaks, not-lag, wrong changes, frames ok and latency were scored on the replays'
+`events.ndjson` with this probe's `score()`:
+
+| | `energy` | projected | `latency3` (real) |
+|---|---|---|---|
+| raw perfect | 341/361 | — | 374/405 |
+| settled perfect | 312/361 | 350/405 | **350/405** (.864) |
+| frames ok | .787 | .815 | **.815** |
+| hand leaks | 0 | 0 | **0** |
+| not-lag | 15 | 22 | **22** |
+| wrong changes | 27 | 23 | **23** |
+| median move→settle (s) | 3.12 | 2.70 | **2.70** |
+| reads | 446 | 496 | **496** |
+
+Take 2 (`20261124-221950`, replayed with the new spec): 88/94 → **91/96** settled
+perfect, 0 hand leaks, **0 of 23** wrong boards in the resting-hand stretch (rows
+452–596), median move→settle 1.66 → **0.94 s**.
+
+Per take, settled perfect: 193308 46/47 → 53/55, 175539 11/15 → 11/15, 111421 30/34 →
+39/48, 181802 50/60 → 54/67, 163352 14/22 → 20/25, 170333 56/63 → 61/69, 172736
+105/120 → 112/126. A live take with moves and a resting hand is still open (step 6).

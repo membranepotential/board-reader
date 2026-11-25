@@ -222,14 +222,14 @@ models:
 # print the table against GATE_BASE. Serial — each replay wants the GPU. The takes
 # and their replay flags live in tools/gate_table.py, so this recipe and the table
 # can never disagree about what the gate is. GATE_NAME must be new for a new
-# measurement: a replay overwrites its own directory. The base, guard-only, is the
-# shipped stack (fp32; serve's schedule: burst-end 3 reads 0.3 s apart and a 2 s
-# keepalive; the 0.5 s settle with its standard-rules guard and no prior decoder; the
-# edge's 1 s burst tail): 341/361 raw, 314/361 settled perfect
-# (docs/reports/2026-11-24-prior-backrank.md). Its predecessor sp03-settle05-7 still
-# had the decoder: 341/361 raw, 315/361 settled.
+# measurement: a replay overwrites its own directory. The base, latency3, is the
+# shipped stack (fp32; serve's schedule: a 0.3 s calm hold, then burst-end 3 reads
+# 0.3 s apart, and a 2 s keepalive; the 0.3 s settle with its standard-rules guard and
+# the energy gate; the edge's 1 s burst tail): 374/405 raw, 350/405 settled perfect
+# (docs/reports/2026-11-25-latency-round3.md). Its predecessors: energy (0.7 s hold,
+# 0.5 s settle) 341/361 raw, 312/361 settled; guard-only (no energy gate) 314/361.
 GATE_NAME ?= gate
-GATE_BASE ?= energy
+GATE_BASE ?= latency3
 # Extra replay flags for every take, e.g. GATE_FLAGS="--rules free" to gate a board
 # whose settle guard is off.
 GATE_FLAGS ?=
