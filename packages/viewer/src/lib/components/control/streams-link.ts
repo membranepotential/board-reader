@@ -1,7 +1,8 @@
 /**
  * The control page's end of the stream list (`WS /streams` on the node, relayed
  * under `/ws/streams`): it sends `add_stream` (a video or live stream URL, and a
- * video's start position) and hears the `streams` list or a refusal. A stream the
+ * video's start position) and `remove_stream`, and hears the `streams` list or a
+ * refusal. A stream the
  * node runs registers as a camera, so its card comes through the camera list.
  */
 
@@ -9,6 +10,7 @@ import { wsUrl } from '#lib/api.ts';
 import { parseWire } from '#lib/protocol/index.ts';
 import { AddStreamMessage, StreamsDown } from '#lib/protocol/generated.ts';
 import { ReconnectingSocket } from '#lib/socket.ts';
+import { removeStreamMessage } from '#lib/control/streams.ts';
 
 export const STREAMS_SOCKET = '/ws/streams';
 
@@ -63,5 +65,10 @@ export class StreamsLink {
   /** `false` when the node is not connected: nothing was sent. */
   add(message: AddStreamMessage): boolean {
     return this.socket.send(JSON.stringify(message));
+  }
+
+  /** Stop a stream and forget its camera. `false` when the node is not connected. */
+  remove(streamId: string): boolean {
+    return this.socket.send(removeStreamMessage(streamId));
   }
 }

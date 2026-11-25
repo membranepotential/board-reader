@@ -2,10 +2,9 @@
   /**
    * The node's streams (`WS /streams`): each one's URL, start position and state,
    * and a Remove button. Removing a stream stops its process and forgets its
-   * camera, so the caller confirms before it sends `removeStreamMessage(id)` (from
-   * `#lib/control/streams.ts`) on the streams socket.
+   * camera, so the caller confirms before it sends `StreamsLink.remove(stream.id)`.
    *
-   *   <StreamList streams={message.streams} onremove={(id) => …} />
+   *   <StreamList streams={message.streams} onremove={(stream) => …} />
    */
   import type { StreamEntry } from '#lib/protocol/generated.ts';
   import { formatStart, streamStatus } from '#lib/control/streams.ts';
@@ -13,8 +12,8 @@
   interface Props {
     /** The latest `streams` list the node pushed, in the order they were added. */
     streams: readonly StreamEntry[];
-    /** Remove this stream (by its `id`). */
-    onremove: (streamId: string) => void;
+    /** The operator pressed this stream's Remove. */
+    onremove: (stream: StreamEntry) => void;
   }
 
   const { streams, onremove }: Props = $props();
@@ -34,7 +33,7 @@
           {/if}
           <span class="status {status.tone}">{status.text}</span>
         </div>
-        <button type="button" onclick={() => onremove(stream.id)} aria-label="Remove {stream.url}">
+        <button type="button" onclick={() => onremove(stream)} aria-label="Remove {stream.url}">
           Remove
         </button>
       </li>

@@ -10,16 +10,24 @@
    *
    * The top bar adds cameras: "Add camera" opens the QR code a phone scans to open
    * /camera, "Add stream" a form that asks the node to play a video or live stream as
-   * a camera (`StreamsLink`, `WS /streams`, open only while the form is). The list
-   * socket closes while the tab is hidden, like the cards' sockets.
+   * a camera (`StreamsLink`, `WS /streams`, open only while the form is), above the
+   * node's streams with a Remove button each (`StreamList`). The list socket closes
+   * while the tab is hidden, like the cards' sockets.
    */
   import { onDestroy, onMount } from 'svelte';
   import { resolve } from '$app/paths';
-  import type { AddStreamMessage, CameraEntry, CamerasDown, StreamsDown } from '#lib/protocol/generated.ts';
+  import type {
+    AddStreamMessage,
+    CameraEntry,
+    CamerasDown,
+    StreamEntry,
+    StreamsDown
+  } from '#lib/protocol/generated.ts';
   import { CamerasLink } from '#lib/control/cameras.ts';
   import CameraCard from '#lib/components/control/CameraCard.svelte';
   import CameraQr from '#lib/components/control/CameraQr.svelte';
   import AddStreamForm from '#lib/components/control/AddStreamForm.svelte';
+  import StreamList from '#lib/components/control/StreamList.svelte';
   import Modal from '#lib/components/control/Modal.svelte';
   import { StreamsLink, type AddStatus } from '#lib/components/control/streams-link.ts';
 
@@ -30,6 +38,10 @@
   let modal = $state<'camera' | 'stream' | null>(null);
   let streamsUp = $state(false);
   let adding = $state.raw<AddStatus>({ kind: 'idle' });
+  /** The node's streams while the Add stream form is open; `null` until its first list. */
+  let streamList = $state.raw<readonly StreamEntry[] | null>(null);
+  /** Why the last removal did not go through. */
+  let removeFailure = $state<string | null>(null);
   let list: CamerasLink | null = null;
 
   onMount(() => {
@@ -70,6 +82,8 @@
     streams?.stop();
     streams = null;
     streamsUp = false;
+    streamList = null;
+    removeFailure = null;
   }
 
   onDestroy(() => streams?.stop());
@@ -85,7 +99,11 @@
   }
 
   function receiveStreams(message: StreamsDown): void {
-    if (adding.kind !== 'sending') return;
+    if (message.type === 'streams') streamList = message.streams;
+    if (adding.kind !== 'sending') {
+      if (message.type === 'refused') removeFailure = `the node refused: ${message.reason}`;
+      return;
+    }
     if (message.type === 'refused') {
       adding = { kind: 'failed', reason: `the node refused: ${message.reason}` };
     } else if (message.streams.some((stream) => stream.url === (adding.kind === 'sending' ? adding.url : null))) {
@@ -98,6 +116,15 @@
       streams !== null && streams.add(message)
         ? { kind: 'sending', url: message.url }
         : { kind: 'failed', reason: 'not added: the node is not connected' };
+  }
+
+  function removeStream(stream: StreamEntry): void {
+    const camera = stream.board_id === null ? 'its camera' : `its camera ${stream.board_id}`;
+    const asked =
+      `Remove the stream ${stream.url}? The node stops playing it and forgets ${camera}, ` +
+      'whose board id may go to the next new camera.';
+    if (!window.confirm(asked)) return;
+    removeFailure = streams !== null && streams.remove(stream.id) ? null : 'not removed: the node is not connected';
   }
 
   function rename(entry: CameraEntry, name: string | null): boolean {
@@ -146,6 +173,15 @@
 </Modal>
 <Modal open={modal === 'stream'} title="Add a video or live stream" onclose={closeModal}>
   <AddStreamForm ready={streamsUp} status={adding} onadd={addStream} />
+  {#if streamList !== null}
+    <section class="streams" aria-label="the node's streams">
+      <h3>streams on the node</h3>
+      {#if removeFailure !== null}
+        <p class="warn" role="alert">{removeFailure}</p>
+      {/if}
+      <StreamList streams={streamList} onremove={removeStream} />
+    </section>
+  {/if}
 </Modal>
 
 <style>
@@ -201,5 +237,23 @@
     color: #9aa3ad;
     font-size: 13px;
     margin: 0 0 10px;
+  }
+  .streams {
+    display: grid;
+    gap: 8px;
+    margin-top: 16px;
+    padding-top: 12px;
+    border-top: 1px solid #2f3540;
+  }
+  .streams h3 {
+    margin: 0;
+    font-size: 13px;
+    font-weight: 600;
+    color: #9aa3ad;
+  }
+  .warn {
+    margin: 0;
+    font-size: 12px;
+    color: #ffcf33;
   }
 </style>
