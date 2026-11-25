@@ -308,8 +308,15 @@ test.describe('the motion meter', () => {
     await expect
       .poll(() => node.headers.find((header) => header['burst_id'] !== null), { timeout: 5_000 })
       .toMatchObject({ burst_id: 'board-1:b0' });
-    const burst = node.headers.filter((header) => header['burst_id'] === 'board-1:b0');
-    expect(Math.min(...burst.map((header) => header['stability'] as number))).toBeLessThan(0.7);
+    // The burst opened below 0.7, but the frame that opened it may not be among the
+    // frames sent (the page drops frames while it encodes): wait for one that is.
+    const lowest = () =>
+      Math.min(
+        ...node.headers
+          .filter((header) => header['burst_id'] === 'board-1:b0')
+          .map((header) => header['stability'] as number)
+      );
+    await expect.poll(lowest, { timeout: 5_000 }).toBeLessThan(0.7);
   });
 });
 

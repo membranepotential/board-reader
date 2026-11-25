@@ -57,9 +57,12 @@ export async function drawnBoardCamera(
         }
         const crossed = handFrom === null ? 1 : (performance.now() - handFrom) / HAND_MS;
         if (crossed < 1) {
+          // A hand a third of the board wide: big enough that every sample of the
+          // crossing reads as motion, not only the first, because the page drops
+          // samples while its encoder is busy (under load, most of them).
           ctx.fillStyle = 'rgb(40,30,25)';
           ctx.beginPath();
-          ctx.arc(bx + side * (0.1 + 0.8 * crossed), by + side * 0.55, side * 0.12, 0, 2 * Math.PI);
+          ctx.arc(bx + side * (0.1 + 0.8 * crossed), by + side * 0.55, side * 0.17, 0, 2 * Math.PI);
           ctx.fill();
         }
         // One pixel that changes every frame: a canvas that never changes produces
