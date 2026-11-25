@@ -118,6 +118,17 @@ YouTube breaks old releases within weeks: when the command says yt-dlp could not
 resolve a page that plays in a browser, bump that date and the floor in
 `packages/edge/pyproject.toml`, then `uv sync`.
 
+**The same from `/control`** (DESIGN D22): **Add stream** in the top bar takes the URL
+and an optional start (`1:00:00`), and the node runs the command above itself. Its
+output appears in the node's log prefixed `[stream-N]`, a crash restarts it (1 s,
+doubling to 60 s), and a restarted node starts every saved stream again as the same
+camera. The list sits in `data/streams.json` beside `BR_CAMERA_CONFIG`, and each
+stream's device id in `data/streams/stream-N.device-id`. The dialog lists the streams
+with their state and a **Remove** button, which stops the process and forgets the
+camera. The node runs `board-reader-edge` from `PATH` or from beside its own Python
+(the workspace `.venv` under `make dev`). Elsewhere, set `BR_EDGE_COMMAND`. The node
+needs deno on its own machine for YouTube, as above.
+
 **What the compose demo reads (D3, measured 2026-11-24).** The compose edge streams
 `core.sim` synthetic renders (letters on coloured squares), and ChessQ does **not**
 read them: on the 14 positions of `SAMPLE_GAME_PLACEMENTS` it scores 0/14 perfect
@@ -156,6 +167,8 @@ recognition.
 | `BR_RECORD_MAX_MB` | Disk-fill stop for the recorder (default: no cap). The session truncates rather than rotating. |
 | `BR_GPU_MEM_LIMIT_MB` | Ceiling on each ONNX session's CUDA arena (default `1024`). Serving builds one session, ChessQ's. `0` removes the cap. See [the GPU section](#stopping-it-and-the-gpu-it-leaves-behind) for why a display GPU needs one. |
 | `BR_ALLOW_ORIGINS` | CORS origins, comma-separated (default `*`). |
+| `BR_EDGE_COMMAND` | The command that runs a stream added on `/control` (DESIGN D22), shell-quoted, e.g. `uv run --directory /srv/board-reader board-reader-edge`. Unset: `board-reader-edge` on `PATH`, else beside the node's Python. Without either, `add_stream` is refused with that hint (the inference Docker image has no edge). |
+| `BR_NODE_URL` | Where a stream's process reaches this node (`--node`). `serve` sets it from `--host`/`--port` (loopback when it listens on every address); default `ws://127.0.0.1:8000`. |
 
 ### Reproducing a run
 

@@ -1219,6 +1219,16 @@ Needs the network (it reads the video) and deno (`sudo pacman -S deno`).
    appears as in step 3. A start the form cannot read (`1:75`) is refused in the
    dialog before anything is sent; a URL the node refuses keeps the dialog open with
    the node's reason.
+9. The node runs the stream (DESIGN D22). Expected: the node logs `stream-1: started
+   (pid …)` and the edge's lines prefixed `[stream-1]`. Press **Add stream** again:
+   under the form, the list shows the URL, `from 1:00:00` and `running as board-N`.
+   Stop `make dev` (Ctrl-C) and start it again. Expected: `pgrep -af "board-reader-edge
+   camera"` shows nothing while the node is down; after the restart the stream starts by
+   itself and its card comes back as the same `board-N`. Press **Remove** in the list
+   and confirm. Expected: the list empties, the node logs `forgot camera … and its
+   board board-N`, and the card disappears. Without the edge installed (or with
+   `BR_EDGE_COMMAND=nope make dev`), **Add stream** keeps the dialog open with the
+   node's reason (`… is not a command here`).
 
 ### Option T — Auto-frame: the node frames the camera by itself (DESIGN D21)
 

@@ -746,6 +746,54 @@ to rest before re-framing): not part of the measured rule, and a moving camera r
 anyway after the rate limit. Re-framing on the board direction's `camera_moved` (D11):
 it sees a rotation, not a shift or a zoom.
 
+### D22 — The node runs the streams /control adds, as edge processes (2026-11-25)
+
+**Status:** accepted (user asked to add a YouTube video or live stream from /control,
+2026-11-25).
+
+**Context.** D19 made a stream a camera, but someone had to start
+`board-reader-edge camera <url>` in a terminal and keep it running. /control should add
+one by URL, and the node should keep it running across crashes and restarts.
+
+**Decision.**
+- **The node starts the edge's console script as a subprocess**
+  (`control/streams/`): `board-reader-edge camera <url> --node <BR_NODE_URL> --state
+  <file> [--start <s>]`. The process registers on `/cameras/{device_id}` like any
+  camera, so the registry assigns its board id (D18) and Auto-frame frames it (D21).
+  **The inference package still never imports the edge** (D1's split, checked by
+  `tests/test_layer_separation.py`): it runs a command by name, process-level glue
+  like the CLI and compose. The command is `BR_EDGE_COMMAND` (shell-quoted) if set,
+  else `board-reader-edge` on `PATH`, else the one beside the node's Python. A node
+  without one (the inference Docker image has no edge) refuses `add_stream` with what
+  to do.
+- **A socket of its own, `WS /streams`** (core `control.py`): up `add_stream {url,
+  start_s?}` and `remove_stream {stream_id}`, down the `streams` list (id, url,
+  start, state `starting`/`running`/`crashed`/`stopped`, device id, board id once
+  registered, last error) on connect, on every change and once a second, and
+  `refused`. The URL is `http(s)`, printable ASCII without spaces, at most 2048
+  characters, because yt-dlp would otherwise open local files and other schemes. It
+  goes into argv, never a shell.
+- **The node picks each stream's device id** and keeps it with the URL, start and
+  creation time in `streams.json` beside `BR_CAMERA_CONFIG` (tmp + `os.replace`, taken
+  whole or ignored with a WARNING; unset, in memory). It writes the edge's `--state`
+  file from it before every start. So a restarted node starts every saved stream
+  again as the same camera, and the registry gives it its board id back. A file of its
+  own rather than a key in the camera config, because the registry writes that file
+  whole and knows nothing of streams.
+- **Supervision.** Each process runs in its own session; its output lines go to the
+  node's log prefixed `[stream-N]`. A process that exits with an error is started again
+  after 1 s, doubling to at most 60 s; one that ran 60 s starts from 1 s again. One
+  that exits cleanly (a video that ended) stays `stopped` until the node restarts.
+  Removing a stream stops its process and then forgets its camera through the
+  registry's forget path (D18), so its board id is free again. Shutdown sends SIGTERM
+  to every process group and SIGKILL after 5 s; the streams stay saved.
+
+**Rejected.** Importing the edge pipeline into the node: it breaks the deployment
+split and puts OpenCV reads and yt-dlp on the node's event loop. Asking the operator
+to run the command (D19 alone): nothing restarts a crashed stream or a node reboot.
+Keeping the streams in the camera config file: the registry owns that file's shape,
+and its loader refuses unknown keys.
+
 ## Superseded decisions
 
 Each entry: what it was, what replaced it, the evidence, and where its full text lives.
