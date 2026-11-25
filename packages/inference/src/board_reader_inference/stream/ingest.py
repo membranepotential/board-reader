@@ -738,9 +738,9 @@ class FrameIngest:
         """Release one board's stream state: its scheduler, ring, stabilizer, guard
         and change clock, and its queued reads (counted in ``frames_forgotten``).
 
-        For a camera /control forgot, whose board id a new camera may get next: the
-        new one starts settling afresh, and the node stops holding ~2 MB per camera
-        ever seen. A read of the board already running finishes but is not
+        For a camera /control forgot: the node stops holding ~2 MB per camera ever
+        seen, and the device, should it come back, is a new camera that starts
+        settling afresh. A read of the board already running finishes but is not
         published (:meth:`_serve`). A frame that arrives later starts a new board.
         """
         board = self._boards.pop(board_id, None)
@@ -861,8 +861,8 @@ class FrameIngest:
                 self.frames_failed += 1
                 log.exception("estimation failed (board %s, seq %d)", frame.board_id, frame.seq)
             else:
-                # A board forgotten while its read ran publishes nothing: its id may
-                # be another camera's by now.
+                # A board forgotten while its read ran publishes nothing: the event
+                # would put the forgotten camera back on the live page.
                 if self._boards.get(frame.board_id) is board:
                     await self._publish(scheduled, outcome)
             finally:
