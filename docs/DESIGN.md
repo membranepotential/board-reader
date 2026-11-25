@@ -452,9 +452,10 @@ the older lines that carry `settled`.
 **Rejected.** Keeping both boards on the wire: two placements invite a consumer to
 pick the wrong one, and the raw one is redundant with `square_dist`.
 
-### D16 — An obscured read is evidence, never a commit (2026-11-25)
+### D16 — An obscured read commits a piece that moved, never one that only vanished (2026-11-25)
 
-**Status:** accepted (user, 2026-11-25).
+**Status:** accepted (user, 2026-11-25); amended the same day (user: "build option 1"):
+the first form let an obscured read commit nothing.
 
 **Context.** A hand that rests still on the board makes no motion, so the burst-end
 schedule reads it, and ChessQ reads the covered squares as empty at p ≥ 0.96: a
@@ -463,26 +464,52 @@ square's confidence cannot tell. On the live take 20261124-221950 the stack sett
 ones (frame ROC-AUC 0.970) and needs no model change
 ([probe](reports/2026-11-24-hand-signal-probe.md)).
 
+The energy judges the frame, not the square: a covered square looks normal. So the
+first form of this decision held the whole board while a read was obscured. On the
+live take 20261125-024330 a hand resting at the far edge of the board then held back
+nine moves that were in plain view, one of them for 13 s
+([probe](reports/2026-11-25-partial-commit-under-hand.md)).
+
 **Decision.**
 - **The frame energy** (`chessq.frame_energy`): per square minus the logsumexp of its 13
   logits, per frame the mean of the 4 highest squares. `Recognition` and `FrameReading`
   carry it; the fp32 and int8 files both report it; the stub reports none.
 - **A read above `BR_OBSCURED_ENERGY` is obscured** (`SettleConfig.obscured_energy`,
-  default −12.4 for ChessQ V6, `off` disables). It still starts and extends a square's
-  challenger, but no square ripens on it, so it commits nothing, the stale fall-through
-  included. The first clear read then confirms or resets each challenger. The first read
-  of a stream is still adopted wholesale.
+  default −12.4 for ChessQ V6, `off` disables). It starts and extends a square's
+  challenger like any read.
+- **An obscured read commits balanced piece groups only** (`stabilize.balanced_squares`).
+  Of the read's ripe squares, those of piece P form a group; the group is balanced when
+  as many squares lose P to "empty" as gain P. A hand hides pieces, which gives losses
+  without gains, so they never balance. A move, a capture and castling balance. A
+  covered piece, a piece still in the hand, a piece set down after its square emptied
+  and a promotion do not: they wait for the first clear read, which confirms or resets
+  each challenger. Nothing is dragged along, and the stale fall-through waits for a
+  clear read too. The rule counts pieces and consults no move rules, like the count
+  guard (D14). So it commits per piece, not per move: castling shows its king before
+  its rook when only the king's squares are ripe, and en passant shows the capturing
+  pawn's move while the captured pawn stays until a clear read. A balanced commit cannot raise the board's excess
+  (per piece the count stays, a capture lowers one), so it needs no guard. The first
+  read of a stream is still adopted wholesale.
 - **The event says so:** `PositionEvent.obscured` (default false, so older recordings
   parse), and the live card shows a "hand?" chip while the latest read is obscured.
 - **Re-fit the threshold for every model release.** The energy lives on the model's
   logit scale, like a temperature. `replay --obscured-energy` replays under another
   value; a non-default one joins the replay name, manifest and digest.
 
-**Evidence.** Gate (`energy` against `guard-only`): settled perfect 314 → 312 of 361
-(the simulation predicted 311), raw reads unchanged, mean settle lag 2.82 → 2.90 s.
-Both lost boards are settle lag (111421, 181802), not a wrong board. On take 2 the
-resting-hand stretch goes from 13/22 to 22/22 settled perfect and from 9 wrong boards to 0,
-and the whole take from 80/94 to 88/94.
+**Evidence.** The gate itself (`energy` against `guard-only`, obscured reads committing
+nothing): settled perfect 314 → 312 of 361, raw reads unchanged. On take 2 the
+resting-hand stretch goes from 13/22 to 22/22 settled perfect and from 9 wrong boards
+to 0, and the whole take from 80/94 to 88/94.
+
+The balanced rule (`balanced` against `latency3`): settled perfect 350 → 353 of 405,
+no take loses a board (111421 39 → 41, 181802 54 → 55), raw reads unchanged. Take 2:
+91 → 90 of 96, and its resting-hand stretch stays free of wrong boards. Of the six
+reads that score worse there, five follow a reset of the pieces by hand, piece by
+piece, ahead of the truth file's single boundary; one is a real phantom (b8 read empty
+while d5 read as a black knight, which balances), reverted by the next clear read
+1.0 s later. On the live take 20261125-024330, simulated over its recorded reads, nine
+moves show 0.3 to 12.7 s earlier and every commit on an obscured read is a move that
+was played.
 
 The shorter calm hold and settle window of
 [latency round 3](reports/2026-11-25-latency-round3.md) (0.3 s each, §5) rely on this
@@ -490,10 +517,14 @@ gate: with `off` they let hands settle, so `off` needs round 2's settings back.
 
 **Rejected.** Dropping obscured reads (15 gate boards lost: a mid-move read with the
 hand on the piece says something true, so dropping it delays every move by a read);
-holding single high-energy squares (half-adopted moves, 20 not-lag wrong boards);
-Mahalanobis distance of the query embeddings (its threshold needs calibration per
-setup and blocked the recovery reads on the dark live take); plain-CV hand signals
-(they fire on every move and on auto-exposure, and wood is skin-coloured).
+holding single high-energy squares and committing the rest (half-adopted moves, 20
+not-lag wrong boards: the square energy does not say which squares are covered);
+committing nothing on an obscured read (the first form: it holds moves in plain view
+for as long as a hand stays in the frame); asking three reads of an obscured commit
+(it removes the one phantom and gives back two of the three gained gate boards,
+351/405, simulated); Mahalanobis distance of the query embeddings (its threshold needs
+calibration per setup and blocked the recovery reads on the dark live take); plain-CV
+hand signals (they fire on every move and on auto-exposure, and wood is skin-coloured).
 
 ### D17 — Load changes when a board's events publish, never what they say (2026-11-25)
 
@@ -999,8 +1030,9 @@ every message in this section is `board_reader_core.schema`'s). One event per re
   are reserved. There is **no `illegal`**: an illegal-looking board is `ok`.
 - `obscured` — `true` when the node judged this read obscured (its frame energy is above
   `BR_OBSCURED_ENERGY`, D16): a hand most likely covers part of the board, so the read
-  started or extended challengers but committed no square. `false` on `/estimate`; a
-  recorded line without the key parses as `false`.
+  started or extended challengers and committed at most balanced piece groups (a piece
+  that left one square and stands on another). `false` on `/estimate`; a recorded line
+  without the key parses as `false`.
 - Every field above is always sent; `square_dist` entries lie in [0, 1], and
   `confidence` and `stability` too. Unknown keys are refused. That each square sums
   to 1 and that `pending` is exactly where `placement` differs from the argmax is
@@ -1167,9 +1199,11 @@ What is open now, in rough order:
   08-13 take settling all its boards is the guard. A hand resting still over the board
   reads as rest to the motion meter; without D16 it could settle under any window
   ([latency round 2](reports/2026-11-24-latency-round2.md)). With D16 its reads are
-  obscured and commit nothing (take 2's resting stretch: 0 wrong boards), as long as the
-  frame energy flags it: a hand that covers squares without a half-covered edge square
-  in view is the remaining risk.
+  obscured and commit only pieces that moved (take 2's resting stretch: 0 wrong boards), as
+  long as the frame energy flags it: a hand that covers squares without a half-covered
+  edge square in view is the remaining risk. So is a hand that hides a piece while
+  another square reads as the same piece: that balances like a move (once in nine takes,
+  for 1 s).
 - **Framing (D11).** The board must fill ≥ ~50 % of the sent width; 35 % collapses
   perfect boards and portrait costs about a quarter of them. Wide framing was measured
   with synthetic padding only, and real distractors (people, other boards) are untested.

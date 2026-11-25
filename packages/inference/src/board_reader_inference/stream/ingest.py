@@ -351,7 +351,7 @@ def _settle_read(
     guard and the clock rely on the same one-at-a-time order. ``rules`` is the
     board's setting for this read. A read whose frame energy the stabilizer's
     config calls obscured (:meth:`~.stabilize.SettleConfig.obscures`) commits
-    nothing and is published with ``obscured`` set.
+    only balanced piece groups and is published with ``obscured`` set.
     """
     dropped = guard.check(frame.seq, reading.direction)
     if dropped is not None:

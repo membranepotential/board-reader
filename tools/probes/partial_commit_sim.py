@@ -7,10 +7,12 @@ Re-runs the settle debounce over the recorded reads (raw board, capture time,
 obscured flag) of every take that has ``replays/latency3`` and a ``truth.json``,
 no model needed, under three variants:
 
-  base      today's BoardStabilizer (must reproduce the recorded settled boards)
+  base      an obscured read commits nothing, as shipped until 2026-11-25 (must
+            reproduce the settled boards the ``latency3`` replays recorded)
   off       the energy gate off (every ripe square commits)
-  balanced  an obscured read commits a ripe piece group only when the group is
-            balanced: as many squares lose piece P to "empty" as squares gain P
+  balanced  BoardStabilizer as it ships now: an obscured read commits a ripe piece
+            group only when the group is balanced, as many squares lose piece P to
+            "empty" as squares gain P (``stabilize.balanced_squares``)
 
 and prints settled perfect / scored, the settled boards that are neither the truth
 nor the previous truth, and the lag from a truth boundary to the first settled
@@ -25,62 +27,29 @@ import sys
 from pathlib import Path
 
 from board_reader_core.control import DEFAULT_RULES
-from board_reader_core.protocol import GRID, encode_placement, parse_placement
+from board_reader_core.protocol import encode_placement, parse_placement
 
 from board_reader_inference.measurement.trial.truth import load_truth
-from board_reader_inference.stream.stabilize import BoardStabilizer, _Candidate, _excess
+from board_reader_inference.stream.stabilize import BoardStabilizer
 
 ROOT = Path(__file__).resolve().parents[2] / "recordings"
 EMPTY = parse_placement("8/8/8/8/8/8/8/8")[0][0]
 FILES = "abcdefgh"
 
 
-class Balanced(BoardStabilizer):
+class FrameGate(BoardStabilizer):
+    """The debounce as it shipped before the balanced rule (DESIGN D16 as first
+    accepted): an obscured read extends challengers and commits nothing. An
+    infinite window for that one read keeps every square from ripening."""
+
     def observe(self, placement, ts, rules=DEFAULT_RULES, *, obscured=False):
-        if not obscured or self._settled is None:
-            return super().observe(placement, ts, rules, obscured=obscured)
-        grid = parse_placement(placement)
-        ripe = []
-        for r in range(GRID):
-            for c in range(GRID):
-                read = grid[r][c]
-                if read == self._settled[r][c]:
-                    self._forget((r, c))
-                    continue
-                ch = self._candidates.get((r, c))
-                if ch is None or ch.cls != read or ts < ch.first_ts:
-                    self._forget((r, c))
-                    ch = _Candidate(cls=read, first_ts=ts, reads=1)
-                    self._candidates[(r, c)] = ch
-                else:
-                    ch.reads += 1
-                if ch.reads >= self._min_reads and ts - ch.first_ts >= self._window:
-                    ripe.append((r, c))
-        lost: dict[str, list] = {}
-        gained: dict[str, list] = {}
-        for r, c in ripe:
-            if grid[r][c] == EMPTY:
-                lost.setdefault(self._settled[r][c], []).append((r, c))
-            else:
-                gained.setdefault(grid[r][c], []).append((r, c))
-        taken = [
-            sq
-            for piece in lost
-            if len(lost[piece]) == len(gained.get(piece, []))
-            for sq in lost[piece] + gained[piece]
-        ]
-        if taken:
-            trial = [row[:] for row in self._settled]
-            for r, c in taken:
-                trial[r][c] = grid[r][c]
-            if _excess(trial, rules) > _excess(self._settled, rules):
-                taken = []
-        if taken:
-            self._changed_ts = max(self._candidates[sq].first_ts for sq in taken)
-        for r, c in taken:
-            self._settled[r][c] = grid[r][c]
-            self._forget((r, c))
-        return encode_placement(self._settled)
+        if not obscured:
+            return super().observe(placement, ts, rules)
+        window, self._window = self._window, float("inf")
+        try:
+            return super().observe(placement, ts, rules, obscured=True)
+        finally:
+            self._window = window
 
 
 def raw_placement(event) -> str:
@@ -109,7 +78,7 @@ def load(src: Path):
 
 
 def run(events, variant: str):
-    stab = Balanced() if variant == "balanced" else BoardStabilizer()
+    stab = FrameGate() if variant == "base" else BoardStabilizer()
     out = []
     for e in events:
         obscured = e.get("obscured", False) and variant != "off"

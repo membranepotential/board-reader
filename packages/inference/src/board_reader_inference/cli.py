@@ -404,7 +404,8 @@ def build_parser() -> argparse.ArgumentParser:
     r.add_argument(
         "--obscured-energy", dest="obscured_energy", default=None, metavar="E",
         help="a read whose ChessQ frame energy is above this is obscured (a hand over "
-        "the board) and commits no square; it still counts as evidence. "
+        "the board) and commits only pieces that moved to another square; it still "
+        "counts as evidence. "
         f"'{GATE_OFF}' switches the gate off (env BR_OBSCURED_ENERGY; default "
         f"{SettleConfig().obscured_energy}, fitted for ChessQ V6: re-fit it per "
         "model release)",

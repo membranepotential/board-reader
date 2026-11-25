@@ -14,7 +14,7 @@
    * per-frame motion messages instead, and the chip is absent when the node sends
    * none. The "hand?" chip is the latest read's `obscured` flag: the node judged
    * something to cover the board (a hand resting still makes no motion), so that
-   * read could not settle a change.
+   * read could settle a piece that moved at most, not one that only vanished.
    *
    * Stale = the reading is old, so it stops asserting itself — except the `.live`
    * row, which is exempt: how stale it is, is exactly what you want to read on a
@@ -77,7 +77,7 @@
       {#if event.obscured}
         <span
           class="obscured-chip"
-          title="the last read looks obscured (a hand over the board?), so it could not change the board shown"
+          title="the last read looks obscured (a hand over the board?), so it could show a piece that moved, not one that vanished"
         >
           hand?
         </span>

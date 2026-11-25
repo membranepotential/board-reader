@@ -17,6 +17,7 @@ from board_reader_inference.stream.stabilize import (
     OBSCURED_ENERGY,
     BoardStabilizer,
     SettleConfig,
+    balanced_squares,
 )
 
 #: START_PLACEMENT after 1.e4 — one real move, two squares changed.
@@ -162,10 +163,10 @@ def test_rejects_nonsensical_parameters():
 
 
 def test_settle_config_from_env_keeps_unset_knobs_at_their_defaults():
-    assert SettleConfig.from_env({}) == SettleConfig()
     assert SettleConfig.from_env({"BR_SETTLE_SECONDS": "1.5", "BR_SETTLE_MIN_READS": ""}) == (
         SettleConfig(seconds=1.5)
     )
+    assert SettleConfig.from_env({}) == SettleConfig()
     assert SettleConfig.from_env(
         {"BR_SETTLE_SECONDS": "0.5", "BR_SETTLE_MIN_READS": "1", "BR_SETTLE_STALE_WINDOWS": "3"}
     ) == SettleConfig(seconds=0.5, min_reads=1, stale_windows=3)
@@ -217,10 +218,11 @@ def test_a_read_is_obscured_only_above_the_threshold():
     assert not SettleConfig(obscured_energy=None).obscures(0.0)  # the gate is off
 
 
-def test_an_obscured_read_never_commits_but_its_evidence_counts():
+def test_a_piece_that_only_vanished_never_commits_on_an_obscured_read():
     """The resting hand: reads under it agree on a wrong board for longer than the
-    window, and none of them commits. The first clear read that agrees with the
-    challenger they started then commits at once: their evidence counted."""
+    window, and none of them commits, because the knight left b8 for no other
+    square. The first clear read that agrees with the challenger they started then
+    commits at once: their evidence counted."""
     stab = BoardStabilizer(SettleConfig(seconds=0.5))
     stab.observe(START_PLACEMENT, 0.0)
     for ts in (1.0, 1.5, 2.0, 3.0, 5.0):  # four seconds of the hand, ripe many times over
@@ -257,6 +259,159 @@ def test_an_obscured_first_read_is_still_adopted():
     """No settled board exists to hold, so the first read is the board (and the
     clear reads that follow displace whatever it got wrong)."""
     assert BoardStabilizer().observe(GONE_B8, 0.0, obscured=True) == GONE_B8
+
+
+#: E4 with a hand over b8: the move in plain view, one piece hidden elsewhere.
+E4_GONE_B8 = "r1bqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR"
+#: E4 with a hand over a2: the hidden piece is a white pawn, like the moved one.
+E4_GONE_A2 = "rnbqkbnr/pppppppp/8/8/4P3/8/1PPP1PPP/RNBQKBNR"
+#: After 1.e4 d5, then 2.exd5, and that capture half done (the pawn in the hand).
+E4_D5 = "rnbqkbnr/ppp1pppp/8/3p4/4P3/8/PPPP1PPP/RNBQKBNR"
+EXD5 = "rnbqkbnr/ppp1pppp/8/3P4/8/8/PPPP1PPP/RNBQKBNR"
+E4_LIFTED = "rnbqkbnr/ppp1pppp/8/3p4/8/8/PPPP1PPP/RNBQKBNR"
+#: White ready to castle short, castled, and the king moved with the rook to follow.
+CAN_CASTLE = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQK2R"
+CASTLED = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQ1RK1"
+KING_ONLY = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQ2KR"
+#: White's e5 pawn takes d5 en passant, and a white pawn promotes on a8.
+EP_BEFORE = "rnbqkbnr/ppp1pppp/8/3pP3/8/8/PPPP1PPP/RNBQKBNR"
+EP_AFTER = "rnbqkbnr/ppp1pppp/3P4/8/8/8/PPPP1PPP/RNBQKBNR"
+PROMOTE_BEFORE = "4k3/P7/8/8/8/8/8/4K3"
+PROMOTE_AFTER = "Q3k3/8/8/8/8/8/8/4K3"
+
+
+def _squares(*names: str) -> list[tuple[int, int]]:
+    """Algebraic names -> the stabilizer's (row, column) squares."""
+    return [(8 - int(name[1]), "abcdefgh".index(name[0])) for name in names]
+
+
+def _balanced(settled: str, read: str) -> set[tuple[int, int]]:
+    """``balanced_squares`` with every differing square ripe."""
+    was, now = parse_placement(settled), parse_placement(read)
+    ripe = [(r, c) for r in range(8) for c in range(8) if was[r][c] != now[r][c]]
+    return set(balanced_squares(was, now, ripe))
+
+
+@pytest.mark.parametrize(
+    ("settled", "read", "squares"),
+    [
+        (START_PLACEMENT, E4, ("e2", "e4")),  # a move
+        (E4_D5, EXD5, ("e4", "d5")),  # a capture: the pawn left e4 and stands on d5
+        (CAN_CASTLE, CASTLED, ("e1", "g1", "h1", "f1")),  # castling: two groups
+        (START_PLACEMENT, GONE_B8, ()),  # a piece that only vanished
+        (GONE_B8, START_PLACEMENT, ()),  # a piece that only appeared
+        (START_PLACEMENT, SWAP, ()),  # two pieces misread as each other: no square emptied
+        (START_PLACEMENT, E4_GONE_B8, ("e2", "e4")),  # the move, not the hidden knight
+        (START_PLACEMENT, E4_GONE_A2, ()),  # two pawns left, one arrived: which one moved?
+        (CAN_CASTLE, KING_ONLY, ("e1", "g1")),  # the king's group balances on its own
+        (EP_BEFORE, EP_AFTER, ("e5", "d6")),  # en passant: the captured pawn only vanished
+        (PROMOTE_BEFORE, PROMOTE_AFTER, ()),  # a promotion: a pawn vanished, a queen appeared
+    ],
+)
+def test_balanced_squares_are_the_pieces_that_left_one_square_for_another(
+    settled, read, squares
+):
+    assert _balanced(settled, read) == set(_squares(*squares))
+
+
+def test_balanced_squares_looks_at_ripe_squares_only():
+    """A group is judged on what is ripe: the move's target alone is a piece that
+    only appeared, however clearly the read shows the source empty too."""
+    was, now = parse_placement(START_PLACEMENT), parse_placement(E4)
+    assert balanced_squares(was, now, _squares("e4")) == []
+    assert balanced_squares(was, now, []) == []
+
+
+def test_committing_balanced_squares_never_raises_the_excess():
+    """Why an obscured commit needs no guard: per piece the count stays the same
+    and a capture only removes a piece. Seeded boards from a small alphabet, so
+    that kings, pawns and queens sit at their limits; each read makes a few moves
+    and a few misreads. Adopting the whole read does raise the excess on the same
+    boards, so the generator reaches the conditions."""
+    import random
+
+    rng = random.Random(20261125)
+    alphabet = ["empty"] * 6 + list("KkPpQqNn")
+    cells = [(r, c) for r in range(2) for c in range(8)]
+    pad = [["empty"] * 8 for _ in range(6)]
+
+    def total(grid: list[list[str]]) -> int:
+        return violation(encode_placement(grid)).total
+
+    committed = whole_read_raises = 0
+    for _ in range(1000):
+        was = [[rng.choice(alphabet) for _ in range(8)] for _ in range(2)] + pad
+        now = [row[:] for row in was]
+        for _ in range(rng.randint(1, 3)):  # moves and captures
+            (r0, c0), (r1, c1) = rng.sample(cells, 2)
+            now[r1][c1], now[r0][c0] = now[r0][c0], "empty"
+        for _ in range(rng.randint(0, 2)):  # misreads
+            r, c = rng.choice(cells)
+            now[r][c] = rng.choice(alphabet)
+        ripe = [(r, c) for r, c in cells if was[r][c] != now[r][c]]
+        taken = balanced_squares(was, now, ripe)
+        after = [row[:] for row in was]
+        for r, c in taken:
+            after[r][c] = now[r][c]
+        committed += bool(taken)
+        whole_read_raises += total(now) > total(was)
+        assert total(after) <= total(was)
+    assert committed > 300
+    assert whole_read_raises > 20
+
+
+def test_a_move_in_plain_view_commits_on_obscured_reads():
+    """The hand rests elsewhere on the board: the move shows after the usual
+    window, and the hidden knight stays on the settled board."""
+    stab = BoardStabilizer(SettleConfig(seconds=0.5))
+    stab.observe(START_PLACEMENT, 0.0)
+    assert stab.observe(E4_GONE_B8, 1.0, obscured=True) == START_PLACEMENT
+    assert stab.observe(E4_GONE_B8, 1.3, obscured=True) == START_PLACEMENT  # not ripe yet
+    assert stab.observe(E4_GONE_B8, 1.6, obscured=True) == E4
+    assert stab.changed_ts == 1.0
+    assert _pending(E4_GONE_B8, E4) == ("b8",)
+    for ts in (2.0, 4.0, 6.0):  # the hand stays: the knight never leaves
+        assert stab.observe(E4_GONE_B8, ts, obscured=True) == E4
+    assert stab.observe(E4, 6.3) == E4  # the hand is gone, so is its challenger
+    assert stab.changed_ts == 1.0
+
+
+def test_one_obscured_read_is_still_no_quorum():
+    stab = BoardStabilizer(SettleConfig(seconds=0.0, min_reads=2))
+    stab.observe(START_PLACEMENT, 0.0)
+    assert stab.observe(E4, 1.0, obscured=True) == START_PLACEMENT
+    assert stab.observe(E4, 1.1, obscured=True) == E4
+
+
+def test_a_capture_commits_on_obscured_reads_but_not_its_first_half():
+    """The pawn in the hand: e4 reads empty and nothing gained a white pawn, so
+    the half-made capture waits. Set down on d5, both squares commit together."""
+    stab = BoardStabilizer(SettleConfig(seconds=0.5))
+    stab.observe(E4_D5, 0.0)
+    for ts in (1.0, 1.6, 2.2):
+        assert stab.observe(E4_LIFTED, ts, obscured=True) == E4_D5
+    assert stab.observe(EXD5, 2.8, obscured=True) == E4_D5  # d5 has one read
+    assert stab.observe(EXD5, 3.4, obscured=True) == EXD5
+    assert stab.changed_ts == 2.8  # the board as it stands was first read then
+
+
+def test_a_hidden_piece_of_the_moved_kind_holds_the_move_until_a_clear_read():
+    """Two white pawns left their squares and one arrived: the count cannot say
+    which moved, so nothing commits under the hand. A clear read settles it."""
+    stab = BoardStabilizer(SettleConfig(seconds=0.5))
+    stab.observe(START_PLACEMENT, 0.0)
+    for ts in (1.0, 1.6, 2.2, 4.2):
+        assert stab.observe(E4_GONE_A2, ts, obscured=True) == START_PLACEMENT
+    assert stab.observe(E4, 4.5) == E4
+
+
+def test_a_swap_never_commits_on_obscured_reads():
+    """No square emptied, so no group balances: k and q misread as each other
+    under a hand wait for a clear read, however long they persist."""
+    stab = BoardStabilizer(SettleConfig(seconds=0.5))
+    stab.observe(START_PLACEMENT, 0.0)
+    for i in range(1, 20):
+        assert stab.observe(SWAP, i * 0.5, obscured=True) == START_PLACEMENT
 
 
 def test_stale_windows_sets_how_long_a_blocked_square_waits():
@@ -411,7 +566,6 @@ def test_two_identical_streams_settle_identically():
     ]
     assert runs[0] == runs[1]
 
-
 def _noisy_stream(rng, reads: int, *, classes: str, churn: int):
     """A stream that actually ripens things: a board that drifts a few squares at
     a time out of a small alphabet, so runs form and commits happen."""
@@ -437,7 +591,6 @@ def _stabilizer(window: float) -> BoardStabilizer:
 #: Two windows, because they exercise different commit paths: 1.0 s reaches the
 #: deadline fall-through, 1.5 s completes drags. Both do partial and empty commits.
 _PROPERTY_WINDOWS = (1.0, 1.5)
-
 
 #: Seeds for the property sweep — enough streams that every commit path fires.
 _PROPERTY_SEEDS = 40
@@ -559,6 +712,7 @@ def test_the_drag_takes_the_best_evidenced_partner():
     """Two partners could each relieve the same blocked commit; the one with more
     consistent reads is taken. Board order would pick b7, evidence order picks
     g7 — this is the only test that tells those two apart."""
+
     # a6 grows a black rook (17 black pieces, 9 promotions): blocked. Removing a
     # black *pawn* is what relieves both counts, so b7/g7 are the two partners.
     def board(a6: str, b7: str, g7: str) -> str:
@@ -585,6 +739,7 @@ def test_the_deadline_takes_only_what_it_needs():
     """The escape waives the quorum, not the debounce: it adds partners in
     evidence order and stops as soon as the board is no worse, so a square that
     merely happens to be in flux at that moment is not swept up with it."""
+
     def board(e8: str, h2: str) -> str:
         grid = [list(row) for row in parse_placement(SWAP)]
         grid[0][3], grid[0][4], grid[6][7] = "q", e8, h2

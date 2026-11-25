@@ -351,8 +351,9 @@ export type NamesMessage = Immutable<z.infer<typeof NamesMessage>>;
  *
  * `obscured` says the node judged this read obscured: something, most likely a
  * hand, covers part of the board, so the read may name covered squares empty. Such
- * a read can start settling a change but never completes one, so `placement`
- * holds until a clear read confirms it. False for a one-shot read, and in a
+ * a read can start settling any change but completes only a piece that left one
+ * square and stands on another; everything else in `placement` holds until a
+ * clear read confirms it. False for a one-shot read, and in a
  * recording made before the flag existed.
  *
  * Construct via `from_square_dist` (and `with_placement` for a

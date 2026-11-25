@@ -4,13 +4,14 @@
 hand had left the frame. Can the node update the unobstructed part of the board while
 a hand is still in view?
 
-**Answer.** Yes, in simulation. The energy gate (DESIGN D16) blocks every commit while
-a read is obscured. A narrower rule keeps most of its protection: an obscured read may
+**Answer.** Yes. The energy gate (DESIGN D16) blocked every commit while
+a read was obscured. A narrower rule keeps most of its protection: an obscured read may
 commit a **balanced piece group**, and nothing else. On the trial that raised the
 question, 9 moves show 0.3 to 12.7 s earlier. On the seven gate takes the settled
 row goes from 350 to 353 of 405 perfect. The cost is one phantom board, held for 1 s,
-in nine takes. This is an offline simulation over recorded reads; nothing is shipped,
-and `make gate` has not run on it.
+in nine takes. The rule shipped the same day (D16 amended, see
+[Shipped](#shipped-the-rule-through-the-changed-node-2026-11-25)); the tables below
+are the offline simulation that led to it, and the gate run reproduced them.
 
 ## What happened in the trial
 
@@ -42,8 +43,11 @@ for a clear read, as today.
 
 Why this shape: a covered piece reads as empty, so a hand produces losses without
 gains, which never balance. A move, a capture and castling balance. A piece lifted and
-still in the hand does not balance, so no half-moved board commits on an obscured read.
-En passant and promotion do not balance either and wait for a clear read.
+still in the hand does not balance, so a lifted piece's square does not empty on an
+obscured read. A promotion does not balance either and waits for a clear read. The
+groups are per piece, so the rule does not see moves: castling can show its king before
+its rook (below), and en passant shows the capturing pawn's move while the captured
+pawn, which only vanished, stays until a clear read.
 
 This differs from the rejected "hold squares with high energy" of the
 [hand signal probe](2026-11-24-hand-signal-probe.md): that variant trusted the
@@ -52,8 +56,9 @@ normal) and committed half-moves.
 
 ## Results
 
-`tools/probes/partial_commit_sim.py` re-runs `BoardStabilizer` over the recorded reads
-of each take's `replays/latency3` (raw board, capture time, obscured flag). `base`
+`tools/probes/partial_commit_sim.py` re-runs the settle debounce over the recorded reads
+of each take's `replays/latency3` (raw board, capture time, obscured flag). `base` is
+the debounce as it shipped before (an obscured read commits nothing); it
 reproduces every recorded settled board (the seven gate takes: 350/405, as in the
 gate table; the trial: 273/273). `off` is the gate switched off.
 
@@ -98,17 +103,46 @@ any obscured read.
 
 ## Limits
 
-- **A simulation, not a gate run.** The schedule and the reads are the recorded ones;
-  only the debounce differs. Per the measurement rules the shipped number must come
-  from `make gate` through a changed `BoardStabilizer`.
 - **One phantom in nine takes is not zero.** A hand that hides a piece while another
-  square reads as the same piece balances by accident. Untested ways to close it: ask
-  more reads of an obscured commit than of a clear one, or refuse groups that touch a
-  square with a high square energy (needs the per-square energy on `Recognition`).
+  square reads as the same piece balances by accident. Asking three reads of an
+  obscured commit removes it in the simulation (221950: 92/96, 4 not-lag wrong, all in
+  the reset by hand) but gives back two of the three gained gate boards (351/405, 22
+  not-lag wrong) and delays the trial's moves by 0.3 to 1.2 s; not shipped. Untested:
+  refuse groups that touch a square with a high square energy (needs the per-square
+  energy on `Recognition`).
 - **A second lost piece of the same kind blocks the group.** A hand over a pawn holds
   back every pawn move until it leaves. That is today's behaviour, not a regression.
 - **The balance test counts pieces, nothing more.** It consults no move rules, like the
   count guard (D14).
+
+## Shipped: the rule through the changed node (2026-11-25)
+
+`BoardStabilizer.observe` now commits `stabilize.balanced_squares` on an obscured read.
+The shipped rule is the simulated one with one simplification: it needs no excess
+check, because a balanced commit cannot raise a piece count (pinned by a seeded test).
+The script's `balanced` rows now come from the shipped class and are unchanged.
+
+`make gate GATE_NAME=balanced` against `latency3`:
+
+| take | raw perfect | settled perfect |
+|---|---|---|
+| 20260813-193308 | 48/55 | 53/55 |
+| 20260827-175539 | 15/15 | 11/15 |
+| 20260828-111421 | 40/48 | 39/48 → 41/48 |
+| 20260827-181802 | 60/67 | 54/67 → 55/67 |
+| 20260827-163352 | 25/25 | 20/25 |
+| 20260827-170333 | 68/69 | 61/69 |
+| 20260827-172736 | 118/126 | 112/126 |
+| **total** | 374/405 | 350/405 → 353/405 |
+
+Live take 20261124-221950, replayed with the same schedule (`replays/balanced`
+against `replays/latency3`, both `report.json`): the same 124 reads, raw unchanged
+(73/96 perfect), settled perfect 91 → 90 of 96, settled per square 99.71 % → 99.25 %.
+The per-square drop is the reset by hand at seq 39 to 57, where the settled board
+follows the pieces while the truth holds the old position.
+
+Not done: a live take with the changed node (docs/TESTING.md, the resting-hand path,
+step 4).
 
 ## Reproduce
 

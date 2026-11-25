@@ -44,16 +44,29 @@ right or wrong. The constraint check above is not legality either — it is the
 necessary condition on the pieces, applied to the board the debounce composes out
 of several reads.
 
-**An obscured read is evidence, never a commit.** A hand resting still on the
-board makes no motion, so the schedule reads it, and ChessQ reads the covered
-squares as empty at p >= 0.96: confidence cannot tell. The frame energy can
+**An obscured read commits a piece that moved, never one that only vanished.** A hand resting
+still on the board makes no motion, so the schedule reads it, and ChessQ reads the
+covered squares as empty at p >= 0.96: confidence cannot tell. The frame energy can
 (:func:`~board_reader_inference.recognition.chessq.frame_energy`), and above
 :attr:`SettleConfig.obscured_energy` the read is *obscured*. It still starts and
 extends challengers, because a mid-move read with the hand on the piece also says
-something true (the lifted piece's square is empty), but no square ripens on it, so
-nothing commits until a clear read confirms or resets each challenger. Dropping
-obscured reads outright cost 15 gate boards in the probe, this 3
-(docs/reports/2026-11-24-hand-signal-probe.md).
+something true (the lifted piece's square is empty). Dropping obscured reads
+outright cost 15 gate boards in the probe (docs/reports/2026-11-24-hand-signal-probe.md).
+
+What such a read may commit is a *balanced piece group* (:func:`balanced_squares`):
+ripe squares where as many lose piece P to "empty" as gain P. The energy says that
+a hand is in the frame, not where: a covered square looks normal. But a hand hides
+pieces, which gives losses without gains, and those never balance; a move, a
+capture and castling do. So a move in plain view shows while a hand rests
+elsewhere on the board (on the live take 20261125-024330 a hand at the far edge
+held nine moves back, one of them for 13 s), and a piece still in the hand, a
+covered piece and a promotion wait for a clear read, which confirms or resets
+each challenger (docs/reports/2026-11-25-partial-commit-under-hand.md).
+
+The groups are judged per piece, so this is not "a whole move": castling shows its
+king before its rook when only the king's squares are ripe, and en passant shows
+the capturing pawn's move while the captured pawn, which only vanished, stays
+until a clear read.
 """
 
 from __future__ import annotations
@@ -65,6 +78,8 @@ from dataclasses import dataclass
 
 from board_reader_core.control import DEFAULT_RULES, Rules
 from board_reader_core.protocol import (
+    CLASSES,
+    EMPTY,
     GRID,
     encode_placement,
     parse_placement,
@@ -111,8 +126,8 @@ SETTLE_MIN_READS = 2
 #: staleness at ~3x SETTLE_SECONDS (one window to ripen, two to time out).
 STALE_WINDOWS = 2
 
-#: A read whose frame energy is above this is obscured and commits nothing (module
-#: docstring). The median of the probe's leave-one-take-out thresholds (each the
+#: A read whose frame energy is above this is obscured and commits only balanced
+#: piece groups (module docstring). The median of the probe's leave-one-take-out thresholds (each the
 #: 99th percentile over the other gate takes' clear frames, -12.13 to -12.93) for
 #: ChessQ V6. Energy lives on the model's logit scale, like a temperature: **re-fit
 #: it for every model release** (docs/reports/2026-11-24-hand-signal-probe.md).
@@ -129,6 +144,7 @@ SETTLE_ENV = (
 #: How ``BR_OBSCURED_ENERGY`` and ``replay --obscured-energy`` spell "no gate".
 GATE_OFF = "off"
 
+
 @dataclass(frozen=True)
 class SettleConfig:
     """The debounce's knobs, as one value a node or a replay is built with.
@@ -137,8 +153,8 @@ class SettleConfig:
     (:data:`SETTLE_SECONDS`, :data:`SETTLE_MIN_READS`); ``stale_windows`` is how
     many windows a ripe-but-blocked square waits before the coherence rule gives
     way (:data:`STALE_WINDOWS`); ``obscured_energy`` is the frame energy above
-    which a read commits nothing (:data:`OBSCURED_ENERGY`, ``None`` switches that
-    gate off). ``serve`` reads them from :data:`SETTLE_ENV`, ``replay`` from
+    which a read commits only balanced piece groups (:data:`OBSCURED_ENERGY`,
+    ``None`` switches that gate off). ``serve`` reads them from :data:`SETTLE_ENV`, ``replay`` from
     ``--settle-*`` and ``--obscured-energy`` (defaulting to the same environment),
     and a replay records them in its manifest, name and config digest.
     """
@@ -255,6 +271,44 @@ def _excess(grid: list[list[str]], rules: Rules) -> int:
     return excess(encode_placement(grid), rules)
 
 
+def balanced_squares(
+    settled: list[list[str]], grid: list[list[str]], ripe: list[tuple[int, int]]
+) -> list[tuple[int, int]]:
+    """The ripe squares an obscured read may commit (module docstring).
+
+    A ripe square either loses its settled piece to "empty" or gains the read's
+    piece (on an empty square or over another piece, a capture). The squares of
+    piece P form a group, and the group is *balanced* when as many squares lose P
+    as gain P: every P that left a square stands on another one. The squares of
+    the balanced groups are returned, the rest are not.
+
+    This counts pieces and consults no move rules, like the guard: a knight that
+    "moves" like a bishop balances too. What it refuses is a piece that only
+    vanished (a hand over it, or a piece in the hand) and a piece that only
+    appeared (a misread at the hand's edge, a piece set down after its square
+    emptied on an earlier commit).
+
+    Committing these squares cannot raise the board's excess, so the caller needs
+    no guard: per piece the count stays the same, a capture lowers the captured
+    piece's count, and every condition of :func:`~.rules.violation` grows only
+    with a count.
+    """
+    empty = CLASSES[EMPTY]
+    lost: dict[str, list[tuple[int, int]]] = {}
+    gained: dict[str, list[tuple[int, int]]] = {}
+    for r, c in ripe:
+        if grid[r][c] == empty:
+            lost.setdefault(settled[r][c], []).append((r, c))
+        else:
+            gained.setdefault(grid[r][c], []).append((r, c))
+    return [
+        square
+        for piece, squares in lost.items()
+        if len(squares) == len(gained.get(piece, ()))
+        for square in squares + gained[piece]
+    ]
+
+
 @dataclass
 class _Candidate:
     """A square's current challenger to the settled class, and its evidence."""
@@ -351,11 +405,13 @@ class BoardStabilizer:
         may change from one read to the next; the guard then judges this read's
         commit by the new setting.
 
-        ``obscured`` (:meth:`SettleConfig.obscures`) makes the read evidence only:
-        it starts and extends challengers as usual, but no square ripens on it, so
-        it commits nothing, not even through the stale fall-through. The first read
-        is still adopted wholesale: there is no settled board to hold yet, and a
-        wrong square is displaced by the clear reads that follow.
+        ``obscured`` (:meth:`SettleConfig.obscures`) narrows what the read may
+        commit: it starts and extends challengers as usual, but of its ripe squares
+        only the balanced piece groups commit (:func:`balanced_squares`). Nothing
+        is dragged along, and the stale fall-through waits for a clear read (an
+        obscured read does not start its clock; one a clear read started runs on). The first read is
+        still adopted wholesale: there is no settled board to hold yet, and a wrong
+        square is displaced by the clear reads that follow.
 
         Raises ``ValueError`` on an unparseable placement, like
         :func:`~board_reader_core.protocol.parse_placement`.
@@ -387,14 +443,17 @@ class BoardStabilizer:
                     challenger.reads += 1
                 contested.append((r, c))
                 if (
-                    not obscured
-                    and challenger.reads >= self._min_reads
+                    challenger.reads >= self._min_reads
                     and ts - challenger.first_ts >= self._window
                 ):
                     ripe.append((r, c))
-                    self._ripe_since.setdefault((r, c), ts)
 
-        taken = self._commit(grid, ripe, contested, ts, rules)
+        if obscured:
+            taken = balanced_squares(self._settled, grid, ripe)
+        else:
+            for square in ripe:
+                self._ripe_since.setdefault(square, ts)
+            taken = self._commit(grid, ripe, contested, ts, rules)
         if taken:
             self._changed_ts = max(self._candidates[square].first_ts for square in taken)
         for r, c in taken:

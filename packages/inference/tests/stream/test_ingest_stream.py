@@ -504,15 +504,17 @@ def test_each_board_settles_with_the_ingest_settle_config():
     assert asyncio.run(run(SettleConfig())) == START_PLACEMENT
 
 
-def test_an_obscured_read_is_published_as_such_and_commits_nothing():
+def test_an_obscured_read_is_published_as_such_and_commits_only_the_move():
     """The frame energy reaches the debounce through ``_settle_read``: with a
-    window that commits any changed read at once, the obscured one still waits."""
+    window that commits any changed read at once, the obscured read commits the
+    move it shows in plain view and holds the knight a hand hides on b8."""
     from board_reader_inference.recognition.recognizer import event_from_dist
     from board_reader_inference.stream.stabilize import SettleConfig
 
     e4 = "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR"
+    e4_gone_b8 = "r1bqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR"
     #: seq -> (the read, its frame energy): clear, obscured, clear.
-    reads = {0: (START_PLACEMENT, -14.0), 1: (e4, -10.0), 2: (e4, -14.0)}
+    reads = {0: (START_PLACEMENT, -14.0), 1: (e4_gone_b8, -10.0), 2: (e4_gone_b8, -14.0)}
 
     def read(frame: Frame) -> FrameReading:
         board, energy = reads[frame.seq]
@@ -533,10 +535,10 @@ def test_an_obscured_read_is_published_as_such_and_commits_nothing():
         return published
 
     events = asyncio.run(run())
-    assert [(e.placement, e.obscured) for e in events] == [
-        (START_PLACEMENT, False),
-        (START_PLACEMENT, True),
-        (e4, False),
+    assert [(e.placement, e.obscured, e.pending) for e in events] == [
+        (START_PLACEMENT, False, ()),
+        (e4, True, ("b8",)),
+        (e4_gone_b8, False, ()),  # clear, the same read commits the knight too
     ]
 
 

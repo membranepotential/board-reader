@@ -643,7 +643,9 @@ the setting its read settled under (`jq -r .rules`).
 **A resting hand and the obscured-read gate** (DESIGN D16). A hand that rests still
 on the board makes no motion, so the node reads it, and ChessQ reads the covered
 squares as empty with high confidence. Such a read is *obscured* (its frame energy
-is above `BR_OBSCURED_ENERGY`): it may start settling a change but never completes one.
+is above `BR_OBSCURED_ENERGY`): it may start settling any change, but it completes only
+a piece that left one square and stands on another. A piece that only vanished, or
+only appeared, waits for a clear read.
 
 1. Mid-game, with the live page open and the board settled, lay a hand flat over a
    few occupied squares and hold it still for about ten seconds.
@@ -655,14 +657,22 @@ is above `BR_OBSCURED_ENERGY`): it may start settling a change but never complet
    clear; the board never changed.
 3. Make a normal move with a hand that leaves the board quickly.
    Expected: the move settles as usual, about a second after the hand leaves.
-4. Optional: restart with `BR_OBSCURED_ENERGY=off make dev` and repeat step 1.
+4. Rest a hand on the edge of the board, over one or two occupied squares, and keep
+   it there. With the other hand make a move elsewhere on the board and take that
+   hand away.
+   Expected: the move shows within about a second while the **hand?** chip is still
+   on, and the covered pieces stay on the shown board. Lift a piece and hold it in
+   the air instead: its square does not empty on the shown board until the resting
+   hand leaves.
+5. Optional: restart with `BR_OBSCURED_ENERGY=off make dev` and repeat step 1.
    Expected: no **hand?** chip, and the board may settle the covered squares as
    empty (the failure the gate exists for). `jq -c '[.frame_seq, .obscured]'` on the
    session's `events.ndjson` shows the flag per read.
 
-Automated: `test_stabilize.py` (obscured reads never commit, the stale path
-included), `test_chessq.py` (the frame energy), `test_ingest_stream.py` (the flag
-reaches the event), `tests/live.spec.ts` (the chip).
+Automated: `test_stabilize.py` (which squares an obscured read commits, and that the
+stale path waits), `test_chessq.py` (the frame energy), `test_ingest_stream.py` (the
+flag reaches the event), `test_server.py` (a move beside a resting hand, through the
+gateway), `tests/live.spec.ts` (the chip).
 
 ### Option K — Reproduce a run from its recording (WP-H2)
 

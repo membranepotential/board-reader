@@ -6,11 +6,11 @@ import json
 
 from starlette.testclient import TestClient
 
-from board_reader_core.protocol import START_PLACEMENT
+from board_reader_core.protocol import START_PLACEMENT, dist_from_placement
 from board_reader_core.sim import render_board
 from board_reader_core.wire import Frame
 
-from board_reader_inference.recognition.recognizer import StubRecognizer
+from board_reader_inference.recognition.recognizer import Recognition, StubRecognizer
 from board_reader_inference.server import create_app
 from board_reader_inference.stream.hub import PositionHub
 
@@ -75,6 +75,41 @@ def test_end_to_end_ingest_to_viewer_stream(gateway):
     assert event["placement"] == START_PLACEMENT
     assert event["status"] == "ok"
     assert "square_dist" in event
+
+
+class _ScriptedRecognizer:
+    """Reads one authored (board, frame energy) per call, in order."""
+
+    name = "scripted"
+    model_path: str | None = None
+
+    def __init__(self, reads: list[tuple[str, float]]) -> None:
+        self._reads = iter(reads)
+
+    def read(self, image) -> Recognition:
+        placement, energy = next(self._reads)
+        return Recognition(dist_from_placement(placement), frame_energy=energy)
+
+
+def test_a_move_beside_a_resting_hand_is_served_by_the_gateway(gateway, drain_ingest):
+    """Through the gateway with the shipped settle window: two obscured reads, one
+    second apart, show 1.e4 in plain view and a hand over b8. The board the node
+    serves has the move, keeps the knight, and says a hand is in the frame."""
+    e4 = "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR"
+    e4_gone_b8 = "r1bqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR"
+    recognizer = _ScriptedRecognizer(
+        [(START_PLACEMENT, -14.0), (e4_gone_b8, -10.0), (e4_gone_b8, -10.0)]
+    )
+    client = gateway(create_app(recognizer, PositionHub()))
+    with client.websocket_connect("/ingest") as ingest:
+        for seq in range(3):
+            _send_frame(ingest, seq=seq)
+            assert ingest.receive_json()["ack"] == seq
+    drain_ingest(client)
+    board = client.get("/boards/A1").json()
+    assert board["placement"] == e4
+    assert board["obscured"] is True
+    assert board["pending"] == ["b8"]
 
 
 def test_estimate_snapshot_roundtrip():
