@@ -177,14 +177,17 @@ the JPEGs that reach `/ws/ingest`, so "the crop the config asked for is the crop
 is measured in pixels.
 It also sends a drawn hand across the board and checks that a burst reaches the wire,
 and that changing the crop alone does not open one.
-`control.spec.ts` drives `/control` against a simulated node on its
-`/ws/boards/{id}/control` socket, including the side White sits on and the
-camera-moved warning, both from the health tick, and checks the QR code beside the
-camera list. `cameras.spec.ts` puts two phones (two browser contexts, so two device
-ids) and a control page on one stateful fake node (`tests/helpers/cameras.ts`):
-assignment, a reload and a node restart keeping the id, a rename on `/control` that
-names the camera and keeps its board id, a taken name refused, and forgetting a
-disconnected camera (a connected one cannot be). `live.spec.ts` checks that a `names`
+`control.spec.ts` drives `/control`'s camera card against a simulated node on its
+`/ws/boards/{id}/control` socket: the cropped frame by default and the whole frame
+with the crop rectangle in Crop mode, the side White sits on and the camera-moved
+warning (both from the health tick), a stream toggle that keeps the crop Auto-frame
+chose (so Auto-frame stays on), Re-detect frame, and the Add camera (QR code) and
+Add stream (`/ws/streams`) modals. `cameras.spec.ts` puts two phones (two browser
+contexts, so two device ids) and a control page on one stateful fake node
+(`tests/helpers/cameras.ts`): assignment, a reload and a node restart keeping the id,
+a rename in a card that names the camera and keeps its board id, a half-typed name
+surviving the list the node pushes every second, a taken name refused, and
+forgetting a disconnected camera (a connected one has no Forget). `live.spec.ts` checks that a `names`
 message relabels a card in place. The node's own registry and its config file are
 `packages/inference/tests/control/camera/`'s; `/ingest` refusing another
 camera's board and the names reaching `/viewer` are
@@ -501,7 +504,8 @@ node packages/viewer/server/main.ts --host 0.0.0.0 --port 8080 --tls-port 8443
 **Open /camera from the QR code on /control** (instead of typing the URL):
 
 1. Run `make dev`, and connect the phone to the same Wi-Fi as the laptop.
-2. On the laptop, open `http://localhost:8080/control`. Expected: a QR code with
+2. On the laptop, open `http://localhost:8080/control` and press **Add camera** in the
+   top bar. Expected: a dialog with a QR code and
    `https://<lan-ip>:8443/camera` under it, and a list of the other addresses (the
    hostname, `localhost`) to switch to. With a tunnel up and `BR_PUBLIC_URL` set, the
    tunnel's `/camera` comes first.
@@ -523,26 +527,26 @@ node packages/viewer/server/main.ts --host 0.0.0.0 --port 8080 --tls-port 8443
    adds `portrait: turn the phone sideways` (it still streams; upright framing costs
    about a quarter of perfect boards, [[operating-envelope#Framing]]).
 5. On the laptop, open `http://localhost:8080/control` (or the **camera control** link on
-   the live page). Expected: the **Cameras** list names `board-1` with the phone's camera
-   id and `connected`, the header reads `board board-1` and `phone connected`, and
-   within ~2 s the
-   phone's whole view appears as a preview, with the phone's lenses in the **lens** list
-   and its size under **frame delivered** in the Status panel. The phone sends previews
-   only while a `/control` page is open (or not hidden); close the tab and they stop.
-6. Drag a rectangle around the board on the preview, with a small margin, and press
-   **Save crop**. Expected: at once the phone shows the same rectangle as an outline
-   with the rest dimmed, and a warning on `/control` disappears or appears as the shape
-   needs (whole frame sent, a rectangle taller than wide or more than twice as wide as
-   tall, an upright phone).
+   the live page). Expected: one card, `board-1`, `connected` in its heading; the
+   picture area reads `no frame received yet` until the phone streams; the phone's
+   lenses are in the **lens** list and its size under **frame delivered** in the
+   card's stats.
+6. Press **Crop mode**. Expected: within ~2 s the phone's whole view, with the crop
+   rectangle on it. Drag a rectangle around the board, with a small margin, and press
+   **Save crop**. Expected: the card leaves Crop mode, at once the phone shows the same
+   rectangle as an outline with the rest dimmed, Auto-frame says it is off (the crop was
+   set by hand), and a warning on the card disappears or appears as the shape needs
+   (whole frame sent, a rectangle taller than wide or more than twice as wide as tall,
+   an upright phone). **Cancel** leaves Crop mode and sends nothing.
 7. Optional: choose another **lens** (an iPhone lists each rear lens, e.g. *Back Ultra
    Wide Camera*) or **resolution**. Expected: the phone's picture switches, and its status
    line names the new lens and size. The rectangle stays on the board, because it is
    stored in fractions of the frame.
 8. Press **Start streaming** on `/control`. Expected: the phone's status line turns
-   green, `streaming ~1.0 fps` at rest, and `/control` shows the cropped frame under
-   **What the node receives**, with **frames/s received** and **last frame** filled in
-   the Status panel and the **recognizer** named (`chessq`, or `stub` with the reason).
-   Once the node has read the board, **board direction** in the Status panel names the
+   green, `streaming ~1.0 fps` at rest, and the card's picture is the cropped frame the
+   node receives, with **frames/s** and **last frame** filled in its stats and the
+   recognizer named under **health** (`chessq`, or `stub` with the reason).
+   Once the node has read the board, **board direction** in the stats names the
    side White sits on as the preview shows it, e.g. `White sits on the left (89°)`.
    (The stub reads no direction, so the line stays `—` without the ChessQ weights.)
 9. Open the live page `http://localhost:8080` and move a piece. Expected: a burst on the
@@ -567,21 +571,23 @@ What to check beyond the steps:
 - Move the camera while streaming: turn the phone holder by a quarter turn, so the
   board lies a different way in the preview. Expected: after a few reads the
   **board direction** line names the new side and turns red, and a red
-  `The camera moved…` warning appears under the preview. Redraw the crop around the
-  board and press **Save crop**. Expected: the warning disappears, and the direction
+  `The camera moved…` warning appears under the card's picture. Press **Re-detect
+  frame**, or redraw the crop in Crop mode and press **Save crop**. Expected: the warning disappears, and the direction
   settles again on the new angle (a new lens or resolution does the same; starting or
   stopping the stream does not).
 - Two phones (DESIGN D18):
-  1. With the first phone streaming as `board-1`, scan the QR code under **Add a camera**
-     on `/control` with a second phone (or type the `/camera` URL), and allow the camera.
-     Expected: the second phone's status line reads `board board-2`, and the **Cameras**
-     list shows two rows, both `connected`.
-  2. Click `board-2` in the list. Expected: the header reads `board board-2`, the preview
-     is the second phone's view, and every control below now sets that phone.
+  1. With the first phone streaming as `board-1`, press **Add camera** on `/control`
+     and scan the QR code with a second phone (or type the `/camera` URL), and allow the
+     camera. Expected: the second phone's status line reads `board board-2`, and
+     `/control` shows two cards, both `connected`.
+  2. Press **Crop mode** on the `board-2` card. Expected: the second phone's view, and
+     every control on that card sets that phone only.
   3. Open the live page (`/`) in another tab, start the second phone streaming, and
      play two moves. Expected: a card `board board-2` whose game drawer lists them.
-  4. On `/control`, press **Rename** on the `board-2` row, type `kitchen table`, press
-     **Save**. Expected: the row reads `kitchen table` with `board-2` beside it within a
+  4. On `/control`, type `kitchen table` into the `board-2` card's **name** field
+     slowly, over a few seconds. Expected: the text stays as typed (the list the node
+     pushes every second does not reset it). Press **Save name** (or Enter). Expected:
+     the card's heading reads `kitchen table` with `board-2` beside it within a
      second; the second phone's status line reads `kitchen table (board board-2)` with
      no reload; its crop and stream setting are unchanged. On the live page the same
      card now reads `kitchen table board-2`, its game drawer still lists the two moves,
@@ -592,16 +598,16 @@ What to check beyond the steps:
      `node unreachable`, then `node connected` as `board-1` and `kitchen table`, and the
      list shows both again (`data/camera-config.json` keeps the pairs under `"cameras"`
      and the names under `"names"`).
-  7. Press **Rename** on the `board-1` row and type `board-2`, then `kitchen table`.
-     Expected: each time `the node refused: … is taken by camera kitchen table` under
-     the list; nothing changes. An empty name, saved, shows the board id again.
+  7. In the `board-1` card's **name** field, save `board-2`, then `kitchen table`.
+     Expected: each time `the node refused: … is taken by camera kitchen table` at the
+     top of the page, and the refused name stays in the field; nothing else changes.
+     An empty name, saved, shows the board id again.
   8. Open `/camera` in a second tab on the first phone. Expected: the older tab says
      `another /camera page on this phone took over` and stops streaming; the new tab
      streams as `board-1`.
-  9. On `/control`, look at a connected camera's **Forget** button. Expected: it is
-     greyed out, and the note under the list says a connected camera cannot be
-     forgotten. Close the second phone's `/camera` page; its row reads `not connected`.
-     Press **Forget** on it and confirm. Expected: the row disappears.
+  9. On `/control`, look at a connected camera's card. Expected: no **Forget** button.
+     Close the second phone's `/camera` page; its card reads `not connected` and shows
+     **Forget**. Press it and confirm. Expected: the card disappears.
   10. Open `/camera` on the second phone again. Expected: it is a new camera: the
       lowest free id (`board-2`), no name, no crop, not streaming.
   11. While the first phone streams, run `uv run board-reader-edge feed --board board-1`
@@ -1181,9 +1187,9 @@ Needs the network (it reads the video) and deno (`sudo pacman -S deno`).
    `uv run board-reader-edge camera "https://www.youtube.com/watch?v=TDx2DGiBGhc" --start 1:00:00`.
    Expected: a log line `video: <the title>`, then `control link up` and
    `streaming as board board-N`.
-3. Open `http://localhost:8080/control`. Expected: the camera in the list, labelled
+3. Open `http://localhost:8080/control`. Expected: a card for the camera, labelled
    with the video's title, connected, with a 1920×1080 frame and no lens or resolution
-   to choose; its preview shows the broadcast's whole picture.
+   to choose; **Crop mode** shows the broadcast's whole picture.
 4. Do nothing for a few seconds. Expected: Auto-frame (DESIGN D21) sets the crop around
    the physical board, not the broadcast's 2D board: the node logs `auto-frame board-N:
    board found in <n> reads ... crop {...}`, the edge logs `config: crop {...},
@@ -1191,8 +1197,8 @@ Needs the network (it reads the video) and deno (`sudo pacman -S deno`).
    took 8 reads (R² 0.994) and chose `x 0.228, y 0.555, w 0.278, h 0.241`. The board is
    about a quarter of the picture's width, so `/control` also says a camera move goes
    unnoticed (too small to watch on the previews). Turn streaming on. Expected: the edge
-   logs `config: crop {...}, streaming on`, and `/control`'s received frame shows only
-   the board.
+   logs `config: crop {...}, streaming on`, and the card's picture (the received
+   frame) shows only the board.
 5. Open `http://localhost:8080`. Expected: a card for `board-N` whose position follows
    the game; a move on the board opens a burst and the card updates within a few
    seconds. `/healthz` shows `ingest.received` climbing and `not_owned` at 0.
@@ -1202,6 +1208,12 @@ Needs the network (it reads the video) and deno (`sudo pacman -S deno`).
 7. Optional, a live stream: `uv run board-reader-edge camera "https://www.youtube.com/@<channel>/live"`
    with `--state /tmp/live-id`. Expected: `live stream: <title>`, a second camera
    (`board-N+1`) on `/control`, and `--start` refused for it.
+8. The same from `/control`, without a terminal: press **Add stream** in the top bar,
+   paste the video's URL, type `1:00:00` under **start at** and press **Add stream**.
+   Expected: the dialog closes once the node lists the stream, and a card for it
+   appears as in step 3. A start the form cannot read (`1:75`) is refused in the
+   dialog before anything is sent; a URL the node refuses keeps the dialog open with
+   the node's reason.
 
 ### Option T — Auto-frame: the node frames the camera by itself (DESIGN D21)
 
@@ -1212,8 +1224,8 @@ A phone, framed and re-framed without drawing a rectangle. Needs the ChessQ weig
    the board from where it will stay, landscape, with the board at least half the
    picture's width. Do not touch `/control`'s rectangle.
 2. Open `http://localhost:8080/control`. Expected: within a few seconds of the phone
-   connecting, Auto-frame says it is looking for the board, then that it framed it; the
-   rectangle on the preview sits around the board with about 10 % to spare on every
+   connecting, the card's Auto-frame says it is looking for the board, then that it
+   framed it; in **Crop mode** the rectangle sits around the board with about 10 % to spare on every
    side, and the phone shows the same outline. The node log reads `auto-frame board-N:
    board found in 2 reads ...`. If the board filled at least half of the last read,
    the live page shows its position at once, before streaming starts.
@@ -1226,9 +1238,9 @@ A phone, framed and re-framed without drawing a rectangle. Needs the ChessQ weig
    is not visible.
 5. Close `/control` and repeat step 4. Expected: the same. Auto-frame keeps the phone's
    previews on while it watches, whether or not a control page is open.
-6. On `/control`, drag the rectangle somewhere else and save it. Expected: Auto-frame
+6. On `/control`, press **Crop mode**, drag the rectangle somewhere else and save it. Expected: Auto-frame
    says it is off (the crop was set by hand), and moving the phone no longer re-frames.
-7. Switch Auto-frame back on, or press **Re-frame now**. Expected: a new full frame is
+7. Switch Auto-frame back on, or press **Re-detect frame** (in or outside Crop mode). Expected: a new full frame is
    asked for at once and the rectangle goes back around the board.
 8. Point the phone away from the board and reload `/camera`. Expected: "no board
    found", retried after 3 s, 10 s, then every 30 s; point it back and the next retry
