@@ -114,3 +114,86 @@ def test_the_committed_descriptor_describes_the_gated_export():
     assert meta[fm.EXPORT_KEY]["verification"]["squares_identical"] == (
         meta[fm.EXPORT_KEY]["verification"]["squares"]
     )
+
+
+# --------------------------------------------------------------------------- #
+# The attention files (attention.py): the served copies with square attention
+# --------------------------------------------------------------------------- #
+
+#: The int8 release's descriptor, as the source of an attention file.
+INT8 = "cq-vit-s-644-v6-seed1-onnx-int8-r1"
+
+
+def _int8_source(tmp_path: Path, payload: bytes = b"int8 onnx" * 40) -> Path:
+    """A models dir holding the committed int8 descriptor, re-pinned to ``payload``."""
+    models = tmp_path / "models/chessq"
+    models.mkdir(parents=True)
+    meta = json.loads((_ROOT / "models/chessq" / f"{INT8}.json").read_text())
+    meta["model"]["artifact_sha256"] = hashlib.sha256(payload).hexdigest()
+    meta["artifact"]["artifact_bytes"] = len(payload)
+    (models / f"{INT8}.json").write_text(json.dumps(meta))
+    (models / meta["artifact"]["filename"]).write_bytes(payload)
+    return models
+
+
+IDENTICAL = desc.Parity(samples=3, outputs_identical=True)
+
+
+def _attention_meta(models: Path, parity=IDENTICAL) -> dict:
+    source, meta = desc.load_attention_source(models, INT8)
+    artifact = models / f"{desc.attention_release(INT8)}.onnx"
+    artifact.write_bytes(b"attn bytes")
+    return desc.build_attention(source=source, source_meta=meta, artifact=artifact,
+                                versions={"onnx": "1.23.2"}, parity=parity)
+
+
+def test_an_attention_file_describes_its_source_and_its_extra_output(tmp_path):
+    models = _int8_source(tmp_path)
+    meta = _attention_meta(models)
+    assert meta["model"]["release"] == f"{INT8}-attn"
+    assert meta["artifact"]["filename"] == f"{INT8}-attn.onnx"
+    assert meta["square_attention"]["shape"] == [1, 3, 64, 46, 46]
+    assert meta["square_attention"]["heads"] == ["L1H0", "L2H0", "L3H0"]
+    source = meta[fm.EXPORT_KEY]["source"]
+    assert source["release"] == INT8
+    assert source["artifact_sha256"] == hashlib.sha256(b"int8 onnx" * 40).hexdigest()
+    assert fm.is_export(meta)  # fetch_models never tries to download it
+
+
+def test_an_attention_file_with_changed_outputs_is_never_described(tmp_path):
+    with pytest.raises(ValueError, match="differ"):
+        _attention_meta(_int8_source(tmp_path), desc.Parity(samples=3, outputs_identical=False))
+
+
+def test_an_attention_source_must_hold_its_recorded_bytes(tmp_path):
+    models = _int8_source(tmp_path)
+    (models / f"{INT8}.onnx").write_bytes(b"tampered")
+    with pytest.raises(ValueError, match="does not hold the bytes"):
+        desc.load_attention_source(models, INT8)
+
+
+def test_an_attention_file_is_current_only_for_its_bytes_and_source(tmp_path):
+    models = _int8_source(tmp_path)
+    _, source_meta = desc.load_attention_source(models, INT8)
+    assert not desc.attention_is_current(models, source_meta)  # no descriptor yet
+    desc.attention_descriptor_path(models, INT8).write_text(json.dumps(_attention_meta(models)))
+    assert desc.attention_is_current(models, source_meta)
+    (models / f"{INT8}-attn.onnx").write_bytes(b"other bytes")
+    assert not desc.attention_is_current(models, source_meta)
+
+
+def test_the_committed_attention_descriptors_pin_the_served_files():
+    """Both served files, built from the committed release files' recorded bytes,
+    with logits and direction bit-identical to them."""
+    models = _ROOT / "models/chessq"
+    pinned = {
+        desc.RELEASE: "eef9e49b52a1577b0f74702a8451b0098c6a94ad795571ade304f662cef3309a",
+        INT8: "ed3dbd48242f9c5a8f48d3631d05394282677249dcd19f1d55030592a71b250b",
+    }
+    assert set(desc.ATTENTION_SOURCES) == set(pinned)
+    for release, sha in pinned.items():
+        meta = json.loads(desc.attention_descriptor_path(models, release).read_text())
+        source = json.loads((models / f"{release}.json").read_text())
+        assert meta["model"]["artifact_sha256"] == sha
+        assert meta[fm.EXPORT_KEY]["source"]["artifact_sha256"] == source["model"]["artifact_sha256"]
+        assert meta[fm.EXPORT_KEY]["verification"] == {"samples": 3, "outputs_identical": True}

@@ -1,0 +1,129 @@
+{
+  "schema_version": 1,
+  "model": {
+    "release": "cq-vit-s-644-v6-seed1-onnx-int8-r1-attn",
+    "format": "board-reader-chessq-onnx-attention-v1",
+    "artifact_sha256": "ed3dbd48242f9c5a8f48d3631d05394282677249dcd19f1d55030592a71b250b"
+  },
+  "variant": "vit-s14",
+  "precision": "int8",
+  "artifact": {
+    "filename": "cq-vit-s-644-v6-seed1-onnx-int8-r1-attn.onnx",
+    "artifact_bytes": 35906281
+  },
+  "preprocessing_version": "rgb-imagenet-f32-bilinear-ignore-exif-v1",
+  "input": {
+    "name": "image",
+    "representation": "tensor",
+    "dtype": "float32",
+    "shape": [
+      1,
+      3,
+      644,
+      644
+    ],
+    "layout": "NCHW",
+    "color_order": "RGB",
+    "resize": {
+      "size_wh": [
+        644,
+        644
+      ],
+      "interpolation": "bilinear",
+      "antialias": true,
+      "arithmetic": "float32",
+      "preserve_aspect_ratio": false,
+      "crop": false,
+      "padding": false
+    },
+    "reference_exif_orientation": "ignored",
+    "normalization": {
+      "formula": "(pixel / 255.0 - mean[channel]) / std[channel]",
+      "mean": [
+        0.485,
+        0.456,
+        0.406
+      ],
+      "std": [
+        0.229,
+        0.224,
+        0.225
+      ]
+    },
+    "normalization_location": "client"
+  },
+  "output": {
+    "name": "logits",
+    "dtype": "float32",
+    "shape": [
+      1,
+      64,
+      13
+    ],
+    "class_symbols": [
+      ".",
+      "P",
+      "N",
+      "B",
+      "R",
+      "Q",
+      "K",
+      "p",
+      "n",
+      "b",
+      "r",
+      "q",
+      "k"
+    ],
+    "square_order": "a8 through h8, then a7 through h7, continuing to a1 through h1",
+    "class_selection": "argmax over the last dimension; first index wins ties",
+    "fen_output": "piece placement only"
+  },
+  "viewing_direction": {
+    "name": "direction",
+    "dtype": "float32",
+    "shape": [
+      1,
+      2
+    ],
+    "components": [
+      "cos",
+      "sin"
+    ]
+  },
+  "square_attention": {
+    "name": "square_attention",
+    "dtype": "float32",
+    "shape": [
+      1,
+      3,
+      64,
+      46,
+      46
+    ],
+    "heads": [
+      "L1H0",
+      "L2H0",
+      "L3H0"
+    ],
+    "meaning": "softmax cross-attention of each square query (FEN order) over the 46x46 encoder patch grid of the 644x644 input, CLS key dropped"
+  },
+  "export": {
+    "tool": "tools/chessq_export/attention.py",
+    "source": {
+      "release": "cq-vit-s-644-v6-seed1-onnx-int8-r1",
+      "filename": "cq-vit-s-644-v6-seed1-onnx-int8-r1.onnx",
+      "artifact_sha256": "b5469a816bbc0c0574c4c02da6aff95286b1e3c90cb233e4e3d8750e1eed6e51",
+      "artifact_bytes": 35905331
+    },
+    "versions": {
+      "onnx": "1.23.2",
+      "onnxruntime": "1.32.0"
+    },
+    "verification": {
+      "samples": 3,
+      "outputs_identical": true
+    }
+  },
+  "license": "PolyForm-Noncommercial-1.0.0"
+}

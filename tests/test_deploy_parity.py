@@ -125,9 +125,11 @@ def _model_relative(path: str) -> str:
     return path.split("models/", 1)[-1]
 
 
-#: The V6 file each kind of hardware serves (Makefile ``BR_CHESSQ_GPU``/``_CPU``).
-_GPU_MODEL = "chessq/cq-vit-s-644-v6-seed1-onnx-fp32.onnx"
-_CPU_MODEL = "chessq/cq-vit-s-644-v6-seed1-onnx-int8-r1.onnx"
+#: The V6 file each kind of hardware serves (Makefile ``BR_CHESSQ_GPU``/``_CPU``):
+#: the ``-attn`` copy of the fp32 export and of the int8 release, which also output
+#: the square attention (tools/chessq_export/attention.py).
+_GPU_MODEL = "chessq/cq-vit-s-644-v6-seed1-onnx-fp32-attn.onnx"
+_CPU_MODEL = "chessq/cq-vit-s-644-v6-seed1-onnx-int8-r1-attn.onnx"
 
 
 def _compose_declares_a_gpu() -> bool:
@@ -173,8 +175,9 @@ def test_both_entry_points_serve_chessq_and_nothing_of_the_old_stack() -> None:
 
 
 def test_the_served_weights_are_the_ones_make_models_produces() -> None:
-    """Every served file is the artifact of a committed descriptor — fetched or
-    exported — and both are V6: the export names the V6 release it was built from."""
+    """Every served file is the artifact of a committed descriptor, built by
+    ``make models`` from another committed descriptor's file, and V6 all the way:
+    the GPU file from our fp32 export, the CPU file from the author's int8 release."""
     import json
 
     descriptors = {
@@ -183,11 +186,19 @@ def test_the_served_weights_are_the_ones_make_models_produces() -> None:
             json.loads(p.read_text()) for p in sorted((_ROOT / "models/chessq").glob("*.json"))
         )
     }
+    releases = {meta["model"]["release"]: meta for meta in descriptors.values()}
     assert {_GPU_MODEL, _CPU_MODEL} <= descriptors.keys()
-    assert descriptors[_CPU_MODEL]["model"]["release"].startswith("cq-vit-s-644-v6-seed1-")
-    exported_from = descriptors[_GPU_MODEL]["export"]["source"]["release"]
+    for served, source in (
+        (_GPU_MODEL, "cq-vit-s-644-v6-seed1-onnx-fp32"),
+        (_CPU_MODEL, "cq-vit-s-644-v6-seed1-onnx-int8-r1"),
+    ):
+        built = descriptors[served]["export"]
+        assert built["tool"] == "tools/chessq_export/attention.py"
+        assert built["source"]["release"] == source
+        assert built["source"]["artifact_sha256"] == releases[source]["model"]["artifact_sha256"]
+    exported_from = releases["cq-vit-s-644-v6-seed1-onnx-fp32"]["export"]["source"]["release"]
     assert exported_from.startswith("cq-vit-s-644-v6-seed1-")
-    assert exported_from in {meta["model"]["release"] for meta in descriptors.values()}
+    assert exported_from in releases
 
 
 def test_every_inference_env_var_is_shared_or_justified() -> None:

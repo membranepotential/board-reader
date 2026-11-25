@@ -63,9 +63,11 @@ HOST := $(shell ip route get 1.1.1.1 2>/dev/null | grep -oP 'src \K[\d.]+' || ec
 #   CPU  the author's int8 — ~660 ms/read against ~990 ms for fp32 on this machine.
 # Both read every gate frame identically (cq-v6 vs cq-v6-fp32: 0 of 133 boards differ).
 # `make dev` and `make gate` take the GPU file; `make dev-cpu` and compose (which
-# declares no GPU device) take the CPU file.
-BR_CHESSQ_GPU   := models/chessq/cq-vit-s-644-v6-seed1-onnx-fp32.onnx
-BR_CHESSQ_CPU   := models/chessq/cq-vit-s-644-v6-seed1-onnx-int8-r1.onnx
+# declares no GPU device) take the CPU file. Each is served as its `-attn` copy
+# (`make models`, tools/chessq_export/attention.py): the same graph plus the square
+# attention Auto-frame locates the board with, logits and direction bit-identical.
+BR_CHESSQ_GPU   := models/chessq/cq-vit-s-644-v6-seed1-onnx-fp32-attn.onnx
+BR_CHESSQ_CPU   := models/chessq/cq-vit-s-644-v6-seed1-onnx-int8-r1-attn.onnx
 BR_CHESSQ       ?= $(BR_CHESSQ_GPU)
 BR_SAVE_UPLOADS ?= data/uploads
 
@@ -208,13 +210,20 @@ test-all:
 # Two steps. fetch_models downloads the author's int8 ONNX (the CPU model) and the
 # FP16 safetensors; tools/chessq_export then exports those safetensors to the fp32
 # ONNX the GPU serves, checks it square by square against the official package's
-# own prediction, and writes its descriptor. The export runs in its own uv project
-# (PyTorch + chessqueries), so the workspace and the node never depend on torch.
-# The first run installs that environment (~1 GB of wheels) and takes a minute.
+# own prediction, and writes its descriptor. A third step (attention.py) writes the
+# files the node serves: a `-attn` copy of the fp32 export and of the int8 release,
+# whose graph also outputs the square attention Auto-frame locates the board with
+# (docs/reports/2026-11-25-autocrop-probe.md). It checks that logits and direction
+# stay bit-identical and records the copy's SHA-256 in its descriptor. The export
+# runs in its own uv project (PyTorch + chessqueries), so the workspace and the
+# node never depend on torch. The first run installs that environment (~1 GB of
+# wheels) and takes a minute.
 models:
 	uv run python tools/fetch_models.py
 	CUDA_VISIBLE_DEVICES= uv run --project tools/chessq_export --frozen \
 	  python tools/chessq_export/export.py
+	CUDA_VISIBLE_DEVICES= uv run --project tools/chessq_export --frozen \
+	  python tools/chessq_export/attention.py
 
 # The replay gate (docs/measuring-accuracy.md): re-read the seven gate takes (the
 # four of docs/reports/2026-11-24-chessq-v6-replay-gate.md and the three held-out

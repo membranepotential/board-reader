@@ -28,10 +28,11 @@ services:
       # The int8 file, because this stack declares no GPU device and int8 is the
       # faster CPU model (~660 vs ~990 ms/read). On a host with the NVIDIA
       # container toolkit, a GPU reservation plus the fp32 export
-      # (cq-vit-s-644-v6-seed1-onnx-fp32.onnx, `make models`) is ~3x faster; the
-      # image already carries onnxruntime-gpu. tests/test_deploy_parity.py holds
-      # the pairing: GPU declared <=> fp32 served.
-      BR_CHESSQ: /models/chessq/cq-vit-s-644-v6-seed1-onnx-int8-r1.onnx
+      # (cq-vit-s-644-v6-seed1-onnx-fp32-attn.onnx, `make models`) is ~3x faster;
+      # the image already carries onnxruntime-gpu. tests/test_deploy_parity.py
+      # holds the pairing: GPU declared <=> fp32 served. Both are the `-attn`
+      # copies, which also output the square attention Auto-frame needs.
+      BR_CHESSQ: /models/chessq/cq-vit-s-644-v6-seed1-onnx-int8-r1-attn.onnx
       # Every ingested frame is recorded (WP-H2) so the run can be replayed:
       #   board-reader-edge feed --recording recordings/ --throttle
       # Bind-mounted, or the recording would die with the container.
