@@ -7,24 +7,11 @@ _reconciled: 2026-11-24 @ `480a5ea`_ · decisions: [docs/DESIGN.md](docs/DESIGN.
 A camera reads a live OTB board and streams timestamped **piece placements + per-square
 confidences**. No moves, no legality, no PGN — those belong to the downstream application layer.
 
-## Now (5 agents, files partitioned)
+## Now (4 agents, files partitioned)
 
-- **camera identity DONE** (`c7c423b`..`1a498fd`, D18): device id → auto `board-N`, kept across reloads/restarts;
-  /control camera list + persistent rename + QR; duplicate id refused.
-- **camera follow-ups** — forget camera, /ingest guard, live card follows a rename — running (agent D).
-- **YouTube source** — Python edge on the control channel (device id, /control crop) + yt-dlp stream source
-  — running (agent E; packages/edge/**).
-- **QR code DONE** (`9fcae08`): `GET /api/camera-links` (cert-covered LAN/host names, `BR_PUBLIC_URL` first) +
-  `CameraQr`; agent A wires it into /control.
-- **multi-board + spikes** — load test: results and timestamps independent of load; fix what differs —
-  running (agent C; stream/, /ingest handler).
-- **read queue DONE** (`0102be1`, D17): every scheduled read done in order, oldest first; load only adds latency
-  (3 boards and 4x speed identical to solo); sustained overload drops keepalives, counted + recorded.
-- **auto-crop probe DONE** (`9de171f`): ChessQ attention (L1–3 H0) → grid → crop; coarse-to-fine reliable to
-  25 % of the frame, + tiles to 15 %; R² ≥ 0.90 refuses bad grids; classical CV loses (0 % at 15 %).
-- **auto-frame** — F1 model export + `locate.py` + grid per read; F1b preview locate + drift thresholds
-  (measure only); F2a pure controller `control/autoframe.py` — running (3 agents). F2b wiring (control
-  channel, phone full frame, /control, stream) after agent D.
+- **auto-frame** — F1 `locate.py` + heads in the served models DONE (`499aeb2`, `1e58440`); F1b preview locate +
+  drift thresholds (measure only), F2a pure controller `control/autoframe.py`, F2b wiring (protocol, phone +
+  edge full frame, /control status, read into the stream, camera kind) — running (3 agents + F1 finishing).
 
 ## Done (2026-11-24/25 — the ChessQ rebuild; plan: [docs/plans/2026-11-24-simplify-around-chessq.md](docs/plans/2026-11-24-simplify-around-chessq.md))
 
@@ -37,6 +24,9 @@ confidences**. No moves, no legality, no PGN — those belong to the downstream 
   0.57 s after the true change); priors → python-chess count guard + `rules: standard|free`.
 - **Dumb-camera phone** (D11) + `/control` over WebSockets; **viewer** (D12) SvelteKit on Node; **one wire
   contract** (D13) pydantic → generated zod TS; **PGN drawer** (`81408ac`, `b58968a`): 7/7 games exact.
+- **Cameras** (D18, `7f84986`): device id → permanent `board-N`, names as aliases, /control list + QR + forget,
+  /ingest owner guard; **streams as cameras** (D19, `bf546c3`): `board-reader-edge camera <YouTube URL>`.
+- **Read queue** (D17, `0102be1`): load adds latency, never changes results; auto-crop probe (`9de171f`).
 - **Docs + rules:** DESIGN rewritten; learnings → `.claude/rules/`; inference regrouped; big data on the HDD
   (`/run/media/felix/archive/board-reader/`, symlinked).
 
