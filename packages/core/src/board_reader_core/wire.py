@@ -28,6 +28,7 @@ import numpy as np
 from pydantic import Field, StrictFloat, StrictStr
 from pydantic.json_schema import SkipJsonSchema
 
+from board_reader_core.control import DeviceId
 from board_reader_core.protocol import Running
 from board_reader_core.wiremodel import (
     BoardId,
@@ -51,8 +52,11 @@ class FrameHeader(Wire):
     ``capture_ts`` is epoch seconds, stamped at capture on the edge (DESIGN D5).
     ``sharpness`` is the edge's focus score (tenengrad), unitless and comparable
     only between neighbouring frames of one board; ``None`` from an edge that
-    does not measure it. ``corners`` is the legacy quad (see the module note):
-    parsed for old recordings, never sent, and not in the JSON Schema.
+    does not measure it. ``device_id`` names the camera that sent it (the phone's
+    :data:`~board_reader_core.control.DeviceId`, DESIGN D18), so the node can refuse a
+    frame under a board id that is another camera's; an edge with no control channel
+    (``board-reader-edge feed``) sends none. ``corners`` is the legacy quad (see the
+    module note): parsed for old recordings, never sent, and not in the JSON Schema.
     """
 
     type: Literal["frame"] = tag(FRAME)
@@ -63,6 +67,7 @@ class FrameHeader(Wire):
     sharpness: Annotated[StrictFloat, Field(ge=0)] | None = None
     clock: Running = "none"
     burst_id: StrictStr | None = None
+    device_id: DeviceId | None = Field(default=None, exclude_if=absent)
     corners: SkipJsonSchema[
         Annotated[tuple[StrictFloat, ...], Field(min_length=8, max_length=8)] | None
     ] = Field(default=None, exclude_if=absent)
@@ -113,6 +118,9 @@ class Frame:
     sharpness: float | None = None
     clock: str = "none"
     burst_id: str | None = None
+    #: The sending camera's device id (:class:`FrameHeader`); ``None`` from an edge
+    #: without one, and from every replay (``RecordedFrame.frame``).
+    device_id: str | None = None
     corners: np.ndarray | None = None  # (4,2) float32 in ``image`` px: a8,h8,h1,a1
 
     def __post_init__(self) -> None:
@@ -135,6 +143,7 @@ class Frame:
             sharpness=self.sharpness,
             clock=self.clock,  # type: ignore[arg-type]  # validated by the model
             burst_id=self.burst_id,
+            device_id=self.device_id,
             corners=corners,
         ).to_dict()
 
@@ -155,6 +164,7 @@ class Frame:
             sharpness=h.sharpness,
             clock=h.clock,
             burst_id=h.burst_id,
+            device_id=h.device_id,
             corners=h.corners,
         )
 

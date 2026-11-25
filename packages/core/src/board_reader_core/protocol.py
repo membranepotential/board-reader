@@ -33,6 +33,7 @@ from pydantic import (
     WithJsonSchema,
 )
 
+from board_reader_core.control import CameraBoardId, CameraName
 from board_reader_core.wiremodel import (
     BoardId,
     Message,
@@ -494,17 +495,50 @@ class MotionUpdate(Message):
     ts: StrictFloat
 
 
+#: The ``type`` of a :class:`NamesMessage` on ``WS /viewer``.
+NAMES_TYPE = "names"
+
+
+@wire
+class BoardName(Wire):
+    """One camera's name for its board id."""
+
+    board_id: CameraBoardId
+    name: CameraName
+
+
+@message
+class NamesMessage(Message):
+    """The cameras' names: every named board, a snapshot (DESIGN D18).
+
+    A name is an alias people read (``kitchen``); the board id it names stays what
+    every event is keyed by. The node sends this on connect once any camera has a
+    name, and again, whole, on every change; a board not listed shows its id. A list
+    rather than an object keyed by board id, because the browser's generated
+    validators cannot check an object's keys. Never recorded: names are not part of
+    a read.
+    """
+
+    type: Literal["names"] = tag(NAMES_TYPE)
+    names: tuple[BoardName, ...]
+
+
 def _viewer_kind(raw: object) -> str | None:
-    if isinstance(raw, PositionEvent | MotionUpdate):
-        return "position" if isinstance(raw, PositionEvent) else MOTION_TYPE
+    if isinstance(raw, PositionEvent):
+        return "position"
+    if isinstance(raw, MotionUpdate | NamesMessage):
+        return raw.TYPE
     if isinstance(raw, dict):
         return raw.get("type", "position")
     return None
 
 
-#: Everything ``WS /viewer`` sends: a position event (no ``type``) or a motion update.
+#: Everything ``WS /viewer`` sends: a position event (no ``type``), a motion update
+#: or the cameras' names.
 ViewerMessage = Annotated[
-    Annotated[PositionEvent, Tag("position")] | Annotated[MotionUpdate, Tag(MOTION_TYPE)],
+    Annotated[PositionEvent, Tag("position")]
+    | Annotated[MotionUpdate, Tag(MOTION_TYPE)]
+    | Annotated[NamesMessage, Tag(NAMES_TYPE)],
     Discriminator(
         _viewer_kind,
         custom_error_type="viewer_message_type",
@@ -513,11 +547,11 @@ ViewerMessage = Annotated[
 ]
 
 
-def parse_viewer_message(raw: str) -> PositionEvent | MotionUpdate:
+def parse_viewer_message(raw: str) -> PositionEvent | MotionUpdate | NamesMessage:
     """One ``WS /viewer`` text message as what it is.
 
-    No ``type`` is a position event (§5); ``"motion"`` a :class:`MotionUpdate`.
-    Any other ``type`` raises, because it would be our own egress sending
-    something this protocol does not define.
+    No ``type`` is a position event (§5); ``"motion"`` a :class:`MotionUpdate`,
+    ``"names"`` a :class:`NamesMessage`. Any other ``type`` raises, because it would
+    be our own egress sending something this protocol does not define.
     """
     return parse(ViewerMessage, raw)

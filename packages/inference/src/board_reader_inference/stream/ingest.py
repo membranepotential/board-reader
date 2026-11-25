@@ -515,6 +515,9 @@ class FrameIngest:
         #: Read, then dropped by the board's :class:`OrientationGuard`: the board
         #: pointed more than :data:`MAX_TURN_DEG` away from its recent reads.
         self.frames_misoriented = 0
+        #: Scheduled, then dropped because their board was forgotten
+        #: (:meth:`forget`) before the recognizer got to them.
+        self.frames_forgotten = 0
 
     def submit(self, frame: Frame) -> None:
         """Schedule ``frame`` for its board and return immediately.
@@ -638,6 +641,25 @@ class FrameIngest:
         for board in boards:
             await board.idle.wait()
 
+    def forget(self, board_id: str) -> None:
+        """Release one board's stream state: its scheduler, ring, stabilizer, guard
+        and change clock, and its queued reads (counted in ``frames_forgotten``).
+
+        For a camera /control forgot, whose board id a new camera may get next: the
+        new one starts settling afresh, and the node stops holding ~2 MB per camera
+        ever seen. A read of the board already running finishes but is not
+        published (:meth:`_serve`). A frame that arrives later starts a new board.
+        """
+        board = self._boards.pop(board_id, None)
+        if board is None:
+            return
+        kept = deque(scheduled for scheduled in self._queue if scheduled.board is not board)
+        self.frames_forgotten += len(self._queue) - len(kept)
+        self._queue = kept
+        board.waiting = 0
+        self._warned_backstop.discard(board_id)
+        board.settle_if_idle()
+
     async def close(self) -> None:
         """Stop the read worker and forget the boards and their queued reads.
         Idempotent; the next frame starts afresh.
@@ -721,7 +743,10 @@ class FrameIngest:
                 self.frames_failed += 1
                 log.exception("estimation failed (board %s, seq %d)", frame.board_id, frame.seq)
             else:
-                await self._publish(scheduled, outcome)
+                # A board forgotten while its read ran publishes nothing: its id may
+                # be another camera's by now.
+                if self._boards.get(frame.board_id) is board:
+                    await self._publish(scheduled, outcome)
             finally:
                 board.busy = False
                 board.settle_if_idle()

@@ -90,4 +90,6 @@ def test_the_python_edge_sends_a_header_the_schema_describes():
         board_id="A1", seq=3, capture_ts=1.5, image=np.zeros((2, 2, 3), np.uint8)
     ).header()
     schema = json_schema()["$defs"]["FrameHeader"]
-    assert set(header) == set(schema["required"]) == set(schema["properties"])
+    assert set(header) == set(schema["required"])
+    # The one optional key: only an edge with a device id sends it (DESIGN D18).
+    assert set(schema["properties"]) - set(header) == {"device_id"}

@@ -16,13 +16,16 @@ from board_reader_core.control import (
     CamerasMessage,
     ConfigMessage,
     CropRect,
+    ForgetMessage,
     FrameSize,
     HealthMessage,
     PreviewMessage,
     PreviewsMessage,
+    RenameMessage,
     ReplacedMessage,
     StateMessage,
     camera_board_id,
+    camera_name,
     parse_cameras_message,
     parse_control_message,
     parse_phone_message,
@@ -198,23 +201,39 @@ def test_a_camera_board_id_refuses_what_a_url_path_would_mangle(name):
         camera_board_id(name)
 
 
-def test_the_control_ui_renames_with_a_typed_message():
-    message = parse_cameras_message(
-        json.dumps({"type": "rename", "device_id": DEVICE, "board_id": "left"})
+@pytest.mark.parametrize("name", ["kitchen", "Board 1", "left.table_2", "-x", "A"])
+def test_a_camera_name_may_hold_spaces_inside(name):
+    assert camera_name(name) == name
+
+
+@pytest.mark.parametrize("name", ["", " kitchen", "kitchen ", "a/b", 'say "hi"', "x" * 33, "Küche"])
+def test_a_camera_name_refuses_edges_of_space_and_what_is_not_ascii(name):
+    with pytest.raises(ValueError, match="is not a camera name: use up to 32 letters"):
+        camera_name(name)
+
+
+def test_the_control_ui_renames_and_forgets_with_typed_messages():
+    message = parse_cameras_message(json.dumps({"type": "rename", "device_id": DEVICE, "name": "left"}))
+    assert message == RenameMessage(DEVICE, "left")
+    cleared = parse_cameras_message(json.dumps({"type": "rename", "device_id": DEVICE, "name": None}))
+    assert cleared == RenameMessage(DEVICE, None)
+    assert parse_cameras_message(json.dumps({"type": "forget", "device_id": DEVICE})) == ForgetMessage(
+        DEVICE
     )
-    assert (message.device_id, message.board_id) == (DEVICE, "left")
     with pytest.raises(ValueError):  # not a device id
-        parse_cameras_message(json.dumps({"type": "rename", "device_id": "x", "board_id": "left"}))
+        parse_cameras_message(json.dumps({"type": "forget", "device_id": "x"}))
 
 
 def test_the_identity_messages_name_their_type():
-    assert json.loads(AssignedMessage("board-2").to_json()) == {"type": "assigned", "board_id": "board-2"}
+    assert json.loads(AssignedMessage("board-2").to_json()) == {
+        "type": "assigned", "board_id": "board-2", "name": None,
+    }
     assert json.loads(ReplacedMessage().to_json()) == {"type": "replaced"}
-    entry = CameraEntry(DEVICE, "board-1", True, None, 0.5, None)
+    entry = CameraEntry(DEVICE, "board-1", "kitchen", True, None, 0.5)
     assert json.loads(CamerasMessage(cameras=(entry,)).to_json()) == {
         "type": "cameras",
         "cameras": [
-            {"device_id": DEVICE, "board_id": "board-1", "connected": True, "report": None,
-             "frame_age_s": 0.5, "refused_board": None},
+            {"device_id": DEVICE, "board_id": "board-1", "name": "kitchen", "connected": True,
+             "report": None, "frame_age_s": 0.5},
         ],
     }

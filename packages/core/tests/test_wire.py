@@ -52,6 +52,17 @@ def test_sharpness_rides_the_header_and_defaults_to_none():
     assert Frame.from_header(legacy, _img()).sharpness is None
 
 
+def test_the_sending_camera_rides_the_header_only_when_there_is_one():
+    """A phone names its device id; an edge without one sends a header with no such
+    key at all, exactly as before the field existed."""
+    phone = Frame(board_id="board-1", seq=0, capture_ts=1.0, image=_img(), device_id="kitchen-phone-id")
+    assert Frame.from_header(phone.header(), _img()).device_id == "kitchen-phone-id"
+    bare = Frame(board_id="A1", seq=0, capture_ts=1.0, image=_img())
+    assert "device_id" not in bare.header()
+    with pytest.raises(ValueError, match="device_id"):
+        Frame.from_header({**bare.header(), "device_id": "no"}, _img())
+
+
 def test_frame_encode_decode_roundtrip():
     f = Frame(board_id="C3", seq=9, capture_ts=1.0, image=_img(1), stability=0.2, clock="black")
     header, jpeg = f.encode()

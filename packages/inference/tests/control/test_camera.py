@@ -26,11 +26,10 @@ from board_reader_core.control import (
     CropRect,
     PreviewMessage,
     PreviewsMessage,
-    RefusedMessage,
     ReplacedMessage,
     StateMessage,
 )
-from board_reader_core.protocol import START_PLACEMENT
+from board_reader_core.protocol import START_PLACEMENT, BoardName, NamesMessage
 from board_reader_core.sim import render_board
 from board_reader_core.wire import Frame, encode_jpeg
 
@@ -170,57 +169,127 @@ def test_boards_are_independent():
 # ---- renaming ---------------------------------------------------------------------------
 
 
-def test_a_rename_moves_the_config_and_tells_the_phone_and_both_pages():
-    registry = CameraRegistry()
+def test_a_rename_sets_a_name_and_nothing_else():
+    """The board id is the device's for good: a rename is an alias people read."""
+    heard: list[NamesMessage] = []
+    registry = CameraRegistry(on_names=heard.append)
     phone = registry.connect_phone(PHONE)
     config = CameraConfig(crop=CropRect(0.1, 0.1, 0.5, 0.5), streaming=True)
     registry.configure("board-1", config)
-    old_page, new_page = registry.connect_watcher("board-1"), registry.connect_watcher("left")
-    for mailbox in (phone.mailbox, old_page, new_page):
+    page = registry.connect_watcher("board-1")
+    for mailbox in (phone.mailbox, page):
         mailbox.take_nowait()
 
-    registry.rename(PHONE, "left")
-    assert registry.board_of(PHONE) == "left"
-    # The phone switches its frames to the new id; a page watches the new one.
-    assert phone.mailbox.take_nowait() == [AssignedMessage("left"), PreviewsMessage(on=True)]
-    assert new_page.take_nowait() == [StateMessage(config, None, phone_connected=True)]
-    # The old id is an empty board now, so its page sees nothing left to control.
-    assert old_page.take_nowait() == [StateMessage(CameraConfig(), None, phone_connected=False)]
-    assert registry.rules("board-1") == "standard"
+    registry.rename(PHONE, "kitchen table")
+    assert registry.board_of(PHONE) == "board-1"
+    assert registry.board("board-1").config == config
+    assert registry.label("board-1") == "kitchen table"
+    # The phone hears its name beside the same board id; the page has nothing new.
+    assert phone.mailbox.take_nowait() == [AssignedMessage("board-1", "kitchen table")]
+    assert page.take_nowait() == []
+    named = NamesMessage(names=(BoardName("board-1", "kitchen table"),))
+    assert heard == [NamesMessage(names=()), named]
+    assert registry.cameras(lambda board_id: None).cameras[0].name == "kitchen table"
+
+    # The same name again changes nothing; its own board id (or None) clears it.
+    registry.rename(PHONE, "kitchen table")
+    registry.rename(PHONE, "board-1")
+    assert heard[-1] == NamesMessage(names=()) and len(heard) == 3
+    assert registry.label("board-1") == "board-1"
 
 
 def test_a_rename_is_refused_for_a_taken_or_malformed_name_or_an_unknown_camera():
     registry = CameraRegistry()
     registry.connect_phone(PHONE)
     registry.connect_phone(OTHER)
-    with pytest.raises(ValueError, match="board-2 is taken by camera garden-p"):
-        registry.rename(PHONE, "board-2")
-    with pytest.raises(ValueError, match="is not a board id"):
-        registry.rename(PHONE, "left board")
+    registry.rename(OTHER, "garden")
+    with pytest.raises(ValueError, match="board-2 is taken by camera garden"):
+        registry.rename(PHONE, "board-2")  # another camera's board id
+    with pytest.raises(ValueError, match="garden is taken by camera garden"):
+        registry.rename(PHONE, "garden")  # another camera's name
+    with pytest.raises(ValueError, match="is not a camera name"):
+        registry.rename(PHONE, " left")
     with pytest.raises(ValueError, match="no camera"):
         registry.rename("unknown-device", "left")
-    assert (registry.board_of(PHONE), registry.board_of(OTHER)) == ("board-1", "board-2")
+    assert registry.label("board-1") == "board-1"
 
 
-def test_a_phone_may_ask_for_its_board_and_is_refused_one_another_camera_holds():
+def test_a_board_id_used_as_a_name_is_not_handed_to_a_new_phone():
     registry = CameraRegistry()
-    asked = registry.connect_phone(PHONE, asked="left")
-    assert asked.mailbox.take_nowait()[0] == AssignedMessage("left")
+    registry.connect_phone(PHONE)
+    registry.rename(PHONE, "board-2")
+    assert registry.connect_phone(OTHER).mailbox.take_nowait()[0] == AssignedMessage("board-3")
 
-    second = registry.connect_phone(OTHER, asked="left")
-    sent = second.mailbox.take_nowait()
-    assert sent[0] == AssignedMessage("board-1")
-    assert sent[-1] == RefusedMessage(
-        "left is taken by camera kitchen-; this phone streams as board-1"
+
+# ---- forgetting ---------------------------------------------------------------------------
+
+
+def test_forgetting_a_disconnected_camera_frees_its_id_and_config():
+    forgotten: list[str] = []
+    heard: list[NamesMessage] = []
+    registry = CameraRegistry(on_names=heard.append, on_forget=forgotten.append)
+    phone = registry.connect_phone(PHONE)
+    registry.configure("board-1", CameraConfig(streaming=True))
+    registry.rename(PHONE, "kitchen")
+    page = registry.connect_watcher("board-1")
+    registry.disconnect_phone(phone)
+    page.take_nowait()
+
+    registry.forget(PHONE)
+    assert registry.board_of(PHONE) is None
+    assert registry.cameras(lambda board_id: None).cameras == ()
+    assert forgotten == ["board-1"]
+    assert heard[-1] == NamesMessage(names=())
+    # The open page stays, on a board with nothing configured.
+    assert page.take_nowait() == [StateMessage(CameraConfig(), None, phone_connected=False)]
+    # The device that comes back is a new camera: the lowest free id, no config.
+    assert registry.connect_phone(OTHER).mailbox.take_nowait()[:2] == [
+        AssignedMessage("board-1"), ConfigMessage(CameraConfig()),
+    ]
+    assert registry.connect_phone(PHONE).mailbox.take_nowait()[0] == AssignedMessage("board-2")
+
+
+def test_a_connected_or_unknown_camera_cannot_be_forgotten():
+    forgotten: list[str] = []
+    registry = CameraRegistry(on_forget=forgotten.append)
+    registry.connect_phone(PHONE)
+    with pytest.raises(ValueError, match="camera board-1 is connected: close its /camera page"):
+        registry.forget(PHONE)
+    with pytest.raises(ValueError, match="no camera"):
+        registry.forget(OTHER)
+    assert registry.board_of(PHONE) == "board-1" and forgotten == []
+
+
+# ---- which frames /ingest takes -------------------------------------------------------
+
+
+def test_a_cameras_board_takes_frames_from_that_camera_only():
+    registry = CameraRegistry()
+    registry.connect_phone(PHONE)
+    registry.connect_phone(OTHER)
+    assert registry.ingest_refusal("board-1", PHONE) is None
+    assert registry.ingest_refusal("board-1", OTHER) == (
+        "camera garden-p streams as board-2, not board-1: reload /camera"
     )
-    listed = {entry.device_id: entry for entry in registry.cameras(lambda board_id: None).cameras}
-    assert listed[OTHER].refused_board == "left"
-    assert listed[PHONE].refused_board is None
+    # An edge without a device id: only under a board id no camera holds.
+    assert registry.ingest_refusal("board-1", None) == (
+        "board board-1 belongs to camera board-1; an edge without a device id may "
+        "stream only under a board id no camera holds"
+    )
+    assert registry.ingest_refusal("feed", None) is None
+    assert registry.ingest_refusal("board-9", None) is None
 
-    # A known phone asking for a free id is renamed to it, which clears the refusal.
-    registry.connect_phone(OTHER, asked="right")
-    assert registry.board_of(OTHER) == "right"
-    assert all(e.refused_board is None for e in registry.cameras(lambda board_id: None).cameras)
+
+def test_a_forgotten_camera_may_not_stream_under_its_old_or_any_board():
+    registry = CameraRegistry()
+    registry.disconnect_phone(registry.connect_phone(PHONE))
+    registry.forget(PHONE)
+    registry.connect_phone(OTHER)  # board-1 is the new camera's now
+    for board_id in ("board-1", "board-7"):
+        assert registry.ingest_refusal(board_id, PHONE) == (
+            "camera kitchen- is not known to the node (forgotten?): reload /camera"
+        )
+    assert registry.ingest_refusal("board-1", OTHER) is None
 
 
 def test_the_list_names_every_camera_in_board_order_with_its_link_and_frame_age():
@@ -251,29 +320,33 @@ def config_file(tmp_path, monkeypatch):
     return path
 
 
-def test_a_restarted_node_gives_each_phone_its_board_and_config_back(config_file):
+def test_a_restarted_node_gives_each_phone_its_board_name_and_config_back(config_file):
     config = CameraConfig.from_dict(CONFIG)
     registry = CameraRegistry()
     registry.connect_phone(OTHER)
     registry.connect_phone(PHONE)
     registry.rename(PHONE, "left")
-    registry.configure("left", config)
+    registry.configure("board-2", config)
     assert config_file.exists()
     assert not list(config_file.parent.glob(".*.tmp")), "the temporary file was renamed"
 
-    restarted = CameraRegistry()
+    heard: list[NamesMessage] = []
+    restarted = CameraRegistry(on_names=heard.append)
     phone = restarted.connect_phone(PHONE)
-    assert phone.mailbox.take_nowait()[:2] == [AssignedMessage("left"), ConfigMessage(config)]
+    assert phone.mailbox.take_nowait()[:2] == [
+        AssignedMessage("board-2", "left"), ConfigMessage(config),
+    ]
     assert restarted.board_of(OTHER) == "board-1"
-    assert restarted.board("other").config == CameraConfig()
+    assert heard == [NamesMessage(names=(BoardName("board-2", "left"),))]
 
 
 def test_a_corrupt_config_file_is_ignored_with_a_warning(config_file, caplog):
     config_file.parent.mkdir(parents=True)
     bad = {"boards": {"phone": {**CONFIG, "resolution": "8k"}}}
     twice = {"boards": {}, "cameras": {PHONE: "left", OTHER: "left"}}
-    for text in ("{not json", json.dumps(bad), json.dumps({"phone": CONFIG}), json.dumps(twice)):
-        config_file.write_text(text)
+    stray_name = {"boards": {}, "cameras": {PHONE: "left"}, "names": {OTHER: "garden"}}
+    for raw in ("{not json", bad, {"phone": CONFIG}, twice, stray_name):
+        config_file.write_text(raw if isinstance(raw, str) else json.dumps(raw))
         with caplog.at_level(logging.WARNING):
             registry = CameraRegistry()
         assert registry.board("phone").config == CameraConfig()
@@ -282,33 +355,60 @@ def test_a_corrupt_config_file_is_ignored_with_a_warning(config_file, caplog):
         caplog.clear()
 
     # The next change replaces the corrupt file with a whole one.
-    registry.configure("phone", CameraConfig(streaming=True))
-    assert CameraRegistry().board("phone").config == CameraConfig(streaming=True)
+    registry.connect_phone(PHONE)
+    registry.configure("board-1", CameraConfig(streaming=True))
+    assert CameraRegistry().board("board-1").config == CameraConfig(streaming=True)
 
 
-def test_a_file_from_before_the_device_ids_loads_and_its_boards_are_not_handed_out(config_file):
-    """Such a file has only ``boards``: no camera is known, the configs still load."""
+def test_a_file_from_before_the_device_ids_loads_and_drops_its_orphaned_configs(
+    config_file, caplog
+):
+    """Such a file has only ``boards`` (``phone`` was every phone's default id): no
+    camera holds them, so they are dropped with one INFO line, and no new camera can
+    inherit a crop or ``streaming: true`` from them."""
     config_file.parent.mkdir(parents=True)
     config_file.write_text(json.dumps({"boards": {"phone": CONFIG, "board-1": CONFIG}}))
+    with caplog.at_level(logging.INFO):
+        registry = CameraRegistry()
+    assert [r.getMessage() for r in caplog.records] == [
+        "dropping the saved config of board-1, phone: no camera holds them"
+    ]
+    assert registry.board("phone").config == CameraConfig()
+    phone = registry.connect_phone(PHONE)
+    assert phone.mailbox.take_nowait()[:2] == [AssignedMessage("board-1"), ConfigMessage(CameraConfig())]
+    registry.rename(PHONE, "phone")
+    assert registry.board("board-1").config == CameraConfig()
+
+
+def test_a_file_from_before_the_names_keeps_every_board_id(config_file):
+    """A camera renamed before names existed kept the new name as its board id; it
+    stays that camera's board id, so nothing recorded under it changes."""
+    config_file.parent.mkdir(parents=True)
+    config_file.write_text(
+        json.dumps({"boards": {"left": CONFIG}, "cameras": {PHONE: "left", OTHER: "board-1"}})
+    )
     registry = CameraRegistry()
-    assert registry.board("phone").config == CameraConfig.from_dict(CONFIG)
-    # A saved config is not handed to a new phone, which would stream at once.
-    assert registry.connect_phone(PHONE).mailbox.take_nowait()[0] == AssignedMessage("board-2")
+    assert registry.connect_phone(PHONE).mailbox.take_nowait()[:2] == [
+        AssignedMessage("left"), ConfigMessage(CameraConfig.from_dict(CONFIG)),
+    ]
+    assert (registry.label("left"), registry.label("board-1")) == ("left", "board-1")
 
 
 def test_a_config_saved_before_the_rules_existed_loads_as_standard(config_file):
     """A config file from before the switch has no ``rules`` key: still standard."""
     config_file.parent.mkdir(parents=True)
-    config_file.write_text(json.dumps({"boards": {"phone": CONFIG}}))
+    config_file.write_text(json.dumps({"boards": {"board-1": CONFIG}, "cameras": {PHONE: "board-1"}}))
     registry = CameraRegistry()
-    assert registry.board("phone").config == CameraConfig.from_dict(CONFIG)
-    assert registry.rules("phone") == "standard"
+    assert registry.board("board-1").config == CameraConfig.from_dict(CONFIG)
+    assert registry.rules("board-1") == "standard"
 
 
 def test_the_rules_are_per_board_and_survive_a_restart(config_file):
-    CameraRegistry().configure("variant", CameraConfig(rules="free"))
+    registry = CameraRegistry()
+    registry.connect_phone(PHONE)
+    registry.configure("board-1", CameraConfig(rules="free"))
     restarted = CameraRegistry()
-    assert restarted.rules("variant") == "free"
+    assert restarted.rules("board-1") == "free"
     assert restarted.rules("phone") == "standard"  # never configured: standard
     assert "phone" not in restarted._boards  # asking did not create the board
 
@@ -428,7 +528,9 @@ def _hello(phone: WebSocketTestSession) -> str:
 
 def test_a_config_set_on_control_is_pushed_to_the_phone():
     with _client() as client, client.websocket_connect(CAMERA) as phone:
-        assert json.loads(phone.receive_text()) == {"type": "assigned", "board_id": "board-1"}
+        assert json.loads(phone.receive_text()) == {
+            "type": "assigned", "board_id": "board-1", "name": None,
+        }
         assert json.loads(phone.receive_text())["type"] == "config"
         assert json.loads(phone.receive_text()) == {"type": "previews", "on": False}
         phone.send_text(json.dumps({"type": "report", "report": REPORT}))
@@ -455,7 +557,9 @@ def test_a_reconnecting_phone_hears_its_board_and_config_again():
             control.send_text(json.dumps({"type": "configure", "config": CONFIG}))
             _until(control, "state")
         with client.websocket_connect(CAMERA) as phone:
-            assert json.loads(phone.receive_text()) == {"type": "assigned", "board_id": "board-1"}
+            assert json.loads(phone.receive_text()) == {
+                "type": "assigned", "board_id": "board-1", "name": None,
+            }
             assert json.loads(phone.receive_text()) == {"type": "config", "config": SENT_CONFIG}
 
 
@@ -469,23 +573,29 @@ def test_a_second_page_of_one_phone_takes_over_and_the_first_is_closed():
                 first.receive_text()
 
 
-def test_the_camera_list_shows_each_phone_and_renames_it():
-    with (
-        _client() as client, client.websocket_connect("/cameras") as cameras,
-        client.websocket_connect(CAMERA) as phone,
-    ):
-        _hello(phone)
-        listed = _until(cameras, "cameras")["cameras"]
-        while not listed:  # the first list may predate the phone
+def test_the_camera_list_shows_each_phone_renames_and_forgets_it():
+    with _client() as client, client.websocket_connect("/cameras") as cameras:
+        with client.websocket_connect(CAMERA) as phone:
+            _hello(phone)
             listed = _until(cameras, "cameras")["cameras"]
-        assert listed == [{"device_id": PHONE, "board_id": "board-1", "connected": True,
-                           "report": None, "frame_age_s": None, "refused_board": None}]
+            while not listed:  # the first list may predate the phone
+                listed = _until(cameras, "cameras")["cameras"]
+            assert listed == [{"device_id": PHONE, "board_id": "board-1", "name": None,
+                               "connected": True, "report": None, "frame_age_s": None}]
 
-        cameras.send_text(json.dumps({"type": "rename", "device_id": PHONE, "board_id": "left"}))
-        assert json.loads(phone.receive_text()) == {"type": "assigned", "board_id": "left"}
-        cameras.send_text(json.dumps({"type": "rename", "device_id": PHONE, "board_id": "a/b"}))
-        assert "is not a board id" in _until(cameras, "refused")["reason"]
-        assert [e["board_id"] for e in _until(cameras, "cameras")["cameras"]] == ["left"]
+            cameras.send_text(json.dumps({"type": "rename", "device_id": PHONE, "name": "left"}))
+            assert json.loads(phone.receive_text()) == {
+                "type": "assigned", "board_id": "board-1", "name": "left",
+            }
+            cameras.send_text(json.dumps({"type": "rename", "device_id": PHONE, "name": "a/b"}))
+            assert "is not a camera name" in _until(cameras, "refused")["reason"]
+            cameras.send_text(json.dumps({"type": "forget", "device_id": PHONE}))
+            assert "is connected" in _until(cameras, "refused")["reason"]
+        while _until(cameras, "cameras")["cameras"][0]["connected"]:
+            pass  # until the list hears the phone leave
+        cameras.send_text(json.dumps({"type": "forget", "device_id": PHONE}))
+        while _until(cameras, "cameras")["cameras"]:
+            pass  # until the forgotten camera leaves the list
 
 
 def test_a_phone_without_a_device_id_is_refused_and_an_outdated_page_told_to_reload():

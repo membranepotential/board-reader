@@ -20,26 +20,28 @@ models, :mod:`.schema`) so neither end trusts the other's JSON:
 
 A phone is known by its **device id** (:data:`DeviceId`), a random id it keeps in
 its browser; the node assigns each device a **board id** (:data:`CameraBoardId`),
-``board-1``, ``board-2``, ..., keeps the pair across restarts, and lets the control
-UI rename it. The board id is what the phone's frames name on ``/ingest`` and what
-every per-board socket below is keyed by.
+``board-1``, ``board-2``, ..., once, and keeps the pair across restarts. The board id
+never changes: it is what the phone's frames name on ``/ingest``, what every event,
+recording and per-board socket below is keyed by. The control UI may give a camera a
+**name** (:data:`CameraName`), an alias people read; it renames nothing.
 
 They travel on three WebSockets. Every text message is a JSON object whose ``type``
 names it:
 
-``WS /cameras/{device_id}`` — the phone (``?board=<id>`` asks for that board id).
+``WS /cameras/{device_id}`` — the phone.
   * up: :class:`ReportMessage` (text), sent on connect and whenever the report
     changes; a whole-frame preview JPEG (binary, the socket's only binary message),
     sent only while the node has asked for previews.
-  * down: :class:`AssignedMessage` on connect and on every rename;
+  * down: :class:`AssignedMessage` (its board id and name) on connect and on every
+    rename;
     :class:`ConfigMessage` on connect and on every change;
     :class:`PreviewsMessage` on connect and whenever the first /control page opens
     or the last one closes; :class:`ReplacedMessage` when a newer socket of the same
     device took over (the node then closes this one); :class:`RefusedMessage` for a
-    message or a ``?board=`` the node refused.
+    message the node refused.
 
 ``WS /cameras`` — the control UI's list of every known camera.
-  * up: :class:`RenameMessage`.
+  * up: :class:`RenameMessage`, :class:`ForgetMessage` (:data:`CamerasUp`).
   * down: :class:`CamerasMessage` on connect, on every change and about once a
     second (for the frame ages); :class:`RefusedMessage`.
 
@@ -400,6 +402,16 @@ CameraBoardId = Annotated[
 ]
 
 
+#: What people call a camera (DESIGN D18): an alias for its board id, shown on the live
+#: page, on /control and in the PGN. Not part of any route, so it may hold spaces:
+#: up to 32 letters, digits, spaces, ``.``, ``_`` or ``-``, starting and ending with
+#: no space. ASCII only, because the same pattern must judge alike in Python and in
+#: the browser (no Unicode classes there).
+CameraName = Annotated[
+    StrictStr,
+    Field(min_length=1, max_length=32, pattern=r"^[0-9A-Za-z._-]([0-9A-Za-z ._-]*[0-9A-Za-z._-])?$"),
+]
+
 
 def device_id(raw: str) -> str:
     """``raw`` as a :data:`DeviceId`; ``ValueError`` if it is none."""
@@ -424,12 +436,27 @@ def camera_board_id(name: str) -> str:
         ) from None
 
 
+def camera_name(name: str) -> str:
+    """``name`` as a :data:`CameraName`; ``ValueError`` says why not, in words."""
+    try:
+        return adapter(CameraName).validate_python(name)
+    except ValidationError:
+        raise ValueError(
+            f"{name!r} is not a camera name: use up to 32 letters, digits, spaces, "
+            "'.', '_' or '-', with no space at either end"
+        ) from None
+
+
 @message
 class AssignedMessage(Message):
-    """Node -> phone: the board id this phone streams as, from now on."""
+    """Node -> phone: the board id this phone streams as, and its name if it has one.
+
+    The board id is the device's for good; ``name`` changes when /control renames it.
+    """
 
     type: Literal["assigned"] = tag("assigned")
     board_id: CameraBoardId
+    name: CameraName | None = None
 
 
 @message
@@ -447,18 +474,17 @@ class ReplacedMessage(Message):
 class CameraEntry(Wire):
     """One known camera, as the control UI lists it.
 
-    ``report`` is the phone's last report (kept after it disconnects);
-    ``frame_age_s`` the seconds since its board's last frame, on the node's clock.
-    ``refused_board`` is the board id this phone asked for (``?board=``) while
-    another camera holds it; the phone streams as ``board_id`` instead.
+    ``name`` is its alias (``None`` shows the board id); ``report`` the phone's last
+    report (kept after it disconnects); ``frame_age_s`` the seconds since its board's
+    last frame, on the node's clock.
     """
 
     device_id: DeviceId
     board_id: CameraBoardId
+    name: CameraName | None
     connected: StrictBool
     report: CameraReport | None
     frame_age_s: NonNegative | None
-    refused_board: CameraBoardId | None
 
 
 @message
@@ -471,20 +497,37 @@ class CamerasMessage(Message):
 
 @message
 class RenameMessage(Message):
-    """Control UI -> node: give this device's camera a new board id.
+    """Control UI -> node: give this device's camera a name; ``None`` clears it.
 
-    ``board_id`` is checked by the node (:data:`CameraBoardId`, not used by another
-    camera), which refuses with a reason an operator can read.
+    The board id stays. ``name`` is checked by the node (:data:`CameraName`, not
+    another camera's name or board id), which refuses with a reason an operator can
+    read.
     """
 
     type: Literal["rename"] = tag("rename")
     device_id: DeviceId
-    board_id: Text
+    name: Text | None
 
 
-def parse_cameras_message(text: str) -> RenameMessage:
+@message
+class ForgetMessage(Message):
+    """Control UI -> node: forget this disconnected camera, its board id and config.
+
+    Refused while the camera is connected. The device, if it comes back, is a new
+    camera and gets a new board id.
+    """
+
+    type: Literal["forget"] = tag("forget")
+    device_id: DeviceId
+
+
+#: What the control UI's camera list sends.
+CamerasUp = Annotated[RenameMessage | ForgetMessage, Field(discriminator="type")]
+
+
+def parse_cameras_message(text: str) -> RenameMessage | ForgetMessage:
     """One text message from a ``/cameras`` socket; ``ValueError`` says why not."""
-    return parse(RenameMessage, text)
+    return parse(CamerasUp, text)
 
 
 #: What the node sends the phone.

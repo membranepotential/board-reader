@@ -125,9 +125,15 @@ class RecordedFrame:
 
         Only the wire's own keys are parsed: a replay marks the headers it
         restamps (``stability_restamped``), and the header model refuses keys the
-        wire does not have.
+        wire does not have. The sender's ``device_id`` is left out too: a replay is
+        not the camera that recorded it, and under that camera's id it would stream
+        into the camera's live board, or be refused there (DESIGN D18).
         """
-        wire = {key: value for key, value in self.header.items() if key in HEADER_KEYS}
+        wire = {
+            key: value
+            for key, value in self.header.items()
+            if key in HEADER_KEYS and key != "device_id"
+        }
         return Frame.from_header(wire, decode_jpeg(self.jpeg))
 
 

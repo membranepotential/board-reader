@@ -82,6 +82,20 @@ def test_frame_decodes_back_to_a_wire_frame(tmp_path):
     assert frame.image.shape == (32, 32, 3)
 
 
+def test_a_recording_keeps_the_sender_but_its_replay_is_anonymous(tmp_path):
+    """The camera's device id is recorded as it arrived, and dropped on the way back
+    out: a replay is not that camera, and the node's /ingest guard must not take it
+    for one (DESIGN D18)."""
+    rec = FrameRecorder(tmp_path, session_id="s1")
+    sent = Frame(board_id="board-1", seq=0, capture_ts=1.0, image=_img(), device_id="kitchen-phone-id")
+    _record(rec, sent)
+    rec.close()
+
+    (replayed,) = list(Recording.open(tmp_path / "s1"))
+    assert replayed.header["device_id"] == "kitchen-phone-id"
+    assert replayed.frame().device_id is None
+
+
 def test_nothing_is_written_until_the_first_frame(tmp_path):
     """A gateway that runs all day without an edge leaves no directories behind."""
     rec = FrameRecorder(tmp_path / "root", session_id="s1")

@@ -6,7 +6,9 @@ import asyncio
 
 from board_reader_core.protocol import (
     START_PLACEMENT,
+    BoardName,
     MotionUpdate,
+    NamesMessage,
     PositionEvent,
     dist_from_placement,
     iso_utc,
@@ -120,6 +122,31 @@ def test_a_motion_update_reaches_live_subscribers_and_is_never_retained():
         await hub.publish(_event("A1", 3))
         first = await asyncio.wait_for(anext(late), 1.0)
         assert isinstance(first, PositionEvent) and first.seq == 3
+        await late.aclose()
+
+    asyncio.run(run())
+
+
+def test_the_names_reach_live_subscribers_and_lead_a_late_ones_snapshot():
+    async def run():
+        hub = PositionHub()
+        await hub.publish(_event("board-1", 3))
+        # No camera has a name yet: a new subscriber hears the positions only.
+        quiet = hub.subscribe()
+        assert isinstance(await asyncio.wait_for(anext(quiet), 1.0), PositionEvent)
+        await quiet.aclose()
+
+        live = hub.subscribe(replay_latest=False)
+        pending = asyncio.ensure_future(anext(live))
+        await asyncio.sleep(0)
+        names = NamesMessage(names=(BoardName("board-1", "kitchen"),))
+        hub.set_names(names)
+        assert await asyncio.wait_for(pending, 1.0) is names
+        await live.aclose()
+
+        late = hub.subscribe()
+        assert await asyncio.wait_for(anext(late), 1.0) is names
+        assert (await asyncio.wait_for(anext(late), 1.0)).seq == 3
         await late.aclose()
 
     asyncio.run(run())

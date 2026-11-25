@@ -230,6 +230,37 @@ def test_drain_and_close_are_idempotent_and_prompt():
     asyncio.run(run())
 
 
+def test_a_forgotten_board_releases_its_state_and_drops_its_queued_reads():
+    """/control forgot the board's camera: its waiting reads go (counted), the read
+    already running publishes nothing, other boards read on, and a later frame under
+    the id starts a fresh board."""
+
+    async def run():
+        est = FakeEstimator(delays={"board-1": 0.2, "other": 0.0})
+        hub = PositionHub()
+        ingest = FrameIngest(est.estimate, hub)
+        for seq in range(3):
+            ingest.submit(_frame("board-1", seq=seq))
+        ingest.submit(_frame("other", seq=0))
+        await asyncio.sleep(0.05)  # the first board-1 read is running
+
+        ingest.forget("board-1")
+        ingest.forget("never-seen")  # nothing to release
+        await asyncio.wait_for(ingest.drain(), timeout=5.0)
+        assert ingest.frames_forgotten == 2
+        assert ingest.queue_stats().waiting == 0
+        assert hub.latest("board-1") is None, "the running read was not published"
+        assert hub.latest("other").seq == 0
+
+        est.delays["board-1"] = 0.0
+        ingest.submit(_frame("board-1", seq=7))
+        await asyncio.wait_for(ingest.drain("board-1"), timeout=5.0)
+        assert hub.latest("board-1").seq == 7
+        await ingest.close()
+
+    asyncio.run(run())
+
+
 def test_ingest_socket_acks_every_frame_promptly_while_the_estimator_is_busy(
     gateway, drain_ingest
 ):

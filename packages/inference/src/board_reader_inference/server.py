@@ -8,13 +8,17 @@ Runs on the inference node. Its surfaces:
   the event loop and publishes the position event to the hub.
 * ``WS /viewer`` — viewers connect and receive the position-event JSON stream
   (retained latest per board first, then live updates), interleaved with
-  ``{"type": "motion"}`` updates per ingested frame (display state, never retained).
+  ``{"type": "motion"}`` updates per ingested frame (display state, never retained)
+  and the cameras' names (``{"type": "names"}``, a snapshot, first on connect once a
+  camera has a name, and on every change).
 * ``GET /boards/{id}`` + ``GET /boards/{id}/frame`` + ``GET /healthz`` — latest
   position snapshot, latest raw ingested JPEG, and liveness.
-* ``WS /boards/{id}/camera`` + ``WS /boards/{id}/control`` — the camera control
-  channel: the control UI's config for each board's camera, pushed to the phone,
-  and the phone's state, previews and the node's health pushed to the control UI
-  (:mod:`board_reader_inference.control.camera`).
+* ``WS /cameras/{device_id}`` + ``WS /cameras`` + ``WS /boards/{id}/control`` — the
+  camera control channel: each phone's board id and the control UI's config for its
+  camera, pushed to the phone; the list of cameras, and each board's state, previews
+  and the node's health, pushed to the control UI
+  (:mod:`board_reader_inference.control.camera`). The registry there also decides
+  which ``/ingest`` frames a board id takes.
 
 The gateway holds the recognizer and the position hub. It never imports the
 edge package; it only speaks the wire (:mod:`board_reader_core.wire`).
@@ -166,8 +170,15 @@ def create_app(
     hub_: PositionHub = hub if hub is not None else PositionHub()
 
     # The camera control channel (DESIGN D11, "dumb camera"): the control UI sets
-    # each board's camera config here and the node pushes it to the phone.
-    cameras = CameraRegistry()
+    # each board's camera config here and the node pushes it to the phone. The
+    # cameras' names go to /viewer; a forgotten camera's board releases its state.
+    def _forget_board(board_id: str) -> None:
+        ingest_.forget(board_id)
+        latest_frames.pop(board_id, None)
+
+    cameras = CameraRegistry(on_names=hub_.set_names, on_forget=_forget_board)
+    #: /ingest frames refused because their board id is another camera's (D18).
+    frames_not_owned = 0
 
     def _on_published(reading: FrameReading, frame: Frame, rules: Rules) -> None:
         """Observers of every published live read (on the event loop).
@@ -287,6 +298,12 @@ def create_app(
                 "dropped": ingest_.frames_dropped,
                 "failed": ingest_.frames_failed,
                 "refused": ingest_.frames_refused,
+                # Of "refused", frames under a board id another camera holds
+                # (a stale /camera page, a replay into a camera's board; D18).
+                "not_owned": frames_not_owned,
+                # Reads dropped from the queue because /control forgot their
+                # board's camera.
+                "forgotten": ingest_.frames_forgotten,
                 # The scheduler's two counters. "unscheduled" is the saving —
                 # at the shipped burst-end policy it is most of the stream, and
                 # "estimated barely moves while received climbs" is the expected
@@ -630,6 +647,7 @@ def create_app(
         means "received" — the pre-filter may drop this frame for a fresher one
         before it is ever estimated.
         """
+        nonlocal frames_not_owned
         await ws.accept()
         boards: set[str] = set()
         warned_refusals: set[str] = set()
@@ -656,6 +674,15 @@ def create_app(
                         warned_refusals.add(reason)
                         log.warning("refused ingest frame: %s", reason)
                     await ws.send_json({"error": f"bad frame: {e}"})
+                    continue
+                refusal = cameras.ingest_refusal(frame.board_id, frame.device_id)
+                if refusal is not None:
+                    frames_not_owned += 1
+                    ingest_.frames_refused += 1
+                    if refusal not in warned_refusals:
+                        warned_refusals.add(refusal)
+                        log.warning("refused ingest frame: %s", refusal)
+                    await ws.send_json({"error": f"refused frame: {refusal}"})
                     continue
                 boards.add(frame.board_id)
                 # The frame's own header, not the client's: retention and the

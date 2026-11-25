@@ -47,7 +47,6 @@ from typing import TextIO
 
 from board_reader_core.protocol import (
     GRID,
-    MotionUpdate,
     PositionEvent,
     parse_placement,
     parse_viewer_message,
@@ -165,8 +164,8 @@ async def follow(
     async with websockets.connect(url, max_size=None) as ws:
         async for raw in ws:
             event = parse_viewer_message(raw if isinstance(raw, str) else raw.decode())
-            if isinstance(event, MotionUpdate):
-                continue
+            if not isinstance(event, PositionEvent):
+                continue  # a motion update or the cameras' names: no read
             if board_id is not None and event.board_id != board_id:
                 continue
             yield event

@@ -9,6 +9,10 @@ It also fans out :class:`~board_reader_core.protocol.MotionUpdate` messages
 (:meth:`PositionHub.broadcast`), which it never retains: they are display state for
 whoever is watching now, and a retained "moving" would outlive the hand.
 
+And it holds the cameras' names (:class:`~board_reader_core.protocol.NamesMessage`,
+:meth:`PositionHub.set_names`), one snapshot for all boards: sent to every
+subscriber on a change, and first to each new one once any camera has a name.
+
 asyncio-based so it drops straight into the FastAPI gateway, but the core is small
 and testable with ``asyncio.run``.
 """
@@ -18,7 +22,12 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncIterator
 
-from board_reader_core.protocol import MotionUpdate, PositionEvent, ViewerMessage
+from board_reader_core.protocol import (
+    MotionUpdate,
+    NamesMessage,
+    PositionEvent,
+    ViewerMessage,
+)
 
 
 class PositionHub:
@@ -26,6 +35,7 @@ class PositionHub:
 
     def __init__(self, queue_maxsize: int = 256) -> None:
         self._latest: dict[str, PositionEvent] = {}
+        self._names = NamesMessage(names=())
         self._subscribers: set[asyncio.Queue[ViewerMessage]] = set()
         self._queue_maxsize = queue_maxsize
         self._lock = asyncio.Lock()
@@ -43,6 +53,14 @@ class PositionHub:
         Safe without the lock: it runs on the event loop and never yields.
         """
         self._fan_out(update)
+
+    def set_names(self, names: NamesMessage) -> None:
+        """Hold the cameras' names and send them to every subscriber now.
+
+        Synchronous, like :meth:`broadcast`; the camera registry calls it.
+        """
+        self._names = names
+        self._fan_out(names)
 
     def _fan_out(self, message: ViewerMessage) -> None:
         for q in list(self._subscribers):
@@ -68,12 +86,17 @@ class PositionHub:
     async def subscribe(
         self, *, replay_latest: bool = True
     ) -> AsyncIterator[ViewerMessage]:
-        """Async-iterate messages. By default replays the retained latest position
-        event per board first, so a viewer connecting mid-stream renders at once."""
+        """Async-iterate messages. By default replays the cameras' names (when any
+        camera has one) and then the retained latest position event per board first,
+        so a viewer connecting mid-stream renders at once, under the right names."""
         q: asyncio.Queue[ViewerMessage] = asyncio.Queue(maxsize=self._queue_maxsize)
         async with self._lock:
             self._subscribers.add(q)
-            snapshot = list(self._latest.values()) if replay_latest else []
+            snapshot: list[ViewerMessage] = []
+            if replay_latest:
+                if self._names.names:
+                    snapshot.append(self._names)
+                snapshot.extend(self._latest.values())
         try:
             for event in snapshot:
                 yield event

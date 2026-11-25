@@ -40,6 +40,7 @@ def _roots() -> dict[str, Any]:
         # WS /viewer (DESIGN §5)
         "PositionEvent": protocol.PositionEvent,
         "MotionUpdate": protocol.MotionUpdate,
+        "NamesMessage": protocol.NamesMessage,
         "ViewerMessage": protocol.ViewerMessage,
         # WS /ingest: each header, then its JPEG as the next (binary) message
         "FrameHeader": wire.FrameHeader,
@@ -47,7 +48,7 @@ def _roots() -> dict[str, Any]:
         "ReportMessage": control.ReportMessage,
         "PhoneDown": control.PhoneDown,
         # WS /cameras: up and down
-        "RenameMessage": control.RenameMessage,
+        "CamerasUp": control.CamerasUp,
         "CamerasDown": control.CamerasDown,
         # WS /boards/{id}/control: up and down
         "ConfigureMessage": control.ConfigureMessage,
@@ -58,7 +59,8 @@ def _roots() -> dict[str, Any]:
 def json_schema() -> dict[str, Any]:
     """The document (see the module note).
 
-    The unions (``ViewerMessage``, ``PhoneDown``, ``CamerasDown``, ``ControlDown``)
+    The unions (``ViewerMessage``, ``PhoneDown``, ``CamerasUp``, ``CamerasDown``,
+    ``ControlDown``)
     are ``$defs`` of their own. The socket unions discriminate on ``type``; a position event has no
     ``type``, and is told from a motion update by its absence.
     """

@@ -12,8 +12,10 @@ from board_reader_core.protocol import (
     GRID,
     NUM_CLASSES,
     START_PLACEMENT,
+    BoardName,
     ClockState,
     MotionUpdate,
+    NamesMessage,
     PositionEvent,
     dist_from_placement,
     encode_placement,
@@ -312,5 +314,10 @@ def test_viewer_messages_parse_by_their_type():
         "ts": 1_700_000_000.25,
     }
     assert parse_viewer_message(motion.to_json()) == motion
+    names = NamesMessage(names=(BoardName("board-2", "kitchen table"),))
+    assert names.to_dict() == {
+        "type": "names", "names": [{"board_id": "board-2", "name": "kitchen table"}],
+    }
+    assert parse_viewer_message(names.to_json()) == names
     with pytest.raises(ValueError, match="unknown /viewer message type"):
         parse_viewer_message('{"type": "gossip"}')
