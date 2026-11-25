@@ -179,7 +179,8 @@ It also sends a drawn hand across the board and checks that a burst reaches the 
 and that changing the crop alone does not open one.
 `control.spec.ts` drives `/control`'s camera card against a simulated node on its
 `/ws/boards/{id}/control` socket: the cropped frame by default and the whole frame
-with the crop rectangle in Crop mode, the side White sits on and the camera-moved
+with the crop rectangle after Manual and Crop, the preview cropped in the browser
+while the camera does not stream, the side White sits on and the camera-moved
 warning (both from the health tick), a stream toggle that keeps the crop Auto-frame
 chose (so Auto-frame stays on), Re-detect frame, and the Add camera (QR code) and
 Add stream (`/ws/streams`) modals. `cameras.spec.ts` puts two phones (two browser
@@ -527,23 +528,26 @@ node packages/viewer/server/main.ts --host 0.0.0.0 --port 8080 --tls-port 8443
    adds `portrait: turn the phone sideways` (it still streams; upright framing costs
    about a quarter of perfect boards, [[operating-envelope#Framing]]).
 5. On the laptop, open `http://localhost:8080/control` (or the **camera control** link on
-   the live page). Expected: one card, `board-1`, `connected` in its heading; the
-   picture area reads `no frame received yet` until the phone streams; the phone's
+   the live page). Expected: one card, `board-1`, `connected` in its heading; within
+   ~2 s the picture shows the phone's preview cropped to the current crop (the whole
+   view while none is set), and it follows a new crop at once although nothing
+   streams yet; **Framing** shows **Auto** selected with Auto-frame's status; the phone's
    lenses are in the **lens** list and its size under **frame delivered** in the
    card's stats.
-6. Press **Crop mode**. Expected: within ~2 s the phone's whole view, with the crop
-   rectangle on it. Drag a rectangle around the board, with a small margin, and press
-   **Save crop**. Expected: the card leaves Crop mode, at once the phone shows the same
-   rectangle as an outline with the rest dimmed, Auto-frame says it is off (the crop was
-   set by hand), and a warning on the card disappears or appears as the shape needs
-   (whole frame sent, a rectangle taller than wide or more than twice as wide as tall,
-   an upright phone). **Cancel** leaves Crop mode and sends nothing.
+6. Under **Framing**, switch to **Manual**, then press **Crop** (there is no Crop in
+   Auto). Expected: the phone's whole view, with the crop rectangle on it. Drag a
+   rectangle around the board, with a small margin, and press **Save crop**. Expected:
+   the card shows the cropped picture again and stays Manual (`the crop was set by
+   hand`), at once the phone shows the same rectangle as an outline with the rest
+   dimmed, and a warning on the card disappears or appears as the shape needs (whole
+   frame sent, a rectangle taller than wide or more than twice as wide as tall, an
+   upright phone). **Cancel** leaves the crop editor and sends nothing.
 7. Optional: choose another **lens** (an iPhone lists each rear lens, e.g. *Back Ultra
    Wide Camera*) or **resolution**. Expected: the phone's picture switches, and its status
    line names the new lens and size. The rectangle stays on the board, because it is
    stored in fractions of the frame.
 8. Press **Start streaming** on `/control`. Expected: the phone's status line turns
-   green, `streaming ~1.0 fps` at rest, and the card's picture is the cropped frame the
+   green, `streaming ~1.0 fps` at rest, and the card's picture is now the frame the
    node receives, with **frames/s** and **last frame** filled in its stats and the
    recognizer named under **health** (`chessq`, or `stub` with the reason).
    Once the node has read the board, **board direction** in the stats names the
@@ -572,7 +576,7 @@ What to check beyond the steps:
   board lies a different way in the preview. Expected: after a few reads the
   **board direction** line names the new side and turns red, and a red
   `The camera moved…` warning appears under the card's picture. Press **Re-detect
-  frame**, or redraw the crop in Crop mode and press **Save crop**. Expected: the warning disappears, and the direction
+  frame** (in Auto), or in Manual press **Crop**, redraw the crop and press **Save crop**. Expected: the warning disappears, and the direction
   settles again on the new angle (a new lens or resolution does the same; starting or
   stopping the stream does not).
 - Two phones (DESIGN D18):
@@ -580,7 +584,7 @@ What to check beyond the steps:
      and scan the QR code with a second phone (or type the `/camera` URL), and allow the
      camera. Expected: the second phone's status line reads `board board-2`, and
      `/control` shows two cards, both `connected`.
-  2. Press **Crop mode** on the `board-2` card. Expected: the second phone's view, and
+  2. Look at the `board-2` card. Expected: its picture is the second phone's view, and
      every control on that card sets that phone only.
   3. Open the live page (`/`) in another tab, start the second phone streaming, and
      play two moves. Expected: a card `board board-2` whose game drawer lists them.
@@ -1189,7 +1193,8 @@ Needs the network (it reads the video) and deno (`sudo pacman -S deno`).
    `streaming as board board-N`.
 3. Open `http://localhost:8080/control`. Expected: a card for the camera, labelled
    with the video's title, connected, with a 1920×1080 frame and no lens or resolution
-   to choose; **Crop mode** shows the broadcast's whole picture.
+   to choose; its picture shows the broadcast (Manual, then **Crop**, shows the whole
+   picture).
 4. Do nothing for a few seconds. Expected: Auto-frame (DESIGN D21) sets the crop around
    the physical board, not the broadcast's 2D board: the node logs `auto-frame board-N:
    board found in <n> reads ... crop {...}`, the edge logs `config: crop {...},
@@ -1225,23 +1230,25 @@ A phone, framed and re-framed without drawing a rectangle. Needs the ChessQ weig
    picture's width. Do not touch `/control`'s rectangle.
 2. Open `http://localhost:8080/control`. Expected: within a few seconds of the phone
    connecting, the card's Auto-frame says it is looking for the board, then that it
-   framed it; in **Crop mode** the rectangle sits around the board with about 10 % to spare on every
-   side, and the phone shows the same outline. The node log reads `auto-frame board-N:
+   framed it; the card's picture (the preview, cropped) shows the board with about
+   10 % to spare on every side, and the phone shows the same outline. The node log reads `auto-frame board-N:
    board found in 2 reads ...`. If the board filled at least half of the last read,
    the live page shows its position at once, before streaming starts.
 3. Start streaming and move a piece. Expected: the live page follows, as in Option J.
 4. Move the phone a little (a few centimetres, or turn it slightly) and hold it still.
    Expected: within about 6 s (two counted previews 3 s apart; at most one re-frame per
    10 s) the node asks for a new full frame, the status says it is looking, then
-   framed, and the rectangle follows the board. A hand over the board, or a person
+   framed, and the card's picture follows the board. A hand over the board, or a person
    walking past, re-frames nothing; covering the board for 15 s or more says the board
    is not visible.
 5. Close `/control` and repeat step 4. Expected: the same. Auto-frame keeps the phone's
    previews on while it watches, whether or not a control page is open.
-6. On `/control`, press **Crop mode**, drag the rectangle somewhere else and save it. Expected: Auto-frame
-   says it is off (the crop was set by hand), and moving the phone no longer re-frames.
-7. Switch Auto-frame back on, or press **Re-detect frame** (in or outside Crop mode). Expected: a new full frame is
-   asked for at once and the rectangle goes back around the board.
+6. On `/control`, switch **Framing** to **Manual**, press **Crop**, drag the rectangle
+   somewhere else and save it. Expected: the card stays Manual (`the crop was set by
+   hand`), and moving the phone no longer re-frames.
+7. Switch **Framing** back to **Auto**. Expected: a new full frame is asked for at once
+   and the picture goes back around the board. In Auto, **Re-detect frame** does the
+   same at any time.
 8. Point the phone away from the board and reload `/camera`. Expected: "no board
    found", retried after 3 s, 10 s, then every 30 s; point it back and the next retry
    frames it.

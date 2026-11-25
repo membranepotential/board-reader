@@ -161,6 +161,20 @@ class FakeControlNode {
 
 const card = (page: Page) => page.getByTestId('camera-card');
 
+/** Switch the card to Manual and press Crop: the crop edit mode. */
+async function enterCrop(page: Page): Promise<void> {
+  await page.getByRole('radio', { name: 'Manual' }).check();
+  await page.getByRole('button', { name: 'Crop', exact: true }).click();
+}
+
+/** Where the cropped preview's image sits, in fractions of its box. */
+async function previewPlacement(page: Page): Promise<{ ar: number; scale: number; left: number }> {
+  const box = await page.getByTestId('cropped-preview').boundingBox();
+  const img = await page.locator('img.preview-crop').boundingBox();
+  if (box === null || img === null) throw new Error('no cropped preview');
+  return { ar: box.width / box.height, scale: img.width / box.width, left: (img.x - box.x) / box.width };
+}
+
 /** Where the crop rectangle sits, in fractions of the drawn picture. */
 async function fractions(page: Page): Promise<{ x: number; w: number }> {
   const picture = await page.locator('.picture').boundingBox();
@@ -169,8 +183,9 @@ async function fractions(page: Page): Promise<{ x: number; w: number }> {
   return { x: (rect.x - picture.x) / picture.width, w: rect.width / picture.width };
 }
 
-test('the card shows what the node receives, and its stats', async ({ page }) => {
-  await FakeControlNode.install(page);
+test('while streaming, the card shows what the node receives, and its stats', async ({ page }) => {
+  const node = await FakeControlNode.install(page);
+  node.config = { ...node.config, streaming: true };
   await page.goto('/control');
 
   await expect(card(page)).toHaveCount(1);
@@ -190,12 +205,42 @@ test('the card shows what the node receives, and its stats', async ({ page }) =>
   await expect(card(page).getByText('4.2')).toBeVisible(); // frames/s, measured on the node
 });
 
-test('crop mode shows the whole frame with the rectangle, and Cancel goes back', async ({ page }) => {
+test('while not streaming, the card crops the latest preview to the config, and follows a new crop', async ({
+  page
+}) => {
   const node = await FakeControlNode.install(page);
   await page.goto('/control');
-  await page.getByRole('button', { name: 'Crop mode' }).click();
-
+  // The 640×360 preview, cropped to x 0.2 w 0.5 (and y 0.2 h 0.6): the box takes the
+  // crop's shape in pixels, and the whole preview is twice its width, shifted left.
+  await expect(page.locator('img.preview-crop')).toHaveJSProperty('complete', true);
   await expect(page.locator('img.received')).toHaveCount(0);
+  let shown = await previewPlacement(page);
+  expect(shown.ar).toBeCloseTo((0.5 * 640) / (0.6 * 360), 1);
+  expect(shown.scale).toBeCloseTo(1 / 0.5, 1);
+  expect(shown.left).toBeCloseTo(-0.2 / 0.5, 1);
+
+  // Auto-frame sets a new crop: the view follows at once, without a new frame.
+  node.autoCrop({ x: 0.1, y: 0.15, w: 0.6, h: 0.7 });
+  await expect.poll(async () => (await previewPlacement(page)).scale).toBeCloseTo(1 / 0.6, 1);
+  shown = await previewPlacement(page);
+  expect(shown.left).toBeCloseTo(-0.1 / 0.6, 1);
+  expect(shown.ar).toBeCloseTo((0.6 * 640) / (0.7 * 360), 1);
+
+  // Streaming: the real received frame again.
+  await page.getByRole('button', { name: 'Start streaming' }).click();
+  await expect(page.locator('img.received')).toBeVisible();
+  await expect(page.locator('img.preview-crop')).toHaveCount(0);
+});
+
+test('Crop, in Manual, shows the whole frame with the rectangle, and Cancel goes back', async ({ page }) => {
+  const node = await FakeControlNode.install(page);
+  await page.goto('/control');
+  // No Crop in Auto: Auto chooses the crop.
+  await expect(page.getByRole('button', { name: 'Crop', exact: true })).toHaveCount(0);
+  await enterCrop(page);
+  await expect.poll(() => node.configures.at(-1)?.auto).toBe(false);
+
+  await expect(page.locator('img.preview-crop')).toHaveCount(0);
   await expect(page.locator('.picture img')).toHaveJSProperty('complete', true);
   // The whole frame (1920×1080) with the rectangle where the config puts it.
   const box = await page.locator('.picture').boundingBox();
@@ -206,14 +251,16 @@ test('crop mode shows the whole frame with the rectangle, and Cancel goes back',
   expect(w).toBeCloseTo(0.5, 1);
 
   await page.getByRole('button', { name: 'Cancel' }).click();
-  await expect(page.locator('img.received')).toBeVisible();
-  expect(node.configures).toHaveLength(0);
+  await expect(page.locator('img.preview-crop')).toBeVisible();
+  // Only the switch to Manual went out; Cancel sent no crop.
+  expect(node.configures).toHaveLength(1);
 });
 
 test('dragging and resizing the rectangle saves the normalized rect', async ({ page }) => {
   const node = await FakeControlNode.install(page);
   await page.goto('/control');
-  await page.getByRole('button', { name: 'Crop mode' }).click();
+  await enterCrop(page);
+  await expect.poll(() => node.configures.length).toBe(1);
   const box = await page.locator('.picture').boundingBox();
   if (box === null) throw new Error('no picture');
 
@@ -237,23 +284,23 @@ test('dragging and resizing the rectangle saves the normalized rect', async ({ p
   await page.mouse.up();
 
   await expect(page.getByText('unsaved')).toBeVisible();
-  await expect(page.getByTestId('save-turns-auto-off')).toBeVisible();
   // Nothing goes to the node before Save: a pushed state must not race the gesture.
-  expect(node.configures).toHaveLength(0);
+  expect(node.configures).toHaveLength(1);
   await page.getByRole('button', { name: 'Save crop' }).click();
 
-  await expect.poll(() => node.configures.length).toBe(1);
-  const crop = node.configures[0]?.crop;
+  await expect.poll(() => node.configures.length).toBe(2);
+  const crop = node.configures[1]?.crop;
   if (crop == null) throw new Error('saved without a crop');
   expect(crop.x).toBeCloseTo(0.3, 2);
   expect(crop.y).toBeCloseTo(0.25, 2);
   expect(crop.w).toBeCloseTo(0.4, 2);
   expect(crop.h).toBeCloseTo(0.6, 2);
   // The rest of the config rides along unchanged: a configure replaces the whole object.
-  expect(node.configures[0]).toMatchObject({ device: null, resolution: '1080p', streaming: false });
-  // Saved: back to what the node receives; a crop by hand switched Auto-frame off.
-  await expect(page.locator('img.received')).toBeVisible();
-  await expect(page.getByTestId('autoframe')).toHaveText('off: the crop was set by hand');
+  expect(node.configures[1]).toMatchObject({ device: null, resolution: '1080p', streaming: false, auto: false });
+  // Saved: back to the cropped view, still Manual.
+  await expect(page.locator('img.preview-crop')).toBeVisible();
+  await expect(page.getByRole('radio', { name: 'Manual' })).toBeChecked();
+  await expect(page.getByText('the crop was set by hand')).toBeVisible();
 });
 
 test('the stream toggle starts and stops the phone', async ({ page }) => {
@@ -290,7 +337,7 @@ test('toggling the stream keeps the crop Auto-frame chose, so Auto-frame stays o
   await expect.poll(() => node.configures.at(-1)?.streaming).toBe(true);
   expect(node.configures.at(-1)?.crop).toEqual(framed);
   expect(node.config.auto).toBe(true);
-  await expect(page.getByLabel('frame the board automatically')).toBeChecked();
+  await expect(page.getByRole('radio', { name: 'Auto' })).toBeChecked();
 
   await page.getByLabel('lens').selectOption('Back Ultra Wide Camera');
   await expect.poll(() => node.configures.at(-1)?.device).toBe('Back Ultra Wide Camera');
@@ -343,20 +390,35 @@ test('Auto-frame says what it is doing for the camera', async ({ page }) => {
   await expect(status).toHaveText('off: the crop was set by hand');
 });
 
-test('the Auto-frame switch and Re-detect frame reach the node, in and outside crop mode', async ({ page }) => {
+test('the Auto | Manual toggle reaches the node; Re-detect frame shows in Auto, Crop in Manual', async ({
+  page
+}) => {
   const node = await FakeControlNode.install(page);
   await page.goto('/control');
-  const auto = page.getByLabel('frame the board automatically');
+  const auto = page.getByRole('radio', { name: 'Auto' });
+  const manual = page.getByRole('radio', { name: 'Manual' });
+  const redetect = page.getByRole('button', { name: 'Re-detect frame' });
+  const crop = page.getByRole('button', { name: 'Crop', exact: true });
   await expect(auto).toBeChecked();
   await expect(page.getByTestId('drift-off')).toBeHidden();
-  await auto.uncheck();
-  await expect.poll(() => node.configures.at(-1)?.auto).toBe(false);
-  const redetect = page.getByRole('button', { name: 'Re-detect frame' });
   await redetect.click();
   await expect.poll(() => node.reframes).toBe(1);
-  await page.getByRole('button', { name: 'Crop mode' }).click();
-  await redetect.click();
-  await expect.poll(() => node.reframes).toBe(2);
+  await expect(crop).toHaveCount(0);
+
+  await manual.check();
+  await expect.poll(() => node.configures.at(-1)?.auto).toBe(false);
+  await expect(redetect).toHaveCount(0);
+  await crop.click();
+  await expect(page.locator('.rect')).toBeVisible();
+
+  // Back to Auto: the crop being edited is dropped, and the node frames afresh.
+  await auto.check();
+  await expect.poll(() => node.configures.at(-1)?.auto).toBe(true);
+  await expect(page.locator('.rect')).toHaveCount(0);
+  await expect(crop).toHaveCount(0);
+  await expect(redetect).toBeVisible();
+  // Switching Auto on sends the crop the node last pushed, not one drawn here.
+  expect(node.configures.at(-1)?.crop).toEqual({ x: 0.2, y: 0.2, w: 0.5, h: 0.6 });
 });
 
 test('a board too small to watch on the previews says a move goes unnoticed', async ({ page }) => {

@@ -1,34 +1,73 @@
 <script lang="ts">
   /**
-   * The latest frame the node received for a board: the camera's picture after the
-   * crop, so what the recognizer reads. The control socket pushes it (`frame`) as
-   * frames arrive, so nothing here polls.
+   * The camera's picture after the crop: what the recognizer reads.
    *
-   * Sized like `CropEditor`'s picture: the box takes the frame's own aspect ratio
-   * and the image fills it at `inset: 0`, so the box IS the picture, with no
-   * letterbox inside it.
+   * While the camera streams, it is the latest frame the node received for the
+   * board (`frame`, pushed by the control socket as frames arrive). While it does
+   * not, no frame arrives, so the picture would go stale; the phone still sends its
+   * small whole-frame previews, so the view crops the latest one to the config's
+   * crop in CSS instead. That follows a new crop at once, including one Auto-frame
+   * sets.
+   *
+   * Sized like `CropEditor`'s picture: the box takes the shown picture's own aspect
+   * ratio and the image sits inside it, so the box IS the picture, with no letterbox.
+   * For a cropped preview the box takes the crop's aspect ratio (in pixels), and the
+   * whole preview inside it is scaled by 1/w and 1/h and shifted by -x and -y, so only
+   * the crop's region shows.
    */
-  import type { FrameMessage } from '#lib/protocol/generated.ts';
+  import type { CropRect, FrameMessage, PreviewMessage } from '#lib/protocol/generated.ts';
+  import { WHOLE_FRAME } from '#lib/control/crop.ts';
   import { jpegSrc } from '#lib/control/messages.ts';
 
   interface Props {
+    /** The latest frame the node received, or `null` before the first. */
     frame: FrameMessage | null;
+    /** The phone's latest whole-frame preview. */
+    preview: PreviewMessage | null;
+    /** The config's crop; `null` sends the whole frame. */
+    crop: CropRect | null;
+    streaming: boolean;
     boardId: string;
   }
 
-  const { frame, boardId }: Props = $props();
+  const { frame, preview, crop, streaming, boardId }: Props = $props();
+
+  type View =
+    | { readonly kind: 'received'; readonly frame: FrameMessage }
+    | { readonly kind: 'preview'; readonly preview: PreviewMessage; readonly crop: CropRect }
+    | { readonly kind: 'none' };
+
+  const view = $derived.by((): View => {
+    if (streaming && frame !== null) return { kind: 'received', frame };
+    if (preview !== null) return { kind: 'preview', preview, crop: crop ?? WHOLE_FRAME };
+    if (frame !== null) return { kind: 'received', frame };
+    return { kind: 'none' };
+  });
 </script>
 
-{#if frame !== null}
-  <div class="picture" style:--ar={frame.width / frame.height}>
+{#if view.kind === 'received'}
+  <div class="picture" style:--ar={view.frame.width / view.frame.height}>
     <img
       class="received"
-      src={jpegSrc(frame.jpeg)}
+      src={jpegSrc(view.frame.jpeg)}
       alt="the latest frame the node received for board {boardId}"
     />
   </div>
+{:else if view.kind === 'preview'}
+  {@const { preview: shot, crop: c } = view}
+  <div class="picture" data-testid="cropped-preview" style:--ar={(c.w * shot.width) / (c.h * shot.height)}>
+    <img
+      class="preview-crop"
+      src={jpegSrc(shot.jpeg)}
+      alt="the camera's preview, cropped as board {boardId} would be"
+      style:width="{100 / c.w}%"
+      style:height="{100 / c.h}%"
+      style:left="{(-c.x / c.w) * 100}%"
+      style:top="{(-c.y / c.h) * 100}%"
+    />
+  </div>
 {:else}
-  <div class="placeholder">no frame received yet: start streaming to see what the node reads</div>
+  <div class="placeholder">no picture from this camera yet</div>
 {/if}
 
 <style>
@@ -43,10 +82,15 @@
   }
   img {
     position: absolute;
+    display: block;
+  }
+  img.received {
     inset: 0;
     width: 100%;
     height: 100%;
-    display: block;
+  }
+  img.preview-crop {
+    max-width: none;
   }
   .placeholder {
     display: flex;
