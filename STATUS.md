@@ -9,8 +9,6 @@ confidences**. No moves, no legality, no PGN — those belong to the downstream 
 
 ## Now (1 agent)
 
-- **device id = board id** — the camera's UUID is its board id; `board-N` only the default name;
-  drop the device→board table (D18 amended) — running (agent I).
 - **file splits DONE** (Sonnet): snapshot page `84ecbc0`, `measurement/{trial,evaluate}/` `a815f91`, `control/camera/`
   `878f80a`, `stream/schedule/` `bbef6b2`, `stream/settle/` `8dcc248`; gate identical. Next round: `replay.py`, `ingest.py`, `server.py`,
   /control + /camera pages, core `control.py`, `camera/registry.py` (573: extract the auto-frame driver).
@@ -26,7 +24,7 @@ confidences**. No moves, no legality, no PGN — those belong to the downstream 
   0.57 s after the true change); priors → python-chess count guard + `rules: standard|free`.
 - **Dumb-camera phone** (D11) + `/control` over WebSockets; **viewer** (D12) SvelteKit on Node; **one wire
   contract** (D13) pydantic → generated zod TS; **PGN drawer** (`81408ac`, `b58968a`): 7/7 games exact.
-- **Cameras** (D18, `7f84986`): device id → permanent `board-N`, names as aliases, /control list + QR + forget,
+- **Cameras** (D18, `7f84986`, `3f8dbd1`): board id = the device's UUID, `board-N` its default name, /control list + QR + forget,
   /ingest owner guard; **streams as cameras** (D19, `bf546c3`): `board-reader-edge camera <YouTube URL>`.
 - **/control as cards** (`9b67284`, `96338f9`): one card per camera; Framing = Auto | Manual toggle,
   Crop in Manual, Re-detect in Auto; stopped camera's picture = preview cropped in CSS; Add camera/stream modals.

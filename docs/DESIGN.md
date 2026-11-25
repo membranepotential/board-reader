@@ -567,7 +567,7 @@ so results depended on load); batching (not needed yet; it would go into
 
 ### D18 — The node names the cameras; a phone keeps a device id (2026-11-25)
 
-**Status:** accepted (user, 2026-11-25); amended the same day (user): the board id is permanent and a rename sets a name, an alias.
+**Status:** accepted (user, 2026-11-25); amended the same day (user): the board id is permanent and a rename sets a name, an alias; amended again (user): **a camera's board id is its device id**, and `board-N` is only its default name.
 
 **Context.** Every phone streamed as `board=phone` unless its URL said otherwise, so a
 second phone silently streamed into the first one's board, and an operator had to type
@@ -578,19 +578,22 @@ live card and PGN drawer is keyed by, so it must stay put across a reload.
 - **A phone is known by a device id**: a random id (`crypto.randomUUID`) its browser
   makes on the first visit and keeps in `localStorage`. Where storage is unavailable
   (a private window), the id lives as long as the page, and the page says so.
-- **The node assigns the board id, once.** `WS /cameras/{device_id}` replaces
-  `/boards/{id}/camera`; the node answers `assigned` with the device's board id (and
-  its name, below), and the phone names that id and its device id on every `/ingest`
-  frame. A new device gets the lowest free `board-N` (an id with a saved config, or
-  used as a camera's name, is not handed out, so a stale config never starts a new
-  phone streaming). **The board id never changes**: frames, events, configs,
-  recordings, the live card and its PGN stay keyed by it. The device -> board pairs
-  persist in `BR_CAMERA_CONFIG` beside the configs; a file from before has none and
-  still loads. A saved config no camera holds (the old shared `phone` id) is dropped at
-  load with one INFO line, so no camera can inherit it.
+- **A camera's board id is its device id.** `WS /cameras/{device_id}` replaces
+  `/boards/{id}/camera`; the node answers `assigned` with the board id (equal to the
+  device id) and the camera's name, and the phone names both ids on every `/ingest`
+  frame. The node hands out no ids, so no table maps devices to boards and no id ever
+  passes to another phone. `DeviceId` (starts with a letter or digit, up to 64) is a
+  subset of `CameraBoardId`. **The board id never changes**: frames, events, configs,
+  recordings, the live card and its PGN stay keyed by it. Every camera has a name: a
+  new one is called the lowest `board-N` no other camera's name uses, persisted and
+  renamable like any name. The UI shows the name everywhere and the id only as small
+  text. `BR_CAMERA_CONFIG` keeps `{"boards", "names"}` by device id; a file with the
+  older `"cameras"` table loads migrated (configs move to the device id; an unnamed
+  camera is named after its old `board-N`), and a saved config no camera holds is
+  dropped at load with one INFO line.
 - **A rename sets a name, an alias.** `/control` lists every known camera over
   `WS /cameras` (name, board id, device, link, last report, frame age) on connect, on
-  change and once a second for the ages, and takes `rename` (`null` clears the name).
+  change and once a second for the ages, and takes `rename` (`null` gives it a default name again).
   A name (`CameraName`: up to 32 letters, digits, spaces, `.`, `_`, `-`; no space at
   either end; ASCII, so Python and the browser judge it alike) is unique among the
   known cameras and never another camera's board id. A rename persists, pushes
@@ -599,9 +602,10 @@ live card and PGN drawer is keyed by, so it must stay put across a reload.
   a name, and whole on every change), and relabels the card in place, so its game
   continues; the PGN's `Site` tag carries the name.
 - **/control forgets a disconnected camera** (`forget`, after a confirm): the node
-  drops its board id, name and config, frees the board's read state on the node, and
-  the id is free again. A connected camera cannot be forgotten (the phone would only
-  be handed a new id at once). The device, if it comes back, is a new camera.
+  drops its name and config and frees the board's read state on the node; a read
+  already running publishes nothing. A connected camera cannot be forgotten. The
+  device, if it comes back, is a new camera under the same board id with a fresh
+  default name.
 - **A camera's board id takes frames from that camera only.** `/ingest` refuses, with
   the reason in the reply and a count in `/healthz` `ingest.not_owned`, a frame from a
   device under a board id that is not its own, and a frame from a device the node does
@@ -793,7 +797,7 @@ one by URL, and the node should keep it running across crashes and restarts.
 - **The node starts the edge's console script as a subprocess**
   (`control/streams/`): `board-reader-edge camera <url> --node <BR_NODE_URL> --state
   <file> [--start <s>]`. The process registers on `/cameras/{device_id}` like any
-  camera, so the registry assigns its board id (D18) and Auto-frame frames it (D21).
+  camera, so its device id is its board id (D18) and Auto-frame frames it (D21).
   **The inference package still never imports the edge** (D1's split, checked by
   `tests/test_layer_separation.py`): it runs a command by name, process-level glue
   like the CLI and compose. The command is `BR_EDGE_COMMAND` (shell-quoted) if set,
