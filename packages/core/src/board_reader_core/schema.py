@@ -56,6 +56,9 @@ def _roots() -> dict[str, Any]:
         "ConfigureMessage": control.ConfigureMessage,
         "ControlUp": control.ControlUp,
         "ControlDown": control.ControlDown,
+        # WS /streams: up and down
+        "StreamsUp": control.StreamsUp,
+        "StreamsDown": control.StreamsDown,
     }
 
 

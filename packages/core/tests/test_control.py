@@ -8,6 +8,7 @@ import json
 import pytest
 
 from board_reader_core.control import (
+    AddStreamMessage,
     AssignedMessage,
     BoardDirection,
     CameraConfig,
@@ -22,16 +23,20 @@ from board_reader_core.control import (
     HealthMessage,
     PreviewMessage,
     PreviewsMessage,
+    RemoveStreamMessage,
     RenameMessage,
     ReplacedMessage,
     ReportMessage,
     SendFullFrameMessage,
     StateMessage,
+    StreamEntry,
+    StreamsMessage,
     camera_board_id,
     camera_name,
     parse_cameras_message,
     parse_control_message,
     parse_phone_message,
+    parse_streams_message,
 )
 
 
@@ -263,3 +268,47 @@ def test_the_identity_messages_name_their_type():
              "report": None, "frame_age_s": 0.5},
         ],
     }
+
+
+def test_the_control_ui_adds_and_removes_streams_with_typed_messages():
+    url = "https://www.youtube.com/watch?v=some-video"
+    added = parse_streams_message(json.dumps({"type": "add_stream", "url": url, "start_s": 3600}))
+    assert added == AddStreamMessage(url, 3600.0)
+    assert parse_streams_message(json.dumps({"type": "add_stream", "url": url})) == AddStreamMessage(url)
+    removed = parse_streams_message(json.dumps({"type": "remove_stream", "stream_id": "stream-2"}))
+    assert removed == RemoveStreamMessage("stream-2")
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "file:///etc/passwd",  # yt-dlp would read a local file
+        "rtsp://camera.local/stream",
+        "https://example.com/a video",  # a space: never a URL a browser sends
+        "https://" + "a" * 2048,  # past the length cap
+        "--exec=rm",  # a flag, not a URL
+    ],
+)
+def test_a_stream_url_is_http_or_https_and_bounded(url):
+    with pytest.raises(ValueError):
+        parse_streams_message(json.dumps({"type": "add_stream", "url": url}))
+
+
+def test_a_stream_start_is_never_negative_and_a_stream_id_is_the_nodes():
+    url = "https://example.com/v"
+    with pytest.raises(ValueError):
+        parse_streams_message(json.dumps({"type": "add_stream", "url": url, "start_s": -1}))
+    with pytest.raises(ValueError):
+        parse_streams_message(json.dumps({"type": "remove_stream", "stream_id": "../x"}))
+
+
+def test_the_streams_list_round_trips():
+    entry = StreamEntry(
+        "stream-1", "https://example.com/v", 60.0, "running", DEVICE, "board-3", None
+    )
+    message = StreamsMessage(streams=(entry,))
+    assert json.loads(message.to_json())["streams"][0] == {
+        "id": "stream-1", "url": "https://example.com/v", "start_s": 60.0,
+        "state": "running", "device_id": DEVICE, "board_id": "board-3", "error": None,
+    }
+    assert StreamsMessage.from_dict(json.loads(message.to_json())) == message

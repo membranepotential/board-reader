@@ -27,6 +27,16 @@ function fixed<T extends z.ZodType, N extends number>(item: T, n: N) {
 }
 
 /**
+ * Control UI -> node: run this video or live stream as a new camera.
+ */
+export const AddStreamMessage = z.strictObject({
+  url: z.string().max(2048).regex(/^https?:\/\/[!-~]+$/),
+  start_s: z.number().min(0).nullable(),
+  type: z.literal('add_stream')
+});
+export type AddStreamMessage = Immutable<z.infer<typeof AddStreamMessage>>;
+
+/**
  * Node -> phone: the board id this phone streams as, and its name if it has one.
  *
  * The board id is the device's for good; `name` changes when /control renames it.
@@ -436,6 +446,16 @@ export const CamerasDown = z.discriminatedUnion('type', [CamerasMessage, Refused
 export type CamerasDown = Immutable<z.infer<typeof CamerasDown>>;
 
 /**
+ * Control UI -> node: stop this stream and forget its camera (its board id is
+ * free again).
+ */
+export const RemoveStreamMessage = z.strictObject({
+  stream_id: z.string().regex(/^stream-[1-9][0-9]{0,8}$/),
+  type: z.literal('remove_stream')
+});
+export type RemoveStreamMessage = Immutable<z.infer<typeof RemoveStreamMessage>>;
+
+/**
  * Control UI -> node: give this device's camera a name; `None` clears it.
  *
  * The board id stays. `name` is checked by the node (`CameraName`, not
@@ -530,6 +550,45 @@ export const ControlDown = z.discriminatedUnion('type', [
   RefusedMessage
 ]);
 export type ControlDown = Immutable<z.infer<typeof ControlDown>>;
+
+/**
+ * One stream the node runs as a camera.
+ *
+ * `start_s` is a video's start position in seconds (`None`: the beginning, and
+ * the only choice for a live stream); `device_id` the camera the stream registers
+ * as; `board_id` the board id the node assigned it (`None` until it first
+ * registered); `error` why it last exited or could not start.
+ */
+export const StreamEntry = z.strictObject({
+  id: z.string().regex(/^stream-[1-9][0-9]{0,8}$/),
+  url: z.string().max(2048).regex(/^https?:\/\/[!-~]+$/),
+  start_s: z.number().min(0).nullable(),
+  state: z.enum([
+    'starting',
+    'running',
+    'crashed',
+    'stopped'
+  ]),
+  device_id: z.string().regex(/^[0-9A-Za-z-]{8,64}$/),
+  board_id: z.string().min(1).max(32).regex(/^[0-9A-Za-z][0-9A-Za-z._-]*$/).nullable(),
+  error: z.string().min(1).nullable()
+});
+export type StreamEntry = Immutable<z.infer<typeof StreamEntry>>;
+
+/**
+ * Node -> control UI: every stream the node runs, in the order they were added.
+ */
+export const StreamsMessage = z.strictObject({
+  streams: z.array(StreamEntry),
+  type: z.literal('streams')
+});
+export type StreamsMessage = Immutable<z.infer<typeof StreamsMessage>>;
+
+export const StreamsDown = z.discriminatedUnion('type', [StreamsMessage, RefusedMessage]);
+export type StreamsDown = Immutable<z.infer<typeof StreamsDown>>;
+
+export const StreamsUp = z.discriminatedUnion('type', [AddStreamMessage, RemoveStreamMessage]);
+export type StreamsUp = Immutable<z.infer<typeof StreamsUp>>;
 
 export const ViewerMessage = z.xor([
   PositionEvent,

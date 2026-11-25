@@ -25,7 +25,7 @@ never changes: it is what the phone's frames name on ``/ingest``, what every eve
 recording and per-board socket below is keyed by. The control UI may give a camera a
 **name** (:data:`CameraName`), an alias people read; it renames nothing.
 
-They travel on three WebSockets. Every text message is a JSON object whose ``type``
+They travel on four WebSockets. Every text message is a JSON object whose ``type``
 names it:
 
 ``WS /cameras/{device_id}`` — the phone.
@@ -55,6 +55,12 @@ names it:
   * down: :class:`StateMessage` on connect and on every change of config, report or
     phone link; :class:`PreviewMessage` and :class:`FrameMessage` (images as
     base64); :class:`HealthMessage` about once a second; :class:`RefusedMessage`.
+
+``WS /streams`` — the control UI's videos and live streams, each run by the node
+as a ``board-reader-edge camera`` process that registers as a camera above.
+  * up: :class:`AddStreamMessage`, :class:`RemoveStreamMessage` (:data:`StreamsUp`).
+  * down: :class:`StreamsMessage` on connect, on every change and about once a
+    second; :class:`RefusedMessage`.
 
 Previews and frames carry their JPEG as standard base64 text, because a page can
 show that as a ``data:`` URL as it stands; binary would need a second message to say
@@ -625,3 +631,81 @@ PhoneDown = Annotated[
 ]
 #: What the node sends the control UI's camera list.
 CamerasDown = Annotated[CamerasMessage | RefusedMessage, Field(discriminator="type")]
+
+
+# ---- streams the node runs as cameras ------------------------------------------
+
+#: The longest stream URL the node takes.
+MAX_STREAM_URL = 2048
+
+#: A video or live stream page the node hands ``board-reader-edge camera`` (yt-dlp
+#: resolves it): ``http`` or ``https`` only, printable ASCII without spaces (a browser
+#: percent-encodes the rest), up to :data:`MAX_STREAM_URL` characters.
+StreamUrl = Annotated[
+    StrictStr, Field(max_length=MAX_STREAM_URL, pattern=r"^https?://[!-~]+$")
+]
+
+#: A stream's id on the node: ``stream-1``, ``stream-2``, ...
+StreamId = Annotated[StrictStr, Field(pattern=r"^stream-[1-9][0-9]{0,8}$")]
+
+#: What a stream's process is doing: started and not yet registered as a camera
+#: (``starting``), registered and connected (``running``), exited with an error and
+#: waiting to be started again (``crashed``), or not running and not restarted
+#: (``stopped``: the video ended, or the node has no edge command to run).
+StreamState = Literal["starting", "running", "crashed", "stopped"]
+
+
+@wire
+class StreamEntry(Wire):
+    """One stream the node runs as a camera.
+
+    ``start_s`` is a video's start position in seconds (``None``: the beginning, and
+    the only choice for a live stream); ``device_id`` the camera the stream registers
+    as; ``board_id`` the board id the node assigned it (``None`` until it first
+    registered); ``error`` why it last exited or could not start.
+    """
+
+    id: StreamId
+    url: StreamUrl
+    start_s: NonNegative | None
+    state: StreamState
+    device_id: DeviceId
+    board_id: CameraBoardId | None
+    error: Text | None
+
+
+@message
+class AddStreamMessage(Message):
+    """Control UI -> node: run this video or live stream as a new camera."""
+
+    type: Literal["add_stream"] = tag("add_stream")
+    url: StreamUrl
+    start_s: NonNegative | None = None
+
+
+@message
+class RemoveStreamMessage(Message):
+    """Control UI -> node: stop this stream and forget its camera (its board id is
+    free again)."""
+
+    type: Literal["remove_stream"] = tag("remove_stream")
+    stream_id: StreamId
+
+
+@message
+class StreamsMessage(Message):
+    """Node -> control UI: every stream the node runs, in the order they were added."""
+
+    type: Literal["streams"] = tag("streams")
+    streams: tuple[StreamEntry, ...]
+
+
+#: What the control UI sends on ``WS /streams``.
+StreamsUp = Annotated[AddStreamMessage | RemoveStreamMessage, Field(discriminator="type")]
+#: What the node sends on ``WS /streams``.
+StreamsDown = Annotated[StreamsMessage | RefusedMessage, Field(discriminator="type")]
+
+
+def parse_streams_message(text: str) -> AddStreamMessage | RemoveStreamMessage:
+    """One text message from a ``/streams`` socket; ``ValueError`` says why not."""
+    return parse(StreamsUp, text)
