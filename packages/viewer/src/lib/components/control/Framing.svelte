@@ -62,12 +62,6 @@
       >
         {camera === null ? '—' : AUTOFRAME_COPY[camera.autoframe]}
       </p>
-      {#if camera?.autoframe === 'framed' && !camera.watching}
-        <p class="hint" data-testid="drift-off">
-          The board is small in the picture, so a moved camera is not noticed: press Re-detect frame
-          after moving it.
-        </p>
-      {/if}
       <div class="actions">
         <button
           type="button"
@@ -76,6 +70,12 @@
           onclick={onreframe}>Re-detect frame</button
         >
       </div>
+      {#if camera?.autoframe === 'framed' && !camera.watching}
+        <p class="hint" data-testid="drift-off">
+          The board is small in the picture, so a moved camera is not noticed: press Re-detect frame
+          after moving it.
+        </p>
+      {/if}
     {:else if cropping}
       <div class="actions">
         <button type="button" class="primary" disabled={!dirty || locked} onclick={onsave}>Save crop</button>
@@ -140,23 +140,25 @@
     width: 1px;
     height: 1px;
   }
+  /* Status and buttons share the toggle's row; only a hint wraps to its own line. */
   .mode {
     flex: 1;
     min-width: 0;
-    display: grid;
-    gap: 8px;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px 12px;
+    min-height: 30px;
   }
   p {
     margin: 0;
     font-size: 13px;
   }
-  .status {
-    padding-top: 5px;
-  }
   .status.bad {
     color: #ff8f8f;
   }
   .hint {
+    flex-basis: 100%;
     font-size: 12px;
     color: #6f7782;
   }
