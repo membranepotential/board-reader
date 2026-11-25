@@ -7,9 +7,12 @@ _reconciled: 2026-11-24 @ `480a5ea`_ · decisions: [docs/DESIGN.md](docs/DESIGN.
 A camera reads a live OTB board and streams timestamped **piece placements + per-square
 confidences**. No moves, no legality, no PGN — those belong to the downstream application layer.
 
-## Now (1 agent)
-- **latency round 3 (measure only)** — every-frame ChessQ cache + offline sweep of calm hold, settle window
-  and the obscured rule; build only what wins — running (agent; tools/probes/latency3_*).
+## Now (2 agents, files partitioned)
+
+- **latency round 3, build** — node hold 0.7 → 0.3 s, settle 0.5 → 0.3 s (report `0ada93d`: take 2 median
+  1.66 → 0.94 s, 0 leaks; needs the energy gate); gate vs `energy` — running (agent).
+- **auto-crop probe** — ChessQ attention centroids → board grid → proposed crop; board 83–15 % of the frame,
+  single pass vs coarse-to-fine — running (measure only; tools/probes/autocrop_*).
 
 ## Done (2026-11-24 — the ChessQ rebuild; plan: [docs/plans/2026-11-24-simplify-around-chessq.md](docs/plans/2026-11-24-simplify-around-chessq.md))
 
@@ -41,13 +44,14 @@ confidences**. No moves, no legality, no PGN — those belong to the downstream 
 ## Next
 
 1. **Resting-hand re-test** (you): rest a hand on the board mid-game; no wrong board, "hand?" chip shows.
+2. **Motion meter over the board only** — 45/60 gate moves wait for the 2 s idle read (the meter sees
+   the hand at the clock); crop-aware meter or the hand signal (report `0ada93d`).
 3. **Record more varied games** — second set, second camera, other light. All gate takes are one
    set; the settle defaults are fitted to it.
 4. **Python edge on the control channel** (today: static `--roi`) — needed for a Pi/Jetson camera.
 5. **Model the remaining HTTP replies in core** (`/estimate`, `/uploads`, `/labels`, the `/ingest`
    ack) so they are generated too.
 6. **Idea, parked:** fully on-phone portable app — [docs/on-phone-app.md](docs/on-phone-app.md).
-   (ChessCam v2 dropped 2026-11-24 by decision.)
 
 ## Open questions
 
