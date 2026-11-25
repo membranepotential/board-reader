@@ -177,9 +177,7 @@ def main(out_dir: Path) -> None:
         "classical-wide",
         "classical+verify",
     ]
-    print(
-        f"good = corner error <= {GOOD} %; trusted = grid R2 >= {MIN_R2}"
-    )
+    print(f"good = corner error <= {GOOD} %; trusted = grid R2 >= {MIN_R2}")
     print("\n## Per size and strategy")
     print(
         "| condition | n | strategy | proposes % | good of proposed % | bad proposed (n) | missed good (n) "
