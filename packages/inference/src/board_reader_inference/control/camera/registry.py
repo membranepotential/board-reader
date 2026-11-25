@@ -6,22 +6,22 @@ about itself (:class:`~board_reader_core.control.CameraReport`) and the latest
 full-frame preview, so the control UI can show the camera's whole field of view
 while the stream itself carries only the crop.
 
-Each phone is known by its **device id**, a random id its browser keeps, and the
-registry **assigns** each new device a board id (the lowest free ``board-N``) once
-and keeps that pair for good (DESIGN D18), so the same phone streams as the same
+Each phone is known by its **device id**, a random id its browser keeps, and its
+board id **is** that device id (DESIGN D18), so the same phone streams as the same
 board after a reload, a reconnect or a node restart, and every event, recording and
-PGN stays under one id. The control UI may give a camera a **name**, an alias the
-live page, /control and the phone show instead of the id; a rename changes nothing
-else. Names are unique among the known cameras and never another camera's board id,
-so no two cards read alike. The control UI may also **forget** a disconnected
-camera: its board id and config are dropped and the id is free again; the device,
-if it comes back, is a new camera.
+PGN stays under one id. Every camera has a **name**, an alias the live page,
+/control and the phone show instead of the id: a new camera gets the lowest
+``board-N`` no other camera's name uses, and the control UI may rename it; a rename
+changes nothing else. Names are unique among the known cameras and never another
+camera's board id, so no two cards read alike. The control UI may also **forget** a
+disconnected camera: its name and config are dropped; the device, if it comes back,
+is a new camera under the same board id, with a new default name.
 
 The registry also decides which ``/ingest`` frames a board id accepts
-(:meth:`CameraRegistry.ingest_refusal`): a board id a camera holds takes frames from
-that camera only, so a stale page or a replay cannot stream into a camera's board.
+(:meth:`CameraRegistry.ingest_refusal`): a camera's board id takes frames from that
+camera only, so a stale page or a replay cannot stream into a camera's board.
 
-The configs, the device -> board pairs and the names can outlive a restart
+The configs and the names can outlive a restart
 (:mod:`~board_reader_inference.control.camera.persistence`).
 
 The registry also follows each board's **direction** in the image, from the
@@ -117,8 +117,9 @@ from board_reader_inference.control.camera.records import BoardCamera, FullFrame
 
 log = logging.getLogger(__name__)
 
-#: The board id a new camera gets: this prefix and the lowest free number.
-AUTO_BOARD_PREFIX = "board-"
+#: The name a new camera gets: this prefix and the lowest number no other camera's
+#: name uses.
+DEFAULT_NAME_PREFIX = "board-"
 
 
 def _reframed(old: CameraConfig, new: CameraConfig) -> bool:
@@ -134,16 +135,16 @@ def _new_picture(before: CameraReport | None, after: CameraReport) -> bool:
     return (before.device, before.frame) != (after.device, after.frame)
 
 
-def _natural(board_id: str) -> list[int | str]:
+def _natural(name: str) -> list[int | str]:
     """``board-2`` before ``board-10``: digit runs compare as numbers."""
-    return [int(part) if part.isdigit() else part for part in re.split(r"([0-9]+)", board_id)]
+    return [int(part) if part.isdigit() else part for part in re.split(r"([0-9]+)", name)]
 
 
 class CameraRegistry:
     """Every board's camera state, every known camera, and the sockets they are pushed to.
 
-    A board exists from the first time anyone asks. A camera (a device id) exists
-    from its first connect and keeps its board id until it is renamed. Methods are
+    A board exists from the first time anyone asks. A camera (a device id, also its
+    board id) exists from its first connect until it is forgotten. Methods are
     synchronous and run on the event loop; they only post to mailboxes (and wake the
     camera lists), and each socket's own task sends.
 
@@ -153,7 +154,7 @@ class CameraRegistry:
     at load, so no new camera can inherit it.
 
     ``on_names`` hears the whole :class:`NamesMessage` now and on every change of a
-    name (the gateway hands it to ``/viewer``); ``on_forget`` hears the board id of
+    name or camera (the gateway hands it to ``/viewer``); ``on_forget`` hears the board id of
     each forgotten camera (the gateway frees that board's read state);
     ``on_full_frame`` hears each full frame Auto-frame asked for (the gateway locates
     the board in it and answers with :meth:`autoframe_result`); ``on_preview`` hears
@@ -174,7 +175,7 @@ class CameraRegistry:
     ) -> None:
         self._path = config_path()
         saved = Saved() if self._path is None else load_state(self._path)
-        held = set(saved.cameras.values())
+        held = set(saved.names)
         orphans = sorted(set(saved.boards) - held)
         if orphans:
             log.info(
@@ -186,9 +187,7 @@ class CameraRegistry:
             for board_id, config in saved.boards.items()
             if board_id in held
         }
-        #: device id -> board id, one board id per camera, for good (persisted).
-        self._cameras: dict[str, str] = dict(saved.cameras)
-        #: device id -> its name, for the named cameras (persisted).
+        #: device id (= board id) -> its name, one entry per known camera (persisted).
         self._names: dict[str, str] = dict(saved.names)
         #: device id -> its one open socket.
         self._phones: dict[str, PhoneLink] = {}
@@ -213,16 +212,12 @@ class CameraRegistry:
         board = self._boards.get(board_id)
         return DEFAULT_RULES if board is None else board.config.rules
 
-    def board_of(self, device_id: str) -> str | None:
-        """The board id ``device_id`` streams as; ``None`` for a device never seen."""
-        return self._cameras.get(device_id)
-
-    def _holder(self, board_id: str) -> str | None:
-        return next((d for d, b in self._cameras.items() if b == board_id), None)
+    def name_of(self, device_id: str) -> str | None:
+        """What ``device_id``'s camera is called; ``None`` for a device not known."""
+        return self._names.get(device_id)
 
     def _phone_on(self, board_id: str) -> PhoneLink | None:
-        holder = self._holder(board_id)
-        return None if holder is None else self._phones.get(holder)
+        return self._phones.get(board_id)
 
     def _state(self, board_id: str) -> StateMessage:
         board = self.board(board_id)
@@ -255,90 +250,89 @@ class CameraRegistry:
 
     # ---- naming the cameras ------------------------------------------------------
 
-    def _free_board_id(self) -> str:
-        """The lowest ``board-N`` no camera holds, none is named, and no config sits under."""
-        taken = set(self._cameras.values()) | set(self._names.values())
-        for n in count(1):
-            board_id = f"{AUTO_BOARD_PREFIX}{n}"
-            board = self._boards.get(board_id)
-            if board_id not in taken and (board is None or board.config == CameraConfig()):
-                return board_id
-        raise AssertionError("unreachable")
+    def _taken(self, device_id: str) -> set[str]:
+        """What no other camera than ``device_id`` may be called: the others' names
+        and board ids."""
+        others = {other: name for other, name in self._names.items() if other != device_id}
+        return set(others) | set(others.values())
+
+    def _default_name(self, device_id: str) -> str:
+        """The lowest ``board-N`` no other camera is called."""
+        taken = self._taken(device_id)
+        return next(
+            name for n in count(1) if (name := f"{DEFAULT_NAME_PREFIX}{n}") not in taken
+        )
 
     def label(self, board_id: str) -> str:
         """What people call ``board_id``: its camera's name, or the id itself."""
-        holder = self._holder(board_id)
-        return board_id if holder is None else self._names.get(holder, board_id)
+        return self._names.get(board_id, board_id)
 
     def names(self) -> NamesMessage:
-        """Every named camera's name, by board id, in board id order."""
-        named = sorted(
-            (BoardName(self._cameras[device_id], name) for device_id, name in self._names.items()),
-            key=lambda entry: _natural(entry.board_id),
+        """Every camera's name, by board id, in name order."""
+        return NamesMessage(
+            names=tuple(
+                BoardName(device_id, name)
+                for device_id, name in sorted(self._names.items(), key=lambda kv: _natural(kv[1]))
+            )
         )
-        return NamesMessage(names=tuple(named))
 
     def _announce_names(self) -> None:
         if self._on_names is not None:
             self._on_names(self.names())
 
     def rename(self, device_id: str, name: str | None) -> None:
-        """Give a known camera a name (``None``, or its own board id, clears it).
+        """Give a known camera a name; ``None`` gives it a default name again (the
+        lowest ``board-N`` no other camera is called).
 
         Only the alias changes: the board id, its config, its events and recordings
         stay. Refused (``ValueError``) for an unknown device, a name that is no
         :data:`CameraName`, or one another camera has as its name or board id.
         """
-        board_id = self._cameras.get(device_id)
-        if board_id is None:
+        current = self._names.get(device_id)
+        if current is None:
             raise ValueError(f"no camera {device_id[:8]} is known")
-        wanted = None if name is None or name == board_id else camera_name(name)
-        if wanted is not None:
-            for other, other_board in self._cameras.items():
-                if other != device_id and wanted in (other_board, self._names.get(other)):
-                    raise ValueError(f"{wanted} is taken by camera {self.label(other_board)}")
-        if wanted == self._names.get(device_id):
+        wanted = self._default_name(device_id) if name is None else camera_name(name)
+        if wanted in self._taken(device_id):
+            holder = next(d for d, n in self._names.items() if wanted in (d, n))
+            raise ValueError(f"{wanted} is taken by camera {self.label(holder)}")
+        if wanted == current:
             return
-        if wanted is None:
-            del self._names[device_id]
-        else:
-            self._names[device_id] = wanted
+        self._names[device_id] = wanted
         self._save()
         phone = self._phones.get(device_id)
         if phone is not None:
-            phone.mailbox.post(AssignedMessage(board_id, wanted))
+            phone.mailbox.post(AssignedMessage(device_id, wanted))
         self._tell_lists()
         self._announce_names()
 
     def forget(self, device_id: str) -> None:
-        """Drop a disconnected camera: its board id, name and config; the id is free.
+        """Drop a disconnected camera: its name and config.
 
         The board's control pages stay open on a board with the default config. A
-        device that comes back is a new camera and gets the lowest free ``board-N``.
-        Refused (``ValueError``) for an unknown device or a connected one: a
-        connected phone would only be handed a new board id at once.
+        device that comes back is a new camera under the same board id, with the
+        default config and a new default name. Refused (``ValueError``) for an
+        unknown device or a connected one: a connected phone would only be known
+        again at once.
         """
-        board_id = self._cameras.get(device_id)
-        if board_id is None:
+        if device_id not in self._names:
             raise ValueError(f"no camera {device_id[:8]} is known")
         if device_id in self._phones:
             raise ValueError(
-                f"camera {self.label(board_id)} is connected: close its /camera page, "
+                f"camera {self.label(device_id)} is connected: close its /camera page, "
                 "then forget it"
             )
-        del self._cameras[device_id]
-        named = self._names.pop(device_id, None) is not None
+        name = self._names.pop(device_id)
+        board_id = device_id
         watchers = self.board(board_id).watchers
         if watchers:
             self._boards[board_id] = BoardCamera(watchers=watchers)
         else:
             del self._boards[board_id]
         self._save()
-        log.info("forgot camera %s and its board %s", device_id[:8], board_id)
+        log.info("forgot camera %s (%s)", name, device_id[:8])
         self._tell_watchers(board_id)
         self._tell_lists()
-        if named:
-            self._announce_names()
+        self._announce_names()
         if self._on_forget is not None:
             self._on_forget(board_id)
 
@@ -347,25 +341,26 @@ class CameraRegistry:
     def ingest_refusal(self, board_id: str, device_id: str | None) -> str | None:
         """Why ``/ingest`` must refuse a frame under ``board_id`` from ``device_id``.
 
-        ``None`` accepts it. A board id a camera holds takes frames from that camera
-        only. A frame from a device the node does not know (forgotten, or one that
-        never opened its control socket) is refused, because its board id was never
-        handed to it. An edge without a device id (``board-reader-edge feed``, a
-        replayed recording) may stream under any board id no camera holds.
+        ``None`` accepts it. A camera's board id (its device id) takes frames from
+        that camera only. A frame from a device the node does not know (forgotten, or
+        one that never opened its control socket) is refused, because its board id
+        was never handed to it. An edge without a device id (``board-reader-edge
+        feed``, a replayed recording) may stream under any board id no camera holds.
         """
-        holder = self._holder(board_id)
         if device_id is None:
-            if holder is None:
+            if board_id not in self._names:
                 return None
             return (
-                f"board {board_id} belongs to camera {self.label(board_id)}; an edge "
+                f"board {board_id[:8]} belongs to camera {self.label(board_id)}; an edge "
                 "without a device id may stream only under a board id no camera holds"
             )
-        own = self._cameras.get(device_id)
-        if own is None:
+        if device_id not in self._names:
             return f"camera {device_id[:8]} is not known to the node (forgotten?): reload /camera"
-        if own != board_id:
-            return f"camera {device_id[:8]} streams as {own}, not {board_id}: reload /camera"
+        if device_id != board_id:
+            return (
+                f"camera {self.label(device_id)} streams as its device id, not {board_id}: "
+                "reload /camera"
+            )
         return None
 
     # ---- the phone ---------------------------------------------------------------
@@ -373,19 +368,21 @@ class CameraRegistry:
     def connect_phone(self, device_id: str) -> PhoneLink:
         """Open ``device_id``'s socket; a socket it already had is replaced.
 
-        A device seen for the first time gets the lowest free ``board-N``, for good.
+        A device seen for the first time is a new camera: it gets the default name
+        (the lowest ``board-N`` no other camera is called).
         """
         previous = self._phones.get(device_id)
         if previous is not None:
             previous.mailbox.post(ReplacedMessage())
         link = PhoneLink(device_id)
         self._phones[device_id] = link
-        if device_id not in self._cameras:
-            self._cameras[device_id] = self._free_board_id()
+        board_id = device_id
+        if device_id not in self._names:
+            self._names[device_id] = self._default_name(device_id)
             self._save()
-        board_id = self._cameras[device_id]
+            self._announce_names()
         board = self.board(board_id)
-        link.mailbox.post(AssignedMessage(board_id, self._names.get(device_id)))
+        link.mailbox.post(AssignedMessage(board_id, self._names[device_id]))
         link.mailbox.post(ConfigMessage(board.config))
         board.previews = self._previews_wanted(board)
         link.mailbox.post(PreviewsMessage(on=board.previews))
@@ -401,7 +398,7 @@ class CameraRegistry:
         if not self._current(link):
             return  # replaced: the newer socket is the device's now
         del self._phones[link.device_id]
-        board_id = self._cameras[link.device_id]
+        board_id = link.device_id
         self._tell_watchers(board_id)
         self._tell_lists()
         self._step(board_id, Disconnected())
@@ -409,7 +406,7 @@ class CameraRegistry:
     def report(self, link: PhoneLink, report: CameraReport) -> None:
         if not self._current(link):
             return
-        board_id = self._cameras[link.device_id]
+        board_id = link.device_id
         board = self.board(board_id)
         before, board.report = board.report, report
         self._tell_watchers(board_id)
@@ -429,7 +426,7 @@ class CameraRegistry:
             raise ValueError(f"full frame larger than {MAX_FULL_FRAME_BYTES} bytes")
         if not self._current(link):
             return
-        board_id = self._cameras[link.device_id]
+        board_id = link.device_id
         inflight = self.board(board_id).autoframe.inflight
         if inflight is None or inflight.request != header.request:
             log.info("board %s: dropping full frame %d, not the one asked for", board_id, header.request)
@@ -440,7 +437,7 @@ class CameraRegistry:
     def preview(self, link: PhoneLink, preview: PreviewMessage) -> None:
         if not self._current(link):
             return
-        board_id = self._cameras[link.device_id]
+        board_id = link.device_id
         board = self.board(board_id)
         board.preview = preview
         self._tell_watchers(board_id, preview)
@@ -464,19 +461,17 @@ class CameraRegistry:
         self._lists.discard(changed)
 
     def cameras(self, frame_age: Callable[[str], float | None]) -> CamerasMessage:
-        """Every known camera, ordered by board id; ``frame_age`` reads a board's."""
+        """Every known camera, ordered by name; ``frame_age`` reads a board's."""
         entries = []
-        for device_id, board_id in sorted(self._cameras.items(), key=lambda kv: _natural(kv[1])):
-            board = self._boards.get(board_id)
-            phone = self._phones.get(device_id)
+        for device_id, name in sorted(self._names.items(), key=lambda kv: _natural(kv[1])):
+            board = self._boards.get(device_id)
             entries.append(
                 CameraEntry(
                     device_id=device_id,
-                    board_id=board_id,
-                    name=self._names.get(device_id),
-                    connected=phone is not None,
+                    name=name,
+                    connected=device_id in self._phones,
                     report=None if board is None else board.report,
-                    frame_age_s=frame_age(board_id),
+                    frame_age_s=frame_age(device_id),
                 )
             )
         return CamerasMessage(cameras=tuple(entries))
@@ -531,7 +526,7 @@ class CameraRegistry:
         """What the gateway found in a full frame of ``board_id``; returns the reads
         to publish (none, or Auto-frame's last read when it saw the board large
         enough). Nothing for a board forgotten meanwhile."""
-        if self._holder(board_id) is None:
+        if board_id not in self._names:
             return []
         return self._step(board_id, result)
 
@@ -548,7 +543,7 @@ class CameraRegistry:
         it (``None``: no trusted board); ``aspect`` is the preview's width over its
         height."""
         camera = self._boards.get(board_id)
-        if camera is None or self._holder(board_id) is None:
+        if camera is None or board_id not in self._names:
             return  # forgotten meanwhile
         camera.locating_preview = False
         self._step(board_id, PreviewLocated(board, aspect))
@@ -609,7 +604,7 @@ class CameraRegistry:
             if board.config != CameraConfig()
         }
         try:
-            save_state(self._path, Saved(configured, dict(self._cameras), dict(self._names)))
+            save_state(self._path, Saved(configured, dict(self._names)))
         except OSError as e:
             # The state still applies; only the next restart forgets it.
             log.warning("cannot save the camera config to %s: %s", self._path, e)

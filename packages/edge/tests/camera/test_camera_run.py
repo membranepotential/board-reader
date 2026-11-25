@@ -114,7 +114,7 @@ async def _camera_against_a_fake_node() -> None:
 
     async def node(ws: ServerConnection) -> None:
         if ws.request.path.startswith("/cameras/"):
-            await ws.send(AssignedMessage(board_id="board-5").to_json())
+            await ws.send(AssignedMessage(board_id=DEVICE, name="board-5").to_json())
             # Asked before any frame exists: answered with the first one.
             await ws.send(SendFullFrameMessage(request=3).to_json())
             await ws.send(ConfigMessage(CameraConfig(crop=CROP, streaming=True)).to_json())
@@ -161,7 +161,7 @@ async def _camera_against_a_fake_node() -> None:
 
     header = heard["header"]
     assert isinstance(header, dict)
-    assert header["board_id"] == "board-5"
+    assert header["board_id"] == DEVICE
     assert header["device_id"] == DEVICE
     assert heard["frame"] == (240, 160)  # cropped to the middle half
     assert heard["preview"] == (240, 320)  # the whole frame, already under the preview size

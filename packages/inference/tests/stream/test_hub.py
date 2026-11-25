@@ -144,10 +144,14 @@ def test_a_motion_update_reaches_live_subscribers_and_is_never_retained():
     asyncio.run(run())
 
 
+#: A camera's board id: its device id.
+KITCHEN = "kitchen-phone-id"
+
+
 def test_the_names_reach_live_subscribers_and_lead_a_late_ones_snapshot():
     async def run():
         hub = PositionHub()
-        await hub.publish(_event("board-1", 3))
+        await hub.publish(_event(KITCHEN, 3))
         # No camera has a name yet: a new subscriber hears the positions only.
         quiet = hub.subscribe()
         assert isinstance(await asyncio.wait_for(anext(quiet), 1.0), PositionEvent)
@@ -156,7 +160,7 @@ def test_the_names_reach_live_subscribers_and_lead_a_late_ones_snapshot():
         live = hub.subscribe(replay_latest=False)
         pending = asyncio.ensure_future(anext(live))
         await asyncio.sleep(0)
-        names = NamesMessage(names=(BoardName("board-1", "kitchen"),))
+        names = NamesMessage(names=(BoardName(KITCHEN, "kitchen"),))
         hub.set_names(names)
         assert await asyncio.wait_for(pending, 1.0) is names
         await live.aclose()

@@ -33,6 +33,7 @@ from board_reader_core.control import (
     StreamsMessage,
     camera_board_id,
     camera_name,
+    device_id,
     parse_cameras_message,
     parse_control_message,
     parse_phone_message,
@@ -221,15 +222,27 @@ def test_a_preview_carries_its_jpeg_as_base64():
 DEVICE = "kitchen-phone-id"
 
 
-@pytest.mark.parametrize("name", ["board-1", "phone", "left.table_2", "A1"])
+@pytest.mark.parametrize("name", ["board-1", "phone", "left.table_2", "A1", "x" * 64])
 def test_a_camera_board_id_is_one_plain_path_segment(name):
     assert camera_board_id(name) == name
 
 
-@pytest.mark.parametrize("name", ["", "left board", "a/b", "-x", ".hidden", "x" * 33, "brett-ü"])
+@pytest.mark.parametrize("name", ["", "left board", "a/b", "-x", ".hidden", "x" * 65, "brett-ü"])
 def test_a_camera_board_id_refuses_what_a_url_path_would_mangle(name):
-    with pytest.raises(ValueError, match="is not a board id: use up to 32 letters"):
+    with pytest.raises(ValueError, match="is not a board id: use up to 64 letters"):
         camera_board_id(name)
+
+
+@pytest.mark.parametrize("raw", [DEVICE, "Z" * 64, "a-b-c-d-e"])
+def test_every_device_id_is_also_a_camera_board_id(raw):
+    """A camera streams under its device id, so the per-board routes must take it."""
+    assert camera_board_id(device_id(raw)) == raw
+
+
+@pytest.mark.parametrize("raw", ["short", "-starts-with-a-dash", "has.a.dot", "z" * 65])
+def test_a_device_id_starts_with_a_letter_or_digit_and_holds_no_dot(raw):
+    with pytest.raises(ValueError, match="is not a device id"):
+        device_id(raw)
 
 
 @pytest.mark.parametrize("name", ["kitchen", "Board 1", "left.table_2", "-x", "A"])
@@ -256,16 +269,18 @@ def test_the_control_ui_renames_and_forgets_with_typed_messages():
 
 
 def test_the_identity_messages_name_their_type():
-    assert json.loads(AssignedMessage("board-2").to_json()) == {
-        "type": "assigned", "board_id": "board-2", "name": None,
+    assert json.loads(AssignedMessage(DEVICE, "board-2").to_json()) == {
+        "type": "assigned", "board_id": DEVICE, "name": "board-2",
     }
+    with pytest.raises(ValueError):  # a camera's board id is its device id
+        AssignedMessage("board-2", "board-2")
     assert json.loads(ReplacedMessage().to_json()) == {"type": "replaced"}
-    entry = CameraEntry(DEVICE, "board-1", "kitchen", True, None, 0.5)
+    entry = CameraEntry(DEVICE, "kitchen", True, None, 0.5)
     assert json.loads(CamerasMessage(cameras=(entry,)).to_json()) == {
         "type": "cameras",
         "cameras": [
-            {"device_id": DEVICE, "board_id": "board-1", "name": "kitchen", "connected": True,
-             "report": None, "frame_age_s": 0.5},
+            {"device_id": DEVICE, "name": "kitchen", "connected": True, "report": None,
+             "frame_age_s": 0.5},
         ],
     }
 
@@ -309,6 +324,6 @@ def test_the_streams_list_round_trips():
     message = StreamsMessage(streams=(entry,))
     assert json.loads(message.to_json())["streams"][0] == {
         "id": "stream-1", "url": "https://example.com/v", "start_s": 60.0,
-        "state": "running", "device_id": DEVICE, "board_id": "board-3", "error": None,
+        "state": "running", "device_id": DEVICE, "name": "board-3", "error": None,
     }
     assert StreamsMessage.from_dict(json.loads(message.to_json())) == message

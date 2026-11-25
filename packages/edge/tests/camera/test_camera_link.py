@@ -61,7 +61,7 @@ async def _link_against_a_fake_node() -> None:
     async def node(ws: ServerConnection) -> None:
         heard["path"] = ws.request.path
         heard["report"] = json.loads(await ws.recv())
-        await ws.send(AssignedMessage(board_id="board-3").to_json())
+        await ws.send(AssignedMessage(board_id=DEVICE, name="board-3").to_json())
         await ws.send(ConfigMessage(config).to_json())
         await ws.send(PreviewsMessage(on=True).to_json())
         heard["preview"] = await ws.recv()
@@ -86,7 +86,7 @@ async def _link_against_a_fake_node() -> None:
 
     assert heard["path"] == f"/cameras/{DEVICE}"
     assert heard["report"] == {"type": "report", "report": CameraReport().to_dict()}
-    assert assigned == ["board-3"]
+    assert assigned == [DEVICE]
     assert configs == [config]
     assert heard["preview"] == b"jpeg"
     # The header, then its JPEG at once: the node pairs them.

@@ -33,7 +33,7 @@ from pydantic import (
     WithJsonSchema,
 )
 
-from board_reader_core.control import CameraBoardId, CameraName
+from board_reader_core.control import CameraName, DeviceId
 from board_reader_core.wiremodel import (
     BoardId,
     Message,
@@ -502,19 +502,20 @@ NAMES_TYPE = "names"
 
 @wire
 class BoardName(Wire):
-    """One camera's name for its board id."""
+    """One camera's name for its board id (the camera's device id)."""
 
-    board_id: CameraBoardId
+    board_id: DeviceId
     name: CameraName
 
 
 @message
 class NamesMessage(Message):
-    """The cameras' names: every named board, a snapshot (DESIGN D18).
+    """The cameras' names: every camera's board, a snapshot (DESIGN D18).
 
-    A name is an alias people read (``kitchen``); the board id it names stays what
-    every event is keyed by. The node sends this on connect once any camera has a
-    name, and again, whole, on every change; a board not listed shows its id. A list
+    A name is an alias people read (``board-1``, ``kitchen``); the board id it names
+    (the camera's device id) stays what every event is keyed by. The node sends this
+    on connect once any camera is known, and again, whole, on every change; a board
+    not listed (an edge without a device id) shows its id. A list
     rather than an object keyed by board id, because the browser's generated
     validators cannot check an object's keys. Never recorded: names are not part of
     a read.

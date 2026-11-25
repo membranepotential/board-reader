@@ -18,12 +18,12 @@ models, :mod:`.schema`) so neither end trusts the other's JSON:
   frame**, so it survives a resolution change unchanged. Also the Python edge's
   static ``--roi``.
 
-A phone is known by its **device id** (:data:`DeviceId`), a random id it keeps in
-its browser; the node assigns each device a **board id** (:data:`CameraBoardId`),
-``board-1``, ``board-2``, ..., once, and keeps the pair across restarts. The board id
-never changes: it is what the phone's frames name on ``/ingest``, what every event,
-recording and per-board socket below is keyed by. The control UI may give a camera a
-**name** (:data:`CameraName`), an alias people read; it renames nothing.
+A phone is known by its **device id** (:data:`DeviceId`), a random id (a UUID) it
+keeps in its browser, and a camera's **board id** is its device id: what the phone's
+frames name on ``/ingest``, what every event, recording and per-board socket below is
+keyed by. It never changes. Each camera also has a **name** (:data:`CameraName`), an
+alias people read: the node names a new camera ``board-N``, the lowest N no other
+camera's name uses, and the control UI may rename it; a rename changes nothing else.
 
 They travel on four WebSockets. Every text message is a JSON object whose ``type``
 names it:
@@ -480,19 +480,24 @@ ControlDown = Annotated[
 
 # ---- camera identity and the list of cameras ----------------------------------
 
-#: A phone's own id: random, made and kept by its browser (``crypto.randomUUID``).
-DeviceId = Annotated[StrictStr, Field(pattern=r"^[0-9A-Za-z-]{8,64}$")]
+#: A phone's own id: random, made and kept by its browser (``crypto.randomUUID``), and
+#: the board id the camera streams as. 8 to 64 letters, digits or ``-``, starting with
+#: a letter or a digit, so every device id is also a :data:`CameraBoardId`.
+DeviceId = Annotated[StrictStr, Field(pattern=r"^[0-9A-Za-z][0-9A-Za-z-]{7,63}$")]
 
-#: A board id a camera may stream as: a :data:`BoardId` that is also one plain URL
-#: path segment (letters, digits, ``.``, ``_``, ``-``; up to 32), because every
-#: per-board route (``/boards/{id}/control``, ``/boards/{id}/frame``) carries it.
+#: A board id a control page may open: a :data:`BoardId` that is also one plain URL
+#: path segment (letters, digits, ``.``, ``_``, ``-``; up to 64), because every
+#: per-board route (``/boards/{id}/control``, ``/boards/{id}/frame``) carries it. A
+#: camera's board id is its :data:`DeviceId`; an edge without a device id
+#: (``board-reader-edge feed --board X``) names its own.
 CameraBoardId = Annotated[
-    BoardId, Field(max_length=32, pattern=r"^[0-9A-Za-z][0-9A-Za-z._-]*$")
+    BoardId, Field(max_length=64, pattern=r"^[0-9A-Za-z][0-9A-Za-z._-]*$")
 ]
 
 
 #: What people call a camera (DESIGN D18): an alias for its board id, shown on the live
-#: page, on /control and in the PGN. Not part of any route, so it may hold spaces:
+#: page, on /control and in the PGN. A new camera gets ``board-N`` (the lowest N no
+#: other camera's name uses). Not part of any route, so it may hold spaces:
 #: up to 32 letters, digits, spaces, ``.``, ``_`` or ``-``, starting and ending with
 #: no space. ASCII only, because the same pattern must judge alike in Python and in
 #: the browser (no Unicode classes there).
@@ -520,7 +525,7 @@ def camera_board_id(name: str) -> str:
         return adapter(CameraBoardId).validate_python(name)
     except ValidationError:
         raise ValueError(
-            f"{name!r} is not a board id: use up to 32 letters, digits, '.', '_' or '-', "
+            f"{name!r} is not a board id: use up to 64 letters, digits, '.', '_' or '-', "
             "starting with a letter or a digit"
         ) from None
 
@@ -538,14 +543,14 @@ def camera_name(name: str) -> str:
 
 @message
 class AssignedMessage(Message):
-    """Node -> phone: the board id this phone streams as, and its name if it has one.
+    """Node -> phone: the board id this phone streams as (its device id), and its name.
 
     The board id is the device's for good; ``name`` changes when /control renames it.
     """
 
     type: Literal["assigned"] = tag("assigned")
-    board_id: CameraBoardId
-    name: CameraName | None = None
+    board_id: DeviceId
+    name: CameraName
 
 
 @message
@@ -563,14 +568,13 @@ class ReplacedMessage(Message):
 class CameraEntry(Wire):
     """One known camera, as the control UI lists it.
 
-    ``name`` is its alias (``None`` shows the board id); ``report`` the phone's last
-    report (kept after it disconnects); ``frame_age_s`` the seconds since its board's
-    last frame, on the node's clock.
+    ``device_id`` is also its board id; ``name`` what people call it; ``report`` the
+    phone's last report (kept after it disconnects); ``frame_age_s`` the seconds since
+    its board's last frame, on the node's clock.
     """
 
     device_id: DeviceId
-    board_id: CameraBoardId
-    name: CameraName | None
+    name: CameraName
     connected: StrictBool
     report: CameraReport | None
     frame_age_s: NonNegative | None
@@ -578,7 +582,7 @@ class CameraEntry(Wire):
 
 @message
 class CamerasMessage(Message):
-    """Node -> control UI: every known camera, ordered by board id."""
+    """Node -> control UI: every known camera, ordered by name."""
 
     type: Literal["cameras"] = tag("cameras")
     cameras: tuple[CameraEntry, ...]
@@ -586,7 +590,8 @@ class CamerasMessage(Message):
 
 @message
 class RenameMessage(Message):
-    """Control UI -> node: give this device's camera a name; ``None`` clears it.
+    """Control UI -> node: give this device's camera a name; ``None`` gives it a
+    default name again (the lowest free ``board-N``).
 
     The board id stays. ``name`` is checked by the node (:data:`CameraName`, not
     another camera's name or board id), which refuses with a reason an operator can
@@ -600,10 +605,10 @@ class RenameMessage(Message):
 
 @message
 class ForgetMessage(Message):
-    """Control UI -> node: forget this disconnected camera, its board id and config.
+    """Control UI -> node: forget this disconnected camera, its name and config.
 
     Refused while the camera is connected. The device, if it comes back, is a new
-    camera and gets a new board id.
+    camera under the same board id, with the defaults and a new default name.
     """
 
     type: Literal["forget"] = tag("forget")
@@ -661,7 +666,7 @@ class StreamEntry(Wire):
 
     ``start_s`` is a video's start position in seconds (``None``: the beginning, and
     the only choice for a live stream); ``device_id`` the camera the stream registers
-    as; ``board_id`` the board id the node assigned it (``None`` until it first
+    as (and so its board id); ``name`` that camera's name (``None`` until it first
     registered); ``error`` why it last exited or could not start.
     """
 
@@ -670,7 +675,7 @@ class StreamEntry(Wire):
     start_s: NonNegative | None
     state: StreamState
     device_id: DeviceId
-    board_id: CameraBoardId | None
+    name: CameraName | None
     error: Text | None
 
 
@@ -685,8 +690,8 @@ class AddStreamMessage(Message):
 
 @message
 class RemoveStreamMessage(Message):
-    """Control UI -> node: stop this stream and forget its camera (its board id is
-    free again)."""
+    """Control UI -> node: stop this stream and forget its camera (its name and
+    config)."""
 
     type: Literal["remove_stream"] = tag("remove_stream")
     stream_id: StreamId

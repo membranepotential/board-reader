@@ -20,7 +20,8 @@ from board_reader_inference.server import create_app
 from board_reader_inference.stream.hub import PositionHub
 
 PHONE = "kitchen-phone-id"
-STALE = "garden-phone-id"
+OTHER = "garden-phone-id"
+STALE = "stale-page-id"
 
 
 def _client() -> TestClient:
@@ -51,24 +52,30 @@ def test_a_cameras_board_takes_its_frames_only_and_healthz_counts_the_rest():
     with (
         _client() as client,
         client.websocket_connect(f"/cameras/{PHONE}") as phone,
+        client.websocket_connect(f"/cameras/{OTHER}") as other,
         client.websocket_connect("/ingest") as ingest,
     ):
-        assert _assigned(phone) == "board-1"
-        assert _send(ingest, "board-1", PHONE, 0) == {"ack": 0, "board_id": "board-1"}
-        # A page of a device the node does not know, still streaming as board-1.
-        stale = _send(ingest, "board-1", STALE, 1)
-        assert stale == {
-            "error": "refused frame: camera garden-p is not known to the node "
+        assert (_assigned(phone), _assigned(other)) == (PHONE, OTHER)
+        assert _send(ingest, PHONE, PHONE, 0) == {"ack": 0, "board_id": PHONE}
+        # A known camera under another camera's board id.
+        assert _send(ingest, PHONE, OTHER, 1) == {
+            "error": "refused frame: camera board-2 streams as its device id, not "
+            "kitchen-phone-id: reload /camera"
+        }
+        # A page of a device the node does not know.
+        assert _send(ingest, STALE, STALE, 2) == {
+            "error": "refused frame: camera stale-pa is not known to the node "
             "(forgotten?): reload /camera"
         }
-        # An edge without a device id: refused on a camera's board, taken elsewhere.
-        assert _send(ingest, "board-1", None, 2)["error"].startswith(
-            "refused frame: board board-1 belongs to camera board-1"
+        # An edge without a device id: refused on a camera's board, taken elsewhere,
+        # under a camera's name too (a name is no board id).
+        assert _send(ingest, PHONE, None, 3)["error"].startswith(
+            "refused frame: board kitchen- belongs to camera board-1"
         )
-        assert _send(ingest, "feed", None, 3) == {"ack": 3, "board_id": "feed"}
+        assert _send(ingest, "board-1", None, 4) == {"ack": 4, "board_id": "board-1"}
 
         counters = client.get("/healthz").json()["ingest"]
-        assert (counters["not_owned"], counters["refused"], counters["received"]) == (2, 2, 2)
+        assert (counters["not_owned"], counters["refused"], counters["received"]) == (3, 3, 2)
 
 
 def test_the_live_page_hears_a_rename_as_names_and_a_late_viewer_hears_them_first():
@@ -77,12 +84,16 @@ def test_the_live_page_hears_a_rename_as_names_and_a_late_viewer_hears_them_firs
         client.websocket_connect(f"/cameras/{PHONE}") as phone,
         client.websocket_connect("/cameras") as cameras,
     ):
-        assert _assigned(phone) == "board-1"
+        assert _assigned(phone) == PHONE
         with client.websocket_connect("/viewer") as viewer:
+            # A known camera has its default name from the start.
+            assert parse_viewer_message(viewer.receive_text()).to_dict() == {
+                "type": "names", "names": [{"board_id": PHONE, "name": "board-1"}],
+            }
             cameras.send_text(json.dumps({"type": "rename", "device_id": PHONE, "name": "kitchen"}))
             heard = parse_viewer_message(viewer.receive_text())
             assert heard.to_dict() == {
-                "type": "names", "names": [{"board_id": "board-1", "name": "kitchen"}],
+                "type": "names", "names": [{"board_id": PHONE, "name": "kitchen"}],
             }
         with client.websocket_connect("/viewer") as late:
             assert parse_viewer_message(late.receive_text()) == heard

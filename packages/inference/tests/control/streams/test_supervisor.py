@@ -77,7 +77,7 @@ def test_a_stream_runs_the_edge_camera_command_and_stops_without_orphans(tmp_pat
         await until(pids.exists, "the fake edge started")
         edge, grandchild = (int(p) for p in pids.read_text().split())
         [entry] = streams.streams().streams
-        assert (entry.id, entry.state, entry.board_id) == (stream_id, "starting", None)
+        assert (entry.id, entry.state, entry.name) == (stream_id, "starting", None)
         assert runs(tmp_path, stream_id) == [[
             "camera", "https://video.test/sleep", "--node", NODE,
             "--state", str(state_file(tmp_path, stream_id)), "--start", "3600.0",
@@ -168,12 +168,12 @@ def test_removing_a_stream_stops_it_and_forgets_its_camera(tmp_path):
         # The edge registers on /cameras/{device_id}; here the test does it for it.
         link = registry.connect_phone(device_id)
         assert streams.streams().streams[0].state == "running"
-        assert streams.streams().streams[0].board_id == "board-1"
+        assert streams.streams().streams[0].name == "board-1"
         streams.remove(stream_id)
         assert streams.streams().streams == ()
         await until(lambda: not alive(edge), "the process stopped")
         registry.disconnect_phone(link)  # its socket closes with the process
-        await until(lambda: registry.board_of(device_id) is None, "the camera forgotten")
+        await until(lambda: registry.name_of(device_id) is None, "the camera forgotten")
         assert not state_file(tmp_path, stream_id).exists()
         await streams.stop()
 

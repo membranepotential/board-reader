@@ -4,8 +4,9 @@ watches, restarts and stops (DESIGN D22).
 /control adds a video or live stream by URL (``add_stream``). The supervisor gives it
 a stream id and a device id of its own, keeps both (:mod:`.store`) and starts the
 edge's ``camera`` command on it (:mod:`.command`), pointed at this node. The process
-registers on ``/cameras/{device_id}`` like any camera, so the registry assigns it a
-board id and Auto-frame frames it; the supervisor only runs it:
+registers on ``/cameras/{device_id}`` like any camera, so it streams under its device
+id as its board id, the registry names it and Auto-frame frames it; the supervisor
+only runs it:
 
 * its output lines go to the node's log, each prefixed with the stream id;
 * one that exits with an error is started again after a delay that doubles with each
@@ -14,10 +15,10 @@ board id and Auto-frame frames it; the supervisor only runs it:
   (a video that ended) stays stopped;
 * removing a stream (``remove_stream``) stops its process and forgets its camera
   (:meth:`~board_reader_inference.control.camera.registry.CameraRegistry.forget`), so
-  its board id is free again;
+  its name and config are dropped;
 * the node's shutdown stops every process (SIGTERM to its process group, SIGKILL
   after :data:`GRACE_S`) and keeps the cameras, which the next start runs again
-  under the same device ids, so they get their board ids back.
+  under the same device ids, so they stream under the same board ids and names.
 
 Every process runs in a session of its own, so a Ctrl-C on the node's terminal
 reaches the node only, and the stop signal reaches whatever the edge started too.
@@ -83,7 +84,7 @@ BACKOFF = Backoff()
 class Cameras(Protocol):
     """What the supervisor needs of the camera registry."""
 
-    def board_of(self, device_id: str) -> str | None: ...
+    def name_of(self, device_id: str) -> str | None: ...
 
     def cameras(self, frame_age: Callable[[str], float | None]) -> CamerasMessage: ...
 
@@ -196,7 +197,7 @@ class StreamSupervisor:
         task.add_done_callback(self._teardowns.discard)
 
     def streams(self) -> StreamsMessage:
-        """Every stream, in the order added, with its camera's board id once known."""
+        """Every stream, in the order added, with its camera's name once known."""
         connected = {
             entry.device_id for entry in self._cameras.cameras(_no_age).cameras if entry.connected
         }
@@ -208,7 +209,7 @@ class StreamSupervisor:
                     start_s=stream.record.start_s,
                     state=_state(stream.phase, stream.record.device_id in connected),
                     device_id=stream.record.device_id,
-                    board_id=self._cameras.board_of(stream.record.device_id),
+                    name=self._cameras.name_of(stream.record.device_id),
                     error=stream.error,
                 )
                 for stream in self._streams.values()
@@ -289,7 +290,7 @@ class StreamSupervisor:
     async def _forget(self, device_id: str) -> None:
         """Forget the camera once its socket is closed (the registry refuses a
         connected one); a camera that never registered has nothing to forget."""
-        if self._cameras.board_of(device_id) is None:
+        if self._cameras.name_of(device_id) is None:
             return
         deadline = self._clock() + FORGET_WAIT_S
         while any(

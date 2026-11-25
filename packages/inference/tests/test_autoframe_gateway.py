@@ -23,8 +23,11 @@ from board_reader_inference.server import create_app
 from board_reader_inference.stream.hub import PositionHub
 
 # Non-hex letters on purpose: test_commit_refs reads 8+ hex characters as a commit.
-CAMERA = "/cameras/kitchen-phone-id"
-CONTROL = "/boards/board-1/control"
+PHONE = "kitchen-phone-id"
+CAMERA = f"/cameras/{PHONE}"
+#: A camera's board id is its device id.
+BOARD = f"/boards/{PHONE}"
+CONTROL = f"{BOARD}/control"
 FULL_FRAME = encode_jpeg(np.zeros((540, 960, 3), np.uint8))
 
 
@@ -76,7 +79,7 @@ def test_a_new_camera_is_framed_by_the_node_and_its_read_published(gateway, drai
 
         # The last read saw the board at 60 % of its width: a position read.
         drain_ingest(client)
-        event = client.get("/boards/board-1").json()
+        event = client.get(BOARD).json()
         assert event["placement"] == START_PLACEMENT
         # Framed on a board this large, the node watches the previews for a move,
         # with no control page open.
@@ -97,7 +100,7 @@ def test_a_full_frame_without_a_board_says_so_on_control(gateway):
         _send_full_frame(phone)
         # The stub reports no grid: no board, a retry waits.
         _until(control, "state", lambda m: m["autoframe"] == "no-board")
-        assert client.get("/boards/board-1").status_code == 404
+        assert client.get(BOARD).status_code == 404
 
 
 def test_a_forgotten_camera_leaves_no_position_behind(gateway, drain_ingest):
@@ -106,16 +109,17 @@ def test_a_forgotten_camera_leaves_no_position_behind(gateway, drain_ingest):
         _send_full_frame(phone)
         _until(phone, "config", lambda m: m["config"]["crop"] is not None)
         drain_ingest(client)
-    assert client.get("/boards/board-1").status_code == 200
+    assert client.get(BOARD).status_code == 200
     with client.websocket_connect("/cameras") as cameras:
         # Until the list hears the phone leave, a forget is refused.
         while _until(cameras, "cameras")["cameras"][0]["connected"]:
             pass
-        cameras.send_text(json.dumps({"type": "forget", "device_id": "kitchen-phone-id"}))
+        cameras.send_text(json.dumps({"type": "forget", "device_id": PHONE}))
         while _until(cameras, "cameras")["cameras"]:
             pass
-    # Its board id goes to the next new camera, which must not open on this position.
-    assert client.get("/boards/board-1").status_code == 404
+    # Should the device come back, it is a new camera and must not open on this
+    # position; nor may the live page keep showing a camera that is gone.
+    assert client.get(BOARD).status_code == 404
 
 
 class FailingRecognizer(FramingRecognizer):

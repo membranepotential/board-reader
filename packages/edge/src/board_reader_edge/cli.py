@@ -16,8 +16,8 @@ inference node. The edge and inference processes meet only on the wire.
 
 ``feed`` streams a fixed source under a fixed ``--board`` with a static ``--roi`` and
 no control channel (scripts, tests, replays). ``camera`` is a camera like the phone:
-it registers on the node's control channel by its device id, streams under the board
-id the node assigns, and takes its crop and streaming on/off from ``/control``.
+it registers on the node's control channel by its device id, streams under that id
+as its board id, and takes its crop and streaming on/off from ``/control``.
 """
 
 from __future__ import annotations

@@ -314,9 +314,9 @@ def test_viewer_messages_parse_by_their_type():
         "ts": 1_700_000_000.25,
     }
     assert parse_viewer_message(motion.to_json()) == motion
-    names = NamesMessage(names=(BoardName("board-2", "kitchen table"),))
+    names = NamesMessage(names=(BoardName("kitchen-phone-id", "kitchen table"),))
     assert names.to_dict() == {
-        "type": "names", "names": [{"board_id": "board-2", "name": "kitchen table"}],
+        "type": "names", "names": [{"board_id": "kitchen-phone-id", "name": "kitchen table"}],
     }
     assert parse_viewer_message(names.to_json()) == names
     with pytest.raises(ValueError, match="unknown /viewer message type"):

@@ -80,9 +80,9 @@ class PositionHub:
     def forget(self, board_id: str) -> None:
         """Drop ``board_id``'s retained event, so no new subscriber is shown it.
 
-        For a camera /control forgot: its board id goes to the next new camera,
-        which must not open under the old one's last position. Synchronous, like
-        :meth:`broadcast`.
+        For a camera /control forgot: a forgotten camera leaves the live page, and
+        should the device come back, it is a new camera that must not open under its
+        last position. Synchronous, like :meth:`broadcast`.
         """
         self._latest.pop(board_id, None)
 

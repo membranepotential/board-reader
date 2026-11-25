@@ -76,14 +76,14 @@ def _hello(phone: WebSocketTestSession) -> str:
 def test_a_config_set_on_control_is_pushed_to_the_phone():
     with _client() as client, client.websocket_connect(CAMERA) as phone:
         assert json.loads(phone.receive_text()) == {
-            "type": "assigned", "board_id": "board-1", "name": None,
+            "type": "assigned", "board_id": PHONE, "name": "board-1",
         }
         assert json.loads(phone.receive_text())["type"] == "config"
         assert json.loads(phone.receive_text()) == {"type": "previews", "on": False}
         assert json.loads(phone.receive_text()) == {"type": "send_full_frame", "request": 0}
         phone.send_text(json.dumps({"type": "report", "report": REPORT}))
 
-        with client.websocket_connect("/boards/board-1/control") as control:
+        with client.websocket_connect(f"/boards/{PHONE}/control") as control:
             state = _until(control, "state")
             assert state["report"] == REPORT
             assert state["phone_connected"] is True
@@ -100,13 +100,13 @@ def test_a_config_set_on_control_is_pushed_to_the_phone():
 def test_a_reconnecting_phone_hears_its_board_and_config_again():
     with _client() as client:
         with client.websocket_connect(CAMERA) as phone:
-            assert _hello(phone) == "board-1"
-        with client.websocket_connect("/boards/board-1/control") as control:
+            assert _hello(phone) == PHONE
+        with client.websocket_connect(f"/boards/{PHONE}/control") as control:
             control.send_text(json.dumps({"type": "configure", "config": CONFIG}))
             _until(control, "state")
         with client.websocket_connect(CAMERA) as phone:
             assert json.loads(phone.receive_text()) == {
-                "type": "assigned", "board_id": "board-1", "name": None,
+                "type": "assigned", "board_id": PHONE, "name": "board-1",
             }
             assert json.loads(phone.receive_text()) == {"type": "config", "config": SENT_CONFIG}
 
@@ -115,7 +115,7 @@ def test_a_second_page_of_one_phone_takes_over_and_the_first_is_closed():
     with _client() as client, client.websocket_connect(CAMERA) as first:
         _hello(first)
         with client.websocket_connect(CAMERA) as second:
-            assert _hello(second) == "board-1"
+            assert _hello(second) == PHONE
             assert json.loads(first.receive_text()) == {"type": "replaced"}
             with pytest.raises(WebSocketDisconnect):
                 first.receive_text()
@@ -128,12 +128,12 @@ def test_the_camera_list_shows_each_phone_renames_and_forgets_it():
             listed = _until(cameras, "cameras")["cameras"]
             while not listed:  # the first list may predate the phone
                 listed = _until(cameras, "cameras")["cameras"]
-            assert listed == [{"device_id": PHONE, "board_id": "board-1", "name": None,
-                               "connected": True, "report": None, "frame_age_s": None}]
+            assert listed == [{"device_id": PHONE, "name": "board-1", "connected": True,
+                               "report": None, "frame_age_s": None}]
 
             cameras.send_text(json.dumps({"type": "rename", "device_id": PHONE, "name": "left"}))
             assert json.loads(phone.receive_text()) == {
-                "type": "assigned", "board_id": "board-1", "name": "left",
+                "type": "assigned", "board_id": PHONE, "name": "left",
             }
             cameras.send_text(json.dumps({"type": "rename", "device_id": PHONE, "name": "a/b"}))
             assert "is not a camera name" in _until(cameras, "refused")["reason"]
@@ -162,7 +162,7 @@ def test_a_phone_without_a_device_id_is_refused_and_an_outdated_page_told_to_rel
 def test_the_phones_preview_reaches_the_control_page():
     jpeg = encode_jpeg(render_board()[:120, :200])
     with (
-        _client() as client, client.websocket_connect("/boards/board-1/control") as control,
+        _client() as client, client.websocket_connect(f"/boards/{PHONE}/control") as control,
         client.websocket_connect(CAMERA) as phone,
     ):
         _hello(phone)
@@ -183,7 +183,7 @@ def test_a_bad_message_is_refused_and_the_socket_stays():
             }
             phone.send_text(json.dumps({"type": "report", "report": {"ingest": "flying"}}))
             assert json.loads(phone.receive_text())["type"] == "refused"
-        with client.websocket_connect("/boards/board-1/control") as control:
+        with client.websocket_connect(f"/boards/{PHONE}/control") as control:
             bad = {"type": "configure", "config": {"crop": {"x": 0.9, "y": 0, "w": 0.5, "h": 0.5}}}
             control.send_text(json.dumps(bad))
             assert "crop" in _until(control, "refused")["reason"]

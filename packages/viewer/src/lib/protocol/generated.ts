@@ -37,13 +37,13 @@ export const AddStreamMessage = z.strictObject({
 export type AddStreamMessage = Immutable<z.infer<typeof AddStreamMessage>>;
 
 /**
- * Node -> phone: the board id this phone streams as, and its name if it has one.
+ * Node -> phone: the board id this phone streams as (its device id), and its name.
  *
  * The board id is the device's for good; `name` changes when /control renames it.
  */
 export const AssignedMessage = z.strictObject({
-  board_id: z.string().min(1).max(32).regex(/^[0-9A-Za-z][0-9A-Za-z._-]*$/),
-  name: z.string().min(1).max(32).regex(/^[0-9A-Za-z._-]([0-9A-Za-z ._-]*[0-9A-Za-z._-])?$/).nullable(),
+  board_id: z.string().regex(/^[0-9A-Za-z][0-9A-Za-z-]{7,63}$/),
+  name: z.string().min(1).max(32).regex(/^[0-9A-Za-z._-]([0-9A-Za-z ._-]*[0-9A-Za-z._-])?$/),
   type: z.literal('assigned')
 });
 export type AssignedMessage = Immutable<z.infer<typeof AssignedMessage>>;
@@ -66,10 +66,10 @@ export const BoardDirection = z.strictObject({
 export type BoardDirection = Immutable<z.infer<typeof BoardDirection>>;
 
 /**
- * One camera's name for its board id.
+ * One camera's name for its board id (the camera's device id).
  */
 export const BoardName = z.strictObject({
-  board_id: z.string().min(1).max(32).regex(/^[0-9A-Za-z][0-9A-Za-z._-]*$/),
+  board_id: z.string().regex(/^[0-9A-Za-z][0-9A-Za-z-]{7,63}$/),
   name: z.string().min(1).max(32).regex(/^[0-9A-Za-z._-]([0-9A-Za-z ._-]*[0-9A-Za-z._-])?$/)
 });
 export type BoardName = Immutable<z.infer<typeof BoardName>>;
@@ -152,13 +152,13 @@ export const ConfigureMessage = z.strictObject({
 export type ConfigureMessage = Immutable<z.infer<typeof ConfigureMessage>>;
 
 /**
- * Control UI -> node: forget this disconnected camera, its board id and config.
+ * Control UI -> node: forget this disconnected camera, its name and config.
  *
  * Refused while the camera is connected. The device, if it comes back, is a new
- * camera and gets a new board id.
+ * camera under the same board id, with the defaults and a new default name.
  */
 export const ForgetMessage = z.strictObject({
-  device_id: z.string().regex(/^[0-9A-Za-z-]{8,64}$/),
+  device_id: z.string().regex(/^[0-9A-Za-z][0-9A-Za-z-]{7,63}$/),
   type: z.literal('forget')
 });
 export type ForgetMessage = Immutable<z.infer<typeof ForgetMessage>>;
@@ -183,7 +183,7 @@ export const FrameHeader = z.strictObject({
   sharpness: z.number().min(0).nullable(),
   clock: z.enum(['white', 'black', 'none']),
   burst_id: z.string().nullable(),
-  device_id: z.string().regex(/^[0-9A-Za-z-]{8,64}$/).nullable().optional(),
+  device_id: z.string().regex(/^[0-9A-Za-z][0-9A-Za-z-]{7,63}$/).nullable().optional(),
   type: z.literal('frame')
 });
 export type FrameHeader = Immutable<z.infer<typeof FrameHeader>>;
@@ -233,14 +233,13 @@ export type CameraReport = Immutable<z.infer<typeof CameraReport>>;
 /**
  * One known camera, as the control UI lists it.
  *
- * `name` is its alias (`None` shows the board id); `report` the phone's last
- * report (kept after it disconnects); `frame_age_s` the seconds since its board's
- * last frame, on the node's clock.
+ * `device_id` is also its board id; `name` what people call it; `report` the
+ * phone's last report (kept after it disconnects); `frame_age_s` the seconds since
+ * its board's last frame, on the node's clock.
  */
 export const CameraEntry = z.strictObject({
-  device_id: z.string().regex(/^[0-9A-Za-z-]{8,64}$/),
-  board_id: z.string().min(1).max(32).regex(/^[0-9A-Za-z][0-9A-Za-z._-]*$/),
-  name: z.string().min(1).max(32).regex(/^[0-9A-Za-z._-]([0-9A-Za-z ._-]*[0-9A-Za-z._-])?$/).nullable(),
+  device_id: z.string().regex(/^[0-9A-Za-z][0-9A-Za-z-]{7,63}$/),
+  name: z.string().min(1).max(32).regex(/^[0-9A-Za-z._-]([0-9A-Za-z ._-]*[0-9A-Za-z._-])?$/),
   connected: z.boolean(),
   report: CameraReport.nullable(),
   frame_age_s: z.number().min(0).nullable()
@@ -248,7 +247,7 @@ export const CameraEntry = z.strictObject({
 export type CameraEntry = Immutable<z.infer<typeof CameraEntry>>;
 
 /**
- * Node -> control UI: every known camera, ordered by board id.
+ * Node -> control UI: every known camera, ordered by name.
  */
 export const CamerasMessage = z.strictObject({
   cameras: z.array(CameraEntry),
@@ -310,11 +309,12 @@ export const MotionUpdate = z.strictObject({
 export type MotionUpdate = Immutable<z.infer<typeof MotionUpdate>>;
 
 /**
- * The cameras' names: every named board, a snapshot (DESIGN D18).
+ * The cameras' names: every camera's board, a snapshot (DESIGN D18).
  *
- * A name is an alias people read (`kitchen`); the board id it names stays what
- * every event is keyed by. The node sends this on connect once any camera has a
- * name, and again, whole, on every change; a board not listed shows its id. A list
+ * A name is an alias people read (`board-1`, `kitchen`); the board id it names
+ * (the camera's device id) stays what every event is keyed by. The node sends this
+ * on connect once any camera is known, and again, whole, on every change; a board
+ * not listed (an edge without a device id) shows its id. A list
  * rather than an object keyed by board id, because the browser's generated
  * validators cannot check an object's keys. Never recorded: names are not part of
  * a read.
@@ -447,8 +447,8 @@ export const CamerasDown = z.discriminatedUnion('type', [CamerasMessage, Refused
 export type CamerasDown = Immutable<z.infer<typeof CamerasDown>>;
 
 /**
- * Control UI -> node: stop this stream and forget its camera (its board id is
- * free again).
+ * Control UI -> node: stop this stream and forget its camera (its name and
+ * config).
  */
 export const RemoveStreamMessage = z.strictObject({
   stream_id: z.string().regex(/^stream-[1-9][0-9]{0,8}$/),
@@ -457,14 +457,15 @@ export const RemoveStreamMessage = z.strictObject({
 export type RemoveStreamMessage = Immutable<z.infer<typeof RemoveStreamMessage>>;
 
 /**
- * Control UI -> node: give this device's camera a name; `None` clears it.
+ * Control UI -> node: give this device's camera a name; `None` gives it a
+ * default name again (the lowest free `board-N`).
  *
  * The board id stays. `name` is checked by the node (`CameraName`, not
  * another camera's name or board id), which refuses with a reason an operator can
  * read.
  */
 export const RenameMessage = z.strictObject({
-  device_id: z.string().regex(/^[0-9A-Za-z-]{8,64}$/),
+  device_id: z.string().regex(/^[0-9A-Za-z][0-9A-Za-z-]{7,63}$/),
   name: z.string().min(1).nullable(),
   type: z.literal('rename')
 });
@@ -557,7 +558,7 @@ export type ControlDown = Immutable<z.infer<typeof ControlDown>>;
  *
  * `start_s` is a video's start position in seconds (`None`: the beginning, and
  * the only choice for a live stream); `device_id` the camera the stream registers
- * as; `board_id` the board id the node assigned it (`None` until it first
+ * as (and so its board id); `name` that camera's name (`None` until it first
  * registered); `error` why it last exited or could not start.
  */
 export const StreamEntry = z.strictObject({
@@ -570,8 +571,8 @@ export const StreamEntry = z.strictObject({
     'crashed',
     'stopped'
   ]),
-  device_id: z.string().regex(/^[0-9A-Za-z-]{8,64}$/),
-  board_id: z.string().min(1).max(32).regex(/^[0-9A-Za-z][0-9A-Za-z._-]*$/).nullable(),
+  device_id: z.string().regex(/^[0-9A-Za-z][0-9A-Za-z-]{7,63}$/),
+  name: z.string().min(1).max(32).regex(/^[0-9A-Za-z._-]([0-9A-Za-z ._-]*[0-9A-Za-z._-])?$/).nullable(),
   error: z.string().min(1).nullable()
 });
 export type StreamEntry = Immutable<z.infer<typeof StreamEntry>>;
