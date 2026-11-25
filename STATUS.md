@@ -35,8 +35,7 @@ confidences**. No moves, no legality, no PGN — those belong to the downstream 
 - **Add stream from /control** (D22, `5a786c8`, `1b3a036`): node supervises `board-reader-edge camera`
   processes, restarts with backoff, persists in `streams.json`; list + Remove in the Add stream modal.
 - **Auto-frame** (D20/D21, `e72eb8e` M1, `b7f3b95` M2, `11c128f`): register → full frame → locate → crop
-  pushed, read published; moved camera re-framed from previews (R² ≥ 0.97, > 5 % twice); gate identical.
-  Drift not yet checked live.
+  pushed, read published; moved camera re-framed from previews (R² ≥ 0.97, > 5 % twice); gate identical; drift not yet checked live.
 - **Read queue** (D17, `0102be1`): load adds latency, never changes results; auto-crop probe (`9de171f`).
 - **Docs + rules:** DESIGN rewritten; learnings → `.claude/rules/`; inference regrouped; big data on the HDD
   (`/run/media/felix/archive/board-reader/`, symlinked).
