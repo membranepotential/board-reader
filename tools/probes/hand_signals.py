@@ -43,7 +43,11 @@ import numpy as np
 
 from board_reader_core.protocol import CLASSES, parse_placement
 
-from board_reader_inference.measurement.trial import SessionTruth, TruthSegment, load_truth
+from board_reader_inference.measurement.trial.truth import (
+    SessionTruth,
+    TruthSegment,
+    load_truth,
+)
 
 ROOT = Path(__file__).resolve().parents[2]
 RING, SAMPLE_S = 15, 1.0

@@ -11,8 +11,9 @@ from pathlib import Path
 
 from board_reader_core.recording import Recording
 
-from board_reader_inference.measurement.evaluate import square_errors
-from board_reader_inference.measurement.trial import load_truth, read_events
+from board_reader_inference.measurement.evaluate.errors import square_errors
+from board_reader_inference.measurement.trial.events import read_events
+from board_reader_inference.measurement.trial.truth import load_truth
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from gate_table import GATE_TAKES

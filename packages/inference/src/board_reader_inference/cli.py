@@ -119,7 +119,7 @@ def cmd_positions(args: argparse.Namespace) -> int:
 
 
 def cmd_eval(args: argparse.Namespace) -> int:
-    from board_reader_inference.measurement.evaluate import run
+    from board_reader_inference.measurement.evaluate.run import run
 
     try:
         report = run(
@@ -140,10 +140,10 @@ def cmd_eval(args: argparse.Namespace) -> int:
 def cmd_eval_session(args: argparse.Namespace) -> int:
     from board_reader_core.recording import Recording
 
-    from board_reader_inference.measurement.trial import (
+    from board_reader_inference.measurement.trial.session import run
+    from board_reader_inference.measurement.trial.truth import (
         TRUTH_NAME,
         TruthError,
-        run,
         truth_skeleton,
     )
 
@@ -178,7 +178,7 @@ def cmd_replay(args: argparse.Namespace) -> int:
     from board_reader_core.recording import Recording
 
     from board_reader_inference.measurement.replay import render, run
-    from board_reader_inference.measurement.trial import TRUTH_NAME, TruthError
+    from board_reader_inference.measurement.trial.truth import TRUTH_NAME, TruthError
     from board_reader_inference.stream.schedule import parse_policy
     from board_reader_inference.stream.stabilize import SettleConfig, parse_obscured_energy
 
@@ -236,7 +236,7 @@ def cmd_replay(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
         return 2
-    from board_reader_inference.measurement.trial import run as score
+    from board_reader_inference.measurement.trial.session import run as score
 
     try:
         report = score(Recording(result.path))
@@ -253,7 +253,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     from board_reader_core.control import DEFAULT_RULES, Rules
 
-    from board_reader_inference.measurement.evaluate import DEFAULT_PATHS
+    from board_reader_inference.measurement.evaluate.run import DEFAULT_PATHS
 
     p = argparse.ArgumentParser(prog="board-reader-inference", description=__doc__)
     sub = p.add_subparsers(dest="command", required=True)
@@ -436,7 +436,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     r.set_defaults(func=cmd_replay)
 
-    from board_reader_inference.measurement.trial import REPORT_NAME, TRUTH_NAME
+    from board_reader_inference.measurement.trial.session import REPORT_NAME
+    from board_reader_inference.measurement.trial.truth import TRUTH_NAME
 
     t = sub.add_parser(
         "eval-session",

@@ -4,7 +4,7 @@ A trial is a person sitting at a real board with a phone, and it is the only
 honest test this project has. It is also the slowest: every code change used to
 need another take. But every served run already keeps its own input
 (:mod:`board_reader_core.recording`: ``frames.ndjson`` + the JPEGs) and its own
-output (``events.ndjson``, scored by :mod:`.trial`), so the take is repeatable —
+output (``events.ndjson``, scored by :mod:`.trial.session`), so the take is repeatable —
 what was missing is the middle, the thing that pushes the recorded *frames*
 through today's recognizer and writes fresh events. That is this module.
 
@@ -141,7 +141,7 @@ from board_reader_core.recording import (
 )
 from board_reader_core.wire import decode_jpeg
 
-from board_reader_inference.measurement.trial import TRUTH_NAME
+from board_reader_inference.measurement.trial.truth import TRUTH_NAME
 from board_reader_inference.recognition.recognizer import (
     FrameRead,
     build_from_env,
@@ -942,7 +942,7 @@ def run(
     node benchmarks something nobody runs.
 
     The entry point behind ``board-reader-inference replay``; ``--score`` is the
-    caller's business (:func:`board_reader_inference.measurement.trial.run` on the returned
+    caller's business (:func:`board_reader_inference.measurement.trial.session.run` on the returned
     :attr:`ReplayResult.path`, which is a recording directory like any other).
     """
     recording = Recording.open(source)

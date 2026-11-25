@@ -38,7 +38,7 @@ from board_reader_core.sim import SAMPLE_GAME_PLACEMENTS, render_game_frames
 from board_reader_core.wire import Frame
 
 from board_reader_inference.measurement.replay import recorded_rules
-from board_reader_inference.measurement.trial import read_events
+from board_reader_inference.measurement.trial.events import read_events
 from board_reader_inference.recognition.recognizer import (
     FrameReading,
     StubRecognizer,

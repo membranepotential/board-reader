@@ -58,7 +58,8 @@ from board_reader_core.recording import Recording
 from board_reader_core.wire import Frame
 
 from board_reader_edge.forwarder import AdaptiveForwarder, ForwarderConfig
-from board_reader_inference.measurement.trial import SessionTruth, load_truth, read_events
+from board_reader_inference.measurement.trial.events import read_events
+from board_reader_inference.measurement.trial.truth import SessionTruth, load_truth
 from board_reader_inference.stream.ingest import OrientationGuard
 from board_reader_inference.stream.schedule import EXIT_HOLD_S, BurstTriggered
 from board_reader_inference.stream.stabilize import (

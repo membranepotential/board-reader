@@ -125,7 +125,7 @@ What's covered today — the main files (`git ls-files 'packages/*/tests/*.py'
 | **Edge camera** | `packages/edge/tests/camera/test_camera_{link,stream,run}.py` | **the device id kept in its state file; the control socket against a fake node (report, assigned, config, previews, `replaced`); yt-dlp resolution (faked), 20 fps sampling, real-time VOD pacing from `--start`, live reconnects; crop, meter rebase and the frames on `/ingest` under the assigned board id with the device id** |
 | **Replay (edge)** | `packages/edge/tests/test_recording_replay.py` | **replays the recorded bytes without re-encoding, paces by capture time, refuses to reprocess** |
 | **Replay (inference)** | `packages/inference/tests/measurement/test_replay.py` | **driven by the recorded clock, byte-identical events on a re-run, the frame policy is asked** |
-| **Labels + eval** | `test_labels.py`, `test_server_labels.py`, `test_evaluate.py`, `test_trial.py`, `test_calibration.py` | **chess-frame labels, `eval`, `eval-session`, temperature scaling** |
+| **Labels + eval** | `test_labels.py`, `test_server_labels.py`, `measurement/evaluate/`, `measurement/trial/`, `test_calibration.py` | **chess-frame labels, `eval`, `eval-session`, temperature scaling** |
 | **Position stream consumer** | `packages/inference/tests/test_positions.py` | **transitions of a real move, first-sighting ≠ unchanged, per-board diffing, NDJSON capture rebuilds the identical event, `--changes-only` drops keepalives** |
 | Hub | `packages/inference/tests/stream/test_hub.py` | retained-latest, fan-out, overflow |
 | Gateway | `packages/inference/tests/test_server.py` | ingest → viewer over WS (in-process) |
@@ -1112,8 +1112,8 @@ eval and replays are all in the chess frame.
    rules are `free`, add `GATE_FLAGS="--rules free"`.
    `uv run python tools/gate_table.py tkr-shipped cq-v6` prints the adoption gate.
 
-Automated: `test_labels.py`, `test_server_labels.py`, `test_evaluate.py` and
-`test_trial.py` (frame sections), `tests/test_gate_table.py`.
+Automated: `test_labels.py`, `test_server_labels.py`, `measurement/evaluate/test_report.py` and
+`measurement/trial/test_score.py` (frame sections), `tests/test_gate_table.py`.
 
 ### Option Q — Record a game to PGN on the live page (WP-H3)
 

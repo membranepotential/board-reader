@@ -45,7 +45,8 @@ from board_reader_inference.measurement.replay import (
     render,
     replay,
 )
-from board_reader_inference.measurement.trial import REPORT_NAME, TRUTH_NAME
+from board_reader_inference.measurement.trial.session import REPORT_NAME
+from board_reader_inference.measurement.trial.truth import TRUTH_NAME
 from board_reader_inference.recognition.recognizer import FrameReading
 from board_reader_inference.stream.hub import PositionHub
 from board_reader_inference.stream.ingest import FrameIngest, event_line

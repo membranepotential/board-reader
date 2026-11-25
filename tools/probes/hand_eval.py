@@ -34,7 +34,7 @@ import numpy as np
 from board_reader_core.protocol import CLASSES, encode_placement, parse_placement
 from board_reader_core.recording import Recording
 
-from board_reader_inference.measurement.trial import read_events
+from board_reader_inference.measurement.trial.events import read_events
 from board_reader_inference.stream.schedule import DEFAULT_POLICY_SPEC, parse_policy
 from board_reader_inference.stream.stabilize import BoardStabilizer
 
