@@ -23,8 +23,8 @@ confidences**. No moves, no legality, no PGN — those belong to the downstream 
 - **auto-crop probe DONE** (`9de171f`): ChessQ attention (L1–3 H0) → grid → crop; coarse-to-fine reliable to
   25 % of the frame, + tiles to 15 %; R² ≥ 0.90 refuses bad grids; classical CV loses (0 % at 15 %).
 - **auto-frame F1** — model export with attention heads, `recognition/locate.py`, grid on every read; gate
-  identical — running (agent). F2 (the control loop: register → full frame → crop; re-frame on grid drift;
-  auto-frame read into the stream) starts after agent D.
+  identical — running (agent). F2 (control loop: register → full frame → crop; drift from the 480 px
+  previews, phone crop kept; auto-frame read into the stream) starts after agent D.
 
 ## Done (2026-11-24/25 — the ChessQ rebuild; plan: [docs/plans/2026-11-24-simplify-around-chessq.md](docs/plans/2026-11-24-simplify-around-chessq.md))
 
