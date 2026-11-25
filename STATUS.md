@@ -11,8 +11,6 @@ confidences**. No moves, no legality, no PGN — those belong to the downstream 
 
 - **split `stream/stabilize.py`** into a `stream/settle/` package (`config`, `rules`, `balance`, `stabilizer`),
   pure move — running in a worktree (Sonnet) — lands when `stream/ingest.py` is clean in main.
-- **auto-frame top margin** — back-rank piece tops get cut; perspective-aware top margin in
-  `locate.proposed_crop`, measured with the autocrop probe — running (agent T).
 - **device id = board id** — the camera's UUID is its board id; `board-N` only the default name;
   drop the device→board table (D18 amended) — running (agent I).
 - **file splits DONE** (Sonnet): snapshot page `84ecbc0`, `measurement/{trial,evaluate}/` `a815f91`, `control/camera/`
@@ -37,7 +35,8 @@ confidences**. No moves, no legality, no PGN — those belong to the downstream 
 - **Add stream from /control** (D22, `5a786c8`, `1b3a036`): node supervises `board-reader-edge camera`
   processes, restarts with backoff, persists in `streams.json`; list + Remove in the Add stream modal.
 - **Auto-frame** (D20/D21, `e72eb8e` M1, `b7f3b95` M2, `11c128f`): register → full frame → locate → crop
-  pushed, read published; moved camera re-framed from previews (R² ≥ 0.97, > 5 % twice); gate identical; drift not yet checked live.
+  pushed, read published; moved camera re-framed from previews (R² ≥ 0.97, > 5 % twice); gate identical; drift not yet checked live;
+  crop top leaves room for a far-rank king (`5ec9089`, 14 → 0 cutting crops, accuracy equal).
 - **Read queue** (D17, `0102be1`): load adds latency, never changes results; auto-crop probe (`9de171f`).
 - **Docs + rules:** DESIGN rewritten; learnings → `.claude/rules/`; inference regrouped; big data on the HDD
   (`/run/media/felix/archive/board-reader/`, symlinked).
