@@ -7,7 +7,7 @@ _reconciled: 2026-11-24 @ `480a5ea`_ · decisions: [docs/DESIGN.md](docs/DESIGN.
 A camera reads a live OTB board and streams timestamped **piece placements + per-square
 confidences**. No moves, no legality, no PGN — those belong to the downstream application layer.
 
-## Now (1 agent)
+## Now (3 agents, files partitioned)
 
 - **auto-frame** — F1 locate + `-attn` models DONE (`499aeb2`, `1e58440`, D20; gate identical); F1b preview
   drift rule DONE (`6de42c6`: R² ≥ 0.97, > 5 % on 2 previews, 0 false fires / 421); F2a controller DONE
@@ -15,6 +15,9 @@ confidences**. No moves, no legality, no PGN — those belong to the downstream 
 - **file splits DONE** (Sonnet): snapshot page `84ecbc0`, `measurement/{trial,evaluate}/` `a815f91`, `control/camera/`
   `878f80a`, `stream/schedule/` `bbef6b2`; gate identical. Next round: `replay.py`, `ingest.py`, `server.py`,
   /control + /camera pages, core `control.py`, `camera/registry.py` (573: extract the auto-frame driver).
+- **/control redesign** — one card per camera (preview on top, name + settings + stats below), no list;
+  Add camera (QR modal), Add stream, Re-detect frame; rename-reset bug — running (agent U, Svelte).
+- **add stream** — node supervises `board-reader-edge camera` subprocesses from /control — running (agent S).
 
 ## Done (2026-11-24/25 — the ChessQ rebuild; plan: [docs/plans/2026-11-24-simplify-around-chessq.md](docs/plans/2026-11-24-simplify-around-chessq.md))
 
