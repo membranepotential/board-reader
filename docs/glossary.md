@@ -55,9 +55,14 @@ on the Python edge.
 **Camera config / report** — the control channel (DESIGN D11): the config is what
 `/control` chose for a board's camera (crop, lens, resolution, streaming); the report is
 what the phone says its camera is (lenses, frame size, stream state). The node pushes the
-config down the phone's socket (`/boards/{id}/camera`) on connect and on every change; the
+config down the phone's socket (`/cameras/{device_id}`) on connect and on every change; the
 phone sends the report when it changes. `serve` keeps the configs in
 `data/camera-config.json` (`BR_CAMERA_CONFIG`), so a restarted node resumes the stream.
+
+**Device id / assigned board id** — a phone's own random id, kept in its browser, and the
+board id the node gives that device (`board-1`, `board-2`, ..., renamed on `/control`;
+DESIGN D18). The node keeps the pairs with the configs, so a phone keeps its board id
+across a reload and a restart.
 
 **Board direction** — which way the board lies in the camera's image
 (`board_reader_core.control.BoardDirection`): the angle of the e1→e8 axis from ChessQ's
