@@ -114,7 +114,7 @@ settle window. Since 2026-11-24 it is a streamed event's `placement`, with `pend
 the squares where the read (the argmax of `square_dist`) disagrees; before, it rode beside
 the read as a `settled` block (DESIGN D15).
 
-**Read scheduler** — the node's choice of which arriving frames to read (`schedule.py`,
+**Read scheduler** — the node's choice of which arriving frames to read (`stream/schedule/`,
 `BR_SCHEDULE`): by default three reads 0.3 s apart at the end of a motion burst, plus a
 keepalive read when 2 s of capture time passed without one.
 

@@ -27,7 +27,7 @@ def cmd_serve(args: argparse.Namespace) -> int:
 
     import uvicorn
 
-    from board_reader_inference.stream.schedule import DEFAULT_POLICY_SPEC
+    from board_reader_inference.stream.schedule.default import DEFAULT_POLICY_SPEC
 
     # Every served run records its ingress by default (WP-H2), so a session can
     # always be replayed afterwards — including one driven by the phone /camera
@@ -179,7 +179,7 @@ def cmd_replay(args: argparse.Namespace) -> int:
 
     from board_reader_inference.measurement.replay import render, run
     from board_reader_inference.measurement.trial import TRUTH_NAME, TruthError
-    from board_reader_inference.stream.schedule import parse_policy
+    from board_reader_inference.stream.schedule.parse import parse_policy
     from board_reader_inference.stream.stabilize import SettleConfig, parse_obscured_energy
 
     try:
@@ -332,7 +332,7 @@ def build_parser() -> argparse.ArgumentParser:
     e.set_defaults(func=cmd_eval)
 
     from board_reader_inference.measurement.replay import REPLAYS_DIR
-    from board_reader_inference.stream.schedule import POLICIES
+    from board_reader_inference.stream.schedule.parse import POLICIES
     from board_reader_inference.stream.stabilize import GATE_OFF, SettleConfig
 
     POLICY_DEFAULT = "every-frame"

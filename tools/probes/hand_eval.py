@@ -35,7 +35,8 @@ from board_reader_core.protocol import CLASSES, encode_placement, parse_placemen
 from board_reader_core.recording import Recording
 
 from board_reader_inference.measurement.trial import read_events
-from board_reader_inference.stream.schedule import DEFAULT_POLICY_SPEC, parse_policy
+from board_reader_inference.stream.schedule.default import DEFAULT_POLICY_SPEC
+from board_reader_inference.stream.schedule.parse import parse_policy
 from board_reader_inference.stream.stabilize import BoardStabilizer
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))

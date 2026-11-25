@@ -80,9 +80,9 @@ one board) and only the **longest** is replayed, with a warning naming the rest;
 ``--all-sessions`` replays them all into one file for the caller who knows better.
 
 **The frame-selection seam.** The node does not have to read every frame that
-reaches it, and should not: :mod:`.schedule` holds the policies that decide
+reaches it, and should not: :mod:`board_reader_inference.stream.schedule` holds the policies that decide
 (estimate at burst end, slow keepalive, skip mid-burst), and ``--policy`` picks
-one. The loop asks it per frame, in order; :class:`~.schedule.EveryFrame` is the
+one. The loop asks it per frame, in order; :class:`~board_reader_inference.stream.schedule.policies.EveryFrame` is the
 default and the control. A policy sees the recorded header
 (:class:`~board_reader_core.recording.FrameEntry`: ``seq``, ``capture_ts``,
 ``stability``, ``sharpness``, ``burst_id``) and not the pixels, which is both what
@@ -102,7 +102,7 @@ evening that field is a *broken sensor's* output: the old motion meter scored an
 absolute pixel difference, the deployment phone's resting difference measured
 about six times the constant it assumed, and the field sat under 0.35 from the
 first frame to the last. Scheduling against it would measure the bug.
-``--restamp-stability`` runs today's meter (:class:`~.schedule.MotionMeter`, the
+``--restamp-stability`` runs today's meter (:class:`~board_reader_inference.stream.schedule.meter.MotionMeter`, the
 edge's algorithm ported — see there for why it is not imported) over the
 recording's own JPEGs in seq order and overwrites the field before any policy
 sees it. Deterministic, and it is exactly what a phone streaming that scene today
@@ -154,14 +154,11 @@ from board_reader_inference.stream.ingest import (
     _settle_read,
     event_line,
 )
-from board_reader_inference.stream.schedule import (
-    EveryFrame,
-    FramePolicy,
-    MotionMeter,
-    parse_policy,
-    policy_slug,
-    restamped,
-)
+from board_reader_inference.stream.schedule.meter import MotionMeter, restamped
+from board_reader_inference.stream.schedule.parse import parse_policy
+from board_reader_inference.stream.schedule.policies import EveryFrame
+from board_reader_inference.stream.schedule.render import policy_slug
+from board_reader_inference.stream.schedule.seam import FramePolicy
 from board_reader_inference.stream.stabilize import (
     DEFAULT_SETTLE,
     BoardStabilizer,
@@ -491,7 +488,7 @@ def replay(
     reads holds a few newer frames too, which the back-dating never looks at).
 
     With ``restamp``, each replayed session's headers get their ``stability``
-    rewritten by a fresh :class:`~.schedule.MotionMeter` before the policy is
+    rewritten by a fresh :class:`~board_reader_inference.stream.schedule.meter.MotionMeter` before the policy is
     asked — one meter per session, because a reconnect is a new camera and a
     learned resting floor does not carry across one. Nothing but the policy reads
     the field (the estimators only copy it onto the published event), so a
@@ -499,13 +496,13 @@ def replay(
     unrestamped one; it is the control a scheduling sweep is diffed against.
 
     **A fresh policy per session too, for the same reason the meter is fresh.** A
-    :class:`~.schedule.FramePolicy` is stateful over one stream — mid-burst,
+    :class:`~board_reader_inference.stream.schedule.seam.FramePolicy` is stateful over one stream — mid-burst,
     reads owed by the last burst end, the keepalive anchor — and a seq restart is
     a different stream. Carried across, session 2 opens *inside* session 1's
     burst and manufactures a move-complete read at its very first calm frame, on
     a board nobody moved. Each replayed session therefore gets its own instance,
-    rebuilt from the policy's spec string (:func:`~.schedule.parse_policy` round
-    trips :attr:`~.schedule.FramePolicy.name` by construction). A caller's own
+    rebuilt from the policy's spec string (:func:`~board_reader_inference.stream.schedule.parse.parse_policy` round
+    trips :attr:`~board_reader_inference.stream.schedule.seam.FramePolicy.name` by construction). A caller's own
     policy object cannot be rebuilt that way, so replaying several sessions with
     one is refused rather than silently leaked across the seam.
     """
@@ -691,8 +688,8 @@ def _per_session_policies(policy: FramePolicy, sessions: int) -> list[FramePolic
     The motion meter is already reset there for the same reason.
 
     Rebuilding goes through the spec string rather than a ``reset()``, because
-    :attr:`~.schedule.FramePolicy.name` round-trips through
-    :func:`~.schedule.parse_policy` by construction (that is the invariant which
+    :attr:`~board_reader_inference.stream.schedule.seam.FramePolicy.name` round-trips through
+    :func:`~board_reader_inference.stream.schedule.parse.parse_policy` by construction (that is the invariant which
     makes a manifest's ``policy`` field the argument that reproduces the run), so
     the rebuilt policy is the same configuration with none of the history. A
     caller's own policy object has no such spec; replaying one session with it is
@@ -728,7 +725,7 @@ def _decoder(recording: Recording) -> Callable[[FrameEntry], np.ndarray]:
     leave exactly that frame carrying its **recorded** ``stability`` — an old
     absolute-scale 0.29 sitting in a stream of re-metered 0.99s, which is a
     phantom burst and, one frame later, a fake move-complete read — and its index
-    line would silently lack :data:`~.schedule.RESTAMPED_KEY` while the directory
+    line would silently lack :data:`~board_reader_inference.stream.schedule.meter.RESTAMPED_KEY` while the directory
     name says ``-restamped``. A benchmark that is subtly wrong about which frames
     were moving is worse than one that refuses to run, so it refuses.
 

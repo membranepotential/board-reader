@@ -35,7 +35,7 @@ the phone is a dumb camera (DESIGN D11) and the laptop does every read (D10).
 | Recognizer contract | `Recognizer.read` → `(8, 8, 13)`, chess frame (`recognizer.py`) | the same contract in TypeScript, over `onnxruntime-web` or LiteRT |
 | Capture, crop, motion, forwarding | already TypeScript in `/camera` (`lib/edge/`) | unchanged; "forwarding" becomes "hand to the local reader" |
 | Crop and lens setup | `/control` on the laptop, over the camera control channel | the same config; it could be set on the phone itself, or still from a laptop |
-| Read scheduling (`schedule.py`), settle debounce and its guard (`stabilize.py`, `rules.py`) | Python on the node | need a TypeScript port, tested against the Python on the same recordings |
+| Read scheduling (`stream/schedule/`), settle debounce and its guard (`stabilize.py`, `rules.py`) | Python on the node | need a TypeScript port, tested against the Python on the same recordings |
 | Position events | `board_reader_core.protocol` | the same JSON shape (§5), so any consumer keeps working |
 
 ## Open questions

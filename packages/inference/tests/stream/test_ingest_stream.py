@@ -25,7 +25,7 @@ from board_reader_inference.recognition.recognizer import (
 from board_reader_inference.server import create_app
 from board_reader_inference.stream.hub import PositionHub
 from board_reader_inference.stream.ingest import READ_BACKLOG, FrameIngest
-from board_reader_inference.stream.schedule import ReadKind
+from board_reader_inference.stream.schedule.seam import ReadKind
 
 
 class SlowRecognizer(StubRecognizer):
@@ -136,7 +136,7 @@ def test_sustained_overload_sheds_keepalive_reads_first_and_reports_each_drop():
     """The overload rule: a board with READ_BACKLOG reads waiting sheds its oldest
     keepalive read, never a burst-end one while it has a keepalive to give up, and
     every drop reaches the drop observer."""
-    from board_reader_inference.stream.schedule import EveryFrame
+    from board_reader_inference.stream.schedule.policies import EveryFrame
 
     class _Kinds(EveryFrame):
         """Every frame read; even seqs are burst-end reads, odd ones keepalives."""

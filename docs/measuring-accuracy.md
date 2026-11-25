@@ -163,7 +163,7 @@ scored the hard-constraint decoder's repair, on by default; the decoder is gone,
 DESIGN D14.)
 
 **The replay gate.** `make gate GATE_NAME=<new>` replays the seven gate takes
-through `BR_CHESSQ` with the schedule `serve` ships (`schedule.DEFAULT_POLICY_SPEC`),
+through `BR_CHESSQ` with the schedule `serve` ships (`schedule.default.DEFAULT_POLICY_SPEC`),
 scores each, and prints `tools/gate_table.py`'s table against `latency3` (the Makefile's
 `GATE_BASE`, [[2026-11-25-latency-round3]]: 374/405 raw, 350/405 settled perfect): raw
 per-square and raw / settled perfect boards per take, with a pooled total.

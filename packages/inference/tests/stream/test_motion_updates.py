@@ -28,7 +28,7 @@ from board_reader_inference.stream.ingest import (
     FrameIngest,
     MotionThrottle,
 )
-from board_reader_inference.stream.schedule import ENTER_BURST
+from board_reader_inference.stream.schedule.constants import ENTER_BURST
 
 
 def test_the_first_frame_and_every_change_of_moving_go_out_at_once():
