@@ -43,9 +43,12 @@ def _roots() -> dict[str, Any]:
         "ViewerMessage": protocol.ViewerMessage,
         # WS /ingest: each header, then its JPEG as the next (binary) message
         "FrameHeader": wire.FrameHeader,
-        # WS /boards/{id}/camera: up (text; previews go up as binary) and down
+        # WS /cameras/{device_id}: up (text; previews go up as binary) and down
         "ReportMessage": control.ReportMessage,
         "PhoneDown": control.PhoneDown,
+        # WS /cameras: up and down
+        "RenameMessage": control.RenameMessage,
+        "CamerasDown": control.CamerasDown,
         # WS /boards/{id}/control: up and down
         "ConfigureMessage": control.ConfigureMessage,
         "ControlDown": control.ControlDown,
@@ -55,8 +58,8 @@ def _roots() -> dict[str, Any]:
 def json_schema() -> dict[str, Any]:
     """The document (see the module note).
 
-    The unions (``ViewerMessage``, ``PhoneDown``, ``ControlDown``) are ``$defs`` of
-    their own. The socket unions discriminate on ``type``; a position event has no
+    The unions (``ViewerMessage``, ``PhoneDown``, ``CamerasDown``, ``ControlDown``)
+    are ``$defs`` of their own. The socket unions discriminate on ``type``; a position event has no
     ``type``, and is told from a motion update by its absence.
     """
     keyed, document = TypeAdapter.json_schemas(

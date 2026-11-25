@@ -6,24 +6,33 @@ about itself (:class:`~board_reader_core.control.CameraReport`) and the latest
 full-frame preview, so the control UI can show the camera's whole field of view
 while the stream itself carries only the crop.
 
-The configs can outlive a restart: with ``BR_CAMERA_CONFIG=<path>`` set (``serve``
-sets it), every change is written to that JSON file and read back at startup, so a
-node restarted mid-game pushes the same crop, lens, resolution and streaming switch
-to the phone when it reconnects, and settles each board under the same rules. Unset,
-everything is in memory. Reports, previews
-and the board direction are always in memory: the phone and the recognizer send
-them again.
+Each phone is known by its **device id**, a random id its browser keeps, and the
+registry **assigns** each new device a board id (the lowest free ``board-N``) and
+keeps that pair, so the same phone streams as the same board after a reload, a
+reconnect or a node restart. The control UI may **rename** a camera: its board's
+config moves to the new id and the phone hears the new id at once. Board ids stay
+unique among the known cameras, so two phones never stream as one board.
+
+The configs and the device -> board pairs can outlive a restart: with
+``BR_CAMERA_CONFIG=<path>`` set (``serve`` sets it), every change is written to that
+JSON file and read back at startup, so a node restarted mid-game gives each phone
+its board id back and pushes the same crop, lens, resolution and streaming switch to
+it when it reconnects, and settles each board under the same rules. Unset,
+everything is in memory. Reports, previews and the board direction are always in
+memory: the phone and the recognizer send them again.
 
 The registry also follows each board's **direction** in the image, from the
 recognizer's reads (:meth:`CameraRegistry.observe_direction`): which side White sits
 on, and whether the camera moved since the angle settled.
 
 The registry is the single source of truth, and it **pushes**: every change is
-posted at once to every socket that cares, over two WebSockets per board (the
-message types and their directions are :mod:`board_reader_core.control`'s):
+posted at once to every socket that cares (the message types and their directions
+are :mod:`board_reader_core.control`'s):
 
-* ``WS /boards/{board_id}/camera`` — the phone. It hears its config and whether to
-  send previews; it says what the camera is and sends previews.
+* ``WS /cameras/{device_id}`` — the phone. It hears its board id, its config and
+  whether to send previews; it says what the camera is and sends previews. One
+  socket per device: a newer one replaces the older, which hears ``replaced``.
+* ``WS /cameras`` — the control UI's list of every known camera; it sends renames.
 * ``WS /boards/{board_id}/control`` — each open control page. It hears the state,
   the previews, the latest received frame and a health tick; it sends configs.
 
@@ -44,11 +53,13 @@ import json
 import logging
 import math
 import os
+import re
 import statistics
 import time
 from collections import deque
 from collections.abc import Callable, Coroutine, Mapping
 from dataclasses import dataclass, field
+from itertools import count
 from pathlib import Path
 from typing import Any, ClassVar, Protocol
 
@@ -57,24 +68,37 @@ from starlette.websockets import WebSocketDisconnect
 
 from board_reader_core.control import (
     DEFAULT_RULES,
+    AssignedMessage,
     BoardDirection,
+    CameraBoardId,
     CameraConfig,
+    CameraEntry,
     CameraReport,
+    CamerasDown,
+    CamerasMessage,
     ConfigMessage,
     ControlDown,
+    DeviceId,
     FrameMessage,
     HealthMessage,
     PhoneDown,
     PreviewMessage,
     PreviewsMessage,
     RefusedMessage,
+    ReplacedMessage,
     Rules,
     StateMessage,
     WhiteSide,
+    camera_board_id,
+    parse_cameras_message,
     parse_control_message,
     parse_phone_message,
 )
+from board_reader_core.control import (
+    device_id as checked_device_id,
+)
 from board_reader_core.wire import decode_jpeg
+from board_reader_core.wiremodel import parse
 
 log = logging.getLogger(__name__)
 
@@ -123,41 +147,64 @@ class Mailbox[M: _Message]:
 
 # ---- the configs on disk --------------------------------------------------------------
 
+#: The board id a new camera gets: this prefix and the lowest free number.
+AUTO_BOARD_PREFIX = "board-"
 
-def load_configs(path: Path) -> dict[str, CameraConfig]:
-    """Each board's config as ``save_configs`` wrote it; ``{}`` if there is none.
+
+@dataclass(frozen=True, slots=True)
+class Saved:
+    """What the node keeps across restarts: each board's config, each device's board."""
+
+    boards: Mapping[str, CameraConfig] = field(default_factory=dict)
+    cameras: Mapping[str, str] = field(default_factory=dict)
+
+
+def _parse_saved(raw: object) -> Saved:
+    if not isinstance(raw, dict) or "boards" not in raw or not set(raw) <= {"boards", "cameras"}:
+        raise ValueError('expected {"boards": {<board id>: <config>}, "cameras": {<device id>: <board id>}}')
+    if not isinstance(raw["boards"], dict):
+        raise ValueError('"boards" is not an object')
+    boards = {str(board_id): CameraConfig.from_dict(config) for board_id, config in raw["boards"].items()}
+    # A file from before the cameras were known by device has no "cameras": none known yet.
+    if not isinstance(raw.get("cameras", {}), dict):
+        raise ValueError('"cameras" is not an object')
+    cameras: dict[str, str] = parse(dict[DeviceId, CameraBoardId], raw.get("cameras", {}))
+    if len(set(cameras.values())) != len(cameras):
+        raise ValueError("two cameras hold one board id")
+    return Saved(boards, cameras)
+
+
+def load_state(path: Path) -> Saved:
+    """What ``save_state`` wrote; nothing saved if there is no file.
 
     A file that does not parse in full is ignored with a WARNING, never half
-    applied: the node then starts with the defaults (streaming off), the same as a
-    node that never had a file.
+    applied: the node then starts with the defaults (streaming off, no camera
+    known), the same as a node that never had a file.
     """
     try:
         text = path.read_text()
     except FileNotFoundError:
-        return {}
+        return Saved()
     except OSError as e:
         log.warning("ignoring the camera config %s: %s", path, e)
-        return {}
+        return Saved()
     try:
-        raw = json.loads(text)
-        if not isinstance(raw, dict) or set(raw) != {"boards"} or not isinstance(raw["boards"], dict):
-            raise ValueError('expected {"boards": {<board id>: <config>}}')
-        return {
-            str(board_id): CameraConfig.from_dict(config)
-            for board_id, config in raw["boards"].items()
-        }
+        return _parse_saved(json.loads(text))
     except ValueError as e:
         log.warning("ignoring the corrupt camera config %s: %s", path, e)
-        return {}
+        return Saved()
 
 
-def save_configs(path: Path, configs: Mapping[str, CameraConfig]) -> None:
-    """Write every board's config to ``path`` at once: a temporary file, then a rename.
+def save_state(path: Path, saved: Saved) -> None:
+    """Write everything to ``path`` at once: a temporary file, then a rename.
 
     A crash mid-write leaves the old file whole, never a truncated one.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
-    body = {"boards": {board_id: config.to_dict() for board_id, config in configs.items()}}
+    body = {
+        "boards": {board_id: config.to_dict() for board_id, config in saved.boards.items()},
+        "cameras": dict(saved.cameras),
+    }
     tmp = path.with_name(f".{path.name}.tmp")
     tmp.write_text(json.dumps(body, indent=2) + "\n")
     os.replace(tmp, path)
@@ -246,35 +293,62 @@ def _reframed(old: CameraConfig, new: CameraConfig) -> bool:
 
 @dataclass(slots=True)
 class BoardCamera:
+    """One board's camera state; it moves with the board id when a camera is renamed."""
+
     config: CameraConfig = field(default_factory=CameraConfig)
     report: CameraReport | None = None
     preview: PreviewMessage | None = None
     direction: DirectionTrack = field(default_factory=DirectionTrack)
-    phones: set[Mailbox[PhoneDown]] = field(default_factory=set)
     watchers: set[Mailbox[ControlDown]] = field(default_factory=set)
 
-    def state(self) -> StateMessage:
-        return StateMessage(
-            config=self.config, report=self.report, phone_connected=bool(self.phones)
-        )
+
+@dataclass(eq=False, slots=True)
+class PhoneLink:
+    """One open phone socket: the device it speaks for and its outbox.
+
+    ``refused_board`` is the board id this socket asked for (``?board=``) while
+    another camera held it, so the control UI can say why the phone streams as
+    another.
+    """
+
+    device_id: str
+    mailbox: Mailbox[PhoneDown] = field(default_factory=Mailbox)
+    refused_board: str | None = None
+
+
+class NameTaken(ValueError):
+    """A board id another camera already holds."""
+
+
+def _natural(board_id: str) -> list[int | str]:
+    """``board-2`` before ``board-10``: digit runs compare as numbers."""
+    return [int(part) if part.isdigit() else part for part in re.split(r"([0-9]+)", board_id)]
 
 
 class CameraRegistry:
-    """Every board's camera state and the sockets it is pushed to.
+    """Every board's camera state, every known camera, and the sockets they are pushed to.
 
-    A board exists from the first time anyone asks. Methods are synchronous and run
-    on the event loop; they only post to mailboxes, and each socket's own task sends.
+    A board exists from the first time anyone asks. A camera (a device id) exists
+    from its first connect and keeps its board id until it is renamed. Methods are
+    synchronous and run on the event loop; they only post to mailboxes (and wake the
+    camera lists), and each socket's own task sends.
 
-    With ``BR_CAMERA_CONFIG`` set, the configs are read from that file here and
-    written back on every change (see the module docstring).
+    With ``BR_CAMERA_CONFIG`` set, the configs and the cameras are read from that
+    file here and written back on every change (see the module docstring).
     """
 
     def __init__(self) -> None:
         self._path = _config_path()
-        saved = {} if self._path is None else load_configs(self._path)
+        saved = Saved() if self._path is None else load_state(self._path)
         self._boards: dict[str, BoardCamera] = {
-            board_id: BoardCamera(config=config) for board_id, config in saved.items()
+            board_id: BoardCamera(config=config) for board_id, config in saved.boards.items()
         }
+        #: device id -> board id, one board id per camera (persisted).
+        self._cameras: dict[str, str] = dict(saved.cameras)
+        #: device id -> its one open socket.
+        self._phones: dict[str, PhoneLink] = {}
+        #: One wake-up per open camera list: something it shows changed.
+        self._lists: set[asyncio.Event] = set()
 
     def board(self, board_id: str) -> BoardCamera:
         return self._boards.setdefault(board_id, BoardCamera())
@@ -287,39 +361,187 @@ class CameraRegistry:
         board = self._boards.get(board_id)
         return DEFAULT_RULES if board is None else board.config.rules
 
-    def _tell_watchers(self, board: BoardCamera, message: ControlDown) -> None:
-        for watcher in board.watchers:
-            watcher.post(message)
+    def board_of(self, device_id: str) -> str | None:
+        """The board id ``device_id`` streams as; ``None`` for a device never seen."""
+        return self._cameras.get(device_id)
 
-    def _tell_phones(self, board: BoardCamera, message: PhoneDown) -> None:
-        for phone in board.phones:
-            phone.post(message)
+    def _holder(self, board_id: str) -> str | None:
+        return next((d for d, b in self._cameras.items() if b == board_id), None)
+
+    def _phone_on(self, board_id: str) -> PhoneLink | None:
+        holder = self._holder(board_id)
+        return None if holder is None else self._phones.get(holder)
+
+    def _state(self, board_id: str) -> StateMessage:
+        board = self.board(board_id)
+        return StateMessage(
+            config=board.config,
+            report=board.report,
+            phone_connected=self._phone_on(board_id) is not None,
+        )
+
+    def _tell_watchers(self, board_id: str, message: ControlDown | None = None) -> None:
+        """Post ``message`` (the board's state by default) to its control pages."""
+        board = self.board(board_id)
+        for watcher in board.watchers:
+            watcher.post(self._state(board_id) if message is None else message)
+
+    def _tell_phone(self, board_id: str, message: PhoneDown) -> None:
+        phone = self._phone_on(board_id)
+        if phone is not None:
+            phone.mailbox.post(message)
+
+    def _tell_lists(self) -> None:
+        for changed in self._lists:
+            changed.set()
+
+    def _current(self, link: PhoneLink) -> bool:
+        """Whether ``link`` is still its device's socket (not replaced by a newer one)."""
+        return self._phones.get(link.device_id) is link
+
+    # ---- naming the cameras ------------------------------------------------------
+
+    def _free_board_id(self) -> str:
+        """The lowest ``board-N`` no camera holds and no saved config sits under."""
+        held = set(self._cameras.values())
+        for n in count(1):
+            board_id = f"{AUTO_BOARD_PREFIX}{n}"
+            board = self._boards.get(board_id)
+            if board_id not in held and (board is None or board.config == CameraConfig()):
+                return board_id
+        raise AssertionError("unreachable")
+
+    def _check_name(self, device_id: str, name: str) -> str:
+        """``name`` as a board id ``device_id`` may take; ``ValueError`` says why not."""
+        board_id = camera_board_id(name)
+        holder = self._holder(board_id)
+        if holder is not None and holder != device_id:
+            raise NameTaken(f"{board_id} is taken by camera {holder[:8]}")
+        return board_id
+
+    def rename(self, device_id: str, name: str) -> None:
+        """Give a known camera a new board id; its board's config moves with it.
+
+        The old board id keeps only its control pages (they watch that id, and the
+        control UI moves them over); recordings and events made under it stay as
+        they are. Refused (``ValueError``) for an unknown device, a name that is no
+        board id, or one another camera holds.
+        """
+        old = self._cameras.get(device_id)
+        if old is None:
+            raise ValueError(f"no camera {device_id[:8]} is known")
+        new = self._check_name(device_id, name)
+        if new == old:
+            return
+        moving = self._boards.pop(old, BoardCamera())
+        left_behind, moving.watchers = moving.watchers, self.board(new).watchers
+        self._boards[new] = moving
+        if left_behind:
+            self._boards[old] = BoardCamera(watchers=left_behind)
+        self._cameras[device_id] = new
+        self._save()
+        phone = self._phones.get(device_id)
+        if phone is not None:
+            phone.refused_board = None
+            phone.mailbox.post(AssignedMessage(new))
+            phone.mailbox.post(PreviewsMessage(on=bool(moving.watchers)))
+        self._tell_watchers(old)
+        self._tell_watchers(new)
+        self._tell_lists()
 
     # ---- the phone ---------------------------------------------------------------
 
-    def connect_phone(self, board_id: str) -> Mailbox[PhoneDown]:
-        board = self.board(board_id)
-        mailbox: Mailbox[PhoneDown] = Mailbox()
-        board.phones.add(mailbox)
-        mailbox.post(ConfigMessage(board.config))
-        mailbox.post(PreviewsMessage(on=bool(board.watchers)))
-        self._tell_watchers(board, board.state())
-        return mailbox
+    def connect_phone(self, device_id: str, asked: str | None = None) -> PhoneLink:
+        """Open ``device_id``'s socket; a socket it already had is replaced.
 
-    def disconnect_phone(self, board_id: str, mailbox: Mailbox[PhoneDown]) -> None:
+        A device seen for the first time gets the lowest free ``board-N``, or
+        ``asked`` (the page's ``?board=``) when that is a board id no other camera
+        holds; a known device asking for another id is renamed to it. A refused
+        ``asked`` is said to the phone, which streams under its own id meanwhile.
+        """
+        previous = self._phones.get(device_id)
+        if previous is not None:
+            previous.mailbox.post(ReplacedMessage())
+        link = PhoneLink(device_id)
+        self._phones[device_id] = link
+        refusal: str | None = None
+        if asked is not None and asked != self._cameras.get(device_id):
+            try:
+                wanted = self._check_name(device_id, asked)
+            except ValueError as e:
+                if isinstance(e, NameTaken):
+                    link.refused_board = asked
+                refusal = str(e)
+            else:
+                if device_id in self._cameras:
+                    self.rename(device_id, wanted)
+                else:
+                    self._cameras[device_id] = wanted
+                    self._save()
+        if device_id not in self._cameras:
+            self._cameras[device_id] = self._free_board_id()
+            self._save()
+        board_id = self._cameras[device_id]
         board = self.board(board_id)
-        board.phones.discard(mailbox)
-        self._tell_watchers(board, board.state())
+        link.mailbox.post(AssignedMessage(board_id))
+        link.mailbox.post(ConfigMessage(board.config))
+        link.mailbox.post(PreviewsMessage(on=bool(board.watchers)))
+        if refusal is not None:
+            link.mailbox.post(RefusedMessage(f"{refusal}; this phone streams as {board_id}"))
+        self._tell_watchers(board_id)
+        self._tell_lists()
+        return link
 
-    def report(self, board_id: str, report: CameraReport) -> None:
-        board = self.board(board_id)
-        board.report = report
-        self._tell_watchers(board, board.state())
+    def disconnect_phone(self, link: PhoneLink) -> None:
+        if not self._current(link):
+            return  # replaced: the newer socket is the device's now
+        del self._phones[link.device_id]
+        self._tell_watchers(self._cameras[link.device_id])
+        self._tell_lists()
 
-    def preview(self, board_id: str, preview: PreviewMessage) -> None:
-        board = self.board(board_id)
-        board.preview = preview
-        self._tell_watchers(board, preview)
+    def report(self, link: PhoneLink, report: CameraReport) -> None:
+        if not self._current(link):
+            return
+        board_id = self._cameras[link.device_id]
+        self.board(board_id).report = report
+        self._tell_watchers(board_id)
+        self._tell_lists()
+
+    def preview(self, link: PhoneLink, preview: PreviewMessage) -> None:
+        if not self._current(link):
+            return
+        board_id = self._cameras[link.device_id]
+        self.board(board_id).preview = preview
+        self._tell_watchers(board_id, preview)
+
+    # ---- the camera lists --------------------------------------------------------
+
+    def connect_list(self) -> asyncio.Event:
+        """A wake-up for one open camera list, set whenever what it shows changes."""
+        changed = asyncio.Event()
+        self._lists.add(changed)
+        return changed
+
+    def disconnect_list(self, changed: asyncio.Event) -> None:
+        self._lists.discard(changed)
+
+    def cameras(self, frame_age: Callable[[str], float | None]) -> CamerasMessage:
+        """Every known camera, ordered by board id; ``frame_age`` reads a board's."""
+        entries = []
+        for device_id, board_id in sorted(self._cameras.items(), key=lambda kv: _natural(kv[1])):
+            board = self._boards.get(board_id)
+            phone = self._phones.get(device_id)
+            entries.append(
+                CameraEntry(
+                    device_id=device_id,
+                    board_id=board_id,
+                    connected=phone is not None,
+                    report=None if board is None else board.report,
+                    frame_age_s=frame_age(board_id),
+                    refused_board=None if phone is None else phone.refused_board,
+                )
+            )
+        return CamerasMessage(cameras=tuple(entries))
 
     # ---- the control pages -------------------------------------------------------
 
@@ -327,18 +549,18 @@ class CameraRegistry:
         board = self.board(board_id)
         mailbox: Mailbox[ControlDown] = Mailbox()
         board.watchers.add(mailbox)
-        mailbox.post(board.state())
+        mailbox.post(self._state(board_id))
         if board.preview is not None:
             mailbox.post(board.preview)
         if len(board.watchers) == 1:
-            self._tell_phones(board, PreviewsMessage(on=True))
+            self._tell_phone(board_id, PreviewsMessage(on=True))
         return mailbox
 
     def disconnect_watcher(self, board_id: str, mailbox: Mailbox[ControlDown]) -> None:
         board = self.board(board_id)
         board.watchers.discard(mailbox)
         if not board.watchers:
-            self._tell_phones(board, PreviewsMessage(on=False))
+            self._tell_phone(board_id, PreviewsMessage(on=False))
 
     def configure(self, board_id: str, config: CameraConfig) -> None:
         board = self.board(board_id)
@@ -348,8 +570,8 @@ class CameraRegistry:
         board.config = config
         if changed:
             self._save()
-        self._tell_phones(board, ConfigMessage(config))
-        self._tell_watchers(board, board.state())
+        self._tell_phone(board_id, ConfigMessage(config))
+        self._tell_watchers(board_id)
 
     def _save(self) -> None:
         if self._path is None:
@@ -360,9 +582,9 @@ class CameraRegistry:
             if board.config != CameraConfig()
         }
         try:
-            save_configs(self._path, configured)
+            save_state(self._path, Saved(configured, dict(self._cameras)))
         except OSError as e:
-            # The config still applies; only the next restart forgets it.
+            # The state still applies; only the next restart forgets it.
             log.warning("cannot save the camera config to %s: %s", self._path, e)
 
     # ---- the recognizer --------------------------------------------------------------
@@ -434,6 +656,11 @@ async def _deliver[M: _Message](ws: WebSocket, mailbox: Mailbox[M]) -> None:
     while True:
         for message in await mailbox.take():
             await ws.send_text(message.to_json())
+            if isinstance(message, ReplacedMessage):
+                # The device's newer socket took over: this one closes, said aloud,
+                # because a handler that only returns leaves the socket open.
+                await ws.close(code=1000, reason="replaced")
+                return
 
 
 class _HungUp(Exception):
@@ -492,14 +719,20 @@ def router(
     status: Callable[[str], NodeStatus],
     clock: Callable[[], float] = time.time,
 ) -> APIRouter:
-    """The two control sockets. ``status`` reads the node's own facts per board."""
+    """The control sockets. ``status`` reads the node's own facts per board."""
     api = APIRouter()
 
-    @api.websocket("/boards/{board_id}/camera")
-    async def phone(ws: WebSocket, board_id: str) -> None:
+    @api.websocket("/cameras/{device_id}")
+    async def phone(ws: WebSocket, device_id: str, board: str | None = None) -> None:
         await ws.accept()
-        mailbox = registry.connect_phone(board_id)
-        refuse = _Refusals(f"/boards/{board_id}/camera", mailbox)
+        try:
+            checked_device_id(device_id)
+        except ValueError as e:
+            await ws.send_text(RefusedMessage(str(e)).to_json())
+            await ws.close(code=1008)
+            return
+        link = registry.connect_phone(device_id, board)
+        refuse = _Refusals(f"/cameras/{device_id[:8]}", link.mailbox)
 
         async def receive() -> None:
             while True:
@@ -509,17 +742,60 @@ def router(
                 try:
                     jpeg = message.get("bytes")
                     if jpeg is not None:
-                        registry.preview(board_id, _parse_preview(jpeg))
+                        registry.preview(link, _parse_preview(jpeg))
                     else:
                         report = parse_phone_message(message.get("text") or "").report
-                        registry.report(board_id, report)
+                        registry.report(link, report)
                 except ValueError as e:
                     refuse(str(e))
 
         try:
-            await _until_first_ends(receive(), _deliver(ws, mailbox))
+            await _until_first_ends(receive(), _deliver(ws, link.mailbox))
         finally:
-            registry.disconnect_phone(board_id, mailbox)
+            registry.disconnect_phone(link)
+
+    @api.websocket("/boards/{board_id}/camera")
+    async def outdated_phone(ws: WebSocket, board_id: str) -> None:
+        """A /camera page from before the phones had device ids: tell it to reload."""
+        await ws.accept()
+        await ws.send_text(RefusedMessage("this /camera page is out of date: reload it").to_json())
+        await ws.close(code=1008)
+
+    @api.websocket("/cameras")
+    async def camera_list(ws: WebSocket) -> None:
+        await ws.accept()
+        changed = registry.connect_list()
+        mailbox: Mailbox[CamerasDown] = Mailbox()
+        refuse = _Refusals("/cameras", mailbox)
+
+        def frame_age(board_id: str) -> float | None:
+            frame = status(board_id).frame
+            return None if frame is None else max(0.0, clock() - frame.received_at)
+
+        async def receive() -> None:
+            while True:
+                message = await ws.receive()
+                if message["type"] == "websocket.disconnect":
+                    return
+                try:
+                    rename = parse_cameras_message(message.get("text") or "")
+                    registry.rename(rename.device_id, rename.board_id)
+                except ValueError as e:
+                    refuse(str(e))
+
+        async def push() -> None:
+            """The list on connect, on every change, and once a second for the ages."""
+            while True:
+                changed.clear()
+                mailbox.post(registry.cameras(frame_age))
+                with contextlib.suppress(TimeoutError):
+                    async with asyncio.timeout(HEALTH_EVERY_S):
+                        await changed.wait()
+
+        try:
+            await _until_first_ends(receive(), _deliver(ws, mailbox), push())
+        finally:
+            registry.disconnect_list(changed)
 
     @api.websocket("/boards/{board_id}/control")
     async def control(ws: WebSocket, board_id: str) -> None:

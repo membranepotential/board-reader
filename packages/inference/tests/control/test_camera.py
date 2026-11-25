@@ -15,8 +15,10 @@ import os
 import numpy as np
 import pytest
 from starlette.testclient import TestClient, WebSocketTestSession
+from starlette.websockets import WebSocketDisconnect
 
 from board_reader_core.control import (
+    AssignedMessage,
     BoardDirection,
     CameraConfig,
     CameraReport,
@@ -24,6 +26,8 @@ from board_reader_core.control import (
     CropRect,
     PreviewMessage,
     PreviewsMessage,
+    RefusedMessage,
+    ReplacedMessage,
     StateMessage,
 )
 from board_reader_core.protocol import START_PLACEMENT
@@ -60,58 +64,86 @@ SENT_CONFIG = {**CONFIG, "rules": "standard"}
 
 # ---- the registry -------------------------------------------------------------------
 
+PHONE = "kitchen-phone-id"
+OTHER = "garden-phone-id"
 
-def test_a_phone_hears_its_config_and_that_nobody_watches_on_connect():
+
+def test_a_phone_hears_its_board_its_config_and_that_nobody_watches_on_connect():
     registry = CameraRegistry()
-    registry.configure("phone", CameraConfig(streaming=True))
-    phone = registry.connect_phone("phone")
-    assert phone.take_nowait() == [
-        ConfigMessage(CameraConfig(streaming=True)),
+    registry.configure("board-1", CameraConfig(streaming=True))  # a saved config keeps its id
+    phone = registry.connect_phone(PHONE)
+    assert phone.mailbox.take_nowait() == [
+        AssignedMessage("board-2"),
+        ConfigMessage(CameraConfig()),
         PreviewsMessage(on=False),
     ]
 
 
-def test_a_config_change_reaches_every_phone_and_every_watcher():
+def test_each_new_phone_gets_the_lowest_free_board_and_keeps_it():
     registry = CameraRegistry()
-    phone = registry.connect_phone("phone")
-    watchers = [registry.connect_watcher("phone"), registry.connect_watcher("phone")]
-    for mailbox in (phone, *watchers):
+    first = registry.connect_phone(PHONE)
+    assert registry.connect_phone(OTHER).mailbox.take_nowait()[0] == AssignedMessage("board-2")
+    registry.disconnect_phone(first)
+    # The same phone again (a reload, a reconnect) streams as the same board.
+    assert registry.connect_phone(PHONE).mailbox.take_nowait()[0] == AssignedMessage("board-1")
+
+
+def test_a_newer_socket_of_one_phone_replaces_the_older():
+    registry = CameraRegistry()
+    old = registry.connect_phone(PHONE)
+    old.mailbox.take_nowait()
+    new = registry.connect_phone(PHONE)
+    assert old.mailbox.take_nowait() == [ReplacedMessage()]
+    assert new.mailbox.take_nowait()[0] == AssignedMessage("board-1")
+
+    # The replaced socket speaks for nobody: its late report and its close change nothing.
+    registry.report(old, CameraReport.from_dict({**REPORT, "ingest": "streaming"}))
+    registry.disconnect_phone(old)
+    watcher = registry.connect_watcher("board-1")
+    assert watcher.take_nowait() == [StateMessage(CameraConfig(), None, phone_connected=True)]
+
+
+def test_a_config_change_reaches_the_boards_phone_and_every_watcher():
+    registry = CameraRegistry()
+    phone = registry.connect_phone(PHONE)
+    watchers = [registry.connect_watcher("board-1"), registry.connect_watcher("board-1")]
+    for mailbox in (phone.mailbox, *watchers):
         mailbox.take_nowait()
 
     config = CameraConfig(crop=CropRect(0.1, 0.1, 0.5, 0.5), streaming=True)
-    registry.configure("phone", config)
-    assert phone.take_nowait() == [ConfigMessage(config)]
+    registry.configure("board-1", config)
+    assert phone.mailbox.take_nowait() == [ConfigMessage(config)]
     for watcher in watchers:
         assert watcher.take_nowait() == [StateMessage(config, None, phone_connected=True)]
 
 
 def test_previews_are_wanted_exactly_while_a_control_page_watches():
     registry = CameraRegistry()
-    phone = registry.connect_phone("phone")
-    phone.take_nowait()
+    phone = registry.connect_phone(PHONE)
+    phone.mailbox.take_nowait()
 
-    first = registry.connect_watcher("phone")
-    assert phone.take_nowait() == [PreviewsMessage(on=True)]
-    second = registry.connect_watcher("phone")
-    assert phone.take_nowait() == []  # already on
-    registry.disconnect_watcher("phone", first)
-    assert phone.take_nowait() == []  # one still watches
-    registry.disconnect_watcher("phone", second)
-    assert phone.take_nowait() == [PreviewsMessage(on=False)]
+    first = registry.connect_watcher("board-1")
+    assert phone.mailbox.take_nowait() == [PreviewsMessage(on=True)]
+    second = registry.connect_watcher("board-1")
+    assert phone.mailbox.take_nowait() == []  # already on
+    registry.disconnect_watcher("board-1", first)
+    assert phone.mailbox.take_nowait() == []  # one still watches
+    registry.disconnect_watcher("board-1", second)
+    assert phone.mailbox.take_nowait() == [PreviewsMessage(on=False)]
 
 
 def test_a_watcher_hears_the_phone_come_and_go_and_its_reports():
     registry = CameraRegistry()
-    watcher = registry.connect_watcher("phone")
+    watcher = registry.connect_watcher("board-1")
     assert watcher.take_nowait() == [StateMessage(CameraConfig(), None, phone_connected=False)]
 
-    phone = registry.connect_phone("phone")
+    phone = registry.connect_phone(PHONE)
     report = CameraReport.from_dict(REPORT)
-    registry.report("phone", report)
+    registry.report(phone, report)
     # Latest state wins: the connect and the report collapse into one message.
     assert watcher.take_nowait() == [StateMessage(CameraConfig(), report, phone_connected=True)]
 
-    registry.disconnect_phone("phone", phone)
+    registry.disconnect_phone(phone)
     # The report outlives the phone, so the lens list survives a reload.
     assert watcher.take_nowait() == [StateMessage(CameraConfig(), report, phone_connected=False)]
 
@@ -119,19 +151,87 @@ def test_a_watcher_hears_the_phone_come_and_go_and_its_reports():
 def test_a_new_watcher_gets_the_last_preview_at_once():
     registry = CameraRegistry()
     preview = PreviewMessage(jpeg=b"jpeg", width=480, height=270)
-    registry.preview("phone", preview)
-    watcher = registry.connect_watcher("phone")
+    registry.preview(registry.connect_phone(PHONE), preview)
+    watcher = registry.connect_watcher("board-1")
     assert watcher.take_nowait()[1:] == [preview]
 
 
 def test_boards_are_independent():
     registry = CameraRegistry()
-    left = registry.connect_phone("left")
-    left.take_nowait()
-    registry.connect_watcher("right")
-    registry.configure("right", CameraConfig(streaming=True))
-    assert left.take_nowait() == []
-    assert registry.board("left").config.streaming is False
+    left = registry.connect_phone(PHONE)
+    left.mailbox.take_nowait()
+    registry.connect_phone(OTHER)
+    registry.connect_watcher("board-2")
+    registry.configure("board-2", CameraConfig(streaming=True))
+    assert left.mailbox.take_nowait() == []
+    assert registry.board("board-1").config.streaming is False
+
+
+# ---- renaming ---------------------------------------------------------------------------
+
+
+def test_a_rename_moves_the_config_and_tells_the_phone_and_both_pages():
+    registry = CameraRegistry()
+    phone = registry.connect_phone(PHONE)
+    config = CameraConfig(crop=CropRect(0.1, 0.1, 0.5, 0.5), streaming=True)
+    registry.configure("board-1", config)
+    old_page, new_page = registry.connect_watcher("board-1"), registry.connect_watcher("left")
+    for mailbox in (phone.mailbox, old_page, new_page):
+        mailbox.take_nowait()
+
+    registry.rename(PHONE, "left")
+    assert registry.board_of(PHONE) == "left"
+    # The phone switches its frames to the new id; a page watches the new one.
+    assert phone.mailbox.take_nowait() == [AssignedMessage("left"), PreviewsMessage(on=True)]
+    assert new_page.take_nowait() == [StateMessage(config, None, phone_connected=True)]
+    # The old id is an empty board now, so its page sees nothing left to control.
+    assert old_page.take_nowait() == [StateMessage(CameraConfig(), None, phone_connected=False)]
+    assert registry.rules("board-1") == "standard"
+
+
+def test_a_rename_is_refused_for_a_taken_or_malformed_name_or_an_unknown_camera():
+    registry = CameraRegistry()
+    registry.connect_phone(PHONE)
+    registry.connect_phone(OTHER)
+    with pytest.raises(ValueError, match="board-2 is taken by camera garden-p"):
+        registry.rename(PHONE, "board-2")
+    with pytest.raises(ValueError, match="is not a board id"):
+        registry.rename(PHONE, "left board")
+    with pytest.raises(ValueError, match="no camera"):
+        registry.rename("unknown-device", "left")
+    assert (registry.board_of(PHONE), registry.board_of(OTHER)) == ("board-1", "board-2")
+
+
+def test_a_phone_may_ask_for_its_board_and_is_refused_one_another_camera_holds():
+    registry = CameraRegistry()
+    asked = registry.connect_phone(PHONE, asked="left")
+    assert asked.mailbox.take_nowait()[0] == AssignedMessage("left")
+
+    second = registry.connect_phone(OTHER, asked="left")
+    sent = second.mailbox.take_nowait()
+    assert sent[0] == AssignedMessage("board-1")
+    assert sent[-1] == RefusedMessage(
+        "left is taken by camera kitchen-; this phone streams as board-1"
+    )
+    listed = {entry.device_id: entry for entry in registry.cameras(lambda board_id: None).cameras}
+    assert listed[OTHER].refused_board == "left"
+    assert listed[PHONE].refused_board is None
+
+    # A known phone asking for a free id is renamed to it, which clears the refusal.
+    registry.connect_phone(OTHER, asked="right")
+    assert registry.board_of(OTHER) == "right"
+    assert all(e.refused_board is None for e in registry.cameras(lambda board_id: None).cameras)
+
+
+def test_the_list_names_every_camera_in_board_order_with_its_link_and_frame_age():
+    registry = CameraRegistry()
+    devices = [f"phone-{n:02d}-id" for n in range(1, 11)]
+    links = [registry.connect_phone(device) for device in devices]
+    registry.disconnect_phone(links[0])
+    listed = registry.cameras(lambda board_id: 2.0 if board_id == "board-10" else None).cameras
+    assert [e.board_id for e in listed] == [f"board-{n}" for n in range(1, 11)]
+    assert [e.connected for e in listed[:2]] == [False, True]
+    assert listed[-1].frame_age_s == 2.0 and listed[0].frame_age_s is None
 
 
 def test_the_frame_rate_is_measured_between_two_ticks():
@@ -151,32 +251,49 @@ def config_file(tmp_path, monkeypatch):
     return path
 
 
-def test_a_restarted_node_pushes_the_config_it_had(config_file):
+def test_a_restarted_node_gives_each_phone_its_board_and_config_back(config_file):
     config = CameraConfig.from_dict(CONFIG)
-    CameraRegistry().configure("phone", config)
+    registry = CameraRegistry()
+    registry.connect_phone(OTHER)
+    registry.connect_phone(PHONE)
+    registry.rename(PHONE, "left")
+    registry.configure("left", config)
     assert config_file.exists()
     assert not list(config_file.parent.glob(".*.tmp")), "the temporary file was renamed"
 
     restarted = CameraRegistry()
-    phone = restarted.connect_phone("phone")
-    assert phone.take_nowait()[0] == ConfigMessage(config)
+    phone = restarted.connect_phone(PHONE)
+    assert phone.mailbox.take_nowait()[:2] == [AssignedMessage("left"), ConfigMessage(config)]
+    assert restarted.board_of(OTHER) == "board-1"
     assert restarted.board("other").config == CameraConfig()
 
 
 def test_a_corrupt_config_file_is_ignored_with_a_warning(config_file, caplog):
     config_file.parent.mkdir(parents=True)
     bad = {"boards": {"phone": {**CONFIG, "resolution": "8k"}}}
-    for text in ("{not json", json.dumps(bad), json.dumps({"phone": CONFIG})):
+    twice = {"boards": {}, "cameras": {PHONE: "left", OTHER: "left"}}
+    for text in ("{not json", json.dumps(bad), json.dumps({"phone": CONFIG}), json.dumps(twice)):
         config_file.write_text(text)
         with caplog.at_level(logging.WARNING):
             registry = CameraRegistry()
         assert registry.board("phone").config == CameraConfig()
+        assert registry.board_of(PHONE) is None
         assert "corrupt camera config" in caplog.text
         caplog.clear()
 
     # The next change replaces the corrupt file with a whole one.
     registry.configure("phone", CameraConfig(streaming=True))
     assert CameraRegistry().board("phone").config == CameraConfig(streaming=True)
+
+
+def test_a_file_from_before_the_device_ids_loads_and_its_boards_are_not_handed_out(config_file):
+    """Such a file has only ``boards``: no camera is known, the configs still load."""
+    config_file.parent.mkdir(parents=True)
+    config_file.write_text(json.dumps({"boards": {"phone": CONFIG, "board-1": CONFIG}}))
+    registry = CameraRegistry()
+    assert registry.board("phone").config == CameraConfig.from_dict(CONFIG)
+    # A saved config is not handed to a new phone, which would stream at once.
+    assert registry.connect_phone(PHONE).mailbox.take_nowait()[0] == AssignedMessage("board-2")
 
 
 def test_a_config_saved_before_the_rules_existed_loads_as_standard(config_file):
@@ -297,13 +414,26 @@ def _until(ws: WebSocketTestSession, kind: str) -> dict:
     raise AssertionError(f"no {kind} message")
 
 
+CAMERA = f"/cameras/{PHONE}"
+
+
+def _hello(phone: WebSocketTestSession) -> str:
+    """Read what a phone hears on connect; its board id."""
+    assigned = json.loads(phone.receive_text())
+    assert assigned["type"] == "assigned"
+    assert json.loads(phone.receive_text())["type"] == "config"
+    assert json.loads(phone.receive_text())["type"] == "previews"
+    return assigned["board_id"]
+
+
 def test_a_config_set_on_control_is_pushed_to_the_phone():
-    with _client() as client, client.websocket_connect("/boards/phone/camera") as phone:
+    with _client() as client, client.websocket_connect(CAMERA) as phone:
+        assert json.loads(phone.receive_text()) == {"type": "assigned", "board_id": "board-1"}
         assert json.loads(phone.receive_text())["type"] == "config"
         assert json.loads(phone.receive_text()) == {"type": "previews", "on": False}
         phone.send_text(json.dumps({"type": "report", "report": REPORT}))
 
-        with client.websocket_connect("/boards/phone/control") as control:
+        with client.websocket_connect("/boards/board-1/control") as control:
             state = _until(control, "state")
             assert state["report"] == REPORT
             assert state["phone_connected"] is True
@@ -317,21 +447,67 @@ def test_a_config_set_on_control_is_pushed_to_the_phone():
         assert json.loads(phone.receive_text()) == {"type": "previews", "on": False}
 
 
-def test_a_reconnecting_phone_hears_the_config_again():
+def test_a_reconnecting_phone_hears_its_board_and_config_again():
     with _client() as client:
-        with client.websocket_connect("/boards/phone/control") as control:
+        with client.websocket_connect(CAMERA) as phone:
+            assert _hello(phone) == "board-1"
+        with client.websocket_connect("/boards/board-1/control") as control:
             control.send_text(json.dumps({"type": "configure", "config": CONFIG}))
             _until(control, "state")
-        with client.websocket_connect("/boards/phone/camera") as phone:
+        with client.websocket_connect(CAMERA) as phone:
+            assert json.loads(phone.receive_text()) == {"type": "assigned", "board_id": "board-1"}
             assert json.loads(phone.receive_text()) == {"type": "config", "config": SENT_CONFIG}
+
+
+def test_a_second_page_of_one_phone_takes_over_and_the_first_is_closed():
+    with _client() as client, client.websocket_connect(CAMERA) as first:
+        _hello(first)
+        with client.websocket_connect(CAMERA) as second:
+            assert _hello(second) == "board-1"
+            assert json.loads(first.receive_text()) == {"type": "replaced"}
+            with pytest.raises(WebSocketDisconnect):
+                first.receive_text()
+
+
+def test_the_camera_list_shows_each_phone_and_renames_it():
+    with (
+        _client() as client, client.websocket_connect("/cameras") as cameras,
+        client.websocket_connect(CAMERA) as phone,
+    ):
+        _hello(phone)
+        listed = _until(cameras, "cameras")["cameras"]
+        while not listed:  # the first list may predate the phone
+            listed = _until(cameras, "cameras")["cameras"]
+        assert listed == [{"device_id": PHONE, "board_id": "board-1", "connected": True,
+                           "report": None, "frame_age_s": None, "refused_board": None}]
+
+        cameras.send_text(json.dumps({"type": "rename", "device_id": PHONE, "board_id": "left"}))
+        assert json.loads(phone.receive_text()) == {"type": "assigned", "board_id": "left"}
+        cameras.send_text(json.dumps({"type": "rename", "device_id": PHONE, "board_id": "a/b"}))
+        assert "is not a board id" in _until(cameras, "refused")["reason"]
+        assert [e["board_id"] for e in _until(cameras, "cameras")["cameras"]] == ["left"]
+
+
+def test_a_phone_without_a_device_id_is_refused_and_an_outdated_page_told_to_reload():
+    with _client() as client:
+        with client.websocket_connect("/cameras/x") as phone:
+            assert json.loads(phone.receive_text()) == {
+                "type": "refused", "reason": "'x' is not a device id",
+            }
+            with pytest.raises(WebSocketDisconnect):
+                phone.receive_text()
+        with client.websocket_connect("/boards/phone/camera") as old:
+            assert "reload" in json.loads(old.receive_text())["reason"]
+        assert client.app.state.cameras.cameras(lambda board_id: None).cameras == ()
 
 
 def test_the_phones_preview_reaches_the_control_page():
     jpeg = encode_jpeg(render_board()[:120, :200])
     with (
-        _client() as client, client.websocket_connect("/boards/phone/control") as control,
-        client.websocket_connect("/boards/phone/camera") as phone,
+        _client() as client, client.websocket_connect("/boards/board-1/control") as control,
+        client.websocket_connect(CAMERA) as phone,
     ):
+        _hello(phone)
         phone.send_bytes(jpeg)
         preview = _until(control, "preview")
         assert (preview["width"], preview["height"]) == (200, 120)
@@ -340,8 +516,8 @@ def test_the_phones_preview_reaches_the_control_page():
 
 def test_a_bad_message_is_refused_and_the_socket_stays():
     with _client() as client:
-        with client.websocket_connect("/boards/phone/camera") as phone:
-            phone.receive_text(), phone.receive_text()  # config, previews
+        with client.websocket_connect(CAMERA) as phone:
+            _hello(phone)
             phone.send_bytes(b"not a picture")
             assert json.loads(phone.receive_text()) == {
                 "type": "refused",
@@ -349,7 +525,7 @@ def test_a_bad_message_is_refused_and_the_socket_stays():
             }
             phone.send_text(json.dumps({"type": "report", "report": {"ingest": "flying"}}))
             assert json.loads(phone.receive_text())["type"] == "refused"
-        with client.websocket_connect("/boards/phone/control") as control:
+        with client.websocket_connect("/boards/board-1/control") as control:
             bad = {"type": "configure", "config": {"crop": {"x": 0.9, "y": 0, "w": 0.5, "h": 0.5}}}
             control.send_text(json.dumps(bad))
             assert "crop" in _until(control, "refused")["reason"]

@@ -18,16 +18,30 @@ models, :mod:`.schema`) so neither end trusts the other's JSON:
   frame**, so it survives a resolution change unchanged. Also the Python edge's
   static ``--roi``.
 
-They travel on two WebSockets, one per board and per kind of client. Every text
-message is a JSON object whose ``type`` names it:
+A phone is known by its **device id** (:data:`DeviceId`), a random id it keeps in
+its browser; the node assigns each device a **board id** (:data:`CameraBoardId`),
+``board-1``, ``board-2``, ..., keeps the pair across restarts, and lets the control
+UI rename it. The board id is what the phone's frames name on ``/ingest`` and what
+every per-board socket below is keyed by.
 
-``WS /boards/{id}/camera`` — the phone.
+They travel on three WebSockets. Every text message is a JSON object whose ``type``
+names it:
+
+``WS /cameras/{device_id}`` — the phone (``?board=<id>`` asks for that board id).
   * up: :class:`ReportMessage` (text), sent on connect and whenever the report
     changes; a whole-frame preview JPEG (binary, the socket's only binary message),
     sent only while the node has asked for previews.
-  * down: :class:`ConfigMessage` on connect and on every change;
+  * down: :class:`AssignedMessage` on connect and on every rename;
+    :class:`ConfigMessage` on connect and on every change;
     :class:`PreviewsMessage` on connect and whenever the first /control page opens
-    or the last one closes; :class:`RefusedMessage` for a message the node refused.
+    or the last one closes; :class:`ReplacedMessage` when a newer socket of the same
+    device took over (the node then closes this one); :class:`RefusedMessage` for a
+    message or a ``?board=`` the node refused.
+
+``WS /cameras`` — the control UI's list of every known camera.
+  * up: :class:`RenameMessage`.
+  * down: :class:`CamerasMessage` on connect, on every change and about once a
+    second (for the frame ages); :class:`RefusedMessage`.
 
 ``WS /boards/{id}/control`` — a control page.
   * up: :class:`ConfigureMessage`, the whole new config.
@@ -55,15 +69,18 @@ from pydantic import (
     StrictBytes,
     StrictFloat,
     StrictStr,
+    ValidationError,
     WithJsonSchema,
     model_validator,
 )
 
 from board_reader_core.wiremodel import (
+    BoardId,
     Message,
     Natural,
     Positive,
     Wire,
+    adapter,
     checked,
     message,
     parse,
@@ -363,10 +380,117 @@ class HealthMessage(Message):
     direction: BoardDirection | None
 
 
-#: What the node sends the phone.
-PhoneDown = Annotated[ConfigMessage | PreviewsMessage | RefusedMessage, Field(discriminator="type")]
 #: What the node sends a control page.
 ControlDown = Annotated[
     StateMessage | PreviewMessage | FrameMessage | HealthMessage | RefusedMessage,
     Field(discriminator="type"),
 ]
+
+
+# ---- camera identity and the list of cameras ----------------------------------
+
+#: A phone's own id: random, made and kept by its browser (``crypto.randomUUID``).
+DeviceId = Annotated[StrictStr, Field(pattern=r"^[0-9A-Za-z-]{8,64}$")]
+
+#: A board id a camera may stream as: a :data:`BoardId` that is also one plain URL
+#: path segment (letters, digits, ``.``, ``_``, ``-``; up to 32), because every
+#: per-board route (``/boards/{id}/control``, ``/boards/{id}/frame``) carries it.
+CameraBoardId = Annotated[
+    BoardId, Field(max_length=32, pattern=r"^[0-9A-Za-z][0-9A-Za-z._-]*$")
+]
+
+
+
+def device_id(raw: str) -> str:
+    """``raw`` as a :data:`DeviceId`; ``ValueError`` if it is none."""
+    try:
+        return adapter(DeviceId).validate_python(raw)
+    except ValidationError:
+        raise ValueError(f"{raw!r} is not a device id") from None
+
+
+def camera_board_id(name: str) -> str:
+    """``name`` as a :data:`CameraBoardId`; ``ValueError`` says why not, in words.
+
+    The reason goes to an operator who typed a name, so it states the rule rather
+    than the pattern.
+    """
+    try:
+        return adapter(CameraBoardId).validate_python(name)
+    except ValidationError:
+        raise ValueError(
+            f"{name!r} is not a board id: use up to 32 letters, digits, '.', '_' or '-', "
+            "starting with a letter or a digit"
+        ) from None
+
+
+@message
+class AssignedMessage(Message):
+    """Node -> phone: the board id this phone streams as, from now on."""
+
+    type: Literal["assigned"] = tag("assigned")
+    board_id: CameraBoardId
+
+
+@message
+class ReplacedMessage(Message):
+    """Node -> phone: a newer socket of this same device took over; this one closes.
+
+    The phone stops streaming and does not reconnect, or two pages of one phone
+    would take the camera from each other forever.
+    """
+
+    type: Literal["replaced"] = tag("replaced")
+
+
+@wire
+class CameraEntry(Wire):
+    """One known camera, as the control UI lists it.
+
+    ``report`` is the phone's last report (kept after it disconnects);
+    ``frame_age_s`` the seconds since its board's last frame, on the node's clock.
+    ``refused_board`` is the board id this phone asked for (``?board=``) while
+    another camera holds it; the phone streams as ``board_id`` instead.
+    """
+
+    device_id: DeviceId
+    board_id: CameraBoardId
+    connected: StrictBool
+    report: CameraReport | None
+    frame_age_s: NonNegative | None
+    refused_board: CameraBoardId | None
+
+
+@message
+class CamerasMessage(Message):
+    """Node -> control UI: every known camera, ordered by board id."""
+
+    type: Literal["cameras"] = tag("cameras")
+    cameras: tuple[CameraEntry, ...]
+
+
+@message
+class RenameMessage(Message):
+    """Control UI -> node: give this device's camera a new board id.
+
+    ``board_id`` is checked by the node (:data:`CameraBoardId`, not used by another
+    camera), which refuses with a reason an operator can read.
+    """
+
+    type: Literal["rename"] = tag("rename")
+    device_id: DeviceId
+    board_id: Text
+
+
+def parse_cameras_message(text: str) -> RenameMessage:
+    """One text message from a ``/cameras`` socket; ``ValueError`` says why not."""
+    return parse(RenameMessage, text)
+
+
+#: What the node sends the phone.
+PhoneDown = Annotated[
+    AssignedMessage | ConfigMessage | PreviewsMessage | ReplacedMessage | RefusedMessage,
+    Field(discriminator="type"),
+]
+#: What the node sends the control UI's camera list.
+CamerasDown = Annotated[CamerasMessage | RefusedMessage, Field(discriminator="type")]

@@ -27,6 +27,15 @@ function fixed<T extends z.ZodType, N extends number>(item: T, n: N) {
 }
 
 /**
+ * Node -> phone: the board id this phone streams as, from now on.
+ */
+export const AssignedMessage = z.strictObject({
+  board_id: z.string().min(1).max(32).regex(/^[0-9A-Za-z][0-9A-Za-z._-]*$/),
+  type: z.literal('assigned')
+});
+export type AssignedMessage = Immutable<z.infer<typeof AssignedMessage>>;
+
+/**
  * Which way the board lies in the camera's image, as the recognizer reads it.
  *
  * `degrees` is the direction of the board's e1->e8 axis in the image, counted
@@ -178,6 +187,33 @@ export const CameraReport = z.strictObject({
 export type CameraReport = Immutable<z.infer<typeof CameraReport>>;
 
 /**
+ * One known camera, as the control UI lists it.
+ *
+ * `report` is the phone's last report (kept after it disconnects);
+ * `frame_age_s` the seconds since its board's last frame, on the node's clock.
+ * `refused_board` is the board id this phone asked for (`?board=`) while
+ * another camera holds it; the phone streams as `board_id` instead.
+ */
+export const CameraEntry = z.strictObject({
+  device_id: z.string().regex(/^[0-9A-Za-z-]{8,64}$/),
+  board_id: z.string().min(1).max(32).regex(/^[0-9A-Za-z][0-9A-Za-z._-]*$/),
+  connected: z.boolean(),
+  report: CameraReport.nullable(),
+  frame_age_s: z.number().min(0).nullable(),
+  refused_board: z.string().min(1).max(32).regex(/^[0-9A-Za-z][0-9A-Za-z._-]*$/).nullable()
+});
+export type CameraEntry = Immutable<z.infer<typeof CameraEntry>>;
+
+/**
+ * Node -> control UI: every known camera, ordered by board id.
+ */
+export const CamerasMessage = z.strictObject({
+  cameras: z.array(CameraEntry),
+  type: z.literal('cameras')
+});
+export type CamerasMessage = Immutable<z.infer<typeof CamerasMessage>>;
+
+/**
  * Node -> control page, about once a second: the recognizer and the stream.
  *
  * Ages and rates are measured on the node's clock, so the page needs none: the
@@ -320,9 +356,38 @@ export const RefusedMessage = z.strictObject({
 });
 export type RefusedMessage = Immutable<z.infer<typeof RefusedMessage>>;
 
+export const CamerasDown = z.discriminatedUnion('type', [CamerasMessage, RefusedMessage]);
+export type CamerasDown = Immutable<z.infer<typeof CamerasDown>>;
+
+/**
+ * Control UI -> node: give this device's camera a new board id.
+ *
+ * `board_id` is checked by the node (`CameraBoardId`, not used by another
+ * camera), which refuses with a reason an operator can read.
+ */
+export const RenameMessage = z.strictObject({
+  device_id: z.string().regex(/^[0-9A-Za-z-]{8,64}$/),
+  board_id: z.string().min(1),
+  type: z.literal('rename')
+});
+export type RenameMessage = Immutable<z.infer<typeof RenameMessage>>;
+
+/**
+ * Node -> phone: a newer socket of this same device took over; this one closes.
+ *
+ * The phone stops streaming and does not reconnect, or two pages of one phone
+ * would take the camera from each other forever.
+ */
+export const ReplacedMessage = z.strictObject({
+  type: z.literal('replaced')
+});
+export type ReplacedMessage = Immutable<z.infer<typeof ReplacedMessage>>;
+
 export const PhoneDown = z.discriminatedUnion('type', [
+  AssignedMessage,
   ConfigMessage,
   PreviewsMessage,
+  ReplacedMessage,
   RefusedMessage
 ]);
 export type PhoneDown = Immutable<z.infer<typeof PhoneDown>>;

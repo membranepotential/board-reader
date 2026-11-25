@@ -8,16 +8,22 @@ import json
 import pytest
 
 from board_reader_core.control import (
+    AssignedMessage,
     BoardDirection,
     CameraConfig,
+    CameraEntry,
     CameraReport,
+    CamerasMessage,
     ConfigMessage,
     CropRect,
     FrameSize,
     HealthMessage,
     PreviewMessage,
     PreviewsMessage,
+    ReplacedMessage,
     StateMessage,
+    camera_board_id,
+    parse_cameras_message,
     parse_control_message,
     parse_phone_message,
 )
@@ -174,3 +180,41 @@ def test_a_preview_carries_its_jpeg_as_base64():
     sent = json.loads(PreviewMessage(jpeg=b"\xff\xd8jpeg", width=480, height=270).to_json())
     assert (sent["type"], sent["width"], sent["height"]) == ("preview", 480, 270)
     assert base64.b64decode(sent["jpeg"]) == b"\xff\xd8jpeg"
+
+
+# ---- camera identity -------------------------------------------------------------
+
+DEVICE = "kitchen-phone-id"
+
+
+@pytest.mark.parametrize("name", ["board-1", "phone", "left.table_2", "A1"])
+def test_a_camera_board_id_is_one_plain_path_segment(name):
+    assert camera_board_id(name) == name
+
+
+@pytest.mark.parametrize("name", ["", "left board", "a/b", "-x", ".hidden", "x" * 33, "brett-ü"])
+def test_a_camera_board_id_refuses_what_a_url_path_would_mangle(name):
+    with pytest.raises(ValueError, match="is not a board id: use up to 32 letters"):
+        camera_board_id(name)
+
+
+def test_the_control_ui_renames_with_a_typed_message():
+    message = parse_cameras_message(
+        json.dumps({"type": "rename", "device_id": DEVICE, "board_id": "left"})
+    )
+    assert (message.device_id, message.board_id) == (DEVICE, "left")
+    with pytest.raises(ValueError):  # not a device id
+        parse_cameras_message(json.dumps({"type": "rename", "device_id": "x", "board_id": "left"}))
+
+
+def test_the_identity_messages_name_their_type():
+    assert json.loads(AssignedMessage("board-2").to_json()) == {"type": "assigned", "board_id": "board-2"}
+    assert json.loads(ReplacedMessage().to_json()) == {"type": "replaced"}
+    entry = CameraEntry(DEVICE, "board-1", True, None, 0.5, None)
+    assert json.loads(CamerasMessage(cameras=(entry,)).to_json()) == {
+        "type": "cameras",
+        "cameras": [
+            {"device_id": DEVICE, "board_id": "board-1", "connected": True, "report": None,
+             "frame_age_s": 0.5, "refused_board": None},
+        ],
+    }

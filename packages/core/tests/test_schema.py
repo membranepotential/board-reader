@@ -27,6 +27,7 @@ def test_the_document_names_every_message_and_is_stable():
     for name in (
         "PositionEvent", "MotionUpdate", "ViewerMessage", "FrameHeader",
         "ReportMessage", "PhoneDown", "ConfigureMessage", "ControlDown",
+        "RenameMessage", "CamerasDown", "CameraEntry",
         "CameraConfig", "CropRect", "CameraReport", "BoardDirection", "HealthMessage",
     ):
         assert name in defs
@@ -39,7 +40,9 @@ def test_the_document_names_every_message_and_is_stable():
 def test_each_socket_union_discriminates_on_the_messages_own_type():
     defs = json_schema()["$defs"]
     for union, members in (
-        ("PhoneDown", (control.ConfigMessage, control.PreviewsMessage, control.RefusedMessage)),
+        ("PhoneDown", (control.AssignedMessage, control.ConfigMessage, control.PreviewsMessage,
+                       control.ReplacedMessage, control.RefusedMessage)),
+        ("CamerasDown", (control.CamerasMessage, control.RefusedMessage)),
         ("ControlDown", (control.StateMessage, control.PreviewMessage, control.FrameMessage,
                          control.HealthMessage, control.RefusedMessage)),
     ):
