@@ -40,6 +40,8 @@ from board_reader_core.protocol import (
 )
 from board_reader_core.wire import Frame
 
+from board_reader_inference.recognition.locate import Grid
+
 #: The ``orientation`` every recognizer event carries. Reserved since D10: the
 #: placement is always in the chess frame, so this never varies.
 ORIENTATION = "a1_bottom_left"
@@ -60,22 +62,29 @@ class Recognition:
     read is *obscured*, a hand over the board, say. ``None`` when the recognizer
     does not report it (the stub, the test recognizers); such a read is never
     obscured.
+
+    ``grid`` is where the board lies in the frame, from the same model run
+    (:mod:`.locate`, in fractions of the frame read); gate it on
+    :attr:`~.locate.Grid.trusted`. ``None`` when the recognizer does not report it
+    (the stub, a model file without the square attention) or no board shape fits.
     """
 
     square_dist: np.ndarray
     direction: float | None = None
     frame_energy: float | None = None
+    grid: Grid | None = None
 
 
 @dataclass(frozen=True, slots=True)
 class FrameReading:
-    """One frame's read: its position event, and the board's direction and the
-    frame energy (see :class:`Recognition`), which ride beside the event, never in
-    it."""
+    """One frame's read: its position event, and the board's direction, the frame
+    energy and the board's grid (see :class:`Recognition`), which ride beside the
+    event, never in it."""
 
     event: PositionEvent
     direction: float | None = None
     frame_energy: float | None = None
+    grid: Grid | None = None
 
 
 #: One frame in, its read out — what a read *is*, for every caller.
@@ -151,6 +160,7 @@ def frame_reader(recognizer: Recognizer) -> FrameRead:
             event_from_dist(frame, recognition.square_dist),
             recognition.direction,
             recognition.frame_energy,
+            recognition.grid,
         )
 
     return read

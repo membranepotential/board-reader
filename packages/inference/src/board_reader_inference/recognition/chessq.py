@@ -28,6 +28,11 @@ rgb-imagenet-f32-bilinear-ignore-exif-v1``, and the reference port in
   author's PORTABLE.md). :func:`direction_degrees` turns it into the bearing
   :class:`~.recognizer.Recognition` carries; the ingest stream's orientation
   guard (:class:`~.ingest.OrientationGuard`) reads it.
+* output ``square_attention`` (the served ``-attn`` files only, ``make models``):
+  ``(1, 3, 64, 46, 46)``, three decoder cross-attention heads per square query over
+  the patch grid. :mod:`.locate` fits the board's grid to it, so every read carries
+  :attr:`~.recognizer.Recognition.grid` from the same run. A release file without
+  it still serves; its reads have no grid.
 
 **Frame energy** (:func:`frame_energy`): the same ``logits``, read as "does this
 frame look like a board?". A square's energy is minus the logsumexp of its 13
@@ -52,6 +57,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 
 import cv2
@@ -59,15 +65,29 @@ import numpy as np
 
 from board_reader_core.protocol import CLASSES, GRID, NUM_CLASSES
 
+from board_reader_inference.recognition.locate import fit_grid, square_centroids
 from board_reader_inference.recognition.onnxrt import cuda_providers
 from board_reader_inference.recognition.recognizer import Recognition
 
-#: ``(1, 3, 644, 644)`` float32 -> its ``(1, 64, 13)`` logits and ``(1, 2)``
-#: direction, the release's two outputs: the model, or a test fake.
-ModelFn = Callable[[np.ndarray], tuple[np.ndarray, np.ndarray]]
 
-#: The release's output names, in the order :data:`ModelFn` returns them.
+@dataclass(frozen=True, slots=True)
+class ModelOutputs:
+    """One run of the model: ``logits`` ``(1, 64, 13)``, ``direction`` ``(1, 2)``,
+    and ``attention`` ``(1, 3, 64, 46, 46)`` when the file outputs it."""
+
+    logits: np.ndarray
+    direction: np.ndarray
+    attention: np.ndarray | None = None
+
+
+#: ``(1, 3, 644, 644)`` float32 -> its :class:`ModelOutputs`: the model, or a test fake.
+ModelFn = Callable[[np.ndarray], ModelOutputs]
+
+#: The release's output names, requested by name on every run.
 OUTPUTS = ["logits", "direction"]
+
+#: The square-attention output of the served ``-attn`` files, requested when present.
+ATTENTION = "square_attention"
 
 #: Side of the square the model reads, in pixels (``input.shape`` in the descriptor).
 INPUT_PX = 644
@@ -149,11 +169,12 @@ def _onnx_model_fn(model_path: Path) -> ModelFn:
     import onnxruntime as ort
 
     sess = ort.InferenceSession(str(model_path), providers=cuda_providers())
+    has_attention = ATTENTION in {o.name for o in sess.get_outputs()}
+    names = [*OUTPUTS, ATTENTION] if has_attention else OUTPUTS
 
-    def run(batch: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    def run(batch: np.ndarray) -> ModelOutputs:
         # By name, never by position: what a release exports is its own business.
-        logits, direction = sess.run(OUTPUTS, {"image": batch})
-        return logits, direction
+        return ModelOutputs(*sess.run(names, {"image": batch}))
 
     return run
 
@@ -175,11 +196,18 @@ class ChessQRecognizer:
             self.model_path = str(model)
 
     def read(self, image: np.ndarray) -> Recognition:
-        """The model's chess-frame distribution, direction and frame energy for a
-        whole BGR frame."""
-        logits, direction = self.model_fn(preprocess_frame(image))
+        """The model's chess-frame distribution, direction, frame energy and board
+        grid for a whole BGR frame."""
+        out = self.model_fn(preprocess_frame(image))
+        height, width = image.shape[:2]
+        grid = (
+            None
+            if out.attention is None
+            else fit_grid(square_centroids(out.attention[0], width, height), width, height)
+        )
         return Recognition(
-            square_dist_from_logits(logits),
-            direction_degrees(direction),
-            frame_energy(logits),
+            square_dist_from_logits(out.logits),
+            direction_degrees(out.direction),
+            frame_energy(out.logits),
+            grid,
         )
