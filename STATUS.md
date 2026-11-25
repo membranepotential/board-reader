@@ -7,7 +7,7 @@ _reconciled: 2026-11-24 @ `480a5ea`_ · decisions: [docs/DESIGN.md](docs/DESIGN.
 A camera reads a live OTB board and streams timestamped **piece placements + per-square
 confidences**. No moves, no legality, no PGN — those belong to the downstream application layer.
 
-## Now (4 agents, files partitioned)
+## Now (2 agents, files partitioned)
 
 - **camera identity DONE** (`c7c423b`..`1a498fd`, D18): device id → auto `board-N`, kept across reloads/restarts;
   /control camera list + persistent rename + QR; duplicate id refused.
@@ -18,8 +18,10 @@ confidences**. No moves, no legality, no PGN — those belong to the downstream 
   `CameraQr`; agent A wires it into /control.
 - **multi-board + spikes** — load test: results and timestamps independent of load; fix what differs —
   running (agent C; stream/, /ingest handler).
-- **auto-crop probe** — ChessQ attention grid vs classical line detection (+ both) → proposed crop; board
-  83–15 % of the frame; where each runs (phone/Pi/node) — running (measure only; tools/probes/autocrop_*).
+- **read queue DONE** (`0102be1`, D17): every scheduled read done in order, oldest first; load only adds latency
+  (3 boards and 4x speed identical to solo); sustained overload drops keepalives, counted + recorded.
+- **auto-crop probe DONE** (`9de171f`): ChessQ attention (L1–3 H0) → grid → crop; coarse-to-fine reliable to
+  25 % of the frame, + tiles to 15 %; R² ≥ 0.90 refuses bad grids; classical CV loses (0 % at 15 %).
 
 ## Done (2026-11-24/25 — the ChessQ rebuild; plan: [docs/plans/2026-11-24-simplify-around-chessq.md](docs/plans/2026-11-24-simplify-around-chessq.md))
 
@@ -38,7 +40,8 @@ confidences**. No moves, no legality, no PGN — those belong to the downstream 
 ## Next
 
 1. **Resting-hand re-test** (you): rest a hand on the board mid-game; no wrong board, "hand?" chip shows.
-2. **Motion meter over the board only** — 45/60 gate moves wait for the 2 s idle read (the meter sees
+2. **Auto-frame button** (build per `9de171f`): node reads full frame → proposes crop on /control.
+3. **Motion meter over the board only** — 45/60 gate moves wait for the 2 s idle read (the meter sees
    the hand at the clock); crop-aware meter or the hand signal (report `0ada93d`).
 3. **Record more varied games** — second set, second camera, other light. All gate takes are one
    set; the settle defaults are fitted to it.
