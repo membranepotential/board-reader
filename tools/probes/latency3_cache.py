@@ -6,7 +6,7 @@ One ``<take>.npz`` per take in ``OUT_DIR``, over the take's longest streaming
 session (the session ``replay`` picks), one row per recorded frame:
 
 * ``seq``, ``ts`` (capture time), ``stab_hdr`` (the header's stability through
-  ``schedule.stability_of``) and ``stab_re`` (today's ``MotionMeter`` over every
+  ``schedule.seam.stability_of``) and ``stab_re`` (today's ``MotionMeter`` over every
   frame of the session, what ``replay --restamp-stability`` stamps);
 * ``cls`` (64 protocol class indices, a8..h1: the argmax of ``square_dist``, so the
   raw board), ``energy`` (``chessq.frame_energy``, what the energy gate compares),
@@ -37,7 +37,8 @@ from board_reader_inference.recognition.chessq import (
     preprocess_frame,
     square_dist_from_logits,
 )
-from board_reader_inference.stream.schedule import MotionMeter, stability_of
+from board_reader_inference.stream.schedule.meter import MotionMeter
+from board_reader_inference.stream.schedule.seam import stability_of
 
 ROOT = Path(__file__).resolve().parents[2]
 MODEL = ROOT / "models" / "chessq" / "cq-vit-s-644-v6-seed1-onnx-fp32.onnx"

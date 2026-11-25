@@ -24,7 +24,7 @@ from board_reader_edge.adapter import FileEdgeAdapter
 from board_reader_edge.client import stream_to_gateway
 from board_reader_edge.source import SyntheticSource
 from board_reader_inference.server import create_app
-from board_reader_inference.stream.schedule import DEFAULT_POLICY_SPEC
+from board_reader_inference.stream.schedule.default import DEFAULT_POLICY_SPEC
 
 
 async def _next_position(viewer, timeout: float = 5.0) -> str:

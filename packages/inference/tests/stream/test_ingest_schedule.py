@@ -41,12 +41,9 @@ from board_reader_inference.recognition.recognizer import (
 from board_reader_inference.server import create_app
 from board_reader_inference.stream.hub import PositionHub
 from board_reader_inference.stream.ingest import BACKSTOP_SLACK, FrameIngest
-from board_reader_inference.stream.schedule import (
-    DEFAULT_POLICY_SPEC,
-    BurstTriggered,
-    EveryFrame,
-    parse_policy,
-)
+from board_reader_inference.stream.schedule.default import DEFAULT_POLICY_SPEC
+from board_reader_inference.stream.schedule.parse import parse_policy
+from board_reader_inference.stream.schedule.policies import BurstTriggered, EveryFrame
 from board_reader_inference.stream.stabilize import SETTLE_SECONDS
 
 #: Capture seconds between two frames — 10 fps, a plausible in-burst rate.

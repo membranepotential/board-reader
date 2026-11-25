@@ -188,7 +188,7 @@ inter-frame motion on the edge, and each event carries it on. It is a **hint**: 
 application layer decides when a move completed. Inside the system two parts use it:
 the edge's adaptive forwarder and the node's read scheduler. The scheduler reads on a
 keepalive floor whatever the meter claims, because a stuck meter once read "moving" all
-day (the `board_reader_inference.stream.schedule` module docstring).
+day (the `board_reader_inference.stream.schedule.policies` module docstring).
 
 ### D4 — Adaptive frame forwarding on the edge
 
@@ -734,7 +734,7 @@ commit whose DESIGN.md carried every section with its dated amendments.
 |---|---|---|
 | `board-reader-core` | the shared contract | `protocol` (L3 events, §5), `wire` (L1→L2 frames, §4.5), `control` (camera config and report), `wiremodel` (how those are modelled) and `schema` (their JSON Schema, D13), `recording` (session directories), `sim` (synthetic renders, §6) |
 | `board-reader-edge` | the Python edge ("Pi") | `source` (camera, video, images, synthetic game, recording), `motion` (stability), `forwarder` (adaptive rate), `client` (WebSocket), `adapter` (pacing), `camera/` (the control link, the stream source, the run loop: D19), `cli` (`feed`, `camera`) |
-| `board-reader-inference` | the inference node ("Jetson") | at the root `server` (FastAPI gateway), `cli`, `positions` (headless `/viewer` client); `recognition/`: `recognizer` + `chessq` + `onnxrt` (the read); `stream/`: `ingest` (inbox + workers), `schedule` (read policy), `stabilize` (debounce), `rules` (its guard's conditions), `hub`; `control/`: `camera` (the camera control channel); `measurement/`: `replay`, the `evaluate/` and `trial/` packages, `labels`, `calibration` (temperature scaling for eval only) |
+| `board-reader-inference` | the inference node ("Jetson") | at the root `server` (FastAPI gateway), `cli`, `positions` (headless `/viewer` client); `recognition/`: `recognizer` + `chessq` + `onnxrt` (the read); `stream/`: `ingest` (inbox + workers), `schedule/` (read policy), `stabilize` (debounce), `rules` (its guard's conditions), `hub`; `control/`: `camera/` (the camera control channel); `measurement/`: `replay`, the `evaluate/` and `trial/` packages, `labels`, `calibration` (temperature scaling for eval only) |
 | `packages/viewer` (Node) | the viewer: a SvelteKit app whose pages are prerendered, with `/api/*` and `/api/client-log` as routes, served by `server/main.ts`, which adds the `/ws/*` relay and the TLS port (D12) | `src/routes/api`, `server/{main,ws,tls}.ts`; pages `/`, `/camera`, `/control`, `/snapshot` |
 
 **Separation rule.** `edge` and `inference` never import each other; they meet only on
@@ -926,7 +926,7 @@ carries one message per ingested frame, at most 5 a second per board but always 
 ```
 
 `ts` is the frame's `capture_ts`; `moving` is `stability` below the read scheduler's
-burst threshold (`schedule.ENTER_BURST`, 0.7, which the UI mirrors as `MOVING_BELOW`).
+burst threshold (`schedule.constants.ENTER_BURST`, 0.7, which the UI mirrors as `MOVING_BELOW`).
 A position event has no `type`, so only a consumer that reads every message as one has
 to change (`protocol.parse_viewer_message`). It is not a read: nothing records it,
 the hub does not retain it, and replay does not produce it. The live viewer's motion

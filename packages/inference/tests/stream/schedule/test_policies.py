@@ -1,4 +1,4 @@
-"""Tests for the estimation scheduler (:mod:`board_reader_inference.stream.schedule`).
+"""Tests for the estimation scheduler (:mod:`board_reader_inference.stream.schedule.policies`).
 
 The claims, in the order they matter:
 
@@ -10,8 +10,7 @@ The claims, in the order they matter:
 * a burst end can be worth **several reads, spaced**, because the debounce needs a
   quorum spanning ``SETTLE_SECONDS`` and one read per move can never move it;
 * decisions come from **capture time only** — no wall clock anywhere, or the
-  replay harness's determinism dies with it;
-* the ported motion meter is the **edge's meter**, value for value.
+  replay harness's determinism dies with it.
 
 Every policy here is exercised on a scripted stability sequence rather than on
 pixels: a scheduler's whole input is the header, so that is the honest unit.
@@ -27,25 +26,20 @@ import pytest
 
 from board_reader_core.recording import FrameEntry
 
-from board_reader_inference.stream import schedule as schedule_mod
-from board_reader_inference.stream.schedule import (
-    DEFAULT_KEEPALIVE_S,
-    DEFAULT_POLICY_SPEC,
+from board_reader_inference.stream import schedule as schedule_pkg
+from board_reader_inference.stream.schedule.constants import (
     ENTER_BURST,
     EXIT_BURST,
     EXIT_HOLD_S,
-    POLICIES,
-    RESTAMPED_KEY,
+)
+from board_reader_inference.stream.schedule.default import DEFAULT_POLICY_SPEC
+from board_reader_inference.stream.schedule.parse import parse_policy
+from board_reader_inference.stream.schedule.policies import (
     BurstTriggered,
     EveryFrame,
-    FramePolicy,
-    MotionMeter,
-    ReadKind,
     WhenStill,
-    parse_policy,
-    policy_slug,
-    restamped,
 )
+from board_reader_inference.stream.schedule.seam import FramePolicy, ReadKind
 
 #: The old takes' cadence: a flat ~8.3 fps, whatever the board was doing.
 FLAT_DT = 0.12
@@ -379,8 +373,11 @@ def test_when_still_reads_calm_frames_at_its_spacing_and_moving_ones_at_the_floo
     index = entries([0.97] * 40 + [0.3] * 40, dt=FLAT_DT)
     policy = WhenStill(theta=0.9, spacing_s=1.0, keepalive_s=3.0)
     calm = [t for t in read_times(policy, index) if t < index[40].capture_ts]
-    moving = [t for t in read_times(WhenStill(theta=0.9, spacing_s=1.0), index)
-              if t >= index[40].capture_ts]
+    moving = [
+        t
+        for t in read_times(WhenStill(theta=0.9, spacing_s=1.0), index)
+        if t >= index[40].capture_ts
+    ]
 
     assert np.diff(calm).min() >= 1.0 - FLAT_DT
     assert len(calm) == pytest.approx(40 * FLAT_DT / 1.0, abs=1)
@@ -404,195 +401,21 @@ def test_two_runs_of_one_sequence_schedule_the_same_frames(policy_factory):
 def test_no_policy_reads_a_wall_clock():
     """Structural, because the failure is invisible: a replay whose scheduler
     consults ``time.time()`` picks different frames on every run and takes the
-    harness's byte-identical guarantee with it. The module may not import a clock
-    at all.
+    harness's byte-identical guarantee with it. No module of the package may
+    import a clock at all.
 
     (The AST is the check rather than a grep for the same reason
     ``tests/test_layer_separation.py`` uses one: prose in a docstring is not an
     import.)
     """
-    tree = ast.parse(Path(schedule_mod.__file__).read_text(encoding="utf-8"))
     imported = set()
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Import):
-            imported.update(a.name.split(".")[0] for a in node.names)
-        elif isinstance(node, ast.ImportFrom) and node.module:
-            imported.add(node.module.split(".")[0])
+    for source in Path(schedule_pkg.__file__).parent.glob("*.py"):
+        for node in ast.walk(ast.parse(source.read_text(encoding="utf-8"))):
+            if isinstance(node, ast.Import):
+                imported.update(a.name.split(".")[0] for a in node.names)
+            elif isinstance(node, ast.ImportFrom) and node.module:
+                imported.add(node.module.split(".")[0])
     assert not imported & {"time", "datetime", "random"}
-
-
-# --------------------------------------------------------------------------- #
-# Spec strings
-# --------------------------------------------------------------------------- #
-
-
-@pytest.mark.parametrize(
-    "policy",
-    [
-        EveryFrame(),
-        BurstTriggered(),
-        BurstTriggered(keepalive_s=5.0),
-        BurstTriggered(keepalive_s=3.0, burst_end_reads=3, spacing_s=1.3),
-        BurstTriggered(enter=0.6, exit=0.9, exit_hold_s=1.0),
-        WhenStill(theta=0.9, spacing_s=1.0),
-    ],
-)
-def test_a_policys_name_is_the_argument_that_rebuilds_it(policy):
-    """The manifest's ``policy`` field is the ``--policy`` string, not a label —
-    which is the difference between a sweep you can rerun and one you cannot."""
-    assert parse_policy(policy.name) == policy
-
-
-def test_a_name_states_only_what_was_asked_for():
-    assert BurstTriggered().name == "burst-end"
-    assert BurstTriggered(keepalive_s=5.0).name == "burst-end:keepalive_s=5"
-    assert EveryFrame().name == "every-frame"
-
-
-def test_a_name_survives_the_values_display_formatting_would_have_mangled():
-    """``%g`` is a *display* format and this is an identity.
-
-    It rendered a large int in exponent form — which the int coercion in
-    ``parse_policy`` then refused outright, so the policy's own name no longer
-    rebuilt it — and it rounded floats to six significant digits, collapsing two
-    genuinely different policies onto one name and therefore one replay directory.
-    """
-    big = BurstTriggered(burst_end_reads=1_000_000)
-    assert big.name == "burst-end:burst_end_reads=1000000"
-    assert parse_policy(big.name) == big
-
-    fine = BurstTriggered(spacing_s=1.2500001)
-    assert parse_policy(fine.name) == fine
-    assert fine.name != BurstTriggered(spacing_s=1.25).name
-    assert policy_slug(fine) != policy_slug(BurstTriggered(spacing_s=1.25))
-
-
-def test_the_shipped_default_is_the_policy_the_sweep_recommended():
-    """``BR_SCHEDULE``'s default is a spec string like any other, so it is checked
-    like one: it must name exactly the constants the round-2 latency sweep chose
-    (three reads 0.3 s apart, with the forwarder's tail), the 2 s keepalive the
-    2026-11-24 live take asked for, and the 0.3 s node hold of latency round 3 —
-    shorter than the edge's mirrored ``EXIT_HOLD_S`` on purpose (see
-    ``DEFAULT_POLICY_SPEC``)."""
-    assert parse_policy(DEFAULT_POLICY_SPEC) == BurstTriggered(
-        keepalive_s=2.0, burst_end_reads=3, spacing_s=0.3, exit_hold_s=0.3
-    )
-    assert EXIT_HOLD_S == 0.7, "the edge's hold, mirrored from motion.ts, is unchanged"
-    # ...and it is canonical, so a manifest and the env var read the same.
-    assert parse_policy(DEFAULT_POLICY_SPEC).name == DEFAULT_POLICY_SPEC
-
-
-def test_an_unknown_policy_or_parameter_is_refused_by_name():
-    with pytest.raises(ValueError, match="unknown policy 'burst'"):
-        parse_policy("burst")
-    with pytest.raises(ValueError, match="no parameter 'keepalive'"):
-        parse_policy("burst-end:keepalive=3")
-    with pytest.raises(ValueError, match="no parameter"):
-        parse_policy("every-frame:keepalive_s=3")
-    with pytest.raises(ValueError, match="not a float"):
-        parse_policy("burst-end:keepalive_s=soon")
-    with pytest.raises(ValueError, match="no parameter 'keepalive_s'"):
-        parse_policy("burst-end:keepalive_s")
-
-
-def test_every_policy_satisfies_the_seam():
-    for cls in POLICIES.values():
-        assert isinstance(cls(), FramePolicy)
-
-
-def test_a_slug_is_a_readable_path_component():
-    slug = policy_slug(BurstTriggered(keepalive_s=5.0, burst_end_reads=3, spacing_s=2.0))
-    assert slug == "burst-end-keepalive_s5-burst_end_reads3-spacing_s2"
-    assert Path(slug).name == slug
-    # Two policies that differ must not share a replay directory.
-    assert policy_slug(BurstTriggered(keepalive_s=5.0)) != policy_slug(BurstTriggered())
-
-
-# --------------------------------------------------------------------------- #
-# The ported meter
-# --------------------------------------------------------------------------- #
-
-
-def _frames(n: int, *, moving: bool = False, seed: int = 0) -> list[np.ndarray]:
-    """A static scene with sensor noise, optionally with something crossing it."""
-    rng = np.random.default_rng(seed)
-    scene = rng.integers(0, 255, (48, 48, 3), dtype=np.uint8)
-    out = []
-    for i in range(n):
-        image = scene.astype(np.int16) + rng.integers(-2, 3, scene.shape)
-        if moving:
-            image[:, (i * 4) % 40 : (i * 4) % 40 + 8] = 0
-        out.append(np.clip(image, 0, 255).astype(np.uint8))
-    return out
-
-
-def test_the_meter_reports_rest_on_the_first_frame_and_finds_the_floor():
-    meter = MotionMeter()
-    scores = [meter.update(f) for f in _frames(30)]
-    assert scores[0] == 1.0
-    assert scores[-1] > EXIT_BURST, "a still scene settles above the burst-exit line"
-
-
-def test_the_meter_drops_on_motion_and_recovers():
-    meter = MotionMeter()
-    for f in _frames(30):
-        meter.update(f)
-    for f in _frames(10, moving=True, seed=1):
-        meter.update(f)
-    assert meter.stability < ENTER_BURST
-    for f in _frames(30, seed=2):
-        meter.update(f)
-    assert meter.stability > EXIT_BURST
-
-
-def test_the_ported_meter_matches_the_edges_value_for_value():
-    """The mirror, pinned.
-
-    :class:`MotionMeter` is a copy of ``board_reader_edge.motion.MotionMeter``
-    because DESIGN §4 forbids this package from importing the edge's (see
-    ``tests/test_layer_separation.py``, which scans ``src`` only — a test may
-    import both, and this is exactly what that is for). A copy with no equality
-    check is a fork waiting to happen, so: same frames, same numbers.
-    """
-    edge_motion = pytest.importorskip("board_reader_edge.motion")
-    ours, theirs = MotionMeter(), edge_motion.MotionMeter()
-    frames = _frames(20) + _frames(10, moving=True, seed=3) + _frames(20, seed=4)
-    assert [ours.update(f) for f in frames] == [theirs.update(f) for f in frames]
-
-
-# --------------------------------------------------------------------------- #
-# Restamping
-# --------------------------------------------------------------------------- #
-
-
-def test_restamping_overrides_the_recorded_value_and_says_so():
-    [entry] = entries([0.31])
-    meter = MotionMeter()
-    out = restamped(entry, meter, _frames(1)[0])
-
-    assert out.header["stability"] == 1.0  # the meter's first-frame invariant
-    assert out.header[RESTAMPED_KEY] is True
-    assert out.seq == entry.seq and out.capture_ts == entry.capture_ts
-    assert entry.header["stability"] == 0.31, "the recorded entry is not mutated"
-
-
-def test_restamping_a_dead_meters_take_is_what_makes_it_schedulable():
-    """The data caveat, end to end: the recorded field says "moving" on every
-    frame of a still scene, and a policy reading it can only ever hit its floor.
-    Re-metered, the same frames read as rest."""
-    frames = _frames(40)
-    index = entries([0.29] * len(frames))  # what the old meter actually wrote
-    stale = BurstTriggered(keepalive_s=DEFAULT_KEEPALIVE_S)
-    read_seqs(stale, index)
-    assert stale.bursting, "a still scene, reported as one long move"
-
-    meter = MotionMeter()
-    fresh = [restamped(e, meter, f) for e, f in zip(index, frames, strict=True)]
-    live = BurstTriggered(keepalive_s=DEFAULT_KEEPALIVE_S)
-    read_seqs(live, fresh)
-
-    assert all(e.header["stability"] > EXIT_BURST for e in fresh[5:])
-    assert not live.bursting, "re-metered, the same frames read as rest"
 
 
 def test_due_names_burst_end_reads_apart_from_the_floor():

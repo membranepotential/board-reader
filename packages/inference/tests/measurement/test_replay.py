@@ -50,15 +50,11 @@ from board_reader_inference.measurement.trial.truth import TRUTH_NAME
 from board_reader_inference.recognition.recognizer import FrameReading
 from board_reader_inference.stream.hub import PositionHub
 from board_reader_inference.stream.ingest import FrameIngest, event_line
-from board_reader_inference.stream.schedule import (
-    ENTER_BURST,
-    EXIT_BURST,
-    RESTAMPED_KEY,
-    BurstTriggered,
-    EveryFrame,
-    ReadKind,
-    parse_policy,
-)
+from board_reader_inference.stream.schedule.constants import ENTER_BURST, EXIT_BURST
+from board_reader_inference.stream.schedule.meter import RESTAMPED_KEY
+from board_reader_inference.stream.schedule.parse import parse_policy
+from board_reader_inference.stream.schedule.policies import BurstTriggered, EveryFrame
+from board_reader_inference.stream.schedule.seam import ReadKind
 from board_reader_inference.stream.stabilize import SETTLE_SECONDS, SettleConfig
 
 E4 = "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR"

@@ -5,7 +5,7 @@
     uv run python tools/probes/latency3_sim.py CACHE_DIR show HOLD READS SPACING SECS MIN OBSC
 
 ``CACHE_DIR`` holds ``latency3_cache.py``'s per-frame ChessQ reads. Nothing here
-re-implements the node: the schedule is ``schedule.BurstTriggered``, the debounce
+re-implements the node: the schedule is ``schedule.policies.BurstTriggered``, the debounce
 ``stabilize.BoardStabilizer`` (and its guard, ``rules.excess``), the orientation
 check ``ingest.OrientationGuard``, and the phone's sending is the edge's
 ``AdaptiveForwarder``, the Python mirror of ``lib/edge/motion.ts``. Only their
@@ -61,7 +61,8 @@ from board_reader_edge.forwarder import AdaptiveForwarder, ForwarderConfig
 from board_reader_inference.measurement.trial.events import read_events
 from board_reader_inference.measurement.trial.truth import SessionTruth, load_truth
 from board_reader_inference.stream.ingest import OrientationGuard
-from board_reader_inference.stream.schedule import EXIT_HOLD_S, BurstTriggered
+from board_reader_inference.stream.schedule.constants import EXIT_HOLD_S
+from board_reader_inference.stream.schedule.policies import BurstTriggered
 from board_reader_inference.stream.stabilize import (
     OBSCURED_ENERGY,
     BoardStabilizer,

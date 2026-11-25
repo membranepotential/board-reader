@@ -24,7 +24,7 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-from board_reader_inference.stream.schedule import DEFAULT_POLICY_SPEC
+from board_reader_inference.stream.schedule.default import DEFAULT_POLICY_SPEC
 
 ROOT = Path(__file__).resolve().parents[1]
 

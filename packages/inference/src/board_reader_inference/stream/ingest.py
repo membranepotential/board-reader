@@ -9,7 +9,7 @@ stall, and the ingest socket backs up behind the model.
 :class:`FrameIngest` is the seam that decouples the two:
 
 * **The read scheduler (D3/D4).** Not every frame is worth ~0.2 GPU-seconds
-  (ChessQ fp32 on CUDA). A :class:`~board_reader_inference.stream.schedule.FramePolicy`
+  (ChessQ fp32 on CUDA). A :class:`~.schedule.seam.FramePolicy`
   — by default "read at the end of a move, plus a keepalive floor at rest" —
   decides in :meth:`FrameIngest.submit`, on every arriving frame, in arrival order:
   exactly the ``observe`` then ``due`` that replay asks per recorded frame. The
@@ -93,14 +93,9 @@ from board_reader_core.wire import Frame
 from board_reader_inference.recognition.recognizer import FrameRead, FrameReading
 from board_reader_inference.stream.backdate import ChangeClock, FrameRing, HeldFrame
 from board_reader_inference.stream.hub import PositionHub
-from board_reader_inference.stream.schedule import (
-    DUE_EPS,
-    ENTER_BURST,
-    EveryFrame,
-    FramePolicy,
-    ReadKind,
-    stability_of,
-)
+from board_reader_inference.stream.schedule.constants import DUE_EPS, ENTER_BURST
+from board_reader_inference.stream.schedule.policies import EveryFrame
+from board_reader_inference.stream.schedule.seam import FramePolicy, ReadKind, stability_of
 from board_reader_inference.stream.stabilize import (
     DEFAULT_SETTLE,
     BoardStabilizer,
@@ -123,7 +118,7 @@ def event_line(
     whole evidence base for the trial report's margin section. Its first class
     per square is the argmax, so the line holds both boards: ``placement`` is the
     settled one, and the read's own board is the digest's top row
-    (:func:`~board_reader_inference.measurement.trial.read_events` derives it).
+    (:func:`~board_reader_inference.measurement.trial.events.read_events` derives it).
 
     The frame's own ``seq`` and ``capture_ts`` ride along too, so an event can be
     joined back to the exact recorded frame it was estimated from, and so does
@@ -158,7 +153,7 @@ def drop_line(
 
     Into the events file so that a recorded run shows where load changed its
     result. ``type`` marks it: it has no ``seq`` or ``placement``, so the trial
-    scorer (:func:`~board_reader_inference.measurement.trial.read_events`) skips it,
+    scorer (:func:`~board_reader_inference.measurement.trial.events.read_events`) skips it,
     and it carries ``rules`` so :func:`~board_reader_inference.measurement.replay.recorded_rules`
     still reads the run's setting. Replay never drops, so only the live node
     writes it.
@@ -192,7 +187,7 @@ READ_BACKLOG = 32
 MAX_KEEPALIVE_WAIT_S = 5.0
 
 #: The wall-clock backstop under the scheduler's own keepalive, as a multiple of
-#: it (4 s under the shipped policy's 2 s keepalive, :data:`~.schedule.DEFAULT_POLICY_SPEC`).
+#: it (4 s under the shipped policy's 2 s keepalive, :data:`~.schedule.default.DEFAULT_POLICY_SPEC`).
 #:
 #: A policy's floor is measured in the EDGE's ``capture_ts``, on purpose: that is
 #: what makes an offline replay deterministic (a scheduler that consulted
@@ -313,14 +308,14 @@ class MotionThrottle:
 
 
 def _schedule_signal(frame: Frame) -> tuple[float, float]:
-    """The two numbers a :class:`~.schedule.FramePolicy` reads, off a live frame.
+    """The two numbers a :class:`~.schedule.seam.FramePolicy` reads, off a live frame.
 
     An explicit adapter, not a duck-type. The policies were written against a
     recorded :class:`~board_reader_core.recording.FrameEntry`, whose ``header`` is
     a *dict*; a live :class:`~board_reader_core.wire.Frame`'s ``header`` is a
     *method*, and its ``stability`` is an ordinary attribute that a hand-rolled
     edge can leave as ``None`` or a NaN. Converting here — through the same
-    :func:`~.schedule.stability_of` coercion the recorded path uses — is what
+    :func:`~.schedule.seam.stability_of` coercion the recorded path uses — is what
     makes "one policy, two callers" true rather than approximately true.
     """
     return frame.capture_ts, stability_of(frame.stability)
@@ -485,7 +480,7 @@ class FrameIngest:
         #: :meth:`close`). Defaults to reading everything, which is what the
         #: gateway did before scheduling existed; ``serve`` supplies the shipped
         #: burst-end policy through ``BR_SCHEDULE`` (see
-        #: :data:`~.schedule.DEFAULT_POLICY_SPEC`).
+        #: :data:`~.schedule.default.DEFAULT_POLICY_SPEC`).
         self._policy = policy
         #: Each board's debounce is built with these knobs (``BR_SETTLE_*``).
         self._settle = settle

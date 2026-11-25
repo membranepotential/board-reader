@@ -80,12 +80,9 @@ from board_reader_inference.recognition.recognizer import (
 )
 from board_reader_inference.stream.hub import PositionHub
 from board_reader_inference.stream.ingest import FrameIngest, drop_line, event_line
-from board_reader_inference.stream.schedule import (
-    EveryFrame,
-    FramePolicy,
-    ReadKind,
-    parse_policy,
-)
+from board_reader_inference.stream.schedule.parse import parse_policy
+from board_reader_inference.stream.schedule.policies import EveryFrame
+from board_reader_inference.stream.schedule.seam import FramePolicy, ReadKind
 from board_reader_inference.stream.stabilize import SettleConfig
 
 log = logging.getLogger(__name__)
@@ -153,7 +150,7 @@ def _frame_policy() -> Callable[[], FramePolicy]:
 
     **Unset means every frame here**, which is what the gateway did before
     scheduling existed and what an injected test app should keep doing. The
-    shipped default is set by ``serve`` (:data:`~.schedule.DEFAULT_POLICY_SPEC`) —
+    shipped default is set by ``serve`` (:data:`~.stream.schedule.default.DEFAULT_POLICY_SPEC`) —
     the same asymmetry ``BR_RECORD_DIR`` has, and for the same reason: a real
     server always schedules, a ``create_app()`` in a test does exactly what it was
     asked to.

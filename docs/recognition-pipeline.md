@@ -123,7 +123,7 @@ tall, and when the phone is upright.
 ## Known weaknesses
 
 - **Hands read as confident empties** (p ≥ 0.96). Confidence cannot flag a hand, so hands
-  are kept out by read scheduling (burst-end reads, `schedule.py`) and the settle debounce,
+  are kept out by read scheduling (burst-end reads, `stream/schedule/`) and the settle debounce,
   not by thresholds. A shorter settle window lets more hand frames through; the 08-13 take
   must settle every scored read. The settle window must stay strictly between the burst-end
   spacing and the run's span (shipped: 0.3 s spacing < 0.5 s window ≤ 0.6 s span): a window two

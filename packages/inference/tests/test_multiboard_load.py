@@ -48,11 +48,9 @@ from board_reader_inference.server import create_app
 from board_reader_inference.stream import ingest as ingest_module
 from board_reader_inference.stream.hub import PositionHub
 from board_reader_inference.stream.ingest import FrameIngest, drop_line, event_line
-from board_reader_inference.stream.schedule import (
-    DEFAULT_POLICY_SPEC,
-    ReadKind,
-    parse_policy,
-)
+from board_reader_inference.stream.schedule.default import DEFAULT_POLICY_SPEC
+from board_reader_inference.stream.schedule.parse import parse_policy
+from board_reader_inference.stream.schedule.seam import ReadKind
 
 #: Capture seconds between two frames (the edge's 10 fps burst rate).
 DT = 0.1
