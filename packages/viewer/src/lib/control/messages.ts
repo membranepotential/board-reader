@@ -50,7 +50,7 @@ export function reframeMessage(): string {
   return JSON.stringify(message);
 }
 
-/** `null` clears the name: the camera is then shown by its board id. */
+/** `null` asks the node for a default name again (the lowest free `board-N`). */
 export function renameMessage(deviceId: string, name: string | null): string {
   const message: RenameMessage = { type: 'rename', device_id: deviceId, name };
   return JSON.stringify(message);

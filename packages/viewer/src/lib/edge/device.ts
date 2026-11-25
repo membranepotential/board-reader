@@ -1,5 +1,6 @@
 /**
- * The phone's own id, so the node gives the same phone the same board id again.
+ * The phone's own id, which is also the board id it streams as, so the same phone
+ * streams as the same board again.
  *
  * A random id (`crypto.randomUUID`) made on the first visit and kept in
  * `localStorage`. Where storage is unavailable (a private window, blocked site

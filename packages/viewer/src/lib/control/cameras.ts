@@ -47,7 +47,7 @@ export class CamerasLink {
     this.socket.stop();
   }
 
-  /** `false` when the node is not connected: nothing was sent. `null` clears the name. */
+  /** `false` when the node is not connected: nothing was sent. `null` asks for a default name. */
   rename(deviceId: string, name: string | null): boolean {
     return this.socket.send(renameMessage(deviceId, name));
   }
