@@ -37,7 +37,7 @@ rest on synthetic reads are projected, not measured (``.claude/rules/stream.md``
 **The obscured rule** is the shipped energy gate (DESIGN D16): the stabilizer is
 built with ``SettleConfig(obscured_energy=OBSCURED_ENERGY)`` or ``None`` (off) and
 each read goes through ``observe(..., obscured=config.obscures(energy))``, as
-``ingest._read_and_settle`` does. The cached energy is ``chessq.frame_energy`` of
+``ingest._settle_read`` does. The cached energy is ``chessq.frame_energy`` of
 the read's logits.
 """
 

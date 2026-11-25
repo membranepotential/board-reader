@@ -58,8 +58,13 @@ from board_reader_inference.recognition.recognizer import (
     frame_reader,
 )
 from board_reader_inference.stream.hub import PositionHub
-from board_reader_inference.stream.ingest import FrameIngest, event_line
-from board_reader_inference.stream.schedule import EveryFrame, FramePolicy, parse_policy
+from board_reader_inference.stream.ingest import FrameIngest, drop_line, event_line
+from board_reader_inference.stream.schedule import (
+    EveryFrame,
+    FramePolicy,
+    ReadKind,
+    parse_policy,
+)
 from board_reader_inference.stream.stabilize import SettleConfig
 
 log = logging.getLogger(__name__)
@@ -190,10 +195,20 @@ def create_app(
     settle = SettleConfig.from_env()
     if not settle.is_default:
         print(f"settling with {settle.to_dict()}")
+
+    def _record_dropped(frame: Frame, kind: ReadKind, rules: Rules, waited_s: float) -> None:
+        """A scheduled read the overload rule dropped, into events.ndjson too."""
+        if recorder is None or not recorder.active:
+            return
+        line = drop_line(frame, kind, rules=rules, waited_s=waited_s, published_ts=time.time())
+        if not recorder.record_event(line):
+            print(f"frame recording stopped: {recorder.stopped_reason}")
+
     ingest_ = FrameIngest(
         read,
         hub_,
         on_event=_on_published,
+        on_drop=_record_dropped,
         policy=_frame_policy(),
         settle=settle,
         # Each board settles under its own /control setting, read per read.
@@ -283,6 +298,13 @@ def create_app(
                 # Reads the orientation guard dropped: the board pointed more
                 # than 45 degrees from its recent reads. Should be 0.
                 "misoriented": ingest_.frames_misoriented,
+                # Of "dropped", burst-end reads: the overload rule drops
+                # keepalive reads first, so anything but 0 means a board had a
+                # whole backlog of move evidence waiting.
+                "dropped_burst_end": ingest_.frames_dropped_burst_end,
+                # The read queue every board shares, oldest first: its waits
+                # grow with boards x read time, its results do not.
+                "queue": ingest_.queue_stats().to_dict(),
             },
             "settle": settle.to_dict(),
         }

@@ -55,6 +55,7 @@ from board_reader_inference.stream.schedule import (
     RESTAMPED_KEY,
     BurstTriggered,
     EveryFrame,
+    ReadKind,
     parse_policy,
 )
 from board_reader_inference.stream.stabilize import SETTLE_SECONDS, SettleConfig
@@ -519,11 +520,11 @@ class _ReadAt:
     def observe(self, capture_ts: float, stability: float) -> None:
         pass
 
-    def due(self, capture_ts: float, stability: float) -> bool:
-        return capture_ts in self.times
+    def due(self, capture_ts: float, stability: float) -> ReadKind | None:
+        return ReadKind.KEEPALIVE if capture_ts in self.times else None
 
     def should_estimate(self, entry) -> bool:
-        return self.due(entry.capture_ts, 1.0)
+        return self.due(entry.capture_ts, 1.0) is not None
 
 
 def _board_image(kind: str) -> np.ndarray:

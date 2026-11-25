@@ -8,35 +8,48 @@ stall, and the ingest socket backs up behind the model.
 
 :class:`FrameIngest` is the seam that decouples the two:
 
-* **G1 — per-board inbox + pre-filter.** Each board has a latest-wins inbox holding
-  a single frame: a newer frame displaces an unconsumed older one. Bursts are
-  therefore streamed at whatever rate the estimator sustains, and what it skips is
-  always the *stale* end of the burst — never the freshest view of the board.
-* **G2 — shared estimator worker.** One asyncio task per board pulls from the inbox
-  and runs the estimator in a worker thread (:func:`asyncio.to_thread`), leaving the
-  event loop free to ack, serve viewers and answer HTTP. One worker per board also
-  keeps published events in submission order per board (monotone ``seq``) without
-  any extra bookkeeping.
-* **The read scheduler (D3/D4).** Not every frame the worker picks is worth ~0.2
-  GPU-seconds (ChessQ fp32 on CUDA). A :class:`~board_reader_inference.stream.schedule.FramePolicy` — by default
-  "read at the end of a move, plus a keepalive floor at rest" — decides, and the
-  declined frames cost nothing beyond the decode that already happened. It is
-  *observed* on every arriving frame in :meth:`FrameIngest.submit` and *asked* in
-  the worker, so a burst-end read lands on whichever contender the inbox kept
-  rather than on whichever frame happened to arrive at that instant. The event
+* **The read scheduler (D3/D4).** Not every frame is worth ~0.2 GPU-seconds
+  (ChessQ fp32 on CUDA). A :class:`~board_reader_inference.stream.schedule.FramePolicy`
+  — by default "read at the end of a move, plus a keepalive floor at rest" —
+  decides in :meth:`FrameIngest.submit`, on every arriving frame, in arrival order:
+  exactly the ``observe`` then ``due`` that replay asks per recorded frame. The
+  declined frames cost nothing beyond the decode that already happened. The event
   stream is therefore SPARSE by design: consumers already tolerate that (nothing
   downstream assumes a per-frame cadence), but tests that count published events
   must not.
+* **G1 — the read queue.** A scheduled frame joins one queue shared by every
+  board, oldest first, together with everything its read depends on besides the
+  pixels: the board's held frames (:meth:`~.backdate.FrameRing.snapshot`) and its
+  ``rules``, both taken at arrival. So which frames a board reads, and what each
+  read settles and back-dates to, depend on the board's own frames alone, never
+  on how far behind the recognizer runs or how many boards share it: load and
+  input spikes add latency, never a different result. Oldest first keeps each
+  board's reads in its arrival order for free and makes the worst wait the
+  shortest one; no board can starve, because the scheduler bounds each board's
+  demand (three burst-end reads per move, one keepalive per 2 s).
+* **The overload rule.** Only a sustained overload drops reads, and it says so:
+  a keepalive read that waited :data:`MAX_KEEPALIVE_WAIT_S` is dropped instead of
+  read, and a board with :data:`READ_BACKLOG` reads waiting sheds its oldest
+  keepalive read (a burst-end read only when it has nothing else waiting). Every
+  drop is counted on ``/healthz`` (``ingest.dropped``,
+  ``ingest.dropped_burst_end``), logged, and recorded (:func:`drop_line`).
+* **G2 — one read worker.** One asyncio task takes the next read off the queue
+  and runs the recognizer and the board's debounce in a worker thread
+  (:func:`asyncio.to_thread`), one read at a time across every board: the event
+  loop stays free to ack, serve viewers and answer HTTP, the GPU session runs one
+  call at a time (each concurrent call would hold its own activations in the
+  session's capped arena), and each board's events publish in its arrival order
+  (monotone ``seq``).
 
 Acks are decoupled from estimation: the gateway acks every frame it *receives*,
-including frames the pre-filter later drops. An ack means "received", not
+including frames the scheduler declines. An ack means "received", not
 "estimated" — it is the edge's flow-control signal, not a result.
 
-The workers belong to the ingest object, not to a connection: a reconnecting edge
+The worker belongs to the ingest object, not to a connection: a reconnecting edge
 never interrupts an estimate in flight, and shutdown is the only thing that stops
-them (:meth:`FrameIngest.lifespan`).
+it (:meth:`FrameIngest.lifespan`).
 
-What a worker *does* with a frame is not this module's decision: it runs the
+What the worker *does* with a frame is not this module's decision: it runs the
 :data:`~board_reader_inference.recognition.recognizer.FrameRead` it was built with — the same
 read ``POST /estimate`` runs (:func:`~board_reader_inference.recognition.recognizer.frame_reader`).
 What it does with the *read* is: the :class:`OrientationGuard` drops a read whose
@@ -64,7 +77,7 @@ import statistics
 import time
 from collections import deque
 from collections.abc import AsyncIterator, Callable, Sequence
-from dataclasses import dataclass, replace
+from dataclasses import asdict, dataclass, replace
 
 from board_reader_core.control import DEFAULT_RULES, Rules
 from board_reader_core.protocol import MotionUpdate, PositionEvent, iso_utc, square_evidence
@@ -78,6 +91,7 @@ from board_reader_inference.stream.schedule import (
     ENTER_BURST,
     EveryFrame,
     FramePolicy,
+    ReadKind,
     stability_of,
 )
 from board_reader_inference.stream.stabilize import (
@@ -129,10 +143,46 @@ def event_line(
         line["published_ts"] = published_ts
     return line
 
-#: How much older than the incoming frame a sharper queued frame may be and still
-#: win the inbox (seconds of edge capture clock). One read period, roughly: any
-#: longer and the estimator would be reading a board state a move behind.
-SHARPNESS_WINDOW_S = 1.0
+
+def drop_line(
+    frame: Frame, kind: ReadKind, *, rules: Rules, waited_s: float, published_ts: float
+) -> dict:
+    """One scheduled read the queue dropped, as its ``events.ndjson`` line.
+
+    Into the events file so that a recorded run shows where load changed its
+    result. ``type`` marks it: it has no ``seq`` or ``placement``, so the trial
+    scorer (:func:`~board_reader_inference.measurement.trial.read_events`) skips it,
+    and it carries ``rules`` so :func:`~board_reader_inference.measurement.replay.recorded_rules`
+    still reads the run's setting. Replay never drops, so only the live node
+    writes it.
+    """
+    return {
+        "type": "read_dropped",
+        "board_id": frame.board_id,
+        "frame_seq": frame.seq,
+        "capture_ts": frame.capture_ts,
+        "kind": kind.value,
+        "waited_s": round(waited_s, 3),
+        "rules": rules,
+        "published_ts": published_ts,
+    }
+
+#: The most scheduled reads one board may have waiting. Under the shipped policy a
+#: board asks for one read per keepalive (2 s) at rest and three in 0.6 s after a
+#: move, so a board never comes near this unless the recognizer is overloaded for
+#: many seconds. Each waiting read holds its decoded frame (~1.5 MB for the phone's
+#: 960 x 520 crop), so this is also the memory bound: ~50 MB per board. A board at
+#: the bound sheds its oldest keepalive read, and a burst-end read only when every
+#: read it has waiting is one (``frames_dropped_burst_end``).
+READ_BACKLOG = 32
+
+#: A keepalive read that waited this long (node clock) is dropped instead of read:
+#: the first half of the overload rule. Keepalives say the same thing again, so
+#: under a sustained overload they are what the node gives up first, and a node
+#: this far behind catches up instead of falling further back. A spike that clears
+#: (every board moving at once) waits far less: three boards' burst-end runs are
+#: nine reads, ~2 s on the GTX 1650.
+MAX_KEEPALIVE_WAIT_S = 5.0
 
 #: The wall-clock backstop under the scheduler's own keepalive, as a multiple of
 #: it (4 s under the shipped policy's 2 s keepalive, :data:`~.schedule.DEFAULT_POLICY_SPEC`).
@@ -142,12 +192,13 @@ SHARPNESS_WINDOW_S = 1.0
 #: ``time.time()`` would pick different frames on every run). Live, that clock
 #: belongs to a phone, and a floor built on a stopped clock is not a floor — a
 #: stalled camera pipeline restamping its last timestamp, or a clock stepping
-#: backwards, would leave the board unread forever. So the worker keeps the same
-#: promise one layer down, on the node's own monotonic clock.
+#: backwards, would leave the board unread forever. So :meth:`FrameIngest.submit`
+#: keeps the same promise one layer down, on the node's own monotonic clock at
+#: arrival (never at read time: a slow recognizer is not a stalled edge clock).
 #:
 #: The 2x is what keeps this a *diagnostic*. Wall time and capture time run at the
 #: same rate on a healthy stream, so a backstop at exactly ``keepalive_s`` would
-#: also fire whenever ingest latency grew a little between two reads — and
+#: also fire whenever the network delayed one frame a little — and
 #: ``frames_backstopped`` would stop meaning "this edge's clock is broken". At 2x
 #: only a genuinely stalled clock trips it, and the worst case is still a bounded
 #: gap of two keepalives rather than silence.
@@ -268,28 +319,8 @@ def _schedule_signal(frame: Frame) -> tuple[float, float]:
     return frame.capture_ts, stability_of(frame.stability)
 
 
-def prefer_frame(
-    queued: tuple[Frame, float], incoming: tuple[Frame, float]
-) -> tuple[Frame, float]:
-    """The inbox entry worth keeping when the estimator is behind.
-
-    Latest-wins, EXCEPT that a measurably sharper queued frame within
-    :data:`SHARPNESS_WINDOW_S` beats a blurrier newcomer — motion blur is the one
-    thing tracking cannot compensate (the corners follow the board; the pixels
-    inside are still smeared), and the edge's per-frame ``sharpness`` says which
-    frames are worth a ~1 s read. Frames without the measurement fall back to
-    latest-wins, which is what a sharpness-less edge always did.
-    """
-    fq, fi = queued[0], incoming[0]
-    if fq.sharpness is None or fi.sharpness is None:
-        return incoming
-    if fi.capture_ts - fq.capture_ts > SHARPNESS_WINDOW_S:
-        return incoming  # the sharp frame has gone stale: freshness wins again
-    return queued if fq.sharpness > fi.sharpness else incoming
-
-
-def _read_and_settle(
-    read: FrameRead,
+def _settle_read(
+    reading: FrameReading,
     frame: Frame,
     stabilizer: BoardStabilizer,
     guard: OrientationGuard,
@@ -297,9 +328,10 @@ def _read_and_settle(
     clock: ChangeClock,
     held: Sequence[HeldFrame],
 ) -> FrameReading | Misoriented:
-    """One estimate and its debounce, both off the event loop.
+    """One frame's read through its board's guard, debounce and change clock.
 
-    The :class:`OrientationGuard` sees the read first: a dropped read never
+    The live worker and replay both call this on every read, in order. The
+    :class:`OrientationGuard` sees the read first: a dropped read never
     reaches the debounce, so a misread board cannot start settling.
 
     The raw read then feeds the board's :class:`.stabilize.BoardStabilizer`, and
@@ -308,15 +340,15 @@ def _read_and_settle(
     board stays its argmax) and the time it last changed as ``changed_utc``: the
     stabilizer's :attr:`~.stabilize.BoardStabilizer.changed_ts`, back-dated by the
     board's :class:`~.backdate.ChangeClock` over ``held``, the board's held frames
-    (:meth:`~.backdate.FrameRing.snapshot`, taken on the event loop) — safe here
-    despite the worker thread because each board's worker estimates strictly one
-    frame at a time, in order, which is exactly the stream a debounce needs. The
+    (:meth:`~.backdate.FrameRing.snapshot`, taken when the frame arrived) — safe here
+    despite the worker thread because the read worker estimates strictly one
+    frame at a time, each board's in arrival order, which is exactly the stream a
+    debounce needs. The
     guard and the clock rely on the same one-at-a-time order. ``rules`` is the
     board's setting for this read. A read whose frame energy the stabilizer's
     config calls obscured (:meth:`~.stabilize.SettleConfig.obscures`) commits
     nothing and is published with ``obscured`` set.
     """
-    reading = read(frame)
     dropped = guard.check(frame.seq, reading.direction)
     if dropped is not None:
         return dropped
@@ -334,38 +366,80 @@ def _read_and_settle(
     return replace(reading, event=published)
 
 
-@dataclass(frozen=True, slots=True)
-class _BoardWorker:
-    """Per-board ingress state: the latest-wins inbox and the task draining it."""
+@dataclass(eq=False, slots=True)
+class _Board:
+    """One board's stream state. Only the read worker touches the read-side state
+    (stabilizer, guard, clock), one read at a time, in the board's arrival order."""
 
-    #: maxsize=1 — the pre-filter (G1). Each entry is (frame, received_ts): the
-    #: gateway's own clock at submit, because the frame's ``capture_ts`` is the
-    #: *edge's* clock (a phone seconds off NTP is normal) and subtracting one
-    #: from the other says nothing about how far behind this node runs.
-    inbox: asyncio.Queue[tuple[Frame, float]]
-    idle: asyncio.Event  # set while the inbox is empty and nothing is in flight
-    task: asyncio.Task[None]
-    #: The board's debounce state (the published ``placement``). Lives with the
-    #: worker so a restarted board starts settling afresh rather than holding a
-    #: board from before the gap.
-    stabilizer: BoardStabilizer
-    #: The board's read scheduler. Per board and per worker for the same reason as
-    #: the stabilizer: burst state describes *this* camera's stream, and a stream
-    #: that went away and came back is a new camera, not a continuation.
+    #: The board's read scheduler. Per board for the same reason as the stabilizer:
+    #: burst state describes *this* camera's stream.
     policy: FramePolicy
-    #: The board's orientation guard, per worker like the stabilizer.
-    guard: OrientationGuard
-    #: The board's recent frames as small grey copies, pushed by :meth:`FrameIngest.submit`
-    #: for every arriving frame (the inbox drops most of them before a read).
+    #: The board's recent frames as small grey copies, pushed by
+    #: :meth:`FrameIngest.submit` for every arriving frame, read or not.
     ring: FrameRing
-    #: Back-dates the board's ``changed_utc`` over the ring, per worker like the stabilizer.
+    #: The board's debounce state (the published ``placement``). A board that went
+    #: away and came back (after :meth:`FrameIngest.close`) starts settling afresh.
+    stabilizer: BoardStabilizer
+    #: The board's orientation guard, per board like the stabilizer.
+    guard: OrientationGuard
+    #: Back-dates the board's ``changed_utc`` over the ring, per board like the stabilizer.
     clock: ChangeClock
     #: The board's motion-update rate limit (display only).
     motion: MotionThrottle
+    #: Set while none of the board's reads is waiting or running (:meth:`FrameIngest.drain`).
+    idle: asyncio.Event
+    #: The node's monotonic clock at the board's last scheduled read, for the
+    #: wall-clock backstop (:data:`BACKSTOP_SLACK`).
+    last_scheduled: float
+    #: The board's reads in the queue, not counting one that is running.
+    waiting: int = 0
+    #: Whether one of the board's reads is running.
+    busy: bool = False
+
+    def settle_if_idle(self) -> None:
+        if not self.waiting and not self.busy:
+            self.idle.set()
+
+
+@dataclass(frozen=True, slots=True)
+class _ScheduledRead:
+    """A frame the policy chose to read, with what its read needs besides pixels.
+
+    ``held`` and ``rules`` are taken when the frame arrives, as replay takes them
+    per recorded frame, so a read that waits behind other reads still back-dates
+    over the frames held at its own arrival and settles under the setting in
+    force then.
+    """
+
+    board: _Board
+    frame: Frame
+    kind: ReadKind
+    held: tuple[HeldFrame, ...]
+    rules: Rules
+    #: The node's monotonic clock when the read joined the queue.
+    queued: float
+
+
+@dataclass(frozen=True, slots=True)
+class ReadQueueStats:
+    """The read queue as ``/healthz`` shows it (``ingest.queue``)."""
+
+    #: Reads waiting now, not counting the one running.
+    waiting: int
+    #: The most reads ever waiting at once.
+    max_waiting: int
+    #: Reads the recognizer has started.
+    served: int
+    #: Seconds a read waited for the recognizer, mean and worst, over ``served``.
+    wait_mean_s: float
+    wait_max_s: float
+
+    def to_dict(self) -> dict[str, int | float]:
+        return asdict(self)
 
 
 class FrameIngest:
-    """Latest-wins frame ingress: :meth:`submit` never blocks on the model.
+    """Scheduled, queued frame ingress: :meth:`submit` never blocks on the model.
 
     ``read`` is the gateway's one read (module docstring).
     """
@@ -376,6 +450,7 @@ class FrameIngest:
         hub: PositionHub,
         *,
         on_event: Callable[[FrameReading, Frame, Rules], None] | None = None,
+        on_drop: Callable[[Frame, ReadKind, Rules, float], None] | None = None,
         policy: Callable[[], FramePolicy] = EveryFrame,
         settle: SettleConfig = DEFAULT_SETTLE,
         rules: Callable[[str], Rules] = lambda _board_id: DEFAULT_RULES,
@@ -383,31 +458,50 @@ class FrameIngest:
         self._read = read
         self._hub = hub
         #: Builds this board's read scheduler — a *factory*, because a policy is
-        #: stateful and each board owns its own (and gets a fresh one when its
-        #: worker restarts). Defaults to reading everything, which is what the
+        #: stateful and each board owns its own (and gets a fresh one after
+        #: :meth:`close`). Defaults to reading everything, which is what the
         #: gateway did before scheduling existed; ``serve`` supplies the shipped
         #: burst-end policy through ``BR_SCHEDULE`` (see
         #: :data:`~.schedule.DEFAULT_POLICY_SPEC`).
         self._policy = policy
         #: Each board's debounce is built with these knobs (``BR_SETTLE_*``).
         self._settle = settle
-        #: Which chess a board plays, asked on the event loop before each read is
-        #: settled — ``serve`` answers from the camera registry (``/control``), so
-        #: a change there applies from the board's next read.
+        #: Which chess a board plays, asked on the event loop for each scheduled
+        #: frame as it arrives — ``serve`` answers from the camera registry
+        #: (``/control``), so a change there applies from the board's next frame.
         self._rules = rules
         #: Called (on the event loop) for every published read, with the frame it
         #: was estimated from and the setting it settled under — the gateway hangs
         #: its trial log and the camera's direction off this.
         self._on_event = on_event
-        self._boards: dict[str, _BoardWorker] = {}
+        #: Called (on the event loop) for every scheduled read the queue dropped,
+        #: with its kind, rules and seconds waited — the gateway records it.
+        self._on_drop = on_drop
+        self._boards: dict[str, _Board] = {}
+        #: Every board's scheduled reads, oldest first (module docstring, G1).
+        self._queue: deque[_ScheduledRead] = deque()
+        #: The one read worker and its wake-up, made on the first scheduled read
+        #: after construction or :meth:`close`: the gateway is built before its
+        #: event loop runs.
+        self._worker: asyncio.Task[None] | None = None
+        self._ready: asyncio.Event | None = None
         self._warned_backstop: set[str] = set()
+        self._max_waiting = 0
+        self._served = 0
+        self._wait_total_s = 0.0
+        self._wait_max_s = 0.0
         self.frames_received = 0
         self.frames_estimated = 0
+        #: Scheduled, then dropped by the overload rule (:data:`READ_BACKLOG`,
+        #: :data:`MAX_KEEPALIVE_WAIT_S`): the recognizer fell that far behind.
         self.frames_dropped = 0
+        #: Of those, burst-end reads: only when a board has :data:`READ_BACKLOG`
+        #: of them waiting. Should be 0 on any real deployment.
+        self.frames_dropped_burst_end = 0
         self.frames_failed = 0
-        #: Reached a worker but were not worth an estimate (the scheduler declined
-        #: them). At the shipped policy this is the *majority* of a live stream and
-        #: is the whole point: ~12x fewer reads than every-frame on the swept takes.
+        #: Not worth an estimate (the scheduler declined them). At the shipped
+        #: policy this is the *majority* of a live stream and is the whole point:
+        #: ~12x fewer reads than every-frame on the swept takes.
         self.frames_unscheduled = 0
         #: Read because the wall-clock backstop fired, not because the policy asked
         #: — i.e. the edge's ``capture_ts`` stopped telling the truth. Nonzero here
@@ -423,201 +517,264 @@ class FrameIngest:
         self.frames_misoriented = 0
 
     def submit(self, frame: Frame) -> None:
-        """Hand ``frame`` to its board's worker and return immediately.
+        """Schedule ``frame`` for its board and return immediately.
 
-        Called from the event-loop thread (the ``/ingest`` handler). If the board's
-        inbox already holds an un-estimated frame, one of the two is dropped —
-        the estimator is behind, and (:func:`prefer_frame`) the SHARPEST recent
-        board state is the useful one, not blindly the freshest: a handheld phone
-        smears half its frames, and at ~1 read/s the read might as well spend
-        itself on the crisp one.
-
-        The read scheduler is *observed* here and *asked* in the worker. Every
-        frame that lands must reach :meth:`~.schedule.FramePolicy.observe` — burst
-        end is only visible from the whole run of frames, and the latest-wins inbox
-        would otherwise hide most of them — while the decision belongs where the
-        frame is picked, so that a burst-end read spends itself on whichever
-        contender :func:`prefer_frame` kept. Header-only and synchronous: it costs
-        two float comparisons, nothing that could hold up an ack.
+        Called from the event-loop thread (the ``/ingest`` handler), for every
+        arriving frame, in arrival order. The frame goes to the board's ring and
+        its policy, which decides here, on this frame: replay asks the same
+        ``observe`` then ``due`` per recorded frame, so the live node reads the
+        frames replay reads. A scheduled frame joins the read queue with its ring
+        snapshot and rules (:class:`_ScheduledRead`); a declined one is done.
+        Header-only apart from the ring's grey copy: nothing here waits on a read.
         """
         self.frames_received += 1
-        worker = self._boards.get(frame.board_id)
-        if worker is None or worker.task.done():
-            # No worker yet, or a stopped one (post-shutdown): start a fresh board.
-            worker = self._spawn(frame.board_id)
-            self._boards[frame.board_id] = worker
+        board = self._boards.get(frame.board_id)
+        if board is None:
+            board = self._boards[frame.board_id] = self._new_board()
         capture_ts, stability = _schedule_signal(frame)
-        worker.policy.observe(capture_ts, stability)
-        worker.ring.push(frame.seq, capture_ts, frame.image)
+        board.policy.observe(capture_ts, stability)
+        board.ring.push(frame.seq, capture_ts, frame.image)
         # The scheduler's own burst threshold, which the UI mirrors as MOVING_BELOW.
         moving = stability < ENTER_BURST
-        if worker.motion.due(moving, time.monotonic()):
+        now = time.monotonic()
+        if board.motion.due(moving, now):
             self._hub.broadcast(
                 MotionUpdate(
                     board_id=frame.board_id, moving=moving, stability=stability, ts=capture_ts
                 )
             )
-        worker.idle.clear()
-        entry = (frame, time.time())
-        try:
-            worker.inbox.put_nowait(entry)
-        except asyncio.QueueFull:
-            # No await since the put, so the queue is still full and this cannot miss.
-            queued = worker.inbox.get_nowait()
-            self.frames_dropped += 1
-            worker.inbox.put_nowait(prefer_frame(queued, entry))
+        kind = board.policy.due(capture_ts, stability)
+        if kind is None and self._backstop(frame.board_id, board, now):
+            kind = ReadKind.KEEPALIVE
+        if kind is None:
+            self.frames_unscheduled += 1
+            return
+        board.last_scheduled = now
+        if board.waiting >= READ_BACKLOG:
+            self._shed(board)
+        self._queue.append(
+            _ScheduledRead(
+                board=board,
+                frame=frame,
+                kind=kind,
+                held=board.ring.snapshot(),
+                rules=self._rules(frame.board_id),
+                queued=now,
+            )
+        )
+        board.waiting += 1
+        board.idle.clear()
+        self._max_waiting = max(self._max_waiting, len(self._queue))
+        self._wake()
+
+    def _backstop(self, board_id: str, board: _Board, now: float) -> bool:
+        """Whether to read a frame the policy declined, on the node's own clock.
+
+        Arrival time, not read time: the backstop asks whether the EDGE's clock
+        stalled, and a slow recognizer must not answer that question for it.
+        """
+        silent = now - board.last_scheduled
+        if silent < BACKSTOP_SLACK * board.policy.keepalive_s - DUE_EPS:
+            return False
+        self.frames_backstopped += 1
+        if board_id not in self._warned_backstop:
+            self._warned_backstop.add(board_id)
+            log.warning(
+                "board %s: %.1fs with no read while frames keep arriving — this "
+                "edge's capture_ts is stalled or stepping backwards, so the "
+                "scheduler's own floor cannot fire. Reading on the node's clock "
+                "instead; see /healthz ingest.backstopped for the count.",
+                board_id, silent,
+            )
+        return True
+
+    def _shed(self, board: _Board) -> None:
+        """Make room in ``board``'s share of the queue: drop its oldest keepalive
+        read, or, when every read it has waiting is a burst end, its oldest."""
+        mine = [s for s in self._queue if s.board is board]
+        victim = next((s for s in mine if s.kind is ReadKind.KEEPALIVE), mine[0])
+        self._queue.remove(victim)
+        self._drop(victim, time.monotonic() - victim.queued)
+
+    def _drop(self, scheduled: _ScheduledRead, waited: float) -> None:
+        """Count, log and report one dropped read; its board's result may now differ."""
+        board, frame = scheduled.board, scheduled.frame
+        board.waiting -= 1
+        board.settle_if_idle()
+        self.frames_dropped += 1
+        if scheduled.kind is ReadKind.BURST_END:
+            self.frames_dropped_burst_end += 1
+        log.warning(
+            "board %s: dropped the %s read of seq %d after %.1fs in the queue — the "
+            "recognizer cannot keep up with this many boards; see /healthz "
+            "ingest.dropped",
+            frame.board_id, scheduled.kind.value, frame.seq, waited,
+        )
+        if self._on_drop is not None:
+            try:
+                self._on_drop(frame, scheduled.kind, scheduled.rules, waited)
+            except Exception:
+                log.exception("drop observer failed (board %s, seq %d)", frame.board_id, frame.seq)
+
+    def queue_stats(self) -> ReadQueueStats:
+        """The read queue's depth and waits, for ``/healthz``."""
+        return ReadQueueStats(
+            waiting=len(self._queue),
+            max_waiting=self._max_waiting,
+            served=self._served,
+            wait_mean_s=self._wait_total_s / self._served if self._served else 0.0,
+            wait_max_s=self._wait_max_s,
+        )
 
     async def drain(self, *board_ids: str) -> None:
         """Wait until the named boards (default: all) have nothing left to estimate.
 
-        A stopped worker counts as idle, so this never outlives :meth:`close`.
+        :meth:`close` releases every waiter, so this never outlives it.
         """
         if board_ids:
-            workers = [self._boards[b] for b in board_ids if b in self._boards]
+            boards = [self._boards[b] for b in board_ids if b in self._boards]
         else:
-            workers = list(self._boards.values())
-        for worker in workers:
-            await worker.idle.wait()
+            boards = list(self._boards.values())
+        for board in boards:
+            await board.idle.wait()
 
     async def close(self) -> None:
-        """Stop every worker and forget the boards. Idempotent.
+        """Stop the read worker and forget the boards and their queued reads.
+        Idempotent; the next frame starts afresh.
 
-        Prompt by design: an estimate already running in its worker thread is
-        abandoned rather than awaited (the thread finishes on its own; its result
-        is simply never published).
+        Prompt by design: a read already running in its thread is abandoned rather
+        than awaited (the thread finishes on its own; its result is simply never
+        published).
         """
-        workers = list(self._boards.values())
+        worker, self._worker = self._worker, None
+        if worker is not None:
+            worker.cancel()
+            await asyncio.gather(worker, return_exceptions=True)
+        self._queue.clear()
+        boards = list(self._boards.values())
         self._boards.clear()
-        for worker in workers:
-            worker.task.cancel()
-        if workers:
-            await asyncio.gather(*(w.task for w in workers), return_exceptions=True)
+        for board in boards:
+            board.idle.set()  # never strand a drain()
 
     @contextlib.asynccontextmanager
     async def lifespan(self, _app: object) -> AsyncIterator[None]:
-        """ASGI lifespan hook — stops the workers when the gateway shuts down."""
+        """ASGI lifespan hook — stops the worker when the gateway shuts down."""
         yield
         await self.close()
 
-    def _spawn(self, board_id: str) -> _BoardWorker:
-        inbox: asyncio.Queue[tuple[Frame, float]] = asyncio.Queue(maxsize=1)
+    def _new_board(self) -> _Board:
         idle = asyncio.Event()
         idle.set()
-        stabilizer = BoardStabilizer(self._settle)
-        policy = self._policy()
-        guard = OrientationGuard()
-        ring = FrameRing()
-        clock = ChangeClock()
-        task = asyncio.create_task(
-            self._run(board_id, inbox, idle, stabilizer, policy, guard, ring, clock),
-            name=f"ingest:{board_id}",
-        )
-        return _BoardWorker(
-            inbox=inbox,
-            idle=idle,
-            task=task,
-            stabilizer=stabilizer,
-            policy=policy,
-            guard=guard,
-            ring=ring,
-            clock=clock,
+        return _Board(
+            policy=self._policy(),
+            ring=FrameRing(),
+            stabilizer=BoardStabilizer(self._settle),
+            guard=OrientationGuard(),
+            clock=ChangeClock(),
             motion=MotionThrottle(),
+            idle=idle,
+            last_scheduled=time.monotonic(),
         )
 
-    async def _run(
-        self,
-        board_id: str,
-        inbox: asyncio.Queue[tuple[Frame, float]],
-        idle: asyncio.Event,
-        stabilizer: BoardStabilizer,
-        policy: FramePolicy,
-        guard: OrientationGuard,
-        ring: FrameRing,
-        clock: ChangeClock,
+    def _wake(self) -> None:
+        if self._worker is None or self._worker.done():
+            self._ready = asyncio.Event()
+            self._worker = asyncio.create_task(self._serve(self._ready), name="ingest-reads")
+        assert self._ready is not None
+        self._ready.set()
+
+    async def _next(self, ready: asyncio.Event) -> _ScheduledRead:
+        """The read the recognizer runs next: the oldest one waiting.
+
+        The one place that takes reads off the queue, so batching would go here
+        (take every waiting read, pad to a fixed batch for the GPU arena rule). A
+        keepalive read that has waited :data:`MAX_KEEPALIVE_WAIT_S` is dropped
+        instead: the overload rule's second half.
+        """
+        while True:
+            while self._queue:
+                scheduled = self._queue.popleft()
+                waited = time.monotonic() - scheduled.queued
+                if scheduled.kind is ReadKind.KEEPALIVE and waited > MAX_KEEPALIVE_WAIT_S:
+                    self._drop(scheduled, waited)
+                    continue
+                scheduled.board.waiting -= 1
+                scheduled.board.busy = True
+                self._served += 1
+                self._wait_total_s += waited
+                self._wait_max_s = max(self._wait_max_s, waited)
+                return scheduled
+            ready.clear()
+            await ready.wait()
+
+    async def _serve(self, ready: asyncio.Event) -> None:
+        """Estimate every scheduled read, forever, one at a time, oldest first."""
+        while True:
+            scheduled = await self._next(ready)
+            board, frame = scheduled.board, scheduled.frame
+            try:
+                outcome = await asyncio.to_thread(self._read_and_settle, scheduled)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                # A frame the model chokes on must not end the board's stream.
+                self.frames_failed += 1
+                log.exception("estimation failed (board %s, seq %d)", frame.board_id, frame.seq)
+            else:
+                await self._publish(scheduled, outcome)
+            finally:
+                board.busy = False
+                board.settle_if_idle()
+
+    def _read_and_settle(self, scheduled: _ScheduledRead) -> FrameReading | Misoriented:
+        """The read and its debounce, on the worker thread."""
+        board = scheduled.board
+        return _settle_read(
+            self._read(scheduled.frame), scheduled.frame, board.stabilizer, board.guard,
+            scheduled.rules, board.clock, scheduled.held,
+        )
+
+    async def _publish(
+        self, scheduled: _ScheduledRead, outcome: FrameReading | Misoriented
     ) -> None:
-        """Estimate whatever is in the inbox, forever, one frame at a time."""
-        backstop_s = BACKSTOP_SLACK * policy.keepalive_s
-        last_read = time.monotonic()
+        frame = scheduled.frame
+        if isinstance(outcome, Misoriented):
+            self.frames_misoriented += 1
+            log.warning(
+                "board %s seq %d: dropped a read pointing %.0f degrees, "
+                "%.0f from the board's running %.0f — almost certainly "
+                "a rotated misread; see /healthz ingest.misoriented",
+                frame.board_id, outcome.seq, outcome.direction,
+                abs(_wrap_deg(outcome.direction - outcome.running)),
+                outcome.running,
+            )
+            return
+        self.frames_estimated += 1
+        event = outcome.event
+        previous = self._hub.latest(frame.board_id)
+        await self._hub.publish(event)
+        # Observers only, and guarded as such: a logging or recording failure must
+        # not take the read worker down with it.
         try:
-            while True:
-                frame, received = await inbox.get()
-                try:
-                    now = time.monotonic()
-                    if not policy.due(*_schedule_signal(frame)):
-                        if now - last_read < backstop_s - DUE_EPS:
-                            self.frames_unscheduled += 1
-                            continue
-                        self.frames_backstopped += 1
-                        if board_id not in self._warned_backstop:
-                            self._warned_backstop.add(board_id)
-                            log.warning(
-                                "board %s: %.1fs with no read while frames keep "
-                                "arriving — this edge's capture_ts is stalled or "
-                                "stepping backwards, so the scheduler's own floor "
-                                "cannot fire. Reading on the node's clock instead;"
-                                " see /healthz ingest.backstopped for the count.",
-                                board_id, now - last_read,
-                            )
-                    last_read = now
-                    rules = self._rules(board_id)
-                    held = ring.snapshot()
-                    outcome = await asyncio.to_thread(
-                        _read_and_settle,
-                        self._read, frame, stabilizer, guard, rules, clock, held,
-                    )
-                except asyncio.CancelledError:
-                    raise
-                except Exception:
-                    # A frame the model chokes on must not end the board's stream.
-                    self.frames_failed += 1
-                    log.exception(
-                        "estimation failed (board %s, seq %d)", board_id, frame.seq
-                    )
-                else:
-                    if isinstance(outcome, Misoriented):
-                        self.frames_misoriented += 1
-                        log.warning(
-                            "board %s seq %d: dropped a read pointing %.0f degrees, "
-                            "%.0f from the board's running %.0f — almost certainly "
-                            "a rotated misread; see /healthz ingest.misoriented",
-                            board_id, outcome.seq, outcome.direction,
-                            abs(_wrap_deg(outcome.direction - outcome.running)),
-                            outcome.running,
-                        )
-                        continue
-                    self.frames_estimated += 1
-                    event = outcome.event
-                    previous = self._hub.latest(board_id)
-                    await self._hub.publish(event)
-                    # Observers only, and guarded as such: a logging or recording
-                    # failure must not take the board's worker down with it.
-                    try:
-                        self._log_read(event, frame, previous, received)
-                        if self._on_event is not None:
-                            self._on_event(outcome, frame, rules)
-                    except Exception:
-                        log.exception(
-                            "post-publish observer failed (board %s, seq %d)",
-                            board_id,
-                            frame.seq,
-                        )
-                finally:
-                    if inbox.empty():
-                        idle.set()
-        finally:
-            idle.set()  # a stopped worker is never busy — never strand a drain()
+            self._log_read(event, frame, previous, scheduled.queued)
+            if self._on_event is not None:
+                self._on_event(outcome, frame, scheduled.rules)
+        except Exception:
+            log.exception(
+                "post-publish observer failed (board %s, seq %d)", frame.board_id, frame.seq
+            )
 
     def _log_read(
         self,
         event: PositionEvent,
         frame: Frame,
         previous: PositionEvent | None,
-        received: float,
+        queued: float,
     ) -> None:
         """One line per published read — INFO when the board changed, DEBUG otherwise.
 
         This is the trial log an operator tails: which placement the stream
-        settled on and how long this node took. ``proc`` is receive→publish on
+        settled on and how long this node took. ``proc`` is queue→publish on
         this node's own clock — never capture→publish, which subtracts the
         *edge's* clock (a phone off NTP) from ours and would print nonsense in the
         one log meant to diagnose lag. "Changed" is judged on the *settled*
@@ -634,6 +791,6 @@ class FrameIngest:
             event.board_id,
             frame.seq,
             event.confidence,
-            time.time() - received,
+            time.monotonic() - queued,
             shown,
         )

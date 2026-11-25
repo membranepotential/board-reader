@@ -18,12 +18,11 @@ and what :mod:`board_reader_inference.measurement.replay` sweeps offline — one
 because a scheduler measured on recordings and a different one in production is a
 sweep that proved nothing.
 
-Live, the two halves of the question come apart: the policy must see **every**
-arriving frame (:meth:`FramePolicy.observe`, on the ``/ingest`` handler) or it
-segments bursts nobody sent, while the decision (:meth:`FramePolicy.due`) belongs
-at the moment the worker picks a frame out of the latest-wins inbox — which is how
-a burst-end read lands on the *sharpest* frame of the moment rather than on
-whichever one arrived at the instant the burst ended. See :class:`FramePolicy`.
+Live, both halves of the question run on the ``/ingest`` handler, on every
+arriving frame in order (:meth:`FramePolicy.observe`, then :meth:`FramePolicy.due`),
+exactly as replay asks them per recorded frame; a scheduled frame then waits in
+its board's read queue however long the recognizer takes. That is what makes a
+board's reads independent of load. See :class:`FramePolicy`.
 
 **The keepalive is a floor, not a nicety** (DESIGN D3: stability is a *hint*, never
 a gate). The meter that shipped before 2026-08-27 measured an absolute pixel
@@ -74,6 +73,7 @@ import math
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass, field, fields
+from enum import Enum
 from typing import ClassVar, Protocol, runtime_checkable
 
 import cv2
@@ -117,6 +117,20 @@ DEFAULT_KEEPALIVE_S = 3.0
 # --------------------------------------------------------------------------- #
 
 
+class ReadKind(Enum):
+    """Why a policy asked for a read, which says what losing it costs.
+
+    The live node reads every scheduled frame, in order, however far behind it
+    runs; only a sustained overload makes it shed reads, and it sheds
+    :attr:`KEEPALIVE` reads first (:mod:`.ingest`).
+    """
+
+    #: Owed by a burst end: the move-complete evidence the debounce settles on.
+    BURST_END = "burst-end"
+    #: The floor, or a fixed-rate read: the next one says the same thing.
+    KEEPALIVE = "keepalive"
+
+
 @runtime_checkable
 class FramePolicy(Protocol):
     """Which frames are worth an estimate.
@@ -131,25 +145,22 @@ class FramePolicy(Protocol):
     :meth:`observe`
         Fold one arriving frame's header into the burst state. Called for
         **every** frame, in capture order, exactly once each — including frames
-        that are never estimated and frames the ingest inbox goes on to drop. A
-        policy blinded to part of the stream segments bursts that nobody sent.
+        that are never estimated. A policy blinded to part of the stream segments
+        bursts that nobody sent.
 
     :meth:`due`
         Decide whether *this* frame is the one to spend an estimate on, and
-        record the read if so. Called at most once per frame, and only for a
-        frame the caller is actually able to estimate right now.
+        record the read if so (its :class:`ReadKind`). Called once per frame,
+        right after :meth:`observe`.
 
     Offline (:mod:`board_reader_inference.measurement.replay`) the two collapse into
-    :meth:`should_estimate`: frames are read one at a time, in order, so the frame
-    just observed is always the frame being decided. Live
-    (:class:`~board_reader_inference.stream.ingest.FrameIngest`) they come apart —
-    :meth:`observe` runs on the ``/ingest`` handler for every frame that lands,
-    while :meth:`due` runs on the board's worker for whichever frame survived the
-    latest-wins inbox. Deciding at the *drain* rather than at arrival is the
-    point: :func:`~board_reader_inference.stream.ingest.prefer_frame` keeps the sharper
-    of two contenders within its window, so a burst-end read spends itself on the
-    crispest view of the moment instead of on whichever frame happened to arrive
-    at the instant the burst ended.
+    :meth:`should_estimate`. Live
+    (:class:`~board_reader_inference.stream.ingest.FrameIngest`) ``submit`` calls
+    both on every arriving frame, in the same order, so the node reads the frames
+    a replay reads; a scheduled frame then waits in its board's read queue. The
+    decision used to wait until a worker drained a latest-wins inbox, which let
+    load change which frame a burst-end read landed on, and so the settled board
+    and its ``changed_utc`` (docs/reports/2026-11-25-multiboard-spikes.md).
 
     :attr:`name` is the policy's canonical spec string: it round-trips through
     :func:`parse_policy`, so the ``policy`` field of a replay manifest is literally
@@ -167,10 +178,11 @@ class FramePolicy(Protocol):
     def observe(self, capture_ts: float, stability: float) -> None:
         """Fold one arriving frame's header in. Every frame, in capture order."""
 
-    def due(self, capture_ts: float, stability: float) -> bool:
-        """Whether to spend an estimate on this frame — and, if so, record it.
+    def due(self, capture_ts: float, stability: float) -> ReadKind | None:
+        """Whether to spend an estimate on this frame (its :class:`ReadKind`, or
+        ``None``) — and, if so, record it.
 
-        Not a pure query: answering ``True`` consumes the read (the keepalive
+        Not a pure query: answering a kind consumes the read (the keepalive
         clock restarts, a burst end's owed read is struck off), so it must be
         asked exactly once per frame the caller can estimate, and never for a
         frame the caller then declines to read for its own reasons.
@@ -297,8 +309,8 @@ def _under_the_floor(name: str, spacing_s: float, keepalive_s: float) -> None:
 class EveryFrame:
     """Estimate every recorded frame — the densest benchmark, and the control.
 
-    Not what the live gateway does (its latest-wins inbox drops frames whenever
-    the estimator falls behind), and not what any scheduler should do; it is the
+    Not what any scheduler should do (live, it fills the read queue as soon as
+    the estimator is slower than the stream, and the queue sheds reads); it is the
     row every sparse policy is measured against, since it is the only reading of
     a take that leaves no frame unread.
     """
@@ -323,8 +335,8 @@ class EveryFrame:
     def observe(self, capture_ts: float, stability: float) -> None:
         return None
 
-    def due(self, capture_ts: float, stability: float) -> bool:
-        return True
+    def due(self, capture_ts: float, stability: float) -> ReadKind | None:
+        return ReadKind.KEEPALIVE
 
     def should_estimate(self, entry: FrameEntry) -> bool:
         return True
@@ -426,7 +438,7 @@ class BurstTriggered:
     def observe(self, capture_ts: float, stability: float) -> None:
         self._track_burst(stability, capture_ts)
 
-    def due(self, capture_ts: float, stability: float) -> bool:
+    def due(self, capture_ts: float, stability: float) -> ReadKind | None:
         ts = capture_ts
         if self._last_read_ts is not None:
             if ts < self._last_read_ts:
@@ -446,15 +458,16 @@ class BurstTriggered:
             # so a non-finite capture_ts answers NO and falls back to the floor,
             # instead of losing every comparison and reading every frame.
             if not ts - self._last_read_ts >= interval - DUE_EPS:
-                return False
+                return None
+        kind = ReadKind.BURST_END if self._owed else ReadKind.KEEPALIVE
         self._owed = max(self._owed - 1, 0)
         self._last_read_ts = ts
-        return True
+        return kind
 
     def should_estimate(self, entry: FrameEntry) -> bool:
         ts, stability = _signal(entry)
         self.observe(ts, stability)
-        return self.due(ts, stability)
+        return self.due(ts, stability) is not None
 
     def _track_burst(self, stability: float, ts: float) -> None:
         """The forwarder's own ``trackBurst``, on the receiving side of the wire."""
@@ -530,21 +543,21 @@ class WhenStill:
         exactly the weakness it exists to measure."""
         return None
 
-    def due(self, capture_ts: float, stability: float) -> bool:
+    def due(self, capture_ts: float, stability: float) -> ReadKind | None:
         ts = capture_ts
         if self._last_read_ts is not None:
             if ts < self._last_read_ts:
                 self._last_read_ts = ts  # see BurstTriggered.due
             interval = self.spacing_s if stability >= self.theta else self.keepalive_s
             if not ts - self._last_read_ts >= interval - DUE_EPS:
-                return False
+                return None
         self._last_read_ts = ts
-        return True
+        return ReadKind.KEEPALIVE
 
     def should_estimate(self, entry: FrameEntry) -> bool:
         ts, stability = _signal(entry)
         self.observe(ts, stability)
-        return self.due(ts, stability)
+        return self.due(ts, stability) is not None
 
 
 # --------------------------------------------------------------------------- #

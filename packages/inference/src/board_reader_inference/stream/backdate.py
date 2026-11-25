@@ -30,7 +30,7 @@ the next (a hand entering darkens it), so each grey frame is scaled to a fixed m
 before it is compared. The comparison is on a downscaled, blurred grey copy
 (:data:`GREY_WIDTH` pixels wide), which also absorbs sub-pixel shake.
 
-**Where it runs.** Inline in the read (:func:`~.ingest._read_and_settle`), right after
+**Where it runs.** Inline in the read (:func:`~.ingest._settle_read`), right after
 the stabilizer, so the event that publishes the new board already carries the
 back-dated time and the field's meaning stays "when the current settled board first
 appeared" with no second event. Its cost is microseconds per held frame against a

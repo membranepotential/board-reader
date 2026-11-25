@@ -269,7 +269,7 @@ settled perfect, with no crop of ours, no warp, no bank and no calibration
   published directions and drops a read more than **45°** off it, before the
   debounce: such a read is almost certainly the board read turned. A
   seq that does not advance starts the guard afresh; 5 drops in a row re-anchor it on
-  the new direction (the camera really turned). It runs in `ingest._read_and_settle`,
+  the new direction (the camera really turned). It runs in `ingest._settle_read`,
   which the live worker and replay share, so the gate counts the same drops
   (`/healthz` `ingest.misoriented`, replay `frames_misoriented`, a WARNING per drop).
   Not on `POST /estimate`: a snapshot may be taken from any side. The gate is

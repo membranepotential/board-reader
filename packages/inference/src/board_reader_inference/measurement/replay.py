@@ -13,8 +13,8 @@ through today's recognizer and writes fresh events. That is this module.
 **It replays the live path, not a copy of it.** The frames go through the same
 :func:`~board_reader_inference.recognition.recognizer.frame_reader` read the ``/ingest``
 worker runs, the same
-:func:`~board_reader_inference.stream.ingest._read_and_settle` (estimate ->
-:class:`~board_reader_inference.stream.stabilize.BoardStabilizer`), and the same
+:func:`~board_reader_inference.stream.ingest._settle_read` (guard ->
+:class:`~board_reader_inference.stream.stabilize.BoardStabilizer` -> change clock), and the same
 :func:`~board_reader_inference.stream.ingest.event_line` writer. A replayed event is
 what the gateway *would* have published; a second implementation of any of those
 three would make the comparison meaningless.
@@ -151,7 +151,7 @@ from board_reader_inference.stream.backdate import ChangeClock, FrameRing
 from board_reader_inference.stream.ingest import (
     Misoriented,
     OrientationGuard,
-    _read_and_settle,
+    _settle_read,
     event_line,
 )
 from board_reader_inference.stream.schedule import (
@@ -481,7 +481,7 @@ def replay(
     ``events.ndjson`` says which setting the live run used; a replay under
     another one warns, since its settled row then measures a different guard.
 
-    The estimate and debounce are :func:`~board_reader_inference.stream.ingest._read_and_settle`
+    Each read goes through :func:`~board_reader_inference.stream.ingest._settle_read`
     — the ingest worker's own body — and the stabilizer is fed the frame's
     ``capture_ts``, so the settle window is recorded time. One stabilizer for the
     whole replay: it is one board's stream, in order, which is exactly the stream
@@ -610,8 +610,8 @@ def replay(
                     stats.frames_missing += 1
                     continue
                 try:
-                    outcome = _read_and_settle(
-                        read, frame, stabilizer, guard, rules, clock, ring.snapshot()
+                    outcome = _settle_read(
+                        read(frame), frame, stabilizer, guard, rules, clock, ring.snapshot()
                     )
                 except Exception as e:  # one bad frame is not the end of the stream
                     stats.frames_failed += 1

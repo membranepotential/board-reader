@@ -40,6 +40,7 @@ from board_reader_inference.stream.schedule import (
     EveryFrame,
     FramePolicy,
     MotionMeter,
+    ReadKind,
     WhenStill,
     parse_policy,
     policy_slug,
@@ -592,3 +593,25 @@ def test_restamping_a_dead_meters_take_is_what_makes_it_schedulable():
 
     assert all(e.header["stability"] > EXIT_BURST for e in fresh[5:])
     assert not live.bursting, "re-metered, the same frames read as rest"
+
+
+def test_due_names_burst_end_reads_apart_from_the_floor():
+    """The node sheds keepalive reads first under a sustained overload, so ``due``
+    must say which reads a burst end owed: here the stream's first read and the
+    floor are keepalives, and the three reads after the move are burst-end ones."""
+    policy = parse_policy(DEFAULT_POLICY_SPEC)
+    kinds = []
+    for seq, stability in enumerate([1.0] * 5 + [0.4] * 6 + [0.95] * 30):
+        ts = seq * 0.1
+        policy.observe(ts, stability)
+        kind = policy.due(ts, stability)
+        if kind is not None:
+            kinds.append((seq, kind))
+    assert kinds == [
+        (0, ReadKind.KEEPALIVE),
+        (14, ReadKind.BURST_END),
+        (17, ReadKind.BURST_END),
+        (20, ReadKind.BURST_END),
+        (40, ReadKind.KEEPALIVE),
+    ]
+    assert EveryFrame().due(0.0, 1.0) is ReadKind.KEEPALIVE

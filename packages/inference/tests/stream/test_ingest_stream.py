@@ -24,11 +24,8 @@ from board_reader_inference.recognition.recognizer import (
 )
 from board_reader_inference.server import create_app
 from board_reader_inference.stream.hub import PositionHub
-from board_reader_inference.stream.ingest import (
-    SHARPNESS_WINDOW_S,
-    FrameIngest,
-    prefer_frame,
-)
+from board_reader_inference.stream.ingest import READ_BACKLOG, FrameIngest
+from board_reader_inference.stream.schedule import ReadKind
 
 
 class SlowRecognizer(StubRecognizer):
@@ -79,8 +76,9 @@ def _frame(board_id: str = "A1", seq: int = 0) -> Frame:
     )
 
 
-def test_burst_is_prefiltered_to_the_freshest_frame():
-    """A burst outrunning the estimator is dropped from the stale end, not the fresh one."""
+def test_a_burst_outrunning_the_estimator_is_read_in_full_and_in_order():
+    """A scheduled frame waits for the estimator however long it takes: nothing is
+    dropped short of the overload rule, and the reads run in arrival order."""
 
     async def run():
         est = FakeEstimator(delay=0.02)
@@ -91,42 +89,94 @@ def test_burst_is_prefiltered_to_the_freshest_frame():
             await asyncio.sleep(0.002)  # stream faster than the model
         await asyncio.wait_for(ingest.drain(), timeout=5.0)
 
-        assert ingest.frames_received == 20
-        assert 0 < ingest.frames_estimated < 20  # the pre-filter did its job
-        assert ingest.frames_estimated + ingest.frames_dropped == 20
-        assert ingest.frames_failed == 0
-        # The newest frame is never the one dropped, and one worker per board keeps
-        # what *is* estimated in submission order.
+        assert (ingest.frames_received, ingest.frames_estimated) == (20, 20)
+        assert (ingest.frames_dropped, ingest.frames_failed) == (0, 0)
+        assert est.seqs("A1") == list(range(20))
         assert hub.latest("A1").seq == 19
-        assert est.seqs("A1") == sorted(est.seqs("A1"))
-        assert est.seqs("A1")[-1] == 19
+        stats = ingest.queue_stats()
+        assert stats.served == 20 and stats.max_waiting > 1 and stats.wait_max_s > 0
         await ingest.close()
 
     asyncio.run(run())
 
 
-def test_boards_are_independent_and_a_slow_board_does_not_starve_a_fast_one():
+def test_boards_share_one_estimator_oldest_read_first_one_at_a_time():
+    """Every board's reads go through one queue: oldest first across boards, and
+    never two estimates at once (one GPU session, one arena)."""
+
     async def run():
-        est = FakeEstimator(delays={"SLOW": 0.3, "FAST": 0.0})
+        running, most = 0, 0
+
+        def estimate(frame: Frame) -> FrameReading:
+            nonlocal running, most
+            running += 1
+            most = max(most, running)
+            try:
+                return est.estimate(frame)
+            finally:
+                running -= 1
+
+        est = FakeEstimator(delays={"SLOW": 0.1, "FAST": 0.0})
         hub = PositionHub()
-        ingest = FrameIngest(est.estimate, hub)
-
+        ingest = FrameIngest(estimate, hub)
         ingest.submit(_frame("SLOW", seq=1))
-        for seq in range(1, 4):
-            ingest.submit(_frame("FAST", seq=seq))
-            await asyncio.sleep(0.01)
-
-        # FAST is done long before SLOW's single frame comes back.
-        await asyncio.wait_for(ingest.drain("FAST"), timeout=2.0)
-        assert hub.latest("FAST").seq == 3
-        assert hub.latest("SLOW") is None
-
+        ingest.submit(_frame("FAST", seq=1))
+        ingest.submit(_frame("SLOW", seq=2))
+        ingest.submit(_frame("FAST", seq=2))
         await asyncio.wait_for(ingest.drain(), timeout=5.0)
-        assert hub.latest("SLOW").seq == 1
-        assert ingest.frames_received == 4
         await ingest.close()
+        return est.seen, most
 
-    asyncio.run(run())
+    seen, most = asyncio.run(run())
+    assert seen == [("SLOW", 1), ("FAST", 1), ("SLOW", 2), ("FAST", 2)]
+    assert most == 1
+
+
+def test_sustained_overload_sheds_keepalive_reads_first_and_reports_each_drop():
+    """The overload rule: a board with READ_BACKLOG reads waiting sheds its oldest
+    keepalive read, never a burst-end one while it has a keepalive to give up, and
+    every drop reaches the drop observer."""
+    from board_reader_inference.stream.schedule import EveryFrame
+
+    class _Kinds(EveryFrame):
+        """Every frame read; even seqs are burst-end reads, odd ones keepalives."""
+
+        def due(self, capture_ts, stability):
+            return ReadKind.BURST_END if int(capture_ts) % 2 == 0 else ReadKind.KEEPALIVE
+
+    async def run():
+        gate = asyncio.Event()
+        est = FakeEstimator()
+        drops: list[tuple[int, ReadKind]] = []
+
+        def estimate(frame: Frame) -> FrameReading:
+            if frame.seq == 0:
+                asyncio.run_coroutine_threadsafe(gate.wait(), loop).result(timeout=5)
+            return est.estimate(frame)
+
+        loop = asyncio.get_running_loop()
+        ingest = FrameIngest(
+            estimate,
+            PositionHub(),
+            policy=_Kinds,
+            on_drop=lambda frame, kind, rules, waited: drops.append((frame.seq, kind)),
+        )
+        ingest.submit(_frame(seq=0))  # parks the estimator
+        await asyncio.sleep(0.05)
+        extra = 10
+        for seq in range(1, 1 + READ_BACKLOG + extra):
+            ingest.submit(_frame(seq=seq))
+        gate.set()
+        await asyncio.wait_for(ingest.drain(), timeout=5.0)
+        await ingest.close()
+        return est.seqs("A1"), drops, ingest
+
+    seen, drops, ingest = asyncio.run(run())
+    assert [kind for _, kind in drops] == [ReadKind.KEEPALIVE] * 10
+    assert [seq for seq, _ in drops] == list(range(1, 21, 2))  # the oldest keepalives
+    assert (ingest.frames_dropped, ingest.frames_dropped_burst_end) == (10, 0)
+    assert seen == sorted(seen) and len(seen) == 1 + READ_BACKLOG
+    assert all(seq % 2 == 0 for seq in seen[1:11]), "every burst-end read was kept"
 
 
 def test_estimator_exception_does_not_end_the_boards_stream():
@@ -285,47 +335,6 @@ def test_each_board_settles_under_its_own_rules_read_per_read():
     asyncio.run(run())
 
 
-def _entry(seq: int, ts: float, sharpness: float | None) -> tuple[Frame, float]:
-    img = np.zeros((8, 8, 3), dtype=np.uint8)
-    return (
-        Frame(
-            board_id="T1", seq=seq, capture_ts=ts, image=img, sharpness=sharpness
-        ),
-        ts,
-    )
-
-
-def test_prefer_frame_keeps_the_sharper_recent_frame():
-    """A shaky hand smears half the frames; the ~1 s read should be spent on the
-    crisp one, not blindly on the newest."""
-    sharp = _entry(1, 10.0, 900.0)
-    blurry = _entry(2, 10.4, 120.0)
-    assert prefer_frame(sharp, blurry) is sharp
-
-
-def test_prefer_frame_lets_freshness_win_past_the_window():
-    """A sharp frame from a move ago describes the WRONG board — staleness caps
-    how long sharpness may hold the inbox."""
-    sharp = _entry(1, 10.0, 900.0)
-    late = _entry(9, 10.0 + SHARPNESS_WINDOW_S + 0.1, 120.0)
-    assert prefer_frame(sharp, late) is late
-
-
-def test_prefer_frame_without_the_measurement_is_latest_wins():
-    """A sharpness-less edge (the synthetic feed, an old page) behaves exactly as
-    before: the freshest board state wins."""
-    older = _entry(1, 10.0, None)
-    newer = _entry(2, 10.1, None)
-    assert prefer_frame(older, newer) is newer
-    assert prefer_frame(_entry(1, 10.0, 500.0), newer) is newer
-
-
-def test_prefer_frame_ties_go_to_the_newcomer():
-    a = _entry(1, 10.0, 500.0)
-    b = _entry(2, 10.1, 500.0)
-    assert prefer_frame(a, b) is b
-
-
 def test_each_board_settles_with_the_ingest_settle_config():
     """``FrameIngest(settle=...)`` builds every board's debounce: with a zero
     window and one read, the first changed read settles at once."""
@@ -353,7 +362,7 @@ def test_each_board_settles_with_the_ingest_settle_config():
 
 
 def test_an_obscured_read_is_published_as_such_and_commits_nothing():
-    """The frame energy reaches the debounce through ``_read_and_settle``: with a
+    """The frame energy reaches the debounce through ``_settle_read``: with a
     window that commits any changed read at once, the obscured one still waits."""
     from board_reader_inference.recognition.recognizer import event_from_dist
     from board_reader_inference.stream.stabilize import SettleConfig

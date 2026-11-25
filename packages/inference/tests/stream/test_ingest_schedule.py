@@ -4,14 +4,10 @@
 This module proves the gateway *asks them at the right moment*, which is a
 different claim and the one that took a design to get right:
 
-* the policy is **observed at submit** — every frame that lands, in arrival order,
-  because burst end is only visible from the whole run and the latest-wins inbox
-  hides most of it;
-* it is **asked at drain** — for whichever frame the worker actually picked, so a
-  burst-end read spends itself on the sharper contender
-  :func:`~board_reader_inference.stream.ingest.prefer_frame` kept rather than on whichever
-  frame happened to arrive at that instant. That interplay is the sweep's own
-  recommendation (report §8, "apply the policy to the ingest inbox");
+* the policy is **observed and asked at submit** — every frame that lands, in
+  arrival order, because burst end is only visible from the whole run — so a busy
+  estimator changes when a scheduled read runs, never which frame it reads
+  (docs/reports/2026-11-25-multiboard-spikes.md);
 * the floor holds through every way the signal can fail — a stuck meter, an absent
   one, and a ``capture_ts`` that stops advancing (which the policy alone cannot
   see, so the worker backstops it on the node's own clock);
@@ -104,9 +100,8 @@ async def _drive(
 ) -> tuple[list[int], FrameIngest]:
     """Stream a stability sequence, draining after each frame.
 
-    Draining between submits keeps the inbox from ever holding two frames, so what
-    this measures is the *schedule* and nothing else — the inbox interplay gets its
-    own test below, where contention is arranged on purpose.
+    Draining between submits keeps the estimator idle, so what this measures is
+    the *schedule* and nothing else — a busy estimator gets its own test below.
     """
     est = _Recorder()
     ingest = FrameIngest(
@@ -212,14 +207,14 @@ def test_boards_schedule_independently():
 
 
 # --------------------------------------------------------------------------- #
-# The inbox interplay — the sweep's own recommendation
+# A busy estimator delays reads, never moves them
 # --------------------------------------------------------------------------- #
 
 
 class _GatedEstimator:
-    """Blocks the worker inside its FIRST estimate, so the inbox can fill.
+    """Blocks the worker inside its FIRST estimate, so frames pile up behind it.
 
-    The real thing takes ~1.3 GPU-seconds; this takes exactly as long as the test
+    The real thing takes ~0.2 GPU-seconds; this takes exactly as long as the test
     needs it to, in the same place — the worker thread.
     """
 
@@ -237,76 +232,42 @@ class _GatedEstimator:
         return self._stub(frame)
 
 
-def test_a_burst_end_read_gets_the_sharper_contender_the_inbox_kept():
-    """Why the decision happens at the drain and not at arrival.
+#: Frame 0, then a move (5-10) and the calm that ends it (11-19).
+_MOVE = [(0, 1.0)] + [(seq, 0.4 if seq <= 10 else 0.95) for seq in range(5, 20)]
 
-    Frame 18 is the move-complete moment and it is *sharp*; frame 19 arrives a
-    tenth of a second later and is smeared. Latest-wins would hand the burst-end
-    read the blurry one — exactly the weakness take 5 exposed in the sweep. Because
-    the policy is only *observed* on arrival and *asked* when the worker picks a
-    frame, ``prefer_frame`` gets to keep the sharp contender and that is what the
-    single expensive read is spent on.
-    """
+
+def test_a_burst_end_read_lands_on_the_frame_the_policy_picked_however_busy():
+    """Why the decision happens at arrival: the whole move arrives while the
+    estimator is still busy with frame 0, and the burst-end run still reads the
+    frames an idle node reads — 14, the move-complete moment, and 17 a beat later
+    — not whatever frame happens to be newest when the estimator frees up."""
 
     async def run():
         est = _GatedEstimator()
-        ingest = FrameIngest(
-            est.estimate, PositionHub(), policy=SHIPPED
-        )
+        ingest = FrameIngest(est.estimate, PositionHub(), policy=SHIPPED)
         ingest.submit(_frame(0))  # the stream's first read — parks the worker
         while not est.entered.is_set():
             await asyncio.sleep(0.005)
-
-        # The move, then the calm that ends it. All of these pile into the inbox
-        # behind the parked worker; every one of them is still OBSERVED.
-        for seq in range(5, 18):
-            ingest.submit(_frame(seq, stability=0.4 if seq <= 10 else 0.95))
-        sharp = _frame(18, stability=0.95, sharpness=900.0)  # ends the burst
-        blurry = _frame(19, stability=0.95, sharpness=120.0)  # newer, smeared
-        ingest.submit(sharp)
-        ingest.submit(blurry)
-
+        for seq, stability in _MOVE[1:]:
+            ingest.submit(_frame(seq, stability=stability))
         est.release.set()
         await asyncio.wait_for(ingest.drain(), timeout=5.0)
         await ingest.close()
         return est.seen, ingest
 
-    seen, ingest = asyncio.run(run())
-    assert seen == [0, 18], "the burst-end read landed on the sharp frame"
-    assert 19 not in seen, "…and not on the newest frame, which was the blurry one"
-    assert ingest.frames_received == 16
-    assert ingest.frames_dropped == 14  # everything the inbox displaced
-
-
-def test_the_policy_sees_every_arriving_frame_not_just_the_ones_it_reads():
-    """The reason ``observe`` lives in ``submit``.
-
-    Under a slow estimator the inbox discards most of a burst. If the policy only
-    saw the survivors it would see a board that went from calm to calm and never
-    notice the move at all — no burst, no burst end, and a completed move that only
-    the keepalive eventually catches, seconds late.
-    """
-
-    async def run():
-        est = _GatedEstimator()
-        ingest = FrameIngest(
-            est.estimate, PositionHub(), policy=SHIPPED
-        )
-        ingest.submit(_frame(0))
-        while not est.entered.is_set():
-            await asyncio.sleep(0.005)
-        # The whole move arrives while the worker is busy: the inbox keeps ONE of
-        # these, and the burst is only in the run of headers.
-        for seq in range(5, 19):
-            ingest.submit(_frame(seq, stability=0.4 if seq <= 10 else 0.95))
-        est.release.set()
-        await asyncio.wait_for(ingest.drain(), timeout=5.0)
+    async def idle():
+        est = _Recorder()
+        ingest = FrameIngest(est.estimate, PositionHub(), policy=SHIPPED)
+        for seq, stability in _MOVE:
+            ingest.submit(_frame(seq, stability=stability))
+            await asyncio.wait_for(ingest.drain(), timeout=5.0)
         await ingest.close()
-        return est.seen
+        return est.seqs()
 
-    # Frame 18 is the move-complete frame; the burst end made it due IMMEDIATELY,
-    # 1.8 s in, rather than at the 2.0 s keepalive.
-    assert asyncio.run(run()) == [0, 18]
+    seen, ingest = asyncio.run(run())
+    assert seen == asyncio.run(idle()) == [0, 14, 17]
+    assert ingest.frames_received == 16
+    assert (ingest.frames_dropped, ingest.frames_unscheduled) == (0, 13)
 
 
 # --------------------------------------------------------------------------- #
@@ -422,17 +383,12 @@ def _stream(client, frames: list[Frame]) -> None:
 @pytest.mark.parametrize(
     ("spec", "reads"),
     [
-        # 0.9 s of capture time under a 2 s floor: one read, and it does not matter
-        # which frames the inbox dropped on the way — that is the point of a
-        # capture-time floor.
+        # 0.9 s of capture time under a 2 s floor: one read.
         (DEFAULT_POLICY_SPEC, (1, 1)),
-        # Whatever reaches a worker is read. The range is the INBOX, not the
-        # scheduler: a fast socket outruns even a stub estimator, and the frames it
-        # displaces were never offered to the policy at all.
-        ("every-frame", (1, 10)),
-        # Its own 0.3 s spacing: at most every arriving frame from 0, 3, 6, 9; at
-        # least the first and the last, which drain() guarantees.
-        ("when-still:spacing_s=0.3", (2, 4)),
+        # Every frame, however fast the socket outruns the estimator.
+        ("every-frame", (10, 10)),
+        # Its own 0.3 s spacing: frames 0, 3, 6 and 9.
+        ("when-still:spacing_s=0.3", (4, 4)),
     ],
 )
 def test_br_schedule_chooses_the_gateways_policy(
@@ -498,8 +454,7 @@ def test_the_ingress_recording_keeps_the_frames_the_scheduler_declined(
     tmp_path, monkeypatch
 ):
     """A recording is the INPUT to a run, not a log of what the estimator got round
-    to — recording happens in the ``/ingest`` handler, before the inbox and long
-    before the policy. It has to stay that way, or a sparse live run replays as a
+    to — recording happens in the ``/ingest`` handler, before the policy. It has to stay that way, or a sparse live run replays as a
     sparse recording and the whole sweep harness is measuring itself."""
     from starlette.testclient import TestClient
 
