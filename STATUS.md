@@ -7,11 +7,11 @@ _reconciled: 2026-11-24 @ `480a5ea`_ · decisions: [docs/DESIGN.md](docs/DESIGN.
 A camera reads a live OTB board and streams timestamped **piece placements + per-square
 confidences**. No moves, no legality, no PGN — those belong to the downstream application layer.
 
-## Now (2 agents, files partitioned)
+## Now (1 agent)
 
 - **auto-frame** — F1 locate + `-attn` models DONE (`499aeb2`, `1e58440`, D20; gate identical); F1b preview
   drift rule DONE (`6de42c6`: R² ≥ 0.97, > 5 % on 2 previews, 0 false fires / 421); F2a controller DONE
-  (`d2613a3`), being split into `control/autoframe/` (agent); F2b wiring M1 then M2 — running (agent).
+  (`d2613a3`), split into `control/autoframe/` (`fed42d6`); F2b wiring M1 then M2 — running (agent).
 
 ## Done (2026-11-24/25 — the ChessQ rebuild; plan: [docs/plans/2026-11-24-simplify-around-chessq.md](docs/plans/2026-11-24-simplify-around-chessq.md))
 
