@@ -7,11 +7,8 @@ _reconciled: 2026-11-24 @ `480a5ea`_ · decisions: [docs/DESIGN.md](docs/DESIGN.
 A camera reads a live OTB board and streams timestamped **piece placements + per-square
 confidences**. No moves, no legality, no PGN — those belong to the downstream application layer.
 
-## Now (3 agents, files partitioned)
+## Now (2 agents, files partitioned)
 
-- **auto-frame** — F1 locate + `-attn` models DONE (`499aeb2`, `1e58440`, D20; gate identical); F1b preview
-  drift rule DONE (`6de42c6`: R² ≥ 0.97, > 5 % on 2 previews, 0 false fires / 421); F2a controller DONE
-  (`d2613a3`), split into `control/autoframe/` (`fed42d6`); F2b M1 DONE (`e72eb8e`); M2 — running (agent).
 - **file splits DONE** (Sonnet): snapshot page `84ecbc0`, `measurement/{trial,evaluate}/` `a815f91`, `control/camera/`
   `878f80a`, `stream/schedule/` `bbef6b2`; gate identical. Next round: `replay.py`, `ingest.py`, `server.py`,
   /control + /camera pages, core `control.py`, `camera/registry.py` (573: extract the auto-frame driver).
@@ -32,6 +29,9 @@ confidences**. No moves, no legality, no PGN — those belong to the downstream 
   contract** (D13) pydantic → generated zod TS; **PGN drawer** (`81408ac`, `b58968a`): 7/7 games exact.
 - **Cameras** (D18, `7f84986`): device id → permanent `board-N`, names as aliases, /control list + QR + forget,
   /ingest owner guard; **streams as cameras** (D19, `bf546c3`): `board-reader-edge camera <YouTube URL>`.
+- **Auto-frame** (D20/D21, `e72eb8e` M1, `b7f3b95` M2, `11c128f`): register → full frame → locate → crop
+  pushed, read published; moved camera re-framed from previews (R² ≥ 0.97, > 5 % twice); gate identical.
+  Drift not yet checked live.
 - **Read queue** (D17, `0102be1`): load adds latency, never changes results; auto-crop probe (`9de171f`).
 - **Docs + rules:** DESIGN rewritten; learnings → `.claude/rules/`; inference regrouped; big data on the HDD
   (`/run/media/felix/archive/board-reader/`, symlinked).
