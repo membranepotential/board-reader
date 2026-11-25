@@ -242,3 +242,161 @@ CUDA_VISIBLE_DEVICES= uv run python autocrop_analyze.py $S/out
 
 The scratch directory is `autocrop_lib.SCRATCH`. Outlines and run outputs live there,
 not in the repo.
+
+## Follow-up: the phone's preview (2026-11-25)
+
+**Question.** The phone keeps cropping. Can the node find the board, and notice a
+camera move ("drift"), on the whole-frame previews the phone already sends: 480 px
+long side, JPEG quality 0.6, every 1.5 s (`PREVIEW_*` in
+`packages/viewer/src/lib/components/camera/state.ts`)?
+
+**Answer: yes, for the real setup (board ≈ 47 % of the frame), with one read per
+preview.**
+
+- **Locate:** at a 50 % share the single pass finds 96 % of the boards with 1.7 %
+  median corner error (1 bad of 51 found). Coarse to fine on the 480 px preview
+  only upsamples, but it still helps: 1.2 % error and no bad grid at 50 %, and at
+  35 % it raises the found rate from 66 % to 91 %. Below 35 % the preview is too
+  small: at 25 % even coarse to fine finds 68 % with 3 bad grids. Auto-frame for a
+  small board needs the full-resolution frame (the `send_full_frame` path above).
+- **Drift rule (proposed):** compare each preview's board with the reference board
+  (the board located when the crop was set). Count a preview only when its grid
+  has **R² ≥ 0.97** (stricter than Auto-frame's 0.90). Report `camera_moved` when
+  the **max corner displacement exceeds 5 % of the board width on 2 consecutive
+  counted previews** (3 s). A preview below R² 0.97 (a hand over the board, a
+  person in view) neither counts nor resets the streak.
+  - On 421 still previews (11 takes, 11 min): **0 false fires**.
+  - It catches moves whose true corner displacement is ≥ 6 %: rotation 5° 20/22,
+    zoom ±10 % 38/44, shift 10 % 20/22, all within 3 previews (4.5 s). It misses most
+    moves of 3–5 % (shift 5 %: 17/22 caught), which still sit inside the crop's
+    10 % margin.
+- **Cost:** 195 ms per fp32 GPU read with the attention output (the read is 644 px
+  whatever the preview's size), 1,067 ms per int8 CPU read, plus 8–16 ms for the
+  grid fit. At one preview per 1.5 s that is 40 reads per minute per camera:
+  8 s of GPU time per minute (13 % of one GPU), or 43 s of one CPU core per minute
+  on the int8 file.
+
+### Locate on the preview
+
+`autocrop_preview.py locate`: the 30-image subset of the canvases above plus every
+labelled live-take image (53 images: 7 stills, 11 gate frames, 35 live frames), on
+the room backdrop, then downscaled to 480 px and JPEG'd at quality 60. "Found" is
+R² ≥ 0.90; "good" is corner error ≤ 5 % against the outlines. Coarse to fine cuts
+pass 1's box grown by 50 % out of the 480 px preview and reads it again.
+
+| board share | board px in preview | strategy | found | good of found | bad | corner err (median) | R² p10 / median |
+|---|---|---|---|---|---|---|---|
+| as-is (~80 %) | 328 | single pass | 96 % | 100 % | 0 | 1.3 % | 0.990 / 0.997 |
+| | | coarse to fine | 96 % | 100 % | 0 | 1.2 % | 0.987 / 0.997 |
+| 50 % | 240 | **single pass** | **96 %** | 98 % | 1 | 1.7 % | 0.971 / 0.995 |
+| | | coarse to fine | 96 % | 100 % | 0 | 1.2 % | 0.980 / 0.997 |
+| 35 % | 168 | single pass | 66 % | 97 % | 1 | 2.1 % | 0.784 / 0.959 |
+| | | coarse to fine | 91 % | 96 % | 2 | 1.4 % | 0.915 / 0.997 |
+| 25 % | 120 | single pass | 23 % | 58 % | 5 | 3.8 % | 0.483 / 0.763 |
+| | | coarse to fine | 68 % | 92 % | 3 | 1.7 % | 0.622 / 0.980 |
+
+- **The misses at 50 % and above** are the same two images in every row: a still
+  (img_0568) and a dark live frame with a hand (004038 #285). The bad 50 % grid is a
+  gate frame at 5.6 % corner error, just over the line.
+- **What coarse to fine buys on the preview:** the second read sees the board at
+  about half its width, so ChessQ's 46 patches cover it more finely, even though
+  the pixels are upsampled. It doubles the cost. For drift checks on a 47 % board
+  the single pass is enough; `locate_preview` (single pass) fits that.
+
+### Drift
+
+`autocrop_preview.py drift`: every take (7 gate, 4 live) as frames 1.5 s apart (at
+most 40 per take), each placed on one fixed 50 % room canvas per take, so the camera
+does not move while hands and pieces do. The **reference** is the median located
+quad of a take's first three counted previews. The **truth** is the probe's
+outline of each frame (the classical detector's ±20-row median). Previews whose
+outline moved ≥ 1.5 % from the reference are left out of the still set: the 2026-08
+tripods creep by ~2 % over a take, and several takes hold real bumps (up to 38 %).
+"Moved" events: from two previews per take on, the whole canvas is shifted
+(diagonally, in % of the board width), rotated (about the frame centre) or zoomed
+(about the frame centre) before the downscale, for three previews in a row.
+
+**Still** (single pass; displacement = max corner distance in % of the board width):
+
+| counted when | previews | not counted | jitter, consecutive: med / p99 / max | vs reference: med / p99 / max |
+|---|---|---|---|---|
+| R² ≥ 0.90 | 421 | 1.7 % | 1.37 / 10.7 / 16.4 % | 1.80 / 9.8 / 14.9 % |
+| R² ≥ 0.97 | 421 | 11.9 % | 1.25 / 7.1 / 16.4 % | 1.56 / 5.0 / 8.4 % |
+
+- **The tail is single-preview spikes.** Almost every still jump over 5 % goes
+  out and back in the next preview (A→B large, B→C large), and most have R²
+  0.92–0.96: a grid pulled by a hand or a crowded rank. Hence the stricter R² and
+  the 2-preview persistence. The persistence, not the threshold, gives the margin:
+  the 5 % threshold sits at the still p99.
+
+**Moved** (single pass, R² ≥ 0.90; 66 previews per row, 22 events):
+
+| move | true displacement (median) | located p10 | located median |
+|---|---|---|---|
+| shift 3 % | 3.1 % | 3.3 % | 4.3 % |
+| shift 5 % | 5.1 % | 4.9 % | 6.0 % |
+| shift 10 % | 10.1 % | 10.1 % | 11.2 % |
+| rotate 3° | 4.8 % | 3.8 % | 5.1 % |
+| rotate 5° | 7.5 % | 6.3 % | 7.6 % |
+| rotate 10° | 14.7 % | 11.8 % | 15.2 % |
+| zoom −5 % | 4.6 % | 3.3 % | 4.8 % |
+| zoom +5 % | 4.4 % | 3.8 % | 5.4 % |
+| zoom −10 % | 8.6 % | 7.2 % | 8.7 % |
+| zoom +10 % | 8.6 % | 6.7 % | 9.7 % |
+| zoom −20 % | 16.1 % | 13.8 % | 17.4 % |
+| zoom +20 % | 16.7 % | 12.4 % | 17.2 % |
+
+The located displacement tracks the true one with about +1 % bias (the still median).
+
+**Rule** (θ on 2 consecutive counted previews; false fires over the 421 still
+previews, 11 min; misses = events not caught within their 3 moved previews):
+
+| counted when | θ | false fires | miss shift 3 / 5 / 10 % | miss rotate 3 / 5 / 10° | miss zoom ±5 / ±10 / ±20 % |
+|---|---|---|---|---|---|
+| R² ≥ 0.90 | 4 % | 15 | 12 / 2 / 1 of 22 | 3 / 0 / 0 of 22 | 12 / 1 / 2 of 44 |
+| | 5 % | 4 | 15 / 4 / 1 of 22 | 12 / 0 / 0 of 22 | 24 / 1 / 2 of 44 |
+| R² ≥ 0.97 | 4 % | 6 | 11 / 3 / 2 of 22 | 4 / 2 / 2 of 22 | 14 / 6 / 5 of 44 |
+| | **5 %** | **0** | 15 / 5 / 2 of 22 | 13 / 2 / 2 of 22 | 26 / 6 / 5 of 44 |
+| | 6 % | 0 | 17 / 13 / 2 of 22 | 18 / 4 / 2 of 22 | 31 / 6 / 5 of 44 |
+
+- **The misses of big moves at R² ≥ 0.97** (2 of 22 even at 10 %) are events where
+  fewer than 2 of the 3 moved previews passed R² 0.97. A real move persists, so
+  the rule fires on a later preview; the 3-preview window undercounts them.
+- **Metric:** max corner displacement and 1 − IoU of the boxes separate still
+  previews from moves of ≥ 5 % true displacement equally well (AUC 0.998 and 0.996
+  at R² ≥ 0.97). Max corner displacement also sees a rotation that keeps the box,
+  and it reads in the same unit as the crop margin, so take that.
+- **Low R² alone never triggers.** In the still set 11.9 % of previews fall below
+  R² 0.97 (1.7 % below 0.90) with the camera unmoved: hands, a dark frame. A board
+  that stays untrusted for long (a person in view, or a camera knocked off the
+  board entirely) is a different signal: report it as "board not visible" after,
+  say, 10 previews (15 s), not as `camera_moved`.
+- **Caveat: 11 minutes of still previews is thin.** Zero false fires in 421
+  previews bounds the rate only to below ~1 per 140 previews (95 %). Before
+  shipping, replay a long still take (an hour, with play) through the rule.
+- **Caveat: the canvas is synthetic.** The phone frame around the board is the room
+  backdrop, not a real uncropped frame; no uncropped recording exists (see Gaps).
+
+### Cost
+
+| | median |
+|---|---|
+| fp32 GPU read with `square_attention` (served `-attn` file) | 195 ms |
+| int8 CPU read with `square_attention` | 1,067 ms |
+| grid fit (Python) | 8–16 ms |
+
+The GPU was shared with another job during the run; the CPU read ran beside the
+GPU run. At 40 previews per minute per camera, one GPU serves about 7 cameras on
+drift reads alone, before any position reads. Reading every second preview
+(every 3 s, still 2 consecutive = 6 s to fire) halves that.
+
+### Reproduce
+
+```bash
+cd tools/probes
+export AUTOCROP_SCRATCH=<scratch>      # holds quads/ from autocrop_label.py
+flock /tmp/claude-1000/br-gpu.lock uv run python autocrop_preview.py locate $AUTOCROP_SCRATCH/prev
+flock /tmp/claude-1000/br-gpu.lock uv run python autocrop_preview.py drift $AUTOCROP_SCRATCH/prev
+CUDA_VISIBLE_DEVICES= uv run python autocrop_preview.py cost $AUTOCROP_SCRATCH/prev
+uv run python autocrop_preview_analyze.py $AUTOCROP_SCRATCH/prev   # R² gate: MIN_R2
+```
