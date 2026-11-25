@@ -9,12 +9,10 @@ confidences**. No moves, no legality, no PGN — those belong to the downstream 
 
 ## Now (1 agent)
 
-- **split `stream/stabilize.py`** into a `stream/settle/` package (`config`, `rules`, `balance`, `stabilizer`),
-  pure move — running in a worktree (Sonnet) — lands when `stream/ingest.py` is clean in main.
 - **device id = board id** — the camera's UUID is its board id; `board-N` only the default name;
   drop the device→board table (D18 amended) — running (agent I).
 - **file splits DONE** (Sonnet): snapshot page `84ecbc0`, `measurement/{trial,evaluate}/` `a815f91`, `control/camera/`
-  `878f80a`, `stream/schedule/` `bbef6b2`; gate identical. Next round: `replay.py`, `ingest.py`, `server.py`,
+  `878f80a`, `stream/schedule/` `bbef6b2`, `stream/settle/` `8dcc248`; gate identical. Next round: `replay.py`, `ingest.py`, `server.py`,
   /control + /camera pages, core `control.py`, `camera/registry.py` (573: extract the auto-frame driver).
 
 ## Done (2026-11-24/25 — the ChessQ rebuild; plan: [docs/plans/2026-11-24-simplify-around-chessq.md](docs/plans/2026-11-24-simplify-around-chessq.md))
