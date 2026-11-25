@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import glob
 import json
+import os
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -25,10 +26,8 @@ from board_reader_inference.recognition.chessq import (
 )
 
 ROOT = Path(__file__).resolve().parents[2]
-SCRATCH = Path(
-    "/tmp/claude-1000/-home-felix-Documents-chess-board-reader/"
-    "8a2d0a57-e76c-4166-856a-3013be0fed9f/scratchpad/autocrop"
-)
+#: Where the probe keeps its scratch ONNX files, outlines and results (gitignored).
+SCRATCH = Path(os.environ.get("AUTOCROP_SCRATCH", ROOT / "scratch" / "autocrop"))
 G = INPUT_PX // 14  # 46 patches a side
 CLASSES = ".PNBRQKpnbrqk"
 BOARD_CORNERS = np.array([[0, 0], [8, 0], [8, 8], [0, 8]], np.float32)
