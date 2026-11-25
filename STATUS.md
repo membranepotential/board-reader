@@ -7,10 +7,10 @@ _reconciled: 2026-11-24 @ `480a5ea`_ · decisions: [docs/DESIGN.md](docs/DESIGN.
 A camera reads a live OTB board and streams timestamped **piece placements + per-square
 confidences**. No moves, no legality, no PGN — those belong to the downstream application layer.
 
-## Now (3 agents, files partitioned)
+## Now (2 agents, files partitioned)
 
-- **camera identity** — device id on the phone → auto board id (no `phone` default), /control overview +
-  persistent rename, duplicate guard — running (agent A; control.py, camera.py, /camera, /control).
+- **camera identity DONE** (`c7c423b`..`1a498fd`, D18): device id → auto `board-N`, kept across reloads/restarts;
+  /control camera list + persistent rename + QR; duplicate id refused. Open: forget-camera, /ingest guard.
 - **QR code DONE** (`9fcae08`): `GET /api/camera-links` (cert-covered LAN/host names, `BR_PUBLIC_URL` first) +
   `CameraQr`; agent A wires it into /control.
 - **multi-board + spikes** — load test: results and timestamps independent of load; fix what differs —
