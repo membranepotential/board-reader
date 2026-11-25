@@ -9,7 +9,7 @@ confidences**. No moves, no legality, no PGN — those belong to the downstream 
 
 ## Now (2 agents, files partitioned)
 
-- **auto-frame** — F1 locate + `-attn` models DONE (`499aeb2`, `cc8a6d3`, D20; gate identical); F1b preview
+- **auto-frame** — F1 locate + `-attn` models DONE (`499aeb2`, `1e58440`, D20; gate identical); F1b preview
   drift rule DONE (`6de42c6`: R² ≥ 0.97, > 5 % on 2 previews, 0 false fires / 421); F2a controller DONE
   (`d2613a3`), being split into `control/autoframe/` (agent); F2b wiring M1 then M2 — running (agent).
 
