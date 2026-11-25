@@ -12,6 +12,11 @@ members = ["packages/core", "packages/edge", "packages/inference"]
 # published on or before this date (today minus 7 days), so freshly-published
 # (potentially compromised) versions are never pulled. Bump deliberately.
 exclude-newer = "2026-06-09T00:00:00Z"
+# A deliberate per-package bump, still seasoned 7 days: YouTube breaks old yt-dlp
+# releases within weeks (2026.3.17, the newest before the date above, resolves
+# URLs that googlevideo answers with 403), so the edge's stream source needs a
+# recent one. Bump this date together with the yt-dlp floor in packages/edge.
+exclude-newer-package = { yt-dlp = "2026-11-18T00:00:00Z" }
 
 [tool.uv.sources]
 board-reader-core = { workspace = true }

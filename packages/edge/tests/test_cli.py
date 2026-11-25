@@ -78,3 +78,16 @@ def test_jpeg_quality_defaults_to_the_adapters_own_default(monkeypatch):
 def test_jpeg_quality_outside_1_100_is_refused(value):
     with pytest.raises(SystemExit):
         main(["feed", "--synthetic", "1", "--jpeg-quality", value])
+
+
+@pytest.mark.parametrize(
+    ("spec", "seconds"), [("90", 90.0), ("1:30", 90.0), ("1:02:00", 3720.0), ("7.5", 7.5)]
+)
+def test_camera_start_takes_seconds_or_clock_time(spec, seconds):
+    assert cli._start(spec) == seconds
+
+
+@pytest.mark.parametrize("spec", ["1:2:3:4", "-5", "ten"])
+def test_camera_start_refuses_what_is_no_time(spec):
+    with pytest.raises(SystemExit):
+        cli.build_parser().parse_args(["camera", "x.mp4", "--start", spec])

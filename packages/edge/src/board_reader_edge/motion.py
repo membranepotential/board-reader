@@ -141,3 +141,13 @@ class MotionMeter:
         self._prev = None
         self._floor = None
         self._stability = 1.0
+
+    def rebase(self) -> None:
+        """Start a new reference with the next frame, keeping the learned floor.
+
+        For a change of WHAT is sampled (a new crop, a reopened stream) rather than
+        of the scene: differencing across it would read the switch as one frame of
+        whole-field motion and open a burst for nothing. Mirrors the phone's
+        ``MotionMeter.rebase``.
+        """
+        self._prev = None

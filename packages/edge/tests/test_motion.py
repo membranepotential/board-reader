@@ -91,6 +91,19 @@ def test_reset_forgets_the_reference_frame():
     assert meter.update(swept(1)) == 1.0  # no reference -> at rest again
 
 
+def test_rebase_starts_a_new_reference_but_keeps_the_learned_floor():
+    """A switch to a different picture is not motion, and the rig's floor survives it."""
+    rng = np.random.default_rng(0)
+    noisy = [np.clip(128 + rng.normal(0, 6, (64, 64)), 0, 255).astype(np.uint8) for _ in range(40)]
+    meter = MotionMeter()
+    for image in noisy:
+        meter.update(image)
+    floor = meter._floor
+    meter.rebase()
+    assert meter.update(np.zeros((64, 64), np.uint8)) == 1.0  # a new reference, no diff
+    assert meter._floor == floor
+
+
 def test_scoring_is_independent_of_capture_resolution():
     # The thumbnail is fixed-size, so the same motion scores the same whether the
     # camera hands us 240px or 720px frames.

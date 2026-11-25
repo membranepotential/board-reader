@@ -10,13 +10,23 @@ inference node. The edge and inference processes meet only on the wire.
     board-reader-edge feed --video otb.mp4 --adaptive --loop \
         --roi 0.2,0.1,0.6,0.8                       # real footage, board's rectangle
     board-reader-edge feed --recording recordings/ --throttle   # re-run a recorded session
+
+    board-reader-edge camera https://www.youtube.com/watch?v=...   # a broadcast as a camera
+    board-reader-edge camera <url> --start 1:02:00               # a video, from 1 h 2 min
+
+``feed`` streams a fixed source under a fixed ``--board`` with a static ``--roi`` and
+no control channel (scripts, tests, replays). ``camera`` is a camera like the phone:
+it registers on the node's control channel by its device id, streams under the board
+id the node assigns, and takes its crop and streaming on/off from ``/control``.
 """
 
 from __future__ import annotations
 
 import argparse
 import asyncio
+import logging
 import sys
+from pathlib import Path
 
 from board_reader_core.control import CropRect
 from board_reader_core.protocol import START_PLACEMENT
@@ -27,6 +37,9 @@ from board_reader_edge.adapter import (
     FileEdgeAdapter,
     RecordingReplay,
 )
+from board_reader_edge.camera.link import default_state_path, load_device_id
+from board_reader_edge.camera.run import StreamCamera
+from board_reader_edge.camera.stream import CAPTURE_FPS, StreamSource, resolve
 from board_reader_edge.client import stream_to_gateway
 from board_reader_edge.forwarder import AdaptiveForwarder, ForwarderConfig
 from board_reader_edge.source import (
@@ -37,6 +50,8 @@ from board_reader_edge.source import (
     RepeatSource,
     VideoFileSource,
 )
+
+log = logging.getLogger("board_reader_edge")
 
 # A recorded game is a *capture* stream and wants a camera-like rate; the
 # one-still feeds only need to tick over.
@@ -130,6 +145,58 @@ def cmd_feed(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_camera(args: argparse.Namespace) -> int:
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    device = load_device_id(args.state)
+    try:
+        first = resolve(args.source, max_height=args.max_height)
+    except ValueError as e:
+        raise SystemExit(str(e)) from e
+    kind = "live stream" if first.live else "video"
+    if first.live and args.start:
+        raise SystemExit("--start applies to a video, not to a live stream")
+    log.info("%s: %s", kind, first.title)
+    log.info("device %s (kept in %s); node %s", device, args.state, args.node)
+    source = StreamSource(
+        first,
+        reresolve=lambda: resolve(args.source, max_height=args.max_height),
+        fps=args.fps,
+        start_s=args.start,
+    )
+    camera = StreamCamera(
+        source,
+        node=args.node,
+        device_id=device,
+        title=first.title,
+        jpeg_quality=args.jpeg_quality,
+    )
+    try:
+        outcome = asyncio.run(camera.run())
+    except KeyboardInterrupt:
+        return 0
+    except OSError as e:
+        raise SystemExit(f"cannot read {args.source}: {e}") from e
+    if outcome == "replaced":
+        log.error("another edge with this device id took over; stopped")
+        return 1
+    log.info("the video ended")
+    return 0
+
+
+def _start(spec: str) -> float:
+    """``--start`` as seconds: ``90``, ``1:30``, ``1:02:00`` or ``75.5``."""
+    try:
+        parts = [float(p) for p in spec.split(":")]
+    except ValueError as e:
+        raise argparse.ArgumentTypeError("--start takes seconds or [h:]m:s") from e
+    if not 1 <= len(parts) <= 3 or any(p < 0 for p in parts):
+        raise argparse.ArgumentTypeError("--start takes seconds or [h:]m:s")
+    seconds = 0.0
+    for part in parts:
+        seconds = seconds * 60 + part
+    return seconds
+
+
 def _roi(spec: str) -> CropRect:
     """``--roi x,y,w,h`` -> a :class:`CropRect`, refused at the argparse boundary."""
     try:
@@ -208,6 +275,45 @@ def build_parser() -> argparse.ArgumentParser:
         default=ForwarderConfig.burst_fps, help="--adaptive during-motion forward rate",
     )
     f.set_defaults(func=cmd_feed)
+
+    c = sub.add_parser(
+        "camera",
+        help="a video or live stream as a camera on the node's control channel",
+        description="Stream a YouTube (or other) video or live stream to the node as a "
+        "camera: it appears on /control, which sets its crop and turns streaming on.",
+    )
+    c.add_argument(
+        "source",
+        help="a web page yt-dlp resolves (YouTube and other sites), a stream URL "
+             "OpenCV opens (rtsp://, .m3u8) or a video file",
+    )
+    c.add_argument(
+        "--node", default="ws://127.0.0.1:8000",
+        help="the inference node (its /cameras and /ingest sockets)",
+    )
+    c.add_argument(
+        "--state", type=Path, default=default_state_path(),
+        help="the file that keeps this camera's device id, so the node gives it the "
+             "same board id after a restart; one file per camera (default: %(default)s)",
+    )
+    c.add_argument(
+        "--start", type=_start, default=0.0,
+        help="a video's start position: seconds or [h:]m:s (default: the beginning)",
+    )
+    c.add_argument(
+        "--fps", type=float, default=CAPTURE_FPS,
+        help="sampling rate of the motion meter, as the phone's (default %(default)g)",
+    )
+    c.add_argument(
+        "--max-height", dest="max_height", type=int, default=1080,
+        help="the tallest format yt-dlp may pick, in lines (default %(default)d)",
+    )
+    c.add_argument(
+        "--jpeg-quality", dest="jpeg_quality", type=_jpeg_quality,
+        default=DEFAULT_JPEG_QUALITY,
+        help="JPEG quality of the sent frames, 1-100 (default %(default)d)",
+    )
+    c.set_defaults(func=cmd_camera)
 
     return p
 
