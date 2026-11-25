@@ -84,7 +84,7 @@ make protocol                 # regenerate the viewer's wire types from core's p
 uv run pytest <path>[::<test>] -q   # one file/test while iterating — no `-n`, it costs more
 uv run pytest packages/core   # one package's tests
 uv run pytest                 # the whole suite SERIALLY (~23s) — prefer `make test`
-make gate GATE_NAME=<new>     # replay the seven gate takes; table against latency3 (needs the GPU)
+make gate GATE_NAME=<new>     # replay the seven gate takes; table against balanced (needs the GPU)
 
 # Run locally (one terminal): inference + the viewer on http :8080 and https :8443
 # (one Node process; /camera on a phone needs the secure one). `make dev` depends on

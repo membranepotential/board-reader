@@ -9,8 +9,8 @@ confidences**. No moves, no legality, no PGN — those belong to the downstream 
 
 ## Now (1 agent)
 
-- **partial commit under a hand** — an obscured read commits a balanced piece group (D16 amended;
-  probe: [report](docs/reports/2026-11-25-partial-commit-under-hand.md)) — building (main session) — next: `make gate`.
+- **split `stream/stabilize.py`** into a `stream/settle/` package (`config`, `rules`, `balance`, `stabilizer`),
+  pure move — running in a worktree (Sonnet) — lands when `stream/ingest.py` is clean in main.
 - **auto-frame top margin** — back-rank piece tops get cut; perspective-aware top margin in
   `locate.proposed_crop`, measured with the autocrop probe — running (agent T).
 - **device id = board id** — the camera's UUID is its board id; `board-N` only the default name;
@@ -22,10 +22,10 @@ confidences**. No moves, no legality, no PGN — those belong to the downstream 
 ## Done (2026-11-24/25 — the ChessQ rebuild; plan: [docs/plans/2026-11-24-simplify-around-chessq.md](docs/plans/2026-11-24-simplify-around-chessq.md))
 
 - **ChessQ is the core recognizer** (Lite V6, fp32 CUDA ~0.2 s/read; int8 CPU); old stack deleted (≈ −26k
-  lines). Gate: 7 takes, base `latency3` 374/405 raw, 350/405 settled, 0 hand leaks; take 2 has truth.
+  lines). Gate: 7 takes, base `balanced` 374/405 raw, 353/405 settled, 0 hand leaks; take 2 has truth.
 - **Latency:** area-averaged phone meter, 1 s tail; node hold 0.3 s, settle 0.3 s (`8eac6f6`, needs the
   energy gate); take 2 median move→settle 1.66 → 0.94 s.
-- **Energy gate** (D16, `138d941`): obscured reads never commit; resting hand 9 wrong boards → 0.
+- **Energy gate** (D16, `138d941`; amended `86884f3`): an obscured read commits only a piece that moved; gate 350 → 353.
 - **Event** (D15): one settled placement + `pending` + `changed_utc` (pixel back-dated, `9fb7671`: take 2
   0.57 s after the true change); priors → python-chess count guard + `rules: standard|free`.
 - **Dumb-camera phone** (D11) + `/control` over WebSockets; **viewer** (D12) SvelteKit on Node; **one wire
@@ -44,7 +44,7 @@ confidences**. No moves, no legality, no PGN — those belong to the downstream 
 
 ## Next
 
-1. **Resting-hand re-test** (you): rest a hand on the board mid-game; no wrong board, "hand?" chip shows.
+1. **Resting-hand re-test** (you): TESTING's resting-hand path; step 4 is new (a move beside a resting hand shows).
 2. **Motion meter over the board only** — 45/60 gate moves wait for the 2 s idle read (report `0ada93d`).
 3. **Record more varied games** — second set/camera/light; all gate takes are one set.
 4. **Model the remaining HTTP replies in core** (`/estimate`, `/uploads`, `/labels`, the `/ingest`
