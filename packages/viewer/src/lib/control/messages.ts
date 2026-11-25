@@ -44,7 +44,7 @@ export function configureMessage(config: CameraConfig): string {
   return JSON.stringify(message);
 }
 
-/** "Re-frame now": the node finds the board again, switching Auto-frame on. */
+/** "Re-detect frame": the node finds the board again, switching Auto-frame on. */
 export function reframeMessage(): string {
   const message: ReframeMessage = { type: 'reframe' };
   return JSON.stringify(message);
