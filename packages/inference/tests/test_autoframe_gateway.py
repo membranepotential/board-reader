@@ -116,3 +116,17 @@ def test_a_forgotten_camera_leaves_no_position_behind(gateway, drain_ingest):
             pass
     # Its board id goes to the next new camera, which must not open on this position.
     assert client.get("/boards/board-1").status_code == 404
+
+
+class FailingRecognizer(FramingRecognizer):
+    """Every read fails, as on a full card."""
+
+    def read(self, image: np.ndarray) -> Recognition:
+        raise RuntimeError("BFCArena failed to allocate")
+
+
+def test_a_failed_locate_is_retried_like_no_board(gateway):
+    client: TestClient = gateway(create_app(FailingRecognizer(), PositionHub()))
+    with client.websocket_connect(CAMERA) as phone, client.websocket_connect(CONTROL) as control:
+        _send_full_frame(phone)
+        _until(control, "state", lambda m: m["autoframe"] == "no-board")

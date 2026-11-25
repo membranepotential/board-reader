@@ -242,8 +242,10 @@ def create_app(
 
         try:
             look = await ingest_.call_spare(work)
-        except ValueError as e:
-            log.warning("board %s: the preview is no JPEG: %s", board_id, e)
+        except Exception:
+            # A bad JPEG, or a read that failed (a full card): this preview is lost,
+            # the next one may go.
+            log.exception("board %s: locating a preview failed", board_id)
             cameras.preview_skipped(board_id)
             return
         if isinstance(look, Busy):
@@ -258,8 +260,9 @@ def create_app(
 
         try:
             located = await ingest_.call(work)
-        except ValueError as e:
-            log.warning("board %s: the full frame is no JPEG: %s", full.board_id, e)
+        except Exception:
+            # A bad JPEG, or a read that failed (a full card): retried like no board.
+            log.exception("board %s: locating the full frame failed", full.board_id)
             cameras.autoframe_result(full.board_id, FullFrameFailed(full.request))
             return
         found = located.found
